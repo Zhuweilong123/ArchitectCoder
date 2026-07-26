@@ -628,24 +628,180 @@ async def generate_tests(
     return result
 
 
+def _build_reference_index(diagrams: list[dict]) -> dict:
+    """Build a structured cross-diagram reference index for prompt injection and post-validation.
+
+    Scans all diagrams and extracts classes, lifelines, components, and their
+    cross-references. Also flags orphan lifelines (no class_ref) and unlinked
+    diagrams (no component_id).
+
+    Returns a dict with keys: classes, lifelines, components, diagram_links,
+    orphan_lifelines, unlinked_diagrams.
+    """
+    index: dict = {
+        "classes": {},       # class_id → {name, methods[], provided[], required[]}
+        "lifelines": {},     # lifeline_id → {name, class_ref}
+        "components": {},    # component_id → {name, provided[], required[]}
+        "diagram_links": [], # [{type, name, component_id}]
+        "orphan_lifelines": [],    # lifeline_ids with empty class_ref
+        "unlinked_diagrams": [],   # diagram names with empty component_id
+    }
+
+    for d in (diagrams or []):
+        dtype = d.get("diagram_type") or d.get("type") or "class"
+        dname = d.get("name", "Untitled")
+        # Read from both data-wrapped and top-level formats
+        data = d.get("data") or d
+        cid = d.get("component_id") or data.get("component_id", "")
+        # Merge top-level fields into data for unified access
+        if "classes" not in data and "classes" in d:
+            data = {**data, "classes": d["classes"], "relations": d.get("relations", [])}
+        if "lifelines" not in data and "lifelines" in d:
+            data = {**data, "lifelines": d["lifelines"], "messages": d.get("messages", [])}
+        if "components" not in data and "components" in d:
+            data = {**data, "components": d["components"], "comp_relations": d.get("comp_relations", [])}
+
+        # Track diagram-level links
+        link_entry = {"type": dtype, "name": dname, "component_id": cid}
+        index["diagram_links"].append(link_entry)
+        if not cid:
+            index["unlinked_diagrams"].append(dname)
+
+        # ── Class diagram data ──
+        for cls in data.get("classes") or []:
+            cid_key = cls.get("id", "")
+            if cid_key:
+                methods = []
+                for m in cls.get("methods") or []:
+                    params = m.get("params", "")
+                    method_sig = f"{m.get('name', '')}({params})"
+                    methods.append(method_sig)
+                index["classes"][cid_key] = {
+                    "name": cls.get("name", ""),
+                    "methods": methods,
+                    "provided": list(cls.get("provided_interfaces") or []),
+                    "required": list(cls.get("required_interfaces") or []),
+                }
+
+        # ── Sequence diagram data ──
+        for ll in data.get("lifelines") or []:
+            ll_id = ll.get("id", "")
+            if ll_id:
+                cref = ll.get("class_ref", "")
+                index["lifelines"][ll_id] = {
+                    "name": ll.get("name", ""),
+                    "class_ref": cref,
+                }
+                if not cref:
+                    index["orphan_lifelines"].append(ll_id)
+
+        # ── Component diagram data ──
+        for comp in data.get("components") or []:
+            comp_id = comp.get("id", "")
+            if comp_id:
+                index["components"][comp_id] = {
+                    "name": comp.get("name", ""),
+                    "provided": list(comp.get("provided_interfaces") or []),
+                    "required": list(comp.get("required_interfaces") or []),
+                }
+
+    return index
+
+
+def _format_index_for_prompt(index: dict) -> str:
+    """Format the reference index as a compact markdown block for LLM prompt injection."""
+    lines = ["## Cross-Diagram Reference Index", ""]
+
+    # Class Directory
+    if index["classes"]:
+        lines.append("### Class Directory")
+        for cid, cinfo in sorted(index["classes"].items(), key=lambda x: x[1]["name"]):
+            methods_str = ", ".join(cinfo["methods"][:8]) or "(none)"
+            if len(cinfo["methods"]) > 8:
+                methods_str += f" ... (+{len(cinfo['methods']) - 8} more)"
+            ifaces = []
+            if cinfo["provided"]:
+                ifaces.append(f"◉ provides: [{', '.join(cinfo['provided'])}]")
+            if cinfo["required"]:
+                ifaces.append(f"◡ requires: [{', '.join(cinfo['required'])}]")
+            iface_str = "  |  " + "  ".join(ifaces) if ifaces else ""
+            lines.append(f"  `{cid}` **{cinfo['name']}** — methods: {methods_str}{iface_str}")
+        lines.append(f"  ({len(index['classes'])} classes total)")
+        lines.append("")
+
+    # Lifeline → Class Mapping
+    if index["lifelines"]:
+        lines.append("### Lifeline → Class Mapping")
+        for lid, linfo in sorted(index["lifelines"].items(), key=lambda x: x[1]["name"]):
+            if linfo["class_ref"]:
+                cls_name = index["classes"].get(linfo["class_ref"], {}).get("name", "?")
+                lines.append(f"  `{lid}` **{linfo['name']}** → `{linfo['class_ref']}` ({cls_name})")
+            else:
+                lines.append(f"  `{lid}` **{linfo['name']}** → ⚠ NO CLASS_REF")
+        lines.append(f"  ({len(index['lifelines'])} lifelines total)")
+        lines.append("")
+
+    # Component Directory
+    if index["components"]:
+        lines.append("### Component Directory")
+        for cid, cinfo in sorted(index["components"].items(), key=lambda x: x[1]["name"]):
+            ifaces = []
+            if cinfo["provided"]:
+                ifaces.append(f"◉ provides: [{', '.join(cinfo['provided'])}]")
+            if cinfo["required"]:
+                ifaces.append(f"◡ requires: [{', '.join(cinfo['required'])}]")
+            iface_str = "  |  " + "  ".join(ifaces) if ifaces else ""
+            lines.append(f"  `{cid}` **{cinfo['name']}**{iface_str}")
+        lines.append(f"  ({len(index['components'])} components total)")
+        lines.append("")
+
+    # Diagram Links
+    if index["diagram_links"]:
+        lines.append("### Diagram → Component Links")
+        for dl in index["diagram_links"]:
+            cid = dl["component_id"]
+            if cid:
+                comp_name = index["components"].get(cid, {}).get("name", cid)
+                lines.append(f"  [{dl['type']}] **{dl['name']}** → `{cid}` ({comp_name})")
+            else:
+                lines.append(f"  [{dl['type']}] **{dl['name']}** → ⚠ NO COMPONENT_ID")
+        lines.append("")
+
+    # Issues
+    issues = []
+    if index["orphan_lifelines"]:
+        issues.append(f"⚠ {len(index['orphan_lifelines'])} lifelines without class_ref: {', '.join(index['orphan_lifelines'])}")
+    if index["unlinked_diagrams"]:
+        issues.append(f"⚠ {len(index['unlinked_diagrams'])} diagrams without component_id: {', '.join(index['unlinked_diagrams'])}")
+    if issues:
+        lines.append("### Issues Detected in Existing Diagrams")
+        for issue in issues:
+            lines.append(f"  {issue}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _build_global_prompt(
     diagrams: list[dict] | None = None,
     instructions: str = "",
+    index: dict | None = None,
 ) -> tuple[str, str, bool]:
     """Build the shared prompt + system_prompt for global optimization.
 
-    Accepts a list of existing diagrams as optional reference context.
+    Accepts a list of existing diagrams as optional reference context and an
+    optional pre-built cross-diagram reference index.
     Returns (prompt, full_system, is_empty).
     Used by both optimize_project and optimize_project_stream.
     """
     _logger = logging.getLogger(__name__)
 
-    # Load design guides
+    # Load design guides (including cross-diagram guide)
     guide_parts = []
     try:
         from pathlib import Path as _P
         _gd = _P(__file__).resolve().parent.parent.parent.parent / "uml_guide"
-        for _t in ["class_diagram", "sequence_diagram", "component_diagram"]:
+        for _t in ["class_diagram", "sequence_diagram", "component_diagram", "cross_diagram"]:
             _gf = _gd / f"{_t}_guide.md"
             if _gf.exists():
                 guide_parts.append(_gf.read_text(encoding="utf-8"))
@@ -659,16 +815,21 @@ def _build_global_prompt(
         for d in diagrams:
             dtype = d.get("diagram_type") or d.get("type") or "class"
             dname = d.get("name", "Untitled")
-            # Determine if non-empty by checking type-specific fields
+            # Check both top-level AND data-wrapped fields (supports both API formats)
+            _inner = d.get("data") or {}
             has_content = False
             if dtype in ("class",):
-                has_content = bool(d.get("classes") or d.get("relations"))
+                has_content = bool(d.get("classes") or d.get("relations")
+                                   or _inner.get("classes") or _inner.get("relations"))
             elif dtype in ("sequence",):
-                has_content = bool(d.get("lifelines") or d.get("messages"))
+                has_content = bool(d.get("lifelines") or d.get("messages")
+                                   or _inner.get("lifelines") or _inner.get("messages"))
             elif dtype in ("component",):
-                has_content = bool(d.get("components") or d.get("comp_relations"))
+                has_content = bool(d.get("components") or d.get("comp_relations")
+                                   or _inner.get("components") or _inner.get("comp_relations"))
             else:
-                has_content = bool(d.get("classes") or d.get("lifelines") or d.get("components"))
+                has_content = bool(d.get("classes") or d.get("lifelines") or d.get("components")
+                                   or _inner.get("classes") or _inner.get("lifelines") or _inner.get("components"))
             if has_content:
                 _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
                                 "component": "Component Diagram"}
@@ -759,12 +920,20 @@ you may create multiple diagrams of the same type for different aspects or scena
 Only output the JSON object, no other text.
 """
     else:
+        # ── Inject cross-diagram reference index (if available) ──
+        index_block = _format_index_for_prompt(index) if index else ""
+
         prompt = f"""Cross-validate and optimize the following UML diagrams as a complete system design.
 
+{index_block}
 {chr(10).join(parts)}
 
 ## Cross-Validation Rules:
 {_cross_validation_rules}
+12. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their relationships.
+    Use it to validate your output: every lifeline.class_ref must resolve to a class in the Class Directory,
+    every message label should match a method in the target class, every component_id must reference a
+    component in the Component Directory. Fix any "Issues Detected" listed in the index.
 
 ## User Instructions:
 {instructions or "Overall system optimization: improve consistency, reduce duplication, ensure cross-diagram coherence"}
@@ -839,6 +1008,170 @@ def _normalize_optimize_result(raw: dict) -> dict:
     }
 
 
+def _fuzzy_match_class(ref: str, classes: dict) -> str | None:
+    """Try to match an invalid class_ref to an actual class ID by name similarity."""
+    if not ref or not classes:
+        return None
+    # Normalize: strip prefix, lowercase, remove underscores
+    ref_clean = ref.lower().replace("class_", "").replace("_", "").replace("-", "")
+    for cid, cinfo in classes.items():
+        name_clean = cinfo["name"].lower().replace("_", "").replace("-", "")
+        if name_clean == ref_clean:
+            return cid
+    # Also try: ref might be the class name itself (not ID)
+    for cid, cinfo in classes.items():
+        if cinfo["name"].lower() == ref.lower():
+            return cid
+    return None
+
+
+def _apply_auto_fixes(result: dict, issues: list[dict]) -> None:
+    """Apply auto-fixable issues directly to the result's diagrams data."""
+    for issue in issues:
+        if not issue.get("auto_fixed"):
+            continue
+        diag_idx = issue.get("_diagram_index")
+        ll_id = issue.get("_lifeline_id")
+        fix_to = issue.get("_fix_to")
+        if diag_idx is not None and ll_id and fix_to:
+            diags = result.get("diagrams", [])
+            if diag_idx < len(diags):
+                data = diags[diag_idx].get("data", {})
+                for ll in data.get("lifelines", []):
+                    if ll.get("id") == ll_id:
+                        ll["class_ref"] = fix_to
+                        break
+
+
+def _validate_cross_references(result: dict, original_index: dict) -> list[dict]:
+    """Post-validate LLM output against the reference index.
+
+    Checks:
+    1. Lifeline class_ref → valid class ID (auto-fix via fuzzy match)
+    2. Message method names → class method signatures
+    3. Diagram component_id → valid component ID
+    4. Component provided/required interface consistency
+
+    Returns a list of {severity, type, msg, auto_fixed, ...} issue dicts.
+    """
+    issues = []
+    opt_diagrams = result.get("diagrams", [])
+    if not opt_diagrams:
+        return issues
+
+    opt_index = _build_reference_index(opt_diagrams)
+
+    # ── Check 1: class_ref validity ──
+    for di, diag in enumerate(opt_diagrams):
+        if diag.get("type") != "sequence":
+            continue
+        data = diag.get("data", {})
+        for ll in data.get("lifelines", []):
+            ll_id = ll.get("id", "")
+            cref = ll.get("class_ref", "")
+            if not cref:
+                # Missing class_ref — check if a class with matching name exists
+                ll_name = ll.get("name", "")
+                if ll_name:
+                    match = _fuzzy_match_class(ll_name, opt_index["classes"])
+                    if match:
+                        ll["class_ref"] = match
+                        issues.append({
+                            "severity": "info", "type": "missing_class_ref",
+                            "msg": f"Lifeline '{ll_name}' had no class_ref, auto-assigned to '{opt_index['classes'][match]['name']}'",
+                            "auto_fixed": True,
+                            "_diagram_index": di, "_lifeline_id": ll_id, "_fix_to": match,
+                        })
+                continue
+            if cref not in opt_index["classes"]:
+                match = _fuzzy_match_class(cref, opt_index["classes"])
+                if match:
+                    ll["class_ref"] = match
+                    issues.append({
+                        "severity": "warning", "type": "bad_class_ref",
+                        "msg": f"Lifeline '{ll.get('name','')}' class_ref='{cref}' → auto-fixed to '{opt_index['classes'][match]['name']}'",
+                        "auto_fixed": True,
+                        "_diagram_index": di, "_lifeline_id": ll_id, "_fix_to": match,
+                    })
+                else:
+                    issues.append({
+                        "severity": "error", "type": "bad_class_ref",
+                        "msg": f"Lifeline '{ll.get('name','')}' class_ref='{cref}' references non-existent class",
+                        "auto_fixed": False,
+                    })
+
+    # ── Check 2: message method → class method ──
+    for diag in opt_diagrams:
+        if diag.get("type") != "sequence":
+            continue
+        data = diag.get("data", {})
+        lifelines = {l["id"]: l for l in data.get("lifelines", [])}
+        for msg in data.get("messages", []):
+            target_ll = lifelines.get(msg.get("to_lifeline", ""))
+            if not target_ll:
+                continue
+            cref = target_ll.get("class_ref", "")
+            if not cref or cref not in opt_index["classes"]:
+                continue
+            cls = opt_index["classes"][cref]
+            label = msg.get("label", "")
+            if not label:
+                continue
+            method_name = label.split("(")[0].strip()
+            if method_name and method_name not in ["return", ""]:
+                cls_methods = [m.split("(")[0] for m in cls["methods"]]
+                if cls_methods and method_name not in cls_methods:
+                    # Only flag if the class actually has methods (not empty skeleton)
+                    issues.append({
+                        "severity": "warning", "type": "method_mismatch",
+                        "msg": f"Message '{label}' → class '{cls['name']}' (has methods: {', '.join(cls_methods[:5])})",
+                        "auto_fixed": False,
+                    })
+
+    # ── Check 3: component_id validity ──
+    for diag in opt_diagrams:
+        cid = diag.get("component_id", "")
+        if cid and cid not in opt_index["components"]:
+            issues.append({
+                "severity": "warning", "type": "bad_component_id",
+                "msg": f"Diagram '{diag.get('name','')}' component_id='{cid}' not found in component diagram",
+                "auto_fixed": False,
+            })
+
+    # ── Check 4: component interface consistency ──
+    for cid, comp in opt_index["components"].items():
+        # Find linked diagrams (class diagrams with this component_id)
+        linked_class_diags = [
+            d for d in opt_diagrams
+            if d.get("type") == "class" and d.get("component_id") == cid
+        ]
+        for lcd in linked_class_diags:
+            lcd_classes = (lcd.get("data") or {}).get("classes", [])
+            all_class_provided = set()
+            all_class_required = set()
+            for cls in lcd_classes:
+                all_class_provided.update(cls.get("provided_interfaces", []))
+                all_class_required.update(cls.get("required_interfaces", []))
+            # Component provided should be covered by class provided
+            for iface in comp["provided"]:
+                if iface not in all_class_provided:
+                    issues.append({
+                        "severity": "warning", "type": "interface_mismatch",
+                        "msg": f"Component '{comp['name']}' provides '{iface}' but no linked class implements it",
+                        "auto_fixed": False,
+                    })
+            # Component required should appear in class required
+            for iface in comp["required"]:
+                if iface not in all_class_required:
+                    issues.append({
+                        "severity": "warning", "type": "interface_mismatch",
+                        "msg": f"Component '{comp['name']}' requires '{iface}' but no linked class declares it",
+                        "auto_fixed": False,
+                    })
+
+    return issues
+
+
 async def optimize_project(
     diagrams: list[dict] | None = None,
     instructions: str = "",
@@ -846,14 +1179,27 @@ async def optimize_project(
     """Cross-validate and optimize all project diagrams together.
 
     Accepts a list of existing diagram dicts as optional reference.
-    Returns a dict with ``diagrams`` array (new format), normalized via
-    ``_normalize_optimize_result()`` for backward compatibility.
+    - Pre-computes a cross-diagram reference index and injects it into the prompt.
+    - Post-validates the LLM output against the index (class_ref, method names, etc.).
+    - Applies auto-fixes for clear reference errors (fuzzy class_ref matching).
+    Returns a dict with ``diagrams`` array (new format).
     """
     _logger = logging.getLogger(__name__)
     _logger.info("[OptimizeProject] Global optimization request")
 
+    # ── Step 1: Build cross-diagram reference index ──
+    original_index = _build_reference_index(diagrams) if diagrams else {}
+    if original_index:
+        _logger.info(
+            f"[OptimizeProject] Index: {len(original_index['classes'])} classes, "
+            f"{len(original_index['lifelines'])} lifelines, "
+            f"{len(original_index['components'])} components, "
+            f"{len(original_index['orphan_lifelines'])} orphans, "
+            f"{len(original_index['unlinked_diagrams'])} unlinked"
+        )
+
     prompt, full_system, is_empty = _build_global_prompt(
-        diagrams=diagrams, instructions=instructions,
+        diagrams=diagrams, instructions=instructions, index=original_index,
     )
 
     # Save prompt + response for diagnostics
@@ -887,7 +1233,29 @@ async def optimize_project(
         cleaned = clean_llm_json_response(response)
         result = json.loads(cleaned)
         _logger.info(f"[OptimizeProject] Result keys: {list(result.keys())}")
-        return _normalize_optimize_result(result)
+
+        # ── Normalize format (old→new) ──
+        result = _normalize_optimize_result(result)
+
+        # ── Apply per-diagram field normalization ──
+        for dspec in result.get("diagrams", []):
+            if isinstance(dspec.get("data"), dict):
+                dspec["data"] = _normalize_llm_output(dspec["data"])
+
+        # ── Post-validate cross-diagram references ──
+        post_issues = _validate_cross_references(result, original_index)
+        if post_issues:
+            existing = result.get("consistency_report", [])
+            result["consistency_report"] = existing + post_issues
+            _logger.info(
+                f"[OptimizeProject] Post-validation: {len(post_issues)} issues "
+                f"({sum(1 for i in post_issues if i.get('auto_fixed'))} auto-fixed, "
+                f"{sum(1 for i in post_issues if i.get('severity') == 'error')} errors)"
+            )
+            # Apply auto-fixes
+            _apply_auto_fixes(result, post_issues)
+
+        return result
     except json.JSONDecodeError:
         _logger.warning("[OptimizeProject] JSON parse failed")
         return {
@@ -913,8 +1281,11 @@ async def optimize_project_stream(
     _l.info("[OptimizeStream] Starting streaming optimization (JSON mode)")
     _lf = None
 
+    # ── Build reference index for prompt injection ──
+    original_index = _build_reference_index(diagrams) if diagrams else {}
+
     prompt, full_system, is_empty = _build_global_prompt(
-        diagrams=diagrams, instructions=instructions,
+        diagrams=diagrams, instructions=instructions, index=original_index,
     )
 
     # Save prompt for diagnostics

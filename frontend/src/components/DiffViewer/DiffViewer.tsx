@@ -336,16 +336,37 @@ const DiffViewer: React.FC = () => {
       )}
 
       {/* Consistency report (global optimization cross-validation findings) */}
-      {optimizationConsistencyReport && optimizationConsistencyReport.length > 0 && (
-        <div className="diff-summary" style={{ backgroundColor: '#fff7e6', borderLeft: '3px solid #faad14' }}>
-          <Tag color="orange">一致性报告</Tag>
-          {optimizationConsistencyReport.map((item: any, i: number) => (
-            <p key={i} style={{ fontSize: 12, margin: '2px 0' }}>
-              {item.severity === 'error' ? '❌' : '⚠️'} {item.msg}
+      {optimizationConsistencyReport && optimizationConsistencyReport.length > 0 && (() => {
+        const errors = optimizationConsistencyReport.filter((i: any) => i.severity === 'error' && !i.auto_fixed);
+        const warnings = optimizationConsistencyReport.filter((i: any) => i.severity === 'warning' && !i.auto_fixed);
+        const infos = optimizationConsistencyReport.filter((i: any) => i.severity === 'info' || i.auto_fixed);
+        return (
+          <div className="diff-summary" style={{ backgroundColor: '#fff7e6', borderLeft: '3px solid #faad14' }}>
+            <Tag color="orange">一致性报告</Tag>
+            {errors.map((item: any, i: number) => (
+              <p key={`err_${i}`} style={{ fontSize: 12, margin: '2px 0', color: '#ff4d4f' }}>
+                ❌ {item.msg}
+              </p>
+            ))}
+            {warnings.map((item: any, i: number) => (
+              <p key={`warn_${i}`} style={{ fontSize: 12, margin: '2px 0', color: '#d48806' }}>
+                ⚠️ {item.msg}
+              </p>
+            ))}
+            {infos.map((item: any, i: number) => (
+              <p key={`info_${i}`} style={{ fontSize: 12, margin: '2px 0', color: '#52c41a' }}>
+                <Tag color="green" style={{ fontSize: 10, lineHeight: '16px', marginRight: 4 }}>已自动修复</Tag>
+                {item.msg}
+              </p>
+            ))}
+            <p style={{ fontSize: 11, color: '#888', marginTop: 6 }}>
+              {errors.length > 0 && `${errors.length} 个错误 `}
+              {warnings.length > 0 && `${warnings.length} 个警告 `}
+              {infos.length > 0 && `${infos.length} 个已自动修复`}
             </p>
-          ))}
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
       {/* Toggle hint */}
       <div className="diff-toggle-hint">
