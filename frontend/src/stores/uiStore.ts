@@ -6,7 +6,7 @@ import type { UmlDiagram } from '../types/uml';
 export type RightPanelTab = 'properties' | 'code' | 'pipeline' | 'diff' | 'testcase';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
-export type DiffDiagramType = 'class' | 'sequence' | 'component';
+export type DiffDiagramType = string;  // was: 'class' | 'sequence' | 'component' — now dynamic
 
 interface UiState {
   // Panel visibility

@@ -181,39 +181,35 @@ const PipelineConsole: React.FC = () => {
           if (data.stage === 'uml_optimize' && data.status === 'success') {
             const store = useUiStore.getState();
             const result = data.data?.stages?.[0]?.result || {};
-            const optimizedAll = result.optimized || {};
             const project = useDiagramStore.getState().project;
+            const labelMap: Record<string, string> = { class: '类图', sequence: '时序图', component: '组件图' };
 
-            // Check if this is a global optimization result (has class/sequence/component keys)
-            if (typeof optimizedAll === 'object' && (optimizedAll.class || optimizedAll.sequence || optimizedAll.component)) {
-              // Global multi-diagram optimization
+            // ── New format: {diagrams: [{type, name, component_id, data}, ...]} ──
+            const diagramsList = result.diagrams;
+            if (diagramsList && Array.isArray(diagramsList) && diagramsList.length > 0) {
+              // Auto-create/update project diagrams from the LLM result
+              useDiagramStore.getState().addDiagramsFromSpec(diagramsList);
+
+              // Build diff data for the DiffViewer
               const originals: Record<string, any> = {};
               const optimizeds: Record<string, any> = {};
               const diffs: Record<string, string> = {};
+              const updatedProject = useDiagramStore.getState().project;
 
-              // Find diagrams by type — do NOT use getState().diagram (active may be wrong type)
-              const classOrig = project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-              const seqOrig = project.diagrams.find(d => d.diagram_type === 'sequence');
-              const compOrig = project.diagrams.find(d => d.diagram_type === 'component');
-
-              const typeMap: Array<{ key: string; orig: any }> = [
-                { key: 'class', orig: classOrig },
-                { key: 'sequence', orig: seqOrig },
-                { key: 'component', orig: compOrig },
-              ];
-
-              const labelMap: Record<string, string> = { class: 'Class Diagram', sequence: 'Sequence Diagram', component: 'Component Diagram' };
-
-              for (const { key, orig } of typeMap) {
-                const opt = optimizedAll[key];
-                if (opt && orig) {
-                  originals[key] = orig;
-                  // Merge LLM output with original metadata (diagram_type, name, etc.)
-                  optimizeds[key] = { ...orig, ...opt };
-                  diffs[key] = Diff.createPatch(
-                    labelMap[key] || key,
+              for (const spec of diagramsList) {
+                const dkey = `${spec.type}:${spec.name}`;
+                // Find the original (pre-optimization) from before the update
+                // Use the spec's data as the optimized version
+                const orig = project.diagrams.find(
+                  d => (d.diagram_type || 'class') === spec.type && d.name === spec.name
+                );
+                if (orig && spec.data) {
+                  originals[dkey] = orig;
+                  optimizeds[dkey] = { ...orig, ...spec.data };
+                  diffs[dkey] = Diff.createPatch(
+                    `${labelMap[spec.type] || spec.type}: ${spec.name}`,
                     JSON.stringify(orig, null, 2),
-                    JSON.stringify(optimizeds[key], null, 2),
+                    JSON.stringify(optimizeds[dkey], null, 2),
                     'Original', 'Optimized'
                   );
                 }
@@ -229,15 +225,59 @@ const PipelineConsole: React.FC = () => {
               store.setRightPanelTab('diff');
               store.setRightPanelVisible(true);
             } else {
-              // Single diagram optimization (fallback for standalone optimize_uml results)
-              const original = useDiagramStore.getState().diagram;
-              const optimized = result.optimized;
-              const diff = result.diff || result.changes_summary || '';
-              if (original && optimized) {
-                store.setOptimizationResult(original, optimized, diff, '');
+              // ── Old format: {optimized: {class, sequence, component}} ──
+              const optimizedAll = result.optimized || {};
+              if (typeof optimizedAll === 'object' && (optimizedAll.class || optimizedAll.sequence || optimizedAll.component)) {
+                const originals: Record<string, any> = {};
+                const optimizeds: Record<string, any> = {};
+                const diffs: Record<string, string> = {};
+
+                const classOrig = project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
+                const seqOrig = project.diagrams.find(d => d.diagram_type === 'sequence');
+                const compOrig = project.diagrams.find(d => d.diagram_type === 'component');
+
+                const typeMap: Array<{ key: string; orig: any }> = [
+                  { key: 'class', orig: classOrig },
+                  { key: 'sequence', orig: seqOrig },
+                  { key: 'component', orig: compOrig },
+                ];
+
+                const diffLabelMap: Record<string, string> = { class: 'Class Diagram', sequence: 'Sequence Diagram', component: 'Component Diagram' };
+
+                for (const { key, orig } of typeMap) {
+                  const opt = optimizedAll[key];
+                  if (opt && orig) {
+                    originals[key] = orig;
+                    optimizeds[key] = { ...orig, ...opt };
+                    diffs[key] = Diff.createPatch(
+                      diffLabelMap[key] || key,
+                      JSON.stringify(orig, null, 2),
+                      JSON.stringify(optimizeds[key], null, 2),
+                      'Original', 'Optimized'
+                    );
+                  }
+                }
+
+                if (Object.keys(optimizeds).length > 0) {
+                  store.setGlobalOptimizationResult(
+                    originals, optimizeds, diffs,
+                    result.consistency_report || [],
+                    ''
+                  );
+                }
+                store.setRightPanelTab('diff');
+                store.setRightPanelVisible(true);
+              } else {
+                // Single diagram optimization (fallback)
+                const original = useDiagramStore.getState().diagram;
+                const optimized = result.optimized;
+                const diff = result.diff || result.changes_summary || '';
+                if (original && optimized) {
+                  store.setOptimizationResult(original, optimized, diff, '');
+                }
+                store.setRightPanelTab('diff');
+                store.setRightPanelVisible(true);
               }
-              store.setRightPanelTab('diff');
-              store.setRightPanelVisible(true);
             }
           }
           // When Case Review stage starts, switch main canvas to test cases

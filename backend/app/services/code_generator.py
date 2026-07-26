@@ -629,13 +629,14 @@ async def generate_tests(
 
 
 def _build_global_prompt(
-    class_diagram: dict | None,
-    sequence_diagram: dict | None,
-    component_diagram: dict | None,
+    diagrams: list[dict] | None = None,
     instructions: str = "",
 ) -> tuple[str, str, bool]:
     """Build the shared prompt + system_prompt for global optimization.
-    Returns (prompt, full_system, is_empty). Used by both optimize_project and optimize_project_stream.
+
+    Accepts a list of existing diagrams as optional reference context.
+    Returns (prompt, full_system, is_empty).
+    Used by both optimize_project and optimize_project_stream.
     """
     _logger = logging.getLogger(__name__)
 
@@ -652,49 +653,71 @@ def _build_global_prompt(
         pass
     global_guide = "\n\n".join(guide_parts) if guide_parts else ""
 
-    # Collect existing diagram data
+    # Collect existing diagram data from list
     parts = []
-    if class_diagram and (class_diagram.get("classes") or class_diagram.get("relations")):
-        parts.append(f"""## Class Diagram:
+    if diagrams:
+        for d in diagrams:
+            dtype = d.get("diagram_type") or d.get("type") or "class"
+            dname = d.get("name", "Untitled")
+            # Determine if non-empty by checking type-specific fields
+            has_content = False
+            if dtype in ("class",):
+                has_content = bool(d.get("classes") or d.get("relations"))
+            elif dtype in ("sequence",):
+                has_content = bool(d.get("lifelines") or d.get("messages"))
+            elif dtype in ("component",):
+                has_content = bool(d.get("components") or d.get("comp_relations"))
+            else:
+                has_content = bool(d.get("classes") or d.get("lifelines") or d.get("components"))
+            if has_content:
+                _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
+                                "component": "Component Diagram"}
+                label = _type_labels.get(dtype, f"{dtype} Diagram")
+                parts.append(f"""## {label} "{dname}":
 ```json
-{json.dumps(class_diagram, indent=2, ensure_ascii=False)}
-```""")
-    if sequence_diagram and (sequence_diagram.get("lifelines") or sequence_diagram.get("messages")):
-        parts.append(f"""## Sequence Diagram:
-```json
-{json.dumps(sequence_diagram, indent=2, ensure_ascii=False)}
-```""")
-    if component_diagram and (component_diagram.get("components") or component_diagram.get("comp_relations")):
-        parts.append(f"""## Component Diagram:
-```json
-{json.dumps(component_diagram, indent=2, ensure_ascii=False)}
+{json.dumps(d, indent=2, ensure_ascii=False)}
 ```""")
 
     is_empty = len(parts) == 0
 
-    # Shared JSON template snippet (not an f-string — used via .format() or % later)
+    # ── New-format JSON example: diagrams array instead of fixed 3-type object ──
     _json_example = """```json
 {{
-  "optimized": {{
-    "class": {{
-      "name": "Design",
+  "diagrams": [
+    {{
+      "type": "component",
+      "name": "System Architecture",
       "component_id": "",
-      "classes": [{{"id": "...", "name": "...", "stereotype": "class", "attributes": [...], "methods": [...], "position": {{"x": 100, "y": 100}}, "size": {{"width": 200, "height": 150}}, "note": "", "provided_interfaces": [], "required_interfaces": []}}],
-      "relations": [{{"id": "...", "source": "...", "target": "...", "type": "association", "multiplicity_source": "", "multiplicity_target": "", "role_name": "", "note": ""}}]
+      "data": {{
+        "components": [{{"id": "...", "name": "...", "x": 100, "y": 100, "width": 200, "height": 160, "parent_id": "", "provided_interfaces": [], "required_interfaces": []}}],
+        "comp_relations": [{{"id": "...", "source": "...", "target": "...", "type": "dependency"}}]
+      }}
     }},
-    "sequence": {{
-      "name": "Sequence",
-      "component_id": "",
-      "lifelines": [{{"id": "...", "name": "...", "x": 100, "class_ref": "", "activations": []}}],
-      "messages": [{{"id": "...", "from_lifeline": "...", "to_lifeline": "...", "label": "method()", "type": "sync", "order": 1, "note": ""}}],
-      "fragments": []
+    {{
+      "type": "class",
+      "name": "Domain Model",
+      "component_id": "comp_xxx",
+      "data": {{
+        "name": "Domain Model",
+        "classes": [{{"id": "...", "name": "...", "stereotype": "class", "attributes": [...], "methods": [...], "position": {{"x": 100, "y": 100}}, "size": {{"width": 200, "height": 150}}, "note": "", "provided_interfaces": [], "required_interfaces": []}}],
+        "relations": [{{"id": "...", "source": "...", "target": "...", "type": "association", "multiplicity_source": "", "multiplicity_target": "", "role_name": "", "note": ""}}]
+      }}
     }},
-    "component": {{
-      "components": [{{"id": "...", "name": "...", "x": 100, "y": 100, "width": 200, "height": 160, "parent_id": "", "provided_interfaces": [], "required_interfaces": []}}],
-      "comp_relations": [{{"id": "...", "source": "...", "target": "...", "type": "dependency"}}]
+    {{
+      "type": "sequence",
+      "name": "Main Flow",
+      "component_id": "comp_xxx",
+      "data": {{
+        "name": "Main Flow",
+        "lifelines": [{{"id": "...", "name": "...", "x": 100, "class_ref": "", "activations": []}}],
+        "messages": [{{"id": "...", "from_lifeline": "...", "to_lifeline": "...", "label": "method()", "type": "sync", "order": 1, "y": 190, "note": ""}}],
+        "fragments": []
+      }}
     }}
-  }},
-  "consistency_report": [],
+  ],
+  "consistency_report": [
+    {{"severity": "error|warning", "msg": "描述信息"}}
+  ],
   "changes_summary": "Created new design from requirements",
   "diff": "All diagrams generated from scratch",
   "design_constraints": {{
@@ -705,24 +728,33 @@ def _build_global_prompt(
 }}
 ```"""
 
-    _cross_validation_rules = """1. Sequence diagram lifelines MUST reference classes that exist in the class diagram
-2. Sequence diagram method calls MUST match method signatures in the class diagram
+    _cross_validation_rules = """1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
+2. Sequence diagram method calls MUST match method signatures in class diagrams
 3. Component diagram interfaces MUST be consistent with class diagram provided/required interfaces
-4. Flag any inconsistencies found between diagrams
-5. If any diagram is missing, generate it based on the others
-6. Optimize each diagram while maintaining consistency across all three
-7. PRESERVE all coordinate fields (position/size/x/y/width/height) across ALL diagram types. NEVER zero them out.
-8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions exactly.
-9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a component diagram node (CompNode.id). When a class diagram describes the internal structure of a specific component, set component_id to that component's id. When a sequence diagram shows the interactions of a specific component, set component_id to that component's id. Use the component IDs from the provided component diagram as reference."""
+4. Flag any inconsistencies found between diagrams in the consistency_report
+5. If any diagram type is missing from the existing set, generate it based on the others
+6. Optimize each diagram while maintaining consistency across all types
+7. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
+8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions
+9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a
+   component diagram node (CompNode.id). Set component_id to the matching component's id when a diagram
+   describes the internals or interactions of a specific component
+10. MULTIPLE DIAGRAMS PER TYPE: You may generate MULTIPLE diagrams of the same type (e.g. two sequence
+    diagrams for different scenarios, two class diagrams for different layers). Each must have a distinct
+    "name" field. Use the "type" field ("class"/"sequence"/"component") to declare the diagram type
+11. GENERATION ORDER: Generate component diagrams first (overall architecture), then class diagrams
+    (structure), then sequence diagrams (behavior). Reference component IDs created in earlier entries"""
 
     if is_empty:
         prompt = f"""Generate a complete UML system design from the following requirements.
-Include ALL three diagram types: class diagram, sequence diagram, and component diagram.
+Determine which diagram types are needed — you may generate zero or more of each type
+(class, sequence, component). Typically you should generate at least one of each, but
+you may create multiple diagrams of the same type for different aspects or scenarios.
 
 ## Design Requirements:
 {instructions or "Design a well-structured software system with clear class hierarchy, interaction flows, and component architecture."}
 
-## Output Format — return a JSON object with ALL three diagrams:
+## Output Format — return a JSON object with a "diagrams" array:
 {_json_example}
 Only output the JSON object, no other text.
 """
@@ -738,16 +770,17 @@ Only output the JSON object, no other text.
 {instructions or "Overall system optimization: improve consistency, reduce duplication, ensure cross-diagram coherence"}
 
 ## Output Format:
+Return a JSON object with a "diagrams" array. Each entry has "type" (class/sequence/component),
+"name", optional "component_id", and "data" (the full diagram content).
+You may generate MULTIPLE diagrams of the same type for different aspects.
+Match existing diagrams by "type" + "name", updating them; create new entries for new diagrams.
 ```json
 {{
-  "optimized": {{
-    "class": {{ ... }},
-    "sequence": {{ ... }},
-    "component": {{ ... }}
-  }},
-  "consistency_report": [
-    {{"severity": "error|warning", "msg": "..."}}
+  "diagrams": [
+    {{"type": "class", "name": "...", "component_id": "...", "data": {{ ... }}}},
+    {{"type": "sequence", "name": "...", "component_id": "...", "data": {{ ... }}}}
   ],
+  "consistency_report": [{{"severity": "error|warning", "msg": "..."}}],
   "changes_summary": "summary",
   "diff": "what changed",
   "design_constraints": {{
@@ -765,18 +798,62 @@ Only output the JSON object, no other text.
     return prompt, full_system, is_empty
 
 
+def _normalize_optimize_result(raw: dict) -> dict:
+    """Convert LLM response to canonical format with a ``diagrams`` array.
+
+    Handles both:
+    - New format: ``{"diagrams": [...], "consistency_report": [...], ...}``
+    - Old format: ``{"optimized": {"class": {...}, "sequence": {...}, "component": {...}}, ...}``
+    """
+    if "diagrams" in raw and isinstance(raw["diagrams"], list):
+        return raw  # already new format
+
+    if "optimized" in raw:
+        optimized = raw["optimized"]
+        diagrams = []
+        for dtype in ("class", "sequence", "component"):
+            opt_data = optimized.get(dtype)
+            if opt_data and isinstance(opt_data, dict):
+                # A non-empty type-specific diagram — include it
+                diagrams.append({
+                    "type": dtype,
+                    "name": opt_data.get("name", dtype.capitalize()),
+                    "component_id": opt_data.get("component_id", ""),
+                    "data": opt_data,
+                })
+        return {
+            "diagrams": diagrams,
+            "consistency_report": raw.get("consistency_report", []),
+            "changes_summary": raw.get("changes_summary", ""),
+            "design_constraints": raw.get("design_constraints", {}),
+            "diff": raw.get("diff", ""),
+        }
+
+    # Fallback: empty result
+    return {
+        "diagrams": [],
+        "consistency_report": [],
+        "changes_summary": "No diagrams generated",
+        "design_constraints": {},
+        "diff": "",
+    }
+
+
 async def optimize_project(
-    class_diagram: dict | None,
-    sequence_diagram: dict | None,
-    component_diagram: dict | None,
+    diagrams: list[dict] | None = None,
     instructions: str = "",
 ) -> dict:
-    """Cross-validate and optimize all three diagrams together."""
+    """Cross-validate and optimize all project diagrams together.
+
+    Accepts a list of existing diagram dicts as optional reference.
+    Returns a dict with ``diagrams`` array (new format), normalized via
+    ``_normalize_optimize_result()`` for backward compatibility.
+    """
     _logger = logging.getLogger(__name__)
     _logger.info("[OptimizeProject] Global optimization request")
 
     prompt, full_system, is_empty = _build_global_prompt(
-        class_diagram, sequence_diagram, component_diagram, instructions,
+        diagrams=diagrams, instructions=instructions,
     )
 
     # Save prompt + response for diagnostics
@@ -810,35 +887,34 @@ async def optimize_project(
         cleaned = clean_llm_json_response(response)
         result = json.loads(cleaned)
         _logger.info(f"[OptimizeProject] Result keys: {list(result.keys())}")
-        return result
+        return _normalize_optimize_result(result)
     except json.JSONDecodeError:
         _logger.warning("[OptimizeProject] JSON parse failed")
         return {
-            "optimized": {
-                "class": class_diagram or {},
-                "sequence": sequence_diagram or {},
-                "component": component_diagram or {},
-            },
+            "diagrams": [],
             "consistency_report": [],
             "changes_summary": "Failed to parse LLM response",
+            "design_constraints": {},
             "diff": response,
         }
 
 
 async def optimize_project_stream(
-    class_diagram: dict | None,
-    sequence_diagram: dict | None,
-    component_diagram: dict | None,
+    diagrams: list[dict] | None = None,
     instructions: str = "",
 ):
-    """Streaming version: extracts complete JSON elements from the LLM stream and yields them for real-time rendering."""
+    """Streaming version: extracts complete JSON elements from the LLM stream
+    and yields them for real-time rendering.
+
+    Accepts a list of existing diagram dicts as optional reference.
+    """
     import logging as _log2
     _l = _log2.getLogger(__name__)
     _l.info("[OptimizeStream] Starting streaming optimization (JSON mode)")
     _lf = None
 
     prompt, full_system, is_empty = _build_global_prompt(
-        class_diagram, sequence_diagram, component_diagram, instructions,
+        diagrams=diagrams, instructions=instructions,
     )
 
     # Save prompt for diagnostics
@@ -910,11 +986,64 @@ class _JsonElementExtractor:
         self._section = None    # 'class', 'sequence', or 'component'
         self._scan_pos = 0      # last position scanned for component_id
         self._seen_cids = set() # avoid duplicate diagram_meta emission
+        self._seen_diagrams = set()  # avoid duplicate diagram_create emission
+        self._diagram_scan_pos = 0   # last position scanned for diagram_create
 
     def feed(self, chunk: str) -> list[tuple[str, str]]:
         """Feed a new text chunk. Returns (type, json_string) tuples for completed elements."""
         self._buf += chunk
         elements: list[tuple[str, str]] = []
+
+        # ── Scan new content for diagram_create events ─────
+        # Detect "type": "class"/"sequence"/"component" patterns in the diagrams array
+        # and extract "name" to emit diagram_create so the frontend can auto-create tabs
+        _new_for_dc = self._buf[self._diagram_scan_pos:]
+        _dc_idx = 0
+        while True:
+            _dc_idx = _new_for_dc.find('"type"', _dc_idx)
+            if _dc_idx < 0:
+                break
+            # Find colon and value
+            _colon = _new_for_dc.find(':', _dc_idx)
+            if _colon < 0: break
+            _vstart = _new_for_dc.find('"', _colon + 1)
+            if _vstart < 0: break
+            _vend = _new_for_dc.find('"', _vstart + 1)
+            if _vend < 0: break
+            _dtype = _new_for_dc[_vstart + 1:_vend]
+            if _dtype in ('class', 'sequence', 'component'):
+                # Find the "name" key nearby (within 300 chars)
+                _search_end = min(len(_new_for_dc), _vend + 300)
+                _name_idx = _new_for_dc.find('"name"', _vend, _search_end)
+                if _name_idx >= 0:
+                    _ncolon = _new_for_dc.find(':', _name_idx)
+                    if _ncolon >= 0:
+                        _nvstart = _new_for_dc.find('"', _ncolon + 1)
+                        if _nvstart >= 0 and _nvstart < _search_end:
+                            _nvend = _new_for_dc.find('"', _nvstart + 1)
+                            if _nvend >= 0 and _nvend < _search_end:
+                                _dname = _new_for_dc[_nvstart + 1:_nvend]
+                                _dkey = f"{_dtype}:{_dname}"
+                                if _dkey not in self._seen_diagrams:
+                                    self._seen_diagrams.add(_dkey)
+                                    # Look for component_id
+                                    _cid = ""
+                                    _cid_idx = _new_for_dc.find('"component_id"', _vend, _search_end)
+                                    if _cid_idx >= 0:
+                                        _ccolon = _new_for_dc.find(':', _cid_idx)
+                                        if _ccolon >= 0:
+                                            _cvstart = _new_for_dc.find('"', _ccolon + 1)
+                                            if _cvstart >= 0 and _cvstart < _search_end:
+                                                _cvend = _new_for_dc.find('"', _cvstart + 1)
+                                                if _cvend >= 0:
+                                                    _cid = _new_for_dc[_cvstart + 1:_cvend]
+                                    elements.append(('diagram_create', json.dumps({
+                                        'type': _dtype,
+                                        'name': _dname,
+                                        'component_id': _cid,
+                                    })))
+            _dc_idx = _vend + 1
+        self._diagram_scan_pos = max(0, len(self._buf) - 1024)
 
         # ── Scan new content for component_id values ─────
         new_text = self._buf[self._scan_pos:]

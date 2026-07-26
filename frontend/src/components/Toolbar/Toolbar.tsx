@@ -19,6 +19,7 @@ import {
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { createDefaultDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, listDiagrams,
   saveProject, openProject, listProjects,
@@ -113,6 +114,14 @@ const Toolbar: React.FC = () => {
   // ── Global optimize handler (complete mode) ─────────
   const handleGlobalOptimize = async () => {
     const proj = useDiagramStore.getState().project;
+
+    // Build existing_diagrams list (new format) + keep old fields for backward compat
+    const existingDiagrams = proj.diagrams.map(d => ({
+      type: d.diagram_type || 'class',
+      name: d.name,
+      component_id: d.component_id || '',
+      data: d,
+    }));
     const classD = proj.diagrams.find(d => (d.diagram_type || 'class') === 'class');
     const seqD = proj.diagrams.find(d => d.diagram_type === 'sequence');
     const compD = proj.diagrams.find(d => d.diagram_type === 'component');
@@ -128,7 +137,11 @@ const Toolbar: React.FC = () => {
         if (token) headers['Authorization'] = `Bearer ${token}`;
         const resp = await fetch('/api/llm/optimize-project-stream', {
           method: 'POST', headers,
-          body: JSON.stringify({ class_diagram: classD || {}, sequence_diagram: seqD || {}, component_diagram: compD || {}, instructions: globalInstructions }),
+          body: JSON.stringify({
+            instructions: globalInstructions,
+            existing_diagrams: existingDiagrams,
+            class_diagram: classD || {}, sequence_diagram: seqD || {}, component_diagram: compD || {},
+          }),
         });
         await handleStreamResponse(resp, proj);
         useDiagramStore.getState().triggerRecenter();
@@ -138,32 +151,46 @@ const Toolbar: React.FC = () => {
       }
       setGlobalOptimizing(false);
     } else {
-      // ── Complete mode (reliable) ─────────────────────
+      // ── Complete mode ────────────────────────────────
       setGlobalOptimizing(true);
       setGlobalOptimizeVisible(false);
       message.loading({ content: '全局优化中...', key: 'globalOpt', duration: 0 });
       try {
-        const result = await apiOptimizeProject({
+        const result: any = await apiOptimizeProject({
+          instructions: globalInstructions,
+          existing_diagrams: existingDiagrams,
           class_diagram: classD as any, sequence_diagram: seqD as any,
-          component_diagram: compD as any, instructions: globalInstructions,
+          component_diagram: compD as any,
         });
-        const optimized = result.optimized as any;
-        const store = useDiagramStore.getState();
-        const diagrams = [...store.project.diagrams];
-        if (optimized?.class) {
-          const idx = diagrams.findIndex(d => (d.diagram_type || 'class') === 'class');
-          if (idx >= 0) diagrams[idx] = { ...diagrams[idx], ...optimized.class as any };
+        // New format: {diagrams: [...]} — auto-create/update
+        const specs = result?.diagrams || [];
+        if (specs.length > 0) {
+          useDiagramStore.getState().addDiagramsFromSpec(specs);
+          message.success({ content: `全局优化完成，已生成/更新 ${specs.length} 张图`, key: 'globalOpt' });
+        } else {
+          // Old format fallback: {optimized: {class, sequence, component}}
+          const optimized = result?.optimized as any;
+          if (optimized) {
+            const store = useDiagramStore.getState();
+            const diagrams = [...store.project.diagrams];
+            for (const dtype of ['class', 'sequence', 'component'] as const) {
+              if (optimized[dtype]) {
+                const idx = diagrams.findIndex(d =>
+                  (d.diagram_type || 'class') === dtype);
+                if (idx >= 0) {
+                  diagrams[idx] = { ...diagrams[idx], ...optimized[dtype] };
+                } else {
+                  const newD = createDefaultDiagram(optimized[dtype].name || dtype);
+                  newD.diagram_type = dtype;
+                  newD.component_id = optimized[dtype].component_id || '';
+                  diagrams.push({ ...newD, ...optimized[dtype] });
+                }
+              }
+            }
+            store.setProject({ ...store.project, diagrams });
+          }
+          message.success({ content: '全局优化完成，请查看各图', key: 'globalOpt' });
         }
-        if (optimized?.sequence) {
-          const idx = diagrams.findIndex(d => d.diagram_type === 'sequence');
-          if (idx >= 0) diagrams[idx] = { ...diagrams[idx], ...optimized.sequence as any };
-        }
-        if (optimized?.component) {
-          const idx = diagrams.findIndex(d => d.diagram_type === 'component');
-          if (idx >= 0) diagrams[idx] = { ...diagrams[idx], ...optimized.component as any };
-        }
-        store.setProject({ ...store.project, diagrams });
-        message.success({ content: '全局优化完成，请查看各图', key: 'globalOpt' });
       } catch (e) {
         message.error({ content: '全局优化失败: ' + String(e), key: 'globalOpt' });
       }
@@ -172,7 +199,7 @@ const Toolbar: React.FC = () => {
   };
 
   // ── Streaming handler (incremental element-by-element) ─
-  const handleStreamResponse = async (resp: Response, proj: { diagrams: Array<{ diagram_type?: string }> }) => {
+  const handleStreamResponse = async (resp: Response, proj: { diagrams: Array<{ diagram_type?: string; name?: string; component_id?: string }> }) => {
       const reader = resp.body?.getReader();
       if (!reader) throw new Error('No stream');
       const decoder = new TextDecoder();
@@ -183,9 +210,15 @@ const Toolbar: React.FC = () => {
 
       const switchTo = (type: string) => {
         if (currentType === type) return;
-        const idx = type === 'class' ? proj.diagrams.findIndex(d => (d.diagram_type || 'class') === 'class')
+        let idx = type === 'class' ? proj.diagrams.findIndex(d => (d.diagram_type || 'class') === 'class')
           : type === 'sequence' ? proj.diagrams.findIndex(d => d.diagram_type === 'sequence')
           : proj.diagrams.findIndex(d => d.diagram_type === 'component');
+        if (idx < 0) {
+          // Auto-create missing diagram type so streaming elements have a target
+          const autoName = type === 'class' ? '类图' : type === 'sequence' ? '时序图' : '组件图';
+          useDiagramStore.getState().addDiagram(type, autoName);
+          idx = useDiagramStore.getState().project.diagrams.length - 1;
+        }
         if (idx >= 0) { useDiagramStore.getState().setActiveDiagram(idx); currentType = type; }
       };
 
@@ -194,6 +227,21 @@ const Toolbar: React.FC = () => {
 
       // ── Element dispatch table ────────────────────────
       const handlers: Record<string, (obj: any) => void> = {
+        diagram_create: (obj) => {
+          // New diagram entry detected in the stream — auto-create the tab
+          const dtype = obj.type || 'class';
+          const dname = obj.name || dtype;
+          const cid = obj.component_id || '';
+          let idx = proj.diagrams.findIndex(
+            d => (d.diagram_type || 'class') === dtype && d.name === dname
+          );
+          if (idx < 0) {
+            useDiagramStore.getState().addDiagram(dtype, dname, cid);
+            idx = useDiagramStore.getState().project.diagrams.length - 1;
+          }
+          useDiagramStore.getState().setActiveDiagram(idx);
+          currentType = dtype;
+        },
         class: (obj) => {
           switchTo('class');
           const s = useDiagramStore.getState();
@@ -532,7 +580,7 @@ const Toolbar: React.FC = () => {
   const handleOptimizeConfirm = async () => {
     setOptimizing(true);
     const dt = diagram.diagram_type || 'class';
-    const loadText = dt === 'sequence' ? 'LLM 正在分析优化时序图...' : dt === 'component' ? 'LLM 正在分析优化组件图...' : 'LLM 正在分析优化 UML...';
+    const loadText = dt === 'sequence' ? 'LLM 正在分析优化时序图...' : dt === 'component' ? 'LLM 正在分析优化组件图...' : 'LLM 正在单图优化...';
     message.loading({ content: loadText, key: 'optimize' });
     try {
       const result = await apiOptimizeUml(diagram, optimizeInstructions);
@@ -684,12 +732,12 @@ const Toolbar: React.FC = () => {
             生成代码
           </Button>
         </Tooltip>
-        <Tooltip title="LLM 优化 UML 设计 (会弹窗收集需求)">
+        <Tooltip title="LLM 单图优化（仅优化当前图，弹窗收集需求）">
           <Button icon={<RobotOutlined />} onClick={handleOptimizeClick}>
-            优化设计
+            单图设计
           </Button>
         </Tooltip>
-        <Tooltip title="全局综合优化（类图+时序图+组件图交叉验证）">
+        <Tooltip title="全局综合优化（类图+时序图+组件图交叉验证，也支持从需求描述直接生成全部图）">
           <Button icon={<RobotOutlined />} onClick={() => setGlobalOptimizeVisible(true)} style={{ color: '#722ed1' }}>
             全局优化
           </Button>
@@ -912,9 +960,9 @@ const Toolbar: React.FC = () => {
         />
       </Modal>
 
-      {/* ── Optimize UML Dialog ──────────────────────── */}
+      {/* ── Single-Diagram Optimize Dialog ──────────────────── */}
       <Modal
-        title={(diagram.diagram_type === 'sequence' ? '时序图' : diagram.diagram_type === 'component' ? '组件图' : 'UML') + (diagram.classes.length || (diagram.lifelines || []).length || (diagram.components || []).length ? '优化' : '生成')}
+        title={(diagram.diagram_type === 'sequence' ? '时序图' : diagram.diagram_type === 'component' ? '组件图' : '类图') + '单图' + (diagram.classes.length || (diagram.lifelines || []).length || (diagram.components || []).length ? '优化' : '生成')}
         open={optimizeVisible}
         onCancel={() => setOptimizeVisible(false)}
         onOk={handleOptimizeConfirm}
@@ -1040,7 +1088,6 @@ const Toolbar: React.FC = () => {
         if (!diag) return null;
         const dtype = diag.diagram_type || 'class';
         const typeLabel = dtype === 'sequence' ? '时序图' : dtype === 'component' ? '组件图' : '类图';
-        const isLast = project.diagrams.length <= 1;
         const closeMenu = () => setTabCtxMenu((p) => ({ ...p, visible: false }));
         return (
           <>
@@ -1057,14 +1104,13 @@ const Toolbar: React.FC = () => {
                 {typeLabel}：{diag.name}
               </div>
               <div style={{
-                padding: '5px 12px', cursor: isLast ? 'not-allowed' : 'pointer',
+                padding: '5px 12px', cursor: 'pointer',
                 fontSize: 12, borderRadius: 4, display: 'flex', alignItems: 'center', gap: 6,
-                color: isLast ? '#ccc' : '#ff4d4f',
+                color: '#ff4d4f',
               }}
-                onMouseEnter={(e) => { if (!isLast) e.currentTarget.style.background = '#fff2f0'; }}
-                onMouseLeave={(e) => { if (!isLast) e.currentTarget.style.background = 'transparent'; }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#fff2f0'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                 onClick={() => {
-                  if (isLast) return;
                   Modal.confirm({
                     title: `删除「${diag.name}」`,
                     content: `确认删除此${typeLabel}？此操作不可撤销。`,
@@ -1074,7 +1120,7 @@ const Toolbar: React.FC = () => {
                   closeMenu();
                 }}
               >
-                <span>🗑️</span> <span>{isLast ? '至少保留一张图' : '删除此图'}</span>
+                <span>🗑️</span> <span>删除此图</span>
               </div>
             </div>
           </>

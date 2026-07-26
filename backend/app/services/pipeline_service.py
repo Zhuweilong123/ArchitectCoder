@@ -435,6 +435,7 @@ async def resume_with_instructions(
     test_dir: str = "",
     sequence_diagram: dict | None = None,
     component_diagram: dict | None = None,
+    all_diagrams: list[dict] | None = None,
     max_change_ratio: int = 0,
 ) -> AsyncIterator[dict]:
     """Resume pipeline from Stage 1 with optimization instructions."""
@@ -444,6 +445,7 @@ async def resume_with_instructions(
         source_dir=source_dir, test_dir=test_dir,
         sequence_diagram=sequence_diagram,
         component_diagram=component_diagram,
+        all_diagrams=all_diagrams,
         max_change_ratio=max_change_ratio,
     ):
         yield event
@@ -583,10 +585,12 @@ async def run_pipeline(
     test_dir: str = "",
     sequence_diagram: dict | None = None,
     component_diagram: dict | None = None,
+    all_diagrams: list[dict] | None = None,
     max_change_ratio: int = 0,
 ) -> AsyncIterator[dict]:
     """Run the 6-stage pipeline, yielding progress updates.
 
+    ``all_diagrams``: full list of project diagrams for global optimization.
     ``max_change_ratio`` (0-100): when >0, Stage 3 ReAct validation will
     enforce a per-file change limit against the original code. 0 = disabled.
     """
@@ -615,22 +619,33 @@ async def run_pipeline(
         return  # Wait for instructions via WebSocket, then resume
 
     try:
-        # Global optimization: pass class + sequence + component diagrams together
+        # Global optimization: pass all existing diagrams as reference
+        _diagrams_for_opt = list(all_diagrams) if all_diagrams else []
+        if not _diagrams_for_opt:
+            # Fallback: build list from individual diagram params
+            for d in (diagram.model_dump(), sequence_diagram, component_diagram):
+                if d:
+                    _diagrams_for_opt.append(d)
         opt_result = await optimize_project(
-            class_diagram=diagram.model_dump(),
-            sequence_diagram=sequence_diagram,
-            component_diagram=component_diagram,
+            diagrams=_diagrams_for_opt if _diagrams_for_opt else None,
             instructions=instructions,
         )
         if _is_stopped(pipeline_id): return
 
-        # Extract optimized class diagram from the three-diagram result
-        optimized_all = opt_result.get("optimized", {})
-        optimized_class_data = optimized_all.get("class") if isinstance(optimized_all, dict) else None
-        if optimized_class_data and isinstance(optimized_class_data, dict):
-            optimized_diagram = UmlDiagram(**optimized_class_data)
+        # Extract optimized class diagram from the diagrams array (new format)
+        # Falls back to old {optimized: {class: ...}} format
+        _dlist = opt_result.get("diagrams", [])
+        _class_spec = next((d for d in _dlist if d.get("type") == "class"), None)
+        if _class_spec and isinstance(_class_spec.get("data"), dict):
+            optimized_diagram = UmlDiagram(**_class_spec["data"])
         else:
-            optimized_diagram = diagram
+            # Old format fallback
+            optimized_all = opt_result.get("optimized", {})
+            optimized_class_data = optimized_all.get("class") if isinstance(optimized_all, dict) else None
+            if optimized_class_data and isinstance(optimized_class_data, dict):
+                optimized_diagram = UmlDiagram(**optimized_class_data)
+            else:
+                optimized_diagram = diagram
 
         pipeline.stages[0].result = opt_result
         pipeline.stages[0].logs = opt_result.get("changes_summary", "")
@@ -1587,11 +1602,17 @@ async def resume_pipeline(
 
     if need_code_gen:
         # Use optimized diagram if available from stage 1
-        # (result.optimized now contains {"class":..., "sequence":..., "component":...})
+        # New format: {diagrams: [{type, name, data}, ...]}
+        # Old format: {optimized: {class: ..., sequence: ..., component: ...}}
         opt_result = pipeline.stages[0].result or {}
-        optimized_all = opt_result.get("optimized", {})
-        optimized_data = optimized_all.get("class") if isinstance(optimized_all, dict) else None
-        optimized_diagram = UmlDiagram(**optimized_data) if optimized_data else diagram
+        _dlist = opt_result.get("diagrams", [])
+        _class_spec = next((d for d in _dlist if d.get("type") == "class"), None)
+        if _class_spec and isinstance(_class_spec.get("data"), dict):
+            optimized_diagram = UmlDiagram(**_class_spec["data"])
+        else:
+            optimized_all = opt_result.get("optimized", {})
+            optimized_data = optimized_all.get("class") if isinstance(optimized_all, dict) else None
+            optimized_diagram = UmlDiagram(**optimized_data) if optimized_data else diagram
 
         # --- Stage 3: Code Gen ---
         if source_dir:

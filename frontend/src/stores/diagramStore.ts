@@ -20,14 +20,19 @@ interface Snapshot {
   timestamp: number;
 }
 
-// Helper: get active diagram from project (with safety fallback)
+// Helper: get active diagram from project.
+// Returns a safe fallback for empty projects so existing code doesn't need null checks.
 function _activeDiagram(project: Project): UmlDiagram {
   const idx = project.active_diagram_index;
   if (idx >= 0 && idx < project.diagrams.length) {
     return project.diagrams[idx];
   }
-  console.warn('[Store] Invalid active_diagram_index', idx, project.diagrams.length);
-  return project.diagrams[0] || createDefaultDiagram();
+  if (project.diagrams.length > 0) {
+    console.warn('[Store] Invalid active_diagram_index', idx, project.diagrams.length);
+    return project.diagrams[0];
+  }
+  // Empty project — return a placeholder so UI doesn't crash
+  return createDefaultDiagram(project.name || 'Untitled');
 }
 
 // Helper: update the active diagram within a project
@@ -56,7 +61,7 @@ interface DiagramState {
 
   // ── Diagram access ────────────────────────────
 
-  /** Convenience getter for the currently active diagram. */
+  /** Convenience getter for the currently active diagram (placeholder for empty projects). */
   diagram: UmlDiagram;
 
   // ── Project actions ───────────────────────────
@@ -65,6 +70,7 @@ interface DiagramState {
   newProject: (name?: string) => void;
   setActiveDiagram: (index: number) => void;
   addDiagram: (type?: string, name?: string, componentId?: string) => void;
+  addDiagramsFromSpec: (specs: Array<{type: string; name: string; component_id: string; data: Record<string, unknown>}>) => void;
   removeDiagram: (index: number) => void;
 
   // ── Legacy diagram actions (kept for compatibility) ──
@@ -244,11 +250,50 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     });
   },
 
+  /** Batch-create or update diagrams from LLM optimization results.
+   *  Each spec is matched by type+name: existing diagrams are updated,
+   *  new ones are created. */
+  addDiagramsFromSpec: (specs) => {
+    const state = get();
+    const diagrams = [...state.project.diagrams];
+    const seen = new Set<string>();
+
+    for (const spec of specs) {
+      // Deduplicate by type+name within this batch
+      const dkey = `${spec.type}:${spec.name}`;
+      if (seen.has(dkey)) continue;
+      seen.add(dkey);
+
+      const existingIdx = diagrams.findIndex(
+        d => (d.diagram_type || 'class') === spec.type && d.name === spec.name
+      );
+      if (existingIdx >= 0) {
+        // Update existing diagram — merge data over original
+        diagrams[existingIdx] = { ...diagrams[existingIdx], ...spec.data };
+      } else {
+        // Create new diagram tab
+        const newD = createDefaultDiagram(spec.name);
+        newD.diagram_type = spec.type;
+        newD.component_id = spec.component_id || '';
+        diagrams.push({ ...newD, ...spec.data });
+      }
+    }
+
+    const lastIdx = diagrams.length - 1;
+    console.debug('[Store] addDiagramsFromSpec:', specs.length, 'specs →', diagrams.length, 'diagrams');
+    set({
+      project: { ...state.project, diagrams, active_diagram_index: lastIdx >= 0 ? lastIdx : 0 },
+      diagram: lastIdx >= 0 ? diagrams[lastIdx] : createDefaultDiagram(),
+      selectedClassId: null, selectedRelationId: null,
+      isModified: true, undoStack: [], redoStack: [],
+    });
+  },
+
   removeDiagram: (index) => {
     const state = get();
-    if (state.project.diagrams.length <= 1) return; // keep at least 1
+    if (state.project.diagrams.length === 0) return; // nothing to remove
     const diagrams = state.project.diagrams.filter((_, i) => i !== index);
-    const newIdx = Math.min(index, diagrams.length - 1);
+    const newIdx = diagrams.length > 0 ? Math.min(index, diagrams.length - 1) : 0;
     console.debug('[Store] removeDiagram:', index, '→', diagrams.length, 'remaining');
     set({
       project: {
@@ -256,7 +301,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         diagrams,
         active_diagram_index: newIdx,
       },
-      diagram: diagrams[newIdx],
+      diagram: diagrams.length > 0 ? diagrams[newIdx] : createDefaultDiagram(),
       isModified: true,
       undoStack: [],
       redoStack: [],
