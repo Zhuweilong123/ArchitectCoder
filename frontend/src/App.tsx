@@ -32,6 +32,7 @@ const App: React.FC = () => {
   } = useUiStore();
   const diagramType = useDiagramStore((s) => s.diagram.diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
+  const hasDiagrams = useDiagramStore((s) => s.project.diagrams.length > 0);
 
   const handleResize = useCallback((_e: React.MouseEvent, direction: string, ref: HTMLElement) => {
     if (direction === 'left') {
@@ -106,6 +107,17 @@ const App: React.FC = () => {
         <Content className="app-content">
           {showTestCaseInCanvas ? (
             <TestCaseViewer embedded />
+          ) : !hasDiagrams ? (
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', height: '100%', color: '#999',
+            }}>
+              <p style={{ fontSize: 18, marginBottom: 8 }}>📋 暂无设计图</p>
+              <p style={{ fontSize: 13 }}>
+                点击工具栏「全局优化」按钮，输入需求描述生成 UML 设计，
+                或使用工具栏「+」下拉菜单手动添加图。
+              </p>
+            </div>
           ) : diagramType === 'sequence' ? (
             <SeqEditor key={`seq_${activeIdx}`} />
           ) : diagramType === 'component' ? (
@@ -117,6 +129,8 @@ const App: React.FC = () => {
           <div className="status-bar">
             {showTestCaseInCanvas ? (
               <span>双击单元格编辑用例 | 支持增删查改 | 全量/增量生成测试代码</span>
+            ) : !hasDiagrams ? (
+              <span>点击工具栏「全局优化」输入需求生成 UML 设计</span>
             ) : diagramType === 'sequence' ? (
               <span>工具栏添加元素 | 点击生命线A→再点生命线B创建消息 | Ctrl+滚轮缩放</span>
             ) : diagramType === 'component' ? (

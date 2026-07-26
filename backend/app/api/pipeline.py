@@ -99,14 +99,17 @@ async def pipeline_websocket(ws: WebSocket, pipeline_id: str, token: str = ""):
     test_dir = msg.get("test_dir", "")
     max_change_ratio = msg.get("max_change_ratio", 0)
     project_data = msg.get("project", {})
-    diagrams = project_data.get("diagrams", [])
-    seq_diagram = next((d for d in diagrams if d.get("diagram_type") == "sequence"), None)
-    comp_diagram = next((d for d in diagrams if d.get("diagram_type") == "component"), None)
+    all_diagrams = project_data.get("diagrams", [])
+    seq_diagram = next((d for d in all_diagrams if d.get("diagram_type") == "sequence"), None)
+    comp_diagram = next((d for d in all_diagrams if d.get("diagram_type") == "component"), None)
 
-    class_diagram_data = next((d for d in diagrams if d.get("diagram_type", "class") == "class"), None)
+    class_diagram_data = next((d for d in all_diagrams if d.get("diagram_type", "class") == "class"), None)
     if class_diagram_data:
         diagram = UmlDiagram(**class_diagram_data)
         logger.info(f"[Pipeline] Using class diagram '{diagram.name}' ({len(diagram.classes)} classes) for pipeline")
+    else:
+        # No class diagram yet — use an empty one as placeholder; LLM will generate
+        diagram = UmlDiagram(name=project_data.get("name", "Untitled"))
 
     state = get_pipeline(pipeline_id) or create_pipeline(pipeline_id, diagram)
     instructions = ""
@@ -166,6 +169,7 @@ async def pipeline_websocket(ws: WebSocket, pipeline_id: str, token: str = ""):
                     pipeline_id, diagram, instructions, language,
                     source_dir=source_dir, test_dir=test_dir,
                     sequence_diagram=seq_diagram, component_diagram=comp_diagram,
+                    all_diagrams=all_diagrams,
                     max_change_ratio=max_change_ratio,
                 ):
                     if _is_stopped(pipeline_id):
@@ -288,6 +292,7 @@ async def pipeline_websocket(ws: WebSocket, pipeline_id: str, token: str = ""):
             pipeline_id, diagram, language, auto_confirm,
             source_dir=source_dir, test_dir=test_dir,
             sequence_diagram=seq_diagram, component_diagram=comp_diagram,
+            all_diagrams=all_diagrams,
             max_change_ratio=max_change_ratio,
         ):
             # Check for stop BEFORE every event we send

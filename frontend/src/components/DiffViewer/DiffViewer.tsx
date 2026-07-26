@@ -114,20 +114,31 @@ const DiffViewer: React.FC = () => {
     setSaving(true);
     try {
       if (hasMultiDiagrams) {
-        // Apply all three optimized diagrams to their respective positions in the project
+        // Apply all optimized diagrams — auto-create tabs for new ones
         for (const type of Object.keys(optimizedDiagrams) as DiffDiagramType[]) {
           const opt = optimizedDiagrams[type];
           if (!opt) continue;
-          const idx = project.diagrams.findIndex(
+          let idx = project.diagrams.findIndex(
             d => (d.diagram_type || 'class') === type
           );
           if (idx >= 0) {
-            // Update that diagram in the project
             const updatedDiagrams = [...project.diagrams];
             updatedDiagrams[idx] = { ...updatedDiagrams[idx], ...opt };
             useDiagramStore.setState({
               project: { ...project, diagrams: updatedDiagrams },
               diagram: updatedDiagrams[project.active_diagram_index],
+              isModified: true,
+            });
+          } else {
+            // Auto-create missing diagram type
+            const store = useDiagramStore.getState();
+            store.addDiagram(type, opt.name || type, opt.component_id || '');
+            const newIdx = store.project.diagrams.length - 1;
+            const updatedDiagrams = [...store.project.diagrams];
+            updatedDiagrams[newIdx] = { ...updatedDiagrams[newIdx], ...opt };
+            useDiagramStore.setState({
+              project: { ...store.project, diagrams: updatedDiagrams },
+              diagram: updatedDiagrams[store.project.active_diagram_index],
               isModified: true,
             });
           }
@@ -275,7 +286,7 @@ const DiffViewer: React.FC = () => {
     return (
       <div className="diff-viewer">
         <Empty description="暂无对比数据" image={Empty.PRESENTED_IMAGE_SIMPLE}>
-          <p>使用"优化设计"功能生成设计优化对比</p>
+          <p>使用"单图设计"或"全局优化"功能生成设计优化对比</p>
         </Empty>
       </div>
     );
@@ -413,7 +424,7 @@ const DiffViewer: React.FC = () => {
       </div>
       <div style={{ fontSize: 10, color: '#999', textAlign: 'center', marginTop: 4 }}>
         评审记录将保存在 backend/dev_review.txt
-        {resolved && ' | 评审已完成，如需重新优化请点击"优化设计"按钮'}
+        {resolved && ' | 评审已完成，如需重新优化请点击"单图设计"或"全局优化"按钮'}
       </div>
 
       {/* Reject → Continue Optimize Modal */}
