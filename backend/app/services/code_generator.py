@@ -638,11 +638,15 @@ def _build_reference_index(diagrams: list[dict]) -> dict:
 
     Returns a dict with keys: classes, lifelines, components, diagram_links,
     orphan_lifelines, unlinked_diagrams.
+
+    Each component entry includes linkage statistics (linked_class_count,
+    linked_seq_count, linked_class_names, linked_seq_names) computed
+    after scanning all diagrams.
     """
     index: dict = {
         "classes": {},       # class_id → {name, methods[], provided[], required[]}
         "lifelines": {},     # lifeline_id → {name, class_ref}
-        "components": {},    # component_id → {name, provided[], required[]}
+        "components": {},    # component_id → {name, provided[], required[], ...linkage stats}
         "diagram_links": [], # [{type, name, component_id}]
         "orphan_lifelines": [],    # lifeline_ids with empty class_ref
         "unlinked_diagrams": [],   # diagram names with empty component_id
@@ -704,7 +708,28 @@ def _build_reference_index(diagrams: list[dict]) -> dict:
                     "name": comp.get("name", ""),
                     "provided": list(comp.get("provided_interfaces") or []),
                     "required": list(comp.get("required_interfaces") or []),
+                    "parent_id": comp.get("parent_id", ""),
                 }
+
+    # ── Enrich components with linkage statistics ──
+    for cid, cinfo in index["components"].items():
+        linked_class = [dl for dl in index["diagram_links"]
+                        if dl["component_id"] == cid and dl["type"] == "class"]
+        linked_seq = [dl for dl in index["diagram_links"]
+                      if dl["component_id"] == cid and dl["type"] == "sequence"]
+        cinfo["linked_class_count"] = len(linked_class)
+        cinfo["linked_seq_count"] = len(linked_seq)
+        cinfo["linked_class_names"] = [dl["name"] for dl in linked_class]
+        cinfo["linked_seq_names"] = [dl["name"] for dl in linked_seq]
+        # Derive coverage status
+        has_class = len(linked_class) > 0
+        has_seq = len(linked_seq) > 0
+        if has_class and has_seq:
+            cinfo["coverage"] = "complete"       # ✅
+        elif has_class or has_seq:
+            cinfo["coverage"] = "partial"         # ⚠️
+        else:
+            cinfo["coverage"] = "missing"         # ❌
 
     return index
 
@@ -742,30 +767,47 @@ def _format_index_for_prompt(index: dict) -> str:
         lines.append(f"  ({len(index['lifelines'])} lifelines total)")
         lines.append("")
 
-    # Component Directory
+    # ── Component Manifest (with coverage status) ──
     if index["components"]:
-        lines.append("### Component Directory")
-        for cid, cinfo in sorted(index["components"].items(), key=lambda x: x[1]["name"]):
+        lines.append("### Component Manifest — Diagram Coverage Status")
+        lines.append("")
+        lines.append("Each component below is a node in the component diagram. Use its `id` as")
+        lines.append("the `component_id` field when creating or updating class/sequence diagrams.")
+        lines.append("Aim for each component to have at least one class diagram (internal structure)")
+        lines.append("and at least one sequence diagram (key interactions).")
+        lines.append("")
+        # Sort: ❌ missing first, then ⚠️ partial, then ✅ complete
+        cov_order = {"missing": 0, "partial": 1, "complete": 2}
+        sorted_comps = sorted(
+            index["components"].items(),
+            key=lambda x: (cov_order.get(x[1].get("coverage", "missing"), 0), x[1]["name"])
+        )
+        emoji = {"missing": "❌", "partial": "⚠️", "complete": "✅"}
+        for cid, cinfo in sorted_comps:
+            status = emoji.get(cinfo.get("coverage", "missing"), "❌")
+            class_str = ", ".join(f'"{n}"' for n in cinfo.get("linked_class_names", [])) or "(none)"
+            seq_str = ", ".join(f'"{n}"' for n in cinfo.get("linked_seq_names", [])) or "(none)"
             ifaces = []
-            if cinfo["provided"]:
+            if cinfo.get("provided"):
                 ifaces.append(f"◉ provides: [{', '.join(cinfo['provided'])}]")
-            if cinfo["required"]:
+            if cinfo.get("required"):
                 ifaces.append(f"◡ requires: [{', '.join(cinfo['required'])}]")
             iface_str = "  |  " + "  ".join(ifaces) if ifaces else ""
-            lines.append(f"  `{cid}` **{cinfo['name']}**{iface_str}")
-        lines.append(f"  ({len(index['components'])} components total)")
+            parent_info = f"  |  child of: `{cinfo['parent_id']}`" if cinfo.get("parent_id") else ""
+            lines.append(f"  {status} `{cid}` **{cinfo['name']}**{iface_str}{parent_info}")
+            lines.append(f"       Class diagrams ({cinfo.get('linked_class_count', 0)}): {class_str}")
+            lines.append(f"       Sequence diagrams ({cinfo.get('linked_seq_count', 0)}): {seq_str}")
         lines.append("")
-
-    # Diagram Links
-    if index["diagram_links"]:
-        lines.append("### Diagram → Component Links")
-        for dl in index["diagram_links"]:
-            cid = dl["component_id"]
-            if cid:
-                comp_name = index["components"].get(cid, {}).get("name", cid)
-                lines.append(f"  [{dl['type']}] **{dl['name']}** → `{cid}` ({comp_name})")
-            else:
-                lines.append(f"  [{dl['type']}] **{dl['name']}** → ⚠ NO COMPONENT_ID")
+        lines.append(f"  **Legend:** ✅ = has both diagram types  |  ⚠️ = needs one type  |  ❌ = needs both")
+        lines.append("")
+        # Coverage summary
+        cov_counts = {"missing": 0, "partial": 0, "complete": 0}
+        for _, cinfo in index["components"].items():
+            cov_counts[cinfo.get("coverage", "missing")] += 1
+        lines.append(f"  ({len(index['components'])} components: "
+                     f"{cov_counts['complete']} complete, "
+                     f"{cov_counts['partial']} partial, "
+                     f"{cov_counts['missing']} need diagrams)")
         lines.append("")
 
     # Issues
@@ -774,8 +816,17 @@ def _format_index_for_prompt(index: dict) -> str:
         issues.append(f"⚠ {len(index['orphan_lifelines'])} lifelines without class_ref: {', '.join(index['orphan_lifelines'])}")
     if index["unlinked_diagrams"]:
         issues.append(f"⚠ {len(index['unlinked_diagrams'])} diagrams without component_id: {', '.join(index['unlinked_diagrams'])}")
+    # Coverage gaps
+    for cid, cinfo in sorted(index["components"].items(), key=lambda x: x[1]["name"]):
+        cov = cinfo.get("coverage", "missing")
+        if cov == "missing":
+            issues.append(f"❌ Component `{cid}` ({cinfo['name']}) has NO linked class or sequence diagrams")
+        elif cov == "partial":
+            missing_type = "sequence" if cinfo.get("linked_seq_count", 0) == 0 else "class"
+            issues.append(f"⚠️ Component `{cid}` ({cinfo['name']}) needs a {missing_type} diagram")
     if issues:
         lines.append("### Issues Detected in Existing Diagrams")
+        lines.append("(These should be addressed in your output to improve diagram coverage)")
         for issue in issues:
             lines.append(f"  {issue}")
         lines.append("")
@@ -890,7 +941,8 @@ def _build_global_prompt(
 }}
 ```"""
 
-    _cross_validation_rules = """1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
+    _cross_validation_rules = """## Core Validation Rules
+1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
 2. Sequence diagram method calls MUST match method signatures in class diagrams
 3. Component diagram interfaces MUST be consistent with class diagram provided/required interfaces
 4. Flag any inconsistencies found between diagrams in the consistency_report
@@ -898,25 +950,67 @@ def _build_global_prompt(
 6. Optimize each diagram while maintaining consistency across all types
 7. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
 8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions
+
+## Component-Diagram Association Rules
 9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a
    component diagram node (CompNode.id). Set component_id to the matching component's id when a diagram
-   describes the internals or interactions of a specific component
-10. MULTIPLE DIAGRAMS PER TYPE: You may generate MULTIPLE diagrams of the same type (e.g. two sequence
-    diagrams for different scenarios, two class diagrams for different layers). Each must have a distinct
-    "name" field. Use the "type" field ("class"/"sequence"/"component") to declare the diagram type
-11. GENERATION ORDER: Generate component diagrams first (overall architecture), then class diagrams
-    (structure), then sequence diagrams (behavior). Reference component IDs created in earlier entries"""
+   describes the internals or interactions of a specific component.
+10. COMPONENT MANIFEST USAGE: The Component Manifest above shows every component and its diagram
+    coverage status (❌/⚠️/✅). When generating or optimizing:
+    - For each ❌ component (missing both types), generate at least one class + one sequence diagram
+    - For each ⚠️ component (partial), fill the missing diagram type
+    - Use the exact component "id" from the manifest as the diagram's "component_id"
+11. MULTIPLE DIAGRAMS PER COMPONENT: A single component may need MULTIPLE diagrams of the same type:
+    - Multiple class diagrams for different layers/concerns (domain / service / dto / repository)
+    - Multiple sequence diagrams for different scenarios (happy path / error handling / async flow)
+    ALL diagrams belonging to the SAME component share the SAME component_id.
+12. COMPONENT HIERARCHY: Parent-child relationships between components (parent_id field) imply
+    architectural nesting. When a parent component has sub-components, the parent's class diagram
+    typically describes coordination logic, while each sub-component gets its own class diagram.
+    Generate diagrams at the appropriate level — don't put all detail in one diagram.
+13. GENERATION ORDER: Always generate component diagrams FIRST (to establish IDs), then class
+    diagrams (structure), then sequence diagrams (behavior). Reference component IDs created in
+    earlier entries as component_id values in later entries.
+
+## Reference Validation
+14. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their
+    relationships. Use it to validate your output: every lifeline.class_ref must resolve to a
+    class in the Class Directory, every message label should match a method in the target class,
+    every component_id must reference a component in the Component Manifest. Fix any
+    "Issues Detected" listed in the index — they are guidance for what to improve."""
 
     if is_empty:
-        prompt = f"""Generate a complete UML system design from the following requirements.
-Determine which diagram types are needed — you may generate zero or more of each type
-(class, sequence, component). Typically you should generate at least one of each, but
-you may create multiple diagrams of the same type for different aspects or scenarios.
+        prompt = f"""You are designing a complete UML system from scratch based on requirements below.
+Follow this structured generation workflow to ensure every component gets proper diagrams.
+
+## Generation Workflow
+
+### Step 1: Component Diagram (System Topology)
+Create a component diagram FIRST. Each component node gets a meaningful "id"
+(e.g., "comp_gateway", "comp_service", "comp_repo"). These IDs are the anchors
+that ALL subsequent diagrams reference via their component_id field.
+
+### Step 2: For EACH component, create its class diagram(s)
+Pick a component's "id" from Step 1, set it as "component_id". Example:
+```json
+{{"type": "class", "name": "Gateway Layer", "component_id": "comp_gateway", "data": {{...}}}}
+```
+A single component may need MULTIPLE class diagrams for different layers
+(e.g., "Domain Model" + "Service Layer" + "DTO Definitions").
+ALL use the SAME component_id.
+
+### Step 3: For EACH component, create its sequence diagram(s)
+Same pattern — pick the "component_id", create diagrams for key interaction flows.
+One component may need multiple sequence diagrams for different scenarios
+(e.g., "Auth Flow" + "Error Recovery" + "Async Event Handling").
 
 ## Design Requirements:
 {instructions or "Design a well-structured software system with clear class hierarchy, interaction flows, and component architecture."}
 
-## Output Format — return a JSON object with a "diagrams" array:
+## Output Format
+Return a JSON object with a "diagrams" array. Each entry has "type" (class/sequence/component),
+"name", optional "component_id", and "data" (the full diagram content).
+Generate component diagrams FIRST, then class, then sequence.
 {_json_example}
 Only output the JSON object, no other text.
 """
@@ -927,14 +1021,11 @@ Only output the JSON object, no other text.
         prompt = f"""Cross-validate and optimize the following UML diagrams as a complete system design.
 
 {index_block}
+
+## Existing Diagram Data:
 {chr(10).join(parts)}
 
-## Cross-Validation Rules:
 {_cross_validation_rules}
-12. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their relationships.
-    Use it to validate your output: every lifeline.class_ref must resolve to a class in the Class Directory,
-    every message label should match a method in the target class, every component_id must reference a
-    component in the Component Directory. Fix any "Issues Detected" listed in the index.
 
 ## User Instructions:
 {instructions or "Overall system optimization: improve consistency, reduce duplication, ensure cross-diagram coherence"}
@@ -1052,6 +1143,7 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
     2. Message method names → class method signatures
     3. Diagram component_id → valid component ID
     4. Component provided/required interface consistency
+    5. Component diagram coverage — every component should have diagrams
 
     Returns a list of {severity, type, msg, auto_fixed, ...} issue dicts.
     """
@@ -1169,6 +1261,38 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
                         "msg": f"Component '{comp['name']}' requires '{iface}' but no linked class declares it",
                         "auto_fixed": False,
                     })
+
+    # ── Check 5: component diagram coverage ──
+    # Every component in the output should ideally have at least one
+    # class diagram and one sequence diagram linked to it.
+    for cid, comp in opt_index["components"].items():
+        linked_class = [
+            d for d in opt_diagrams
+            if d.get("type") == "class" and d.get("component_id") == cid
+        ]
+        linked_seq = [
+            d for d in opt_diagrams
+            if d.get("type") == "sequence" and d.get("component_id") == cid
+        ]
+        if not linked_class and not linked_seq:
+            issues.append({
+                "severity": "warning", "type": "component_coverage",
+                "msg": f"Component '{comp['name']}' ({cid}) has NO class or sequence diagrams. "
+                       f"Consider adding at least a class diagram describing its internal structure.",
+                "auto_fixed": False,
+            })
+        elif not linked_class:
+            issues.append({
+                "severity": "info", "type": "component_coverage",
+                "msg": f"Component '{comp['name']}' ({cid}) has {len(linked_seq)} sequence diagram(s) but NO class diagram.",
+                "auto_fixed": False,
+            })
+        elif not linked_seq:
+            issues.append({
+                "severity": "info", "type": "component_coverage",
+                "msg": f"Component '{comp['name']}' ({cid}) has {len(linked_class)} class diagram(s) but NO sequence diagram.",
+                "auto_fixed": False,
+            })
 
     return issues
 
