@@ -5,6 +5,7 @@ import logging
 from app.models.uml import UmlDiagram
 from app.services.llm_service import chat, chat_stream
 from app.services.tools import clean_llm_json_response
+from app.services.layout_engine import auto_layout
 
 SUPPORTED_LANGUAGES = [
     "python", "java", "typescript", "javascript", "csharp", "cpp",
@@ -1255,6 +1256,9 @@ async def optimize_project(
             # Apply auto-fixes
             _apply_auto_fixes(result, post_issues)
 
+        # ── Auto-layout: reposition newly-generated elements to avoid overlap ──
+        result = auto_layout(result)
+
         return result
     except json.JSONDecodeError:
         _logger.warning("[OptimizeProject] JSON parse failed")
@@ -1556,9 +1560,15 @@ def _normalize_llm_output(data: dict) -> dict:
     def walk(obj, parent_key=""):
         if isinstance(obj, dict):
             result = {}
+            # Determine context: is this a message (has from_lifeline/to_lifeline)?
+            _is_message = "from_lifeline" in obj or "to_lifeline" in obj
             for k, v in obj.items():
                 # Remap known alias fields
                 mapped_key = FIELD_ALIASES.get(k, k)
+                # For sequence messages, "label" is the correct field name (method name).
+                # Only remap label→role_name in relations, not messages.
+                if k == "label" and _is_message:
+                    mapped_key = "label"  # keep as-is for messages
                 if k == "visibility" and isinstance(v, str):
                     v = VIS_MAP.get(v.lower(), "+")
                 elif mapped_key == "stereotype":

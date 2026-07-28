@@ -263,7 +263,7 @@ export async function optimizeProject(req: {
   existing_diagrams?: Array<{type: string; name: string; component_id: string; data: any}>;
   instructions?: string;
 }): Promise<Record<string, unknown>> {
-  const { data } = await api.post('/llm/optimize-project', req);
+  const { data } = await api.post('/llm/optimize-project', req, { timeout: 300000 });
   return data;
 }
 
