@@ -1,5 +1,11 @@
 """Application configuration loaded from environment variables."""
 
+# ── Fix OpenBLAS memory exhaustion on Windows ──────────
+# Must be set BEFORE any library that pulls in numpy (pydantic, etc.)
+import os as _os
+_os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+_os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import logging
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationInfo, field_validator
