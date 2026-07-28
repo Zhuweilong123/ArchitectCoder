@@ -54,7 +54,48 @@
 
 ---
 
-## 2. 三图一致性检查清单
+## 1.4 组件-图多对多关联规范 (Multi-Diagram per Component)
+
+### 关联模型
+
+一个组件可以关联多张类图和多张时序图，形成 `1:N` 的关系：
+
+```
+CompNode (组件)
+  ├── component_id → Class Diagram A (领域模型)
+  ├── component_id → Class Diagram B (服务层)
+  ├── component_id → Sequence Diagram A (正常流程)
+  └── component_id → Sequence Diagram B (异常处理)
+```
+
+**关联方式**：所有图的 `component_id` 字段指向同一个 `CompNode.id`。
+
+### 何时需要多张图
+
+| 场景 | 多张类图 | 多张时序图 |
+|------|---------|-----------|
+| 复杂组件（10+ 核心类） | 按层拆分：领域层 / 服务层 / DTO | 按场景拆分：主流程 / 错误恢复 / 异步事件 |
+| 简单组件（5 个以下类） | 1 张类图即可 | 1 张时序图即可 |
+| 有子组件的父组件 | 1 张协调逻辑图 | 各子组件交互流程 |
+| 跨多个子系统的组件 | 每个子系统 1 张 | 各子系统关键场景 |
+
+### 组件覆盖率目标
+
+理想情况下每个组件应有：
+- ✅ **至少 1 张类图** — 描述组件内部结构和类关系
+- ✅ **至少 1 张时序图** — 描述组件关键交互流程
+
+LLM 在生成时应在 `consistency_report` 中标记覆盖率不足的组件。
+
+### 检查清单
+
+- [ ] 组件图中每个 CompNode 至少关联 1 张类图（或明确说明为何不需要）
+- [ ] 组件图中每个 CompNode 至少关联 1 张时序图（或明确说明为何不需要）
+- [ ] 复杂组件（接口 3+ 或有子组件）有 2+ 张类图
+- [ ] 关键业务场景有时序图覆盖
+- [ ] `component_id` 引用的组件 ID 确实存在于组件图中
+
+---
 
 当同时生成或优化多张图时，LLM 应逐条检查以下项目，发现问题记录到 `consistency_report`。
 
@@ -174,6 +215,15 @@
 
 **修正**：在组件图中创建对应组件，或清空 `component_id`。
 
+### 4.7 ❌ 组件缺少关联图（覆盖率不足）
+
+```json
+// 组件图中有 CompNode "PaymentService" (id="comp_pay")
+// 但没有任何类图或时序图的 component_id 指向 "comp_pay"
+```
+
+**修正**：为 `PaymentService` 创建至少 1 张类图（描述其内部 PaymentProcessor、TransactionLogger 等类），以及至少 1 张时序图（描述支付流程）。所有新图的 `component_id` 设为 `"comp_pay"`。
+
 ---
 
 ## 5. `diagrams` 数组输出规范
@@ -213,9 +263,10 @@
 
 ## 6. 自动校验信息
 
-当收到 Cross-Diagram Reference Index 时，请注意其中的 "Issues Detected" 部分。
+当收到 Cross-Diagram Reference Index 时，请注意其中的 "Issues Detected" 部分和 Component Manifest。
 这些是程序自动检测到的问题，你应在优化输出中修复它们：
 
 - **孤心生命线**：为其设置正确的 `class_ref`
 - **未关联组件的图**：根据图的内容设置合适的 `component_id`
 - **引用不存在的 ID**：修正为实际存在的 ID
+- **组件覆盖率不足**（❌/⚠️）：为缺少图的组件生成类图或时序图

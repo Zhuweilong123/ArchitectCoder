@@ -356,8 +356,18 @@ const SeqEditor: React.FC = () => {
         }
       });
 
-      // Calculate needed height from message count
-      const neededHeight = Math.max(LIFELINE_HEIGHT, 120 + messages.length * 40);
+      // Calculate needed height from actual message positions, not a heuristic.
+      // Backend layout engine spaces messages at 45px intervals starting from
+      // _SEQ_START_Y=190. Using msg.y directly avoids drift from formula mismatches.
+      let maxMsgY = 0;
+      for (const m of messages) {
+        const y = m.y || (LIFELINE_Y + 30 + m.order * 45);
+        if (y > maxMsgY) maxMsgY = y;
+      }
+      const neededHeight = Math.max(
+        LIFELINE_HEIGHT,
+        maxMsgY > 0 ? (maxMsgY - LIFELINE_Y + 60) : 0  // 60px padding below last message
+      );
 
       // Add/update lifelines (coordinate validation handled by store)
       lifelines.forEach((ll) => {
@@ -406,7 +416,7 @@ const SeqEditor: React.FC = () => {
         if (!srcLL || !tgtLL) return;
 
         const isSelf = msg.from_lifeline === msg.to_lifeline;
-        const msgY = msg.y || MSG_Y_BASE + msg.order * 40;  // persisted Y takes priority
+        const msgY = msg.y || MSG_Y_BASE + msg.order * 45;  // persisted Y takes priority; fallback matches backend 45px gap
 
         // Connect from source lifeline edge → target lifeline edge
         // Self-messages stay on right side; normal messages connect edges
