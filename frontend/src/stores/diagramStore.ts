@@ -56,8 +56,11 @@ interface DiagramState {
   undoStack: Snapshot[];
   redoStack: Snapshot[];
   lastOperationTime: number;
+  lastMergeKey: string | null;
   maxHistorySteps: number;
   mergeWindowMs: number;
+  /** When true, pushSnapshot is a no-op (e.g. during streaming bulk updates). */
+  isBatching: boolean;
 
   // ── Diagram access ────────────────────────────
 
@@ -152,8 +155,10 @@ interface DiagramState {
 
   undo: () => void;
   redo: () => void;
-  pushSnapshot: (operation: string) => void;
+  pushSnapshot: (operation: string, mergeKey?: string) => void;
   clearHistory: () => void;
+  beginBatch: () => void;
+  endBatch: () => void;
 
   // ── File ──────────────────────────────────────
 
@@ -176,8 +181,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   undoStack: [],
   redoStack: [],
   lastOperationTime: 0,
+  lastMergeKey: null,
   maxHistorySteps: 50,
   mergeWindowMs: 500,
+  isBatching: false,
   recenterCounter: 0,
 
   // ── Project actions ───────────────────────────────────
@@ -375,7 +382,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   updateClass: (id, updates) => {
     const state = get();
-    get().pushSnapshot('update_class');
+    get().pushSnapshot('update_class', `update_class:${id}`);
     const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
       classes: d.classes.map((c) => (c.id === id ? { ...c, ...updates } : c)),
@@ -385,21 +392,16 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   moveClass: (id, position) => {
     const state = get();
-    const now = Date.now();
-    if (state.lastOperationTime && (now - state.lastOperationTime) < state.mergeWindowMs) {
-      get().redoStack.pop();
-    } else {
-      get().pushSnapshot('move_class');
-    }
+    get().pushSnapshot('move_class', `move_class:${id}`);
     const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
       classes: d.classes.map((c) => (c.id === id ? { ...c, position } : c)),
     }));
-    set({ project, diagram: _activeDiagram(project), lastOperationTime: now, isModified: true });
+    set({ project, diagram: _activeDiagram(project), isModified: true });
   },
 
   resizeClass: (id, size) => {
-    get().pushSnapshot('resize_class');
+    get().pushSnapshot('resize_class', `resize_class:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       classes: d.classes.map((c) => (c.id === id ? { ...c, size } : c)),
@@ -444,7 +446,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateRelation: (id, updates) => {
-    get().pushSnapshot('update_relation');
+    get().pushSnapshot('update_relation', `update_relation:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       relations: d.relations.map((r) => (r.id === id ? { ...r, ...updates } : r)),
@@ -497,7 +499,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   moveLifeline: (id, x) => {
-    get().pushSnapshot('move_lifeline');
+    get().pushSnapshot('move_lifeline', `move_lifeline:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       lifelines: (d.lifelines || []).map((l) => (l.id === id ? { ...l, x } : l)),
@@ -506,6 +508,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateLifeline: (id, updates) => {
+    get().pushSnapshot('update_lifeline', `update_lifeline:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       lifelines: (d.lifelines || []).map((l) =>
@@ -550,6 +553,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateMessage: (id, updates) => {
+    get().pushSnapshot('update_message', `update_message:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       messages: (d.messages || []).map((m) =>
@@ -581,6 +585,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateFragment: (id, updates) => {
+    get().pushSnapshot('update_fragment', `update_fragment:${id}`);
     const state = get();
     const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
@@ -591,15 +596,27 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, diagram: _activeDiagram(project), isModified: true });
   },
 
-  pushSnapshot: (op) => {
+  pushSnapshot: (op, mergeKey) => {
     const state = get();
+    if (state.isBatching) return;  // bulk/streaming update — suppress per-op snapshots
+    const now = Date.now();
+    // Merge consecutive ops with the same key (e.g. a drag, or typing in the
+    // property panel) into a single undo step within the merge window.
+    if (mergeKey && state.lastMergeKey === mergeKey &&
+        (now - state.lastOperationTime) < state.mergeWindowMs) {
+      set({ lastOperationTime: now });
+      return;
+    }
     const snapshot = {
       diagram: JSON.parse(JSON.stringify(state.diagram)),
-      timestamp: Date.now(),
+      timestamp: now,
     };
     const newUndo = [...state.undoStack, snapshot].slice(-state.maxHistorySteps);
-    set({ undoStack: newUndo, redoStack: [] });
+    set({ undoStack: newUndo, redoStack: [], lastOperationTime: now, lastMergeKey: mergeKey ?? null });
   },
+
+  beginBatch: () => set({ isBatching: true }),
+  endBatch: () => set({ isBatching: false, lastMergeKey: null }),
 
   // ── Component diagram operations ───────────────────────
 
@@ -638,7 +655,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   moveComponent: (id, x, y) => {
-    get().pushSnapshot('move_component');
+    get().pushSnapshot('move_component', `move_component:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       components: (d.components || []).map((c) =>
@@ -649,6 +666,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateComponent: (id, updates) => {
+    get().pushSnapshot('update_component', `update_component:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       components: (d.components || []).map((c) =>
@@ -683,6 +701,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateCompRelation: (id, updates) => {
+    get().pushSnapshot('update_comp_relation', `update_comp_relation:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       comp_relations: (d.comp_relations || []).map((r) =>
@@ -786,7 +805,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     });
   },
 
-  clearHistory: () => set({ undoStack: [], redoStack: [], lastOperationTime: 0 }),
+  clearHistory: () => set({ undoStack: [], redoStack: [], lastOperationTime: 0, lastMergeKey: null }),
 
   setCurrentFilepath: (path) => set({ currentFilepath: path }),
 }));

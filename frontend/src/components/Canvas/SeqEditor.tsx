@@ -162,6 +162,11 @@ const SeqEditor: React.FC = () => {
     graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
     graph.use(new Snapline({ enabled: true, sharp: true }));
 
+    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
+    graph.on('scale', ({ sx }) => {
+      useDiagramStore.getState().setZoom(sx);
+    });
+
     // Click-to-click message creation (lifelines only)
     graph.on('node:click', ({ node, e }) => {
       if (node.shape === 'seq-fragment') {
@@ -574,6 +579,16 @@ const SeqEditor: React.FC = () => {
       isInternalUpdate.current = false;
     }
   }, [diagram, selectedLifelineId]);
+
+  // ── Apply store zoom to the graph (toolbar zoom buttons) ──
+  // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
+      graph.zoomTo(diagram.zoom);
+    }
+  }, [diagram.zoom]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
