@@ -105,6 +105,13 @@ const Toolbar: React.FC = () => {
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [globalOptimizing, setGlobalOptimizing] = useState(false);
   const [globalStreamMode, setGlobalStreamMode] = useState(false);
+  // Holds the in-flight streaming request so it can be cancelled on unmount / re-run.
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  // Cancel any in-flight streaming request when the toolbar unmounts.
+  useEffect(() => {
+    return () => { streamAbortRef.current?.abort(); };
+  }, []);
 
 
   // ── Global optimize handler (complete mode) ─────────
@@ -129,10 +136,14 @@ const Toolbar: React.FC = () => {
       message.loading({ content: '流式优化中，实时生成设计...', key: 'globalOpt', duration: 0 });
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        const token = (import.meta as any).env?.VITE_API_TOKEN;
+        const token = import.meta.env.VITE_API_TOKEN;
         if (token) headers['Authorization'] = `Bearer ${token}`;
+        // Cancel any previous stream, then track this one for unmount/re-run cleanup.
+        streamAbortRef.current?.abort();
+        const abort = new AbortController();
+        streamAbortRef.current = abort;
         const resp = await fetch('/api/llm/optimize-project-stream', {
-          method: 'POST', headers,
+          method: 'POST', headers, signal: abort.signal,
           body: JSON.stringify({
             instructions: globalInstructions,
             existing_diagrams: existingDiagrams,
@@ -143,7 +154,11 @@ const Toolbar: React.FC = () => {
         useDiagramStore.getState().triggerRecenter();
         message.success({ content: '流式优化完成', key: 'globalOpt' });
       } catch (e) {
-        message.error({ content: '流式优化失败: ' + String(e), key: 'globalOpt' });
+        if ((e as Error)?.name === 'AbortError') {
+          message.info({ content: '流式优化已取消', key: 'globalOpt' });
+        } else {
+          message.error({ content: '流式优化失败: ' + String(e), key: 'globalOpt' });
+        }
       }
       setGlobalOptimizing(false);
     } else {
@@ -346,47 +361,53 @@ const Toolbar: React.FC = () => {
       };
 
       // ── SSE read loop ────────────────────────────────
+      // Suppress per-element undo snapshots for the whole streaming batch.
+      useDiagramStore.getState().beginBatch();
       let receivedBytes = 0, sseMsgCount = 0;
       let textBuffer = '', currentData = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { console.log('[Stream] Reader done, total bytes:', receivedBytes, 'msgs:', sseMsgCount); break; }
-        receivedBytes += value?.length || 0;
-        textBuffer += decoder.decode(value, { stream: true });
-
+      try {
         while (true) {
-          const nlIdx = textBuffer.indexOf('\n');
-          if (nlIdx < 0) break;
-          const rawLine = textBuffer.slice(0, nlIdx);
-          textBuffer = textBuffer.slice(nlIdx + 1);
+          const { done, value } = await reader.read();
+          if (done) { console.log('[Stream] Reader done, total bytes:', receivedBytes, 'msgs:', sseMsgCount); break; }
+          receivedBytes += value?.length || 0;
+          textBuffer += decoder.decode(value, { stream: true });
 
-          if (rawLine.startsWith('data: ')) {
-            currentData += rawLine.slice(6);
-          } else if (rawLine === '') {
-            if (!currentData) continue;
-            sseMsgCount++;
-            console.log('[Stream] SSE msg #' + sseMsgCount + ':', currentData.slice(0, 150));
-            if (currentData === 'DONE') {
-              console.log('[Stream] DONE received, total msgs:', sseMsgCount);
-              useDiagramStore.getState().triggerRecenter();
-              return;
-            }
-            const colonIdx = currentData.indexOf(':');
-            if (colonIdx >= 0) {
-              const elemType = currentData.slice(0, colonIdx);
-              const jsonStr = currentData.slice(colonIdx + 1);
-              try {
-                const obj = JSON.parse(jsonStr);
-                console.log('[Stream] Element:', elemType, obj.name || obj.label || obj.id);
-                handlers[elemType]?.(obj);
-              } catch (e) {
-                console.warn('[Stream] JSON parse failed for', elemType + ':', (e as Error).message, 'json:', jsonStr.slice(0, 100));
+          while (true) {
+            const nlIdx = textBuffer.indexOf('\n');
+            if (nlIdx < 0) break;
+            const rawLine = textBuffer.slice(0, nlIdx);
+            textBuffer = textBuffer.slice(nlIdx + 1);
+
+            if (rawLine.startsWith('data: ')) {
+              currentData += rawLine.slice(6);
+            } else if (rawLine === '') {
+              if (!currentData) continue;
+              sseMsgCount++;
+              console.log('[Stream] SSE msg #' + sseMsgCount + ':', currentData.slice(0, 150));
+              if (currentData === 'DONE') {
+                console.log('[Stream] DONE received, total msgs:', sseMsgCount);
+                useDiagramStore.getState().triggerRecenter();
+                return;
               }
+              const colonIdx = currentData.indexOf(':');
+              if (colonIdx >= 0) {
+                const elemType = currentData.slice(0, colonIdx);
+                const jsonStr = currentData.slice(colonIdx + 1);
+                try {
+                  const obj = JSON.parse(jsonStr);
+                  console.log('[Stream] Element:', elemType, obj.name || obj.label || obj.id);
+                  handlers[elemType]?.(obj);
+                } catch (e) {
+                  console.warn('[Stream] JSON parse failed for', elemType + ':', (e as Error).message, 'json:', jsonStr.slice(0, 100));
+                }
+              }
+              currentData = '';
             }
-            currentData = '';
           }
         }
+      } finally {
+        useDiagramStore.getState().endBatch();
       }
   }; // handleStreamResponse
 
