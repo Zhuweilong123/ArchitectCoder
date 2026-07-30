@@ -12,6 +12,14 @@ Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** �
 
 https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
+## Why UML Designer?
+
+Architecture diagrams shouldn't be throw-away documentation that rots the moment you start coding — they should be the **single source of truth** that drives your entire workflow.
+
+- **Consistency at scale — machines are better at this than humans.** 50 classes, 30 components, thousands of cross-references. No one can manually verify every `class_ref` and `component_id`. Our auto-validation engine can — 5-point cross-diagram consistency checks with fuzzy-match auto-repair, fixing issues before you even notice them.
+- **Design intent preserved from blueprint to implementation.** Stage 1 auto-extracts critical design constraints — which entities are immutable, which relationships must endure, which architectural decisions are foundational — and injects them into every downstream stage. It's like having your architect review every line of generated code.
+- **From natural language to verified, running code — end to end.** A product manager describes requirements in words → auto-generated UML architecture → code generation with ReAct guard → test generation with real pytest execution → failure-driven source optimization. AI watches every step.
+
 ## Features
 
 ### Multi-Diagram Editor
