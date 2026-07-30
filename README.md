@@ -1,6 +1,14 @@
-# UML Designer - 智能 UML 设计工具
+<div align="center">
 
-基于 LLM 的可视化 UML 建模与代码自动化工具。支持类图、时序图、组件图，从设计到代码生成、测试构建、代码优化的全流程闭环。
+# UML Designer
+
+**让想法成为架构，让架构驱动开发**
+
+[English](README_EN.md) | **中文**
+
+</div>
+
+支持类图、时序图、组件图，从设计到代码生成、测试构建、代码优化的全流程闭环。
 
 https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
