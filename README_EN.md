@@ -1,8 +1,8 @@
 <div align="center">
 
-# UML Designer — LLM-Powered Visual UML Modeling & Code Automation
+# UML Designer
 
-**Visual UML modeling & code automation powered by LLM**
+**Draw with Words**
 
 **English** | [中文](README.md)
 

@@ -1,8 +1,8 @@
 <div align="center">
 
-# UML Designer - 智能 UML 设计工具
+# UML Designer
 
-**基于 LLM 的可视化 UML 建模与代码自动化工具**
+**用文字画图**
 
 [English](README_EN.md) | **中文**
 
