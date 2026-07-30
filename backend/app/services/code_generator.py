@@ -1145,6 +1145,10 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
     4. Component provided/required interface consistency
     5. Component diagram coverage — every component should have diagrams
 
+    Validates against the MERGED index (original + new) so cross-references
+    to entities that exist in the project but weren't in the LLM's current
+    output batch are not falsely flagged.
+
     Returns a list of {severity, type, msg, auto_fixed, ...} issue dicts.
     """
     issues = []
@@ -1153,6 +1157,16 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
         return issues
 
     opt_index = _build_reference_index(opt_diagrams)
+
+    # ── Build merged index: original + new (new overrides on same key) ──
+    # This ensures cross-references to entities in the full project scope
+    # are validated, not just the LLM's current output subset.
+    merged = {
+        "classes": {**original_index.get("classes", {}), **opt_index["classes"]},
+        "components": {**original_index.get("components", {}), **opt_index["components"]},
+        "lifelines": {**original_index.get("lifelines", {}), **opt_index["lifelines"]},
+        "diagram_links": original_index.get("diagram_links", []) + opt_index.get("diagram_links", []),
+    }
 
     # ── Check 1: class_ref validity ──
     for di, diag in enumerate(opt_diagrams):
@@ -1166,23 +1180,23 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
                 # Missing class_ref — check if a class with matching name exists
                 ll_name = ll.get("name", "")
                 if ll_name:
-                    match = _fuzzy_match_class(ll_name, opt_index["classes"])
+                    match = _fuzzy_match_class(ll_name, merged["classes"])
                     if match:
                         ll["class_ref"] = match
                         issues.append({
                             "severity": "info", "type": "missing_class_ref",
-                            "msg": f"Lifeline '{ll_name}' had no class_ref, auto-assigned to '{opt_index['classes'][match]['name']}'",
+                            "msg": f"Lifeline '{ll_name}' had no class_ref, auto-assigned to '{merged['classes'][match]['name']}'",
                             "auto_fixed": True,
                             "_diagram_index": di, "_lifeline_id": ll_id, "_fix_to": match,
                         })
                 continue
-            if cref not in opt_index["classes"]:
-                match = _fuzzy_match_class(cref, opt_index["classes"])
+            if cref not in merged["classes"]:
+                match = _fuzzy_match_class(cref, merged["classes"])
                 if match:
                     ll["class_ref"] = match
                     issues.append({
                         "severity": "warning", "type": "bad_class_ref",
-                        "msg": f"Lifeline '{ll.get('name','')}' class_ref='{cref}' → auto-fixed to '{opt_index['classes'][match]['name']}'",
+                        "msg": f"Lifeline '{ll.get('name','')}' class_ref='{cref}' → auto-fixed to '{merged['classes'][match]['name']}'",
                         "auto_fixed": True,
                         "_diagram_index": di, "_lifeline_id": ll_id, "_fix_to": match,
                     })
@@ -1204,9 +1218,9 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
             if not target_ll:
                 continue
             cref = target_ll.get("class_ref", "")
-            if not cref or cref not in opt_index["classes"]:
+            if not cref or cref not in merged["classes"]:
                 continue
-            cls = opt_index["classes"][cref]
+            cls = merged["classes"][cref]
             label = msg.get("label", "")
             if not label:
                 continue
@@ -1224,7 +1238,7 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
     # ── Check 3: component_id validity ──
     for diag in opt_diagrams:
         cid = diag.get("component_id", "")
-        if cid and cid not in opt_index["components"]:
+        if cid and cid not in merged["components"]:
             issues.append({
                 "severity": "warning", "type": "bad_component_id",
                 "msg": f"Diagram '{diag.get('name','')}' component_id='{cid}' not found in component diagram",
@@ -1232,47 +1246,57 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
             })
 
     # ── Check 4: component interface consistency ──
-    for cid, comp in opt_index["components"].items():
-        # Find linked diagrams (class diagrams with this component_id)
-        linked_class_diags = [
-            d for d in opt_diagrams
-            if d.get("type") == "class" and d.get("component_id") == cid
+    # Check ALL components (merged, not just new) against linked class diagrams
+    # across the full project scope (original diagram_links + new).
+    for cid, comp in merged["components"].items():
+        # Find linked class diagrams: both new (opt_diagrams) and original (diagram_links)
+        linked_class_names = [
+            dl["name"] for dl in merged["diagram_links"]
+            if dl["component_id"] == cid and dl["type"] == "class"
         ]
-        for lcd in linked_class_diags:
-            lcd_classes = (lcd.get("data") or {}).get("classes", [])
-            all_class_provided = set()
-            all_class_required = set()
-            for cls in lcd_classes:
-                all_class_provided.update(cls.get("provided_interfaces", []))
-                all_class_required.update(cls.get("required_interfaces", []))
-            # Component provided should be covered by class provided
-            for iface in comp["provided"]:
-                if iface not in all_class_provided:
-                    issues.append({
-                        "severity": "warning", "type": "interface_mismatch",
-                        "msg": f"Component '{comp['name']}' provides '{iface}' but no linked class implements it",
-                        "auto_fixed": False,
-                    })
-            # Component required should appear in class required
-            for iface in comp["required"]:
-                if iface not in all_class_required:
-                    issues.append({
-                        "severity": "warning", "type": "interface_mismatch",
-                        "msg": f"Component '{comp['name']}' requires '{iface}' but no linked class declares it",
-                        "auto_fixed": False,
-                    })
+        # Collect class data from linked diagrams in the new output
+        all_class_provided = set()
+        all_class_required = set()
+        for lcd in opt_diagrams:
+            if lcd.get("type") == "class" and lcd.get("component_id") == cid:
+                lcd_classes = (lcd.get("data") or {}).get("classes", [])
+                for cls in lcd_classes:
+                    all_class_provided.update(cls.get("provided_interfaces", []))
+                    all_class_required.update(cls.get("required_interfaces", []))
+        # If no linked class diagrams exist at all, skip interface checks
+        # (coverage check in Check 5 handles that case)
+        if not linked_class_names and not all_class_provided and not all_class_required:
+            # No class diagrams linked to this component anywhere — skip,
+            # Check 5 will flag the coverage gap.
+            continue
+        # Component provided should be covered by class provided
+        for iface in comp["provided"]:
+            if iface not in all_class_provided:
+                issues.append({
+                    "severity": "warning", "type": "interface_mismatch",
+                    "msg": f"Component '{comp['name']}' provides '{iface}' but no linked class implements it",
+                    "auto_fixed": False,
+                })
+        # Component required should appear in class required
+        for iface in comp["required"]:
+            if iface not in all_class_required:
+                issues.append({
+                    "severity": "warning", "type": "interface_mismatch",
+                    "msg": f"Component '{comp['name']}' requires '{iface}' but no linked class declares it",
+                    "auto_fixed": False,
+                })
 
     # ── Check 5: component diagram coverage ──
-    # Every component in the output should ideally have at least one
-    # class diagram and one sequence diagram linked to it.
-    for cid, comp in opt_index["components"].items():
+    # Every component (merged across original + new) should ideally have
+    # at least one class diagram and one sequence diagram linked to it.
+    for cid, comp in merged["components"].items():
         linked_class = [
-            d for d in opt_diagrams
-            if d.get("type") == "class" and d.get("component_id") == cid
+            dl["name"] for dl in merged["diagram_links"]
+            if dl["component_id"] == cid and dl["type"] == "class"
         ]
         linked_seq = [
-            d for d in opt_diagrams
-            if d.get("type") == "sequence" and d.get("component_id") == cid
+            dl["name"] for dl in merged["diagram_links"]
+            if dl["component_id"] == cid and dl["type"] == "sequence"
         ]
         if not linked_class and not linked_seq:
             issues.append({
