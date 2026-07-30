@@ -2,7 +2,7 @@
 
 # UML Designer
 
-**用文字画图**
+**让想法成为架构，让架构驱动开发**
 
 [English](README_EN.md) | **中文**
 

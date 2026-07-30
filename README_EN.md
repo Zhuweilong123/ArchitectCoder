@@ -2,7 +2,7 @@
 
 # UML Designer
 
-**Draw with Words**
+**Turn Ideas into Architecture, Let Architecture Drive Development**
 
 **English** | [中文](README.md)
 
