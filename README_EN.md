@@ -1,8 +1,14 @@
+<div align="center">
+
 # UML Designer — LLM-Powered Visual UML Modeling & Code Automation
 
-[中文文档](README.md)
+**Visual UML modeling & code automation powered by LLM**
 
-An LLM-driven visual UML modeling and code automation tool. Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, test construction, and code optimization, all in a single integrated workflow.
+**English** | [中文](README.md)
+
+</div>
+
+Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, test construction, and code optimization, all in a single integrated workflow.
 
 https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
