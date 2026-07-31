@@ -297,7 +297,6 @@ class ReActAgent(Agent):
 
         self.current_history = []
         no_tool_call_streak = 0
-        tool_executed = False
 
         for step in range(1, self.max_steps + 1):
             logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
@@ -324,25 +323,19 @@ class ReActAgent(Agent):
 
                 messages.append({"role": "assistant", "content": content})
 
-                # 工具执行后有实质内容 → 最终答案
-                if tool_executed and content.strip():
-                    logger.info("🏁 %s FC 完成（工具执行后返回最终答案）", self.name)
+                # 模型本轮直接给出实质回复（未调用工具）→ 这就是最终答案。
+                # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
+                # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
+                if content.strip():
+                    logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
                     yield ReActProgress(
                         step=step, thought=content,
                         is_final=True, final_answer=content,
                     )
                     break
 
-                if no_tool_call_streak >= 2:
-                    logger.info("🏁 %s FC 完成（连续无工具调用）", self.name)
-                    yield ReActProgress(
-                        step=step, thought=content,
-                        is_final=True, final_answer=content,
-                    )
-                    break
-
-                # 第一轮纯文本且无内容？提示模型使用工具
-                if step == 1 and not content.strip():
+                # 空内容：提示模型使用工具
+                if step == 1:
                     messages.append({
                         "role": "user",
                         "content": "请调用合适的工具来回答问题。如果需要更多信息，"
@@ -361,7 +354,6 @@ class ReActAgent(Agent):
 
             # 3. 有 tool_calls → 全部执行
             no_tool_call_streak = 0
-            tool_executed = True
             tool_results: list[dict] = []
             actions: list[str] = []
             details: list[dict] = []

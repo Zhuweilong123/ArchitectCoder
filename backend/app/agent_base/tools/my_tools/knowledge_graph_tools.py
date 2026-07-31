@@ -135,6 +135,8 @@ class KgQueryTool(AsyncTool):
                                 "逗号分隔的节点类型过滤，如 'class,method,component'。"
                                 "可用类型: project, diagram, class, component, lifeline, "
                                 "source_file, test_file, method, attribute, interface。"
+                                "注意: message/messages 是边类型不是节点，查询时序图消息"
+                                "请用 lifeline 或 kg_expand。"
                                 "不传则查所有类型。"
                             ),
                         },

@@ -260,89 +260,6 @@ async def _classify_intent(llm: BaseAgentsLLM, message: str) -> str:
         return "chat"
 
 
-# ── 闲聊模式 — 直接 LLM 对话 ──────────────────────────
-
-async def _handle_chat(
-    llm: BaseAgentsLLM,
-    message: str,
-    history: list[dict],
-    websocket: WebSocket,
-    stop_check=None,
-    source_dir: str = "",
-    test_dir: str = "",
-    project_file: str = "",
-    chat_log: ChatSessionLogger | None = None,
-    trace_log: ChatTraceLogger | None = None,
-):
-    """轻量闲聊 — 流式 LLM 调用，注入项目上下文但不加载工具。"""
-    # 构建项目上下文
-    context = _build_project_context(source_dir, test_dir, project_file)
-
-    # ── 知识图谱补充：检索与用户问题相关的项目内容 ──
-    kg_context = await _build_kg_chat_context(project_file, message)
-
-    system_prompt = (
-        "你是 AI 开发助手，一个友好的技术伙伴。"
-        "你可以讨论编程、架构设计、技术选型、UML设计模式等话题。"
-        "当用户想做具体开发任务（创建项目、生成代码、设计UML等）时，"
-        "请告知他们你可以切换到开发模式来完成这些任务。"
-        "用自然、有帮助的口吻回复，使用中文。"
-        "\n\n"
-        "## 当前项目信息\n"
-        + context +
-        "\n\n"
-        "## 项目知识（来自知识图谱）\n"
-        + kg_context
-    )
-
-    if chat_log:
-        chat_log.add_chat_ctx("项目上下文", context)
-        chat_log.add_chat_ctx("知识图谱注入", kg_context)
-    if trace_log:
-        trace_log.kg_inject(kg_context, query=message)
-
-    messages = [{"role": "system", "content": system_prompt}]
-    # 加入最近的对话历史
-    for h in history[-10:]:
-        if h.get("role") and h.get("content"):
-            messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": message})
-
-    # 流式输出
-    full_response = ""
-    try:
-        async for chunk in llm.athink(messages, temperature=0.7):
-            if stop_check and stop_check():
-                await websocket.send_json({
-                    "event": "stopped", "reason": "User requested stop",
-                })
-                return
-            full_response += chunk
-            await websocket.send_json({
-                "event": "chat_chunk",
-                "content": chunk,
-            })
-    except Exception as e:
-        logger.exception("[AgentChat] Chat streaming error")
-        if chat_log:
-            chat_log.add_error(f"Chat error: {e}")
-        if trace_log:
-            trace_log.error(event_type="chat_stream", message=f"Chat error: {e}")
-        await websocket.send_json({
-            "event": "error", "message": f"Chat error: {e}",
-        })
-        return
-
-    if chat_log:
-        chat_log.add_ai_chat(full_response)
-    if trace_log:
-        trace_log.done(mode="chat", answer=full_response)
-    await websocket.send_json({
-        "event": "done",
-        "result": full_response,
-    })
-
-
 # ── 开发模式 — ReActAgent + 工具 ───────────────────────
 
 def _build_project_context(
@@ -592,41 +509,39 @@ async def _create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=(
-            "你是全栈 Python 开发专家。使用工具按需完成开发任务：\n"
-            "## 开发工具\n"
-            "1. optimize_uml — 从需求设计或优化 UML 图\n"
-            "2. generate_code — 从 UML 生成 Python 代码\n"
-            "3. validate_code — 验证代码（语法/导入/运行时）\n"
-            "4. generate_tests — 生成 pytest 测试\n"
-            "5. run_tests — 运行测试检查\n"
-            "6. fix_code — 如果测试失败则修复源码\n"
-            "7. write_files — 将最终代码保存到磁盘\n"
-            "8. request_review — 在关键决策点请求人工审核\n\n"
-            "## 知识图谱工具（了解项目结构和设计代码一致性）\n"
-            "9.  kg_query  — 全文检索类、组件、方法、源码文件\n"
-            "10. kg_expand — 展开节点关系（方法、属性、继承、依赖）\n"
-            "11. kg_trace  — 追踪节点间依赖路径\n"
-            "12. kg_diff   — 对比 UML 设计与源码实现差异\n\n"
-            "## 知识图谱使用建议\n"
-            "- 在开始修改代码前，先用 kg_query 了解项目中已有的类和组件结构\n"
-            "- 修改类关系时，用 kg_expand 查看当前继承链和依赖关系，避免破坏\n"
-            "- 代码生成完成后，用 kg_diff 检查 UML 设计是否全部实现\n"
-            "- 如果 kg_query 摘要信息不够，用 kg_expand(node_ids=..., depth=2) 获取完整上下文\n\n"
-            "## 项目上下文\n"
-            + context + "\n\n"
-            + (("## 项目知识图谱结构（当前 UML 设计的真实内容）\n"
-                + kg_summary + "\n\n") if kg_summary else "")
-            + "注意：对于纯问答或总结类请求（如 \"总结当前项目\"、"
-              "\"这个项目有哪些类\"），直接基于上面的项目上下文和知识图谱结构作答，"
-              "一般不需要调用工具。"
-              "如果知识图谱结构信息不足以回答（需要深入某个类的方法/属性、"
-              "追踪依赖、对比设计与代码），可以调用 kg_query / kg_expand / kg_trace / kg_diff 补充。"
-              "只有用户明确要开发/创建/生成/修改代码时才调用开发工具。"
+            "你是 AI 开发助手。\n"
+            "## 核心原则\n"
+            "- 有需要就调用工具，没需要就直接正常回复。\n"
+            "- 简单问候、寒暄（如\"你好\"、\"谢谢\"、\"再见\"）一两句话简短回应即可，不要展开。\n"
+            "- 用户没明确要求时，不要主动查询或总结项目内容。\n"
+            "\n"
+            "## 项目信息\n"
+            + context + "\n"
+            + (("参考项目结构（仅在用户询问时使用，不要主动复述）:\n"
+                + kg_summary + "\n") if kg_summary else "")
         ),
         max_steps=12,
         use_native_fc=True,
     )
     return agent, review_mgr
+
+
+async def _ws_send(websocket: WebSocket, payload: dict) -> bool:
+    """发送 WebSocket 消息，连接已断开时返回 False 而非抛异常。
+
+    前端可能在任何时刻断开（刷新/关闭面板），若继续在原连接上 send_json，
+    会抛 "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'"
+    并可能击穿 uvicorn 进程。这里把发送失败转化为返回值，让调用方优雅终止 agent 循环。
+    """
+    try:
+        await websocket.send_json(payload)
+        return True
+    except WebSocketDisconnect:
+        logger.info("[AgentChat] WebSocket disconnected during send")
+        return False
+    except Exception:
+        logger.warning("[AgentChat] WebSocket send failed (client likely closed)", exc_info=True)
+        return False
 
 
 async def _handle_dev(
@@ -638,11 +553,16 @@ async def _handle_dev(
     chat_log: ChatSessionLogger | None = None,
     trace_log: ChatTraceLogger | None = None,
 ):
-    """开发模式 — ReActAgent 流式执行，进度推送到前端。"""
+    """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
+
+    该函数同时服务闲聊与开发：agent 依据 system prompt 自行决定
+    是否调用工具（闲聊直接文本回复，开发调工具）。
+    """
     try:
+        called_tools = False  # 本轮是否调用过工具（决定 done 的 mode 标注）
         async for progress in agent.arun_stream(user_message):
             if stop_check():
-                await websocket.send_json({
+                await _ws_send(websocket, {
                     "event": "stopped", "reason": "User requested stop",
                 })
                 return
@@ -668,7 +588,7 @@ async def _handle_dev(
                             question=pr.get("question", ""),
                             content=pr.get("content", ""),
                         )
-                    await websocket.send_json({
+                    ok = await _ws_send(websocket, {
                         "event": "request_review",
                         "review_id": i,
                         "review_type": pr.get("review_type", "code"),
@@ -677,6 +597,8 @@ async def _handle_dev(
                         "question": pr.get("question", ""),
                         "step": d["step"],
                     })
+                    if not ok:
+                        return
                 continue
 
             # 记录完整工具调用与返回（在截断发给前端之前）
@@ -698,8 +620,10 @@ async def _handle_dev(
                         tool_name=td.get("name", ""),
                         observation=str(td.get("observation", "")),
                     )
+                if d["tool_calls_detail"]:
+                    called_tools = True
 
-            await websocket.send_json({
+            ok = await _ws_send(websocket, {
                 "event": "progress",
                 "step": d["step"],
                 "actions": d["actions"],
@@ -714,17 +638,32 @@ async def _handle_dev(
                 ],
                 "is_final": d["is_final"],
                 "final_answer": d["final_answer"] if d["is_final"] else "",
+                "mode": "dev" if called_tools else "chat",
             })
+            if not ok:
+                return
 
             if d["is_final"]:
+                mode = "dev" if called_tools else "chat"
+                # 跨轮记忆：本轮 user + assistant 一起写入 agent 历史
+                try:
+                    from app.agent_base.core.message import Message
+                    agent.add_message(Message(content=user_message, role="user"))
+                    if d["final_answer"]:
+                        agent.add_message(Message(content=d["final_answer"], role="assistant"))
+                except Exception:
+                    logger.exception("[AgentChat] Failed to append messages to agent history")
                 if chat_log:
-                    chat_log.add_done(d["final_answer"], mode="dev")
+                    chat_log.add_done(d["final_answer"], mode=mode)
                 if trace_log:
-                    trace_log.done(mode="dev", answer=d["final_answer"])
-                await websocket.send_json({
+                    trace_log.done(mode=mode, answer=d["final_answer"])
+                ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],
+                    "mode": mode,
                 })
+                if not ok:
+                    return
                 return
 
     except Exception as e:
@@ -733,7 +672,7 @@ async def _handle_dev(
             chat_log.add_error(f"Agent error: {e}")
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {e}")
-        await websocket.send_json({
+        await _ws_send(websocket, {
             "event": "error", "message": f"Agent error: {e}",
         })
 
@@ -753,8 +692,6 @@ async def agent_chat_ws(websocket: WebSocket):
     source_dir = ""
     test_dir = ""
     project_file = ""
-    conversation_history: list[dict] = []  # [{role, content}, ...]
-    current_mode: str = ""  # "chat" or "dev"
     chat_log = ChatSessionLogger()
     trace_log = ChatTraceLogger(session_id=chat_log.session_id)
     _set_trace_bridge(trace_log)
@@ -790,7 +727,7 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 stop_requested = False
 
-                # ── 意图分类 ──
+                # ── 意图分类（仅用于前端徽章/日志标注，不再决定分流） ──
                 intent = await _classify_intent(llm, user_message)
                 logger.info("[AgentChat] Intent: %s | message: %s", intent, user_message[:80])
 
@@ -800,38 +737,16 @@ async def agent_chat_ws(websocket: WebSocket):
                 trace_log.user_message(user_message, project_file=project_file)
                 trace_log.intent(intent)
 
-                # 保存用户消息到历史
-                conversation_history.append({"role": "user", "content": user_message})
-
-                if intent == "chat":
-                    # ── 闲聊模式 ──
-                    current_mode = "chat"
-                    await _handle_chat(
-                        llm, user_message, conversation_history, websocket, _stop_check,
-                        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
-                        chat_log=chat_log, trace_log=trace_log,
+                # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
+                if dev_agent is None:
+                    dev_agent, review_mgr = await _create_dev_agent(
+                        llm, source_dir, test_dir, project_file,
                     )
-                    conversation_history.append({
-                        "role": "assistant",
-                        "content": "(chat response, see UI)",
-                    })
 
-                else:
-                    # ── 开发模式 ──
-                    current_mode = "dev"
-                    dev_agent, review_mgr = await _create_dev_agent(llm, source_dir, test_dir, project_file)
-                    await _handle_dev(
-                        dev_agent, review_mgr, user_message, websocket, _stop_check,
-                        chat_log=chat_log, trace_log=trace_log,
-                    )
-                    conversation_history.append({
-                        "role": "assistant",
-                        "content": f"(dev task: {user_message[:100]})",
-                    })
-
-                # 裁剪历史
-                if len(conversation_history) > 40:
-                    conversation_history = conversation_history[-20:]
+                await _handle_dev(
+                    dev_agent, review_mgr, user_message, websocket, _stop_check,
+                    chat_log=chat_log, trace_log=trace_log,
+                )
 
             # ── 停止对话 ──
             elif msg_type == "stop":

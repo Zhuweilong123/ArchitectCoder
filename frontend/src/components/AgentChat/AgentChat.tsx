@@ -148,47 +148,21 @@ const AgentChat: React.FC = () => {
         // ── 完成 ──
         case 'done': {
           setBusy(false);
-          if (modeRef.current === 'chat') {
-            // 聊天模式：stream_ → agent_，或回退补一个消息
-            setMessages((prev) => {
-              const hasStreaming = prev.some((m) => m.id.startsWith('stream_'));
-              if (hasStreaming) {
-                return prev.map((m) =>
-                  m.id.startsWith('stream_')
-                    ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: 'chat' }
-                    : m,
-                );
-              }
-              // 回退：流式期间没创建消息（空响应等）
-              if (event.result) {
-                return [...prev, {
-                  id: `agent_${Date.now()}`,
-                  role: 'agent',
-                  content: event.result,
-                  timestamp: Date.now(),
-                  mode: 'chat',
-                }];
-              }
-              return prev;
-            });
-          } else {
-            // 开发模式：追加完整结果
-            const steps = [...currentSteps];
-            setCurrentSteps([]);
-            if (event.result) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `agent_${Date.now()}`,
-                  role: 'agent',
-                  content: event.result,
-                  timestamp: Date.now(),
-                  steps,
-                  mode: 'dev',
-                },
-              ]);
-            }
-          }
+          // 单 agent 模式：所有回复以完整 result 追加（后端判定 mode）
+          const finalMode = event.mode ?? (modeRef.current === 'dev' ? 'dev' : 'chat');
+          const steps = [...currentSteps];
+          setCurrentSteps([]);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `agent_${Date.now()}`,
+              role: 'agent',
+              content: event.result || '(空回复)',
+              timestamp: Date.now(),
+              steps: steps.length ? steps : undefined,
+              mode: finalMode,
+            },
+          ]);
           break;
         }
 
