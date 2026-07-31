@@ -37,6 +37,8 @@ interface ChatMessage {
   timestamp: number;
   steps?: AgentProgressEvent[];
   review?: AgentReviewEvent;
+  /** 回复模式: chat（轻量对话）| dev（Agent 工具驱动） */
+  mode?: 'chat' | 'dev';
 }
 
 // ── 组件 ──────────────────────────────────────────────
@@ -153,7 +155,7 @@ const AgentChat: React.FC = () => {
               if (hasStreaming) {
                 return prev.map((m) =>
                   m.id.startsWith('stream_')
-                    ? { ...m, id: m.id.replace('stream_', 'agent_') }
+                    ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: 'chat' }
                     : m,
                 );
               }
@@ -164,6 +166,7 @@ const AgentChat: React.FC = () => {
                   role: 'agent',
                   content: event.result,
                   timestamp: Date.now(),
+                  mode: 'chat',
                 }];
               }
               return prev;
@@ -181,6 +184,7 @@ const AgentChat: React.FC = () => {
                   content: event.result,
                   timestamp: Date.now(),
                   steps,
+                  mode: 'dev',
                 },
               ]);
             }
@@ -196,7 +200,7 @@ const AgentChat: React.FC = () => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_') }
+                ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: modeRef.current }
                 : m,
             ),
           );
@@ -220,7 +224,7 @@ const AgentChat: React.FC = () => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_') }
+                ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: modeRef.current }
                 : m,
             ),
           );
@@ -435,8 +439,15 @@ const AgentChat: React.FC = () => {
 
             {messages.map((msg) => (
               <div key={msg.id} className={`agent-message agent-message-${msg.role}${msg.id.startsWith('stream_') ? ' agent-message-streaming' : ''}`}>
-                <div className="agent-message-avatar">
-                  {msg.role === 'user' ? <UserOutlined /> : msg.role === 'agent' ? <RobotOutlined /> : null}
+                <div className="agent-message-avatar-wrap">
+                  <div className="agent-message-avatar">
+                    {msg.role === 'user' ? <UserOutlined /> : msg.role === 'agent' ? <RobotOutlined /> : null}
+                  </div>
+                  {msg.role === 'agent' && (
+                    <span className={`agent-mode-badge ${msg.mode === 'dev' ? 'mode-dev' : 'mode-chat'}`}>
+                      {msg.mode === 'dev' ? 'dev' : 'chat'}
+                    </span>
+                  )}
                 </div>
                 <div className="agent-message-body">
                   <div className="agent-message-content">
@@ -452,7 +463,10 @@ const AgentChat: React.FC = () => {
             {/* 实时步骤（开发模式） */}
             {busy && currentSteps.length > 0 && (
               <div className="agent-message agent-message-agent">
-                <div className="agent-message-avatar"><RobotOutlined /></div>
+                <div className="agent-message-avatar-wrap">
+                  <div className="agent-message-avatar"><RobotOutlined /></div>
+                  <span className="agent-mode-badge mode-dev">dev</span>
+                </div>
                 <div className="agent-message-body">
                   <Spin size="small" style={{ marginRight: 8 }} />
                   <span style={{ color: '#888' }}>正在执行...</span>

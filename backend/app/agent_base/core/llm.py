@@ -15,10 +15,35 @@ Usage::
 
 import os
 import logging
+import time
 from typing import Optional, Iterator, AsyncIterator
 from openai import OpenAI, AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+# ── LLM trace 钩子 ─────────────────────────────────────
+# 在 chat_trace.py 注册/注销，捕获每次 LLM 调用的原始 prompt/completion。
+# 延迟导入避免循环依赖。
+def _trace_hook(kind, *args, **kwargs):
+    try:
+        from app.services.chat_trace import _safe_hook
+        return _safe_hook(kind, *args, **kwargs)
+    except Exception:
+        return None
+
+
+def _usage_dict(usage) -> Optional[dict]:
+    """将 OpenAI usage 对象序列化为 dict（兼容 None / 流式无 usage）。"""
+    if usage is None:
+        return None
+    try:
+        return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+    except Exception:
+        return None
 
 
 class BaseAgentsLLM:
@@ -279,8 +304,21 @@ class BaseAgentsLLM:
         if kwargs.get("timeout"):
             call_kwargs["timeout"] = kwargs["timeout"]
 
-        response = await self._async_client.chat.completions.create(**call_kwargs)
-        return response.choices[0].message.content or ""
+        span_id = _trace_hook("llm_request", model=call_kwargs["model"],
+                              messages=messages, temperature=call_kwargs.get("temperature"),
+                              max_tokens=call_kwargs.get("max_tokens")) or ""
+        _t0 = time.monotonic()
+        try:
+            response = await self._async_client.chat.completions.create(**call_kwargs)
+            content = response.choices[0].message.content or ""
+        except Exception as exc:
+            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+                        duration_ms=(time.monotonic() - _t0) * 1000)
+            raise
+        _trace_hook("llm_response", span_id=span_id, content=content,
+                    usage=_usage_dict(getattr(response, "usage", None)),
+                    duration_ms=(time.monotonic() - _t0) * 1000)
+        return content
 
     async def athink(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
         """异步流式调用，逐块产出文本"""
@@ -296,11 +334,25 @@ class BaseAgentsLLM:
         if kwargs.get("max_tokens", self.max_tokens):
             call_kwargs["max_tokens"] = kwargs.get("max_tokens", self.max_tokens)
 
-        stream = await self._async_client.chat.completions.create(**call_kwargs)
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        span_id = _trace_hook("llm_request", model=call_kwargs["model"],
+                              messages=messages, temperature=call_kwargs.get("temperature"),
+                              max_tokens=call_kwargs.get("max_tokens")) or ""
+        _t0 = time.monotonic()
+        _full = ""
+        try:
+            stream = await self._async_client.chat.completions.create(**call_kwargs)
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    _full += delta
+                    yield delta
+            _trace_hook("llm_response", span_id=span_id, content=_full,
+                        usage=_usage_dict(getattr(stream, "usage", None)),
+                        duration_ms=(time.monotonic() - _t0) * 1000)
+        except Exception as exc:
+            _trace_hook("llm_response", span_id=span_id, content=_full, error=str(exc),
+                        duration_ms=(time.monotonic() - _t0) * 1000)
+            raise
 
     # ── 工具调用 ───────────────────────────────────────────
 
@@ -329,7 +381,17 @@ class BaseAgentsLLM:
         if kwargs.get("max_tokens", self.max_tokens):
             call_kwargs["max_tokens"] = kwargs.get("max_tokens", self.max_tokens)
 
-        response = await self._async_client.chat.completions.create(**call_kwargs)
+        span_id = _trace_hook("llm_request", model=call_kwargs["model"],
+                              messages=messages, temperature=call_kwargs.get("temperature"),
+                              max_tokens=call_kwargs.get("max_tokens"),
+                              tools=tools, tool_choice=tool_choice) or ""
+        _t0 = time.monotonic()
+        try:
+            response = await self._async_client.chat.completions.create(**call_kwargs)
+        except Exception as exc:
+            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+                        duration_ms=(time.monotonic() - _t0) * 1000)
+            raise
         msg = response.choices[0].message
         result: dict = {"content": msg.content, "tool_calls": None}
         if msg.tool_calls:
@@ -344,6 +406,10 @@ class BaseAgentsLLM:
                 }
                 for tc in msg.tool_calls
             ]
+        _trace_hook("llm_response", span_id=span_id, content=result["content"] or "",
+                    tool_calls=result["tool_calls"],
+                    usage=_usage_dict(getattr(response, "usage", None)),
+                    duration_ms=(time.monotonic() - _t0) * 1000)
         return result
 
     def stream_invoke(self, messages: list[dict], **kwargs) -> Iterator[str]:

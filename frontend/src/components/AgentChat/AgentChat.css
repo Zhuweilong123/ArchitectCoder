@@ -166,6 +166,45 @@
   color: #fa8c16;
 }
 
+/* ── Avatar wrap + mode badge ───────────────────────── */
+
+.agent-message-avatar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.agent-message-avatar-wrap .agent-message-avatar {
+  width: 30px;
+  height: 30px;
+}
+
+.agent-mode-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  user-select: none;
+}
+
+.agent-mode-badge.mode-chat {
+  background: #e6f4ff;
+  color: #1677ff;
+}
+
+.agent-mode-badge.mode-dev {
+  background: #fff2e8;
+  color: #d46b08;
+}
+
+.agent-message-user .agent-message-avatar-wrap .agent-mode-badge {
+  display: none;
+}
+
 /* ── Bubble body ────────────────────────────────────── */
 
 .agent-message-body {
