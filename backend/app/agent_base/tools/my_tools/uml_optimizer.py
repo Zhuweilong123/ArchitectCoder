@@ -74,15 +74,26 @@ class UmlOptimizer:
         diagrams: list[dict] | None = None,
         instructions: str = "",
     ) -> dict:
-        """执行 UML 全局优化
+        """执行 UML 全局优化"""
+        logger.info("[UmlOptimizer] 优化: %d 图, %s",
+                    len(diagrams) if diagrams else 0, instructions[:80])
 
-        Args:
-            diagrams: 现有图列表，None 表示从零生成
-            instructions: 用户的设计指令
+        try:
+            return await self._optimize_internal(diagrams, instructions)
+        except Exception as e:
+            logger.exception("[UmlOptimizer] Internal error")
+            return {
+                "diagrams": diagrams or [],
+                "consistency_report": [{"severity": "error", "msg": str(e)}],
+                "changes_summary": f"Optimization failed: {e}",
+                "design_constraints": {},
+                "diff": "",
+            }
 
-        Returns:
-            dict with ``diagrams`` array (new format)，兼容原 ``optimize_project()`` 返回值
-        """
+    async def _optimize_internal(
+        self, diagrams: list[dict] | None, instructions: str
+    ) -> dict:
+        """内部优化逻辑"""
         logger.info(
             "[UmlOptimizer] 开始优化: %d 张现有图, instructions=%s",
             len(diagrams) if diagrams else 0,
@@ -97,9 +108,21 @@ class UmlOptimizer:
             index=original_index,
         )
 
+        # ── 修复 prompt 中的裸 {} 以避免 ReflectionAgent .format() 解析错误 ──
+        # _build_global_prompt 的 JSON 示例包含 {{}} （Python 字符串字面量转义后的 {}），
+        # 当 ReflectionAgent 再次调用 .format() 时会误解析它们。
+        # 方案：预填充 instructions 占位符 + 对 prompt 中所有非标准 {} 做二次转义。
+        import re
+        prompt = prompt.replace("{instructions}", instructions or "Design a complete UML system")
+        # 对任何不在已知 format key 列表中的 {} 做转义
+        _valid_keys = {'task', 'context', 'content', 'auto_feedback',
+                       'last_attempt', 'feedback'}
+        prompt = re.sub(r'(?<!\{)\{(?![\{])', '{{', prompt)
+        prompt = re.sub(r'(?<!\})(\})(?!\})', '}}', prompt)
+
         # ── Step 2: 准备 UML 专用提示词 ──
         uml_prompts = {
-            "initial": prompt,  # 复用原有的完整 prompt
+            "initial": prompt,  # 复用原有的完整 prompt（已预填充 instructions）
             "reflect": """你是UML审查专家。请结合自动验证结果和语义审查，分析以下UML设计的质量。
 
 ## 设计上下文:

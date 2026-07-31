@@ -1,17 +1,33 @@
 """ReActAgent — Reasoning + Acting 范式
 
-实现 Thought → Action → Observation 循环。
-每次只执行一个步骤，使用工具获取信息，最终给出答案。
+支持两种运行模式:
+
+1. **原生 Function Calling** (推荐, 默认) — ``await agent.arun(input)``
+   利用 LLM 内置的工具调用能力，结构化 JSON 参数，支持多工具并行。
+
+2. **文本解析降级** (兼容) — ``agent.run(input)``
+   正则匹配 ``Thought:/Action:`` 文本格式，兼容不支持 FC 的模型。
 
 Usage::
 
+    # 推荐：异步 FC 模式
     agent = ReActAgent(name="推理助手", llm=llm, tool_registry=registry, max_steps=5)
-    result = agent.run("最近有什么关于AI的热点新闻？")
+
+    # 一次性获取结果
+    result = await agent.arun("最近有什么关于AI的热点新闻？")
+
+    # 流式获取每轮进度（用于前端实时展示）
+    async for progress in agent.arun_stream("帮我优化这段代码"):
+        print(f"Round {progress['step']}: {progress['actions']}")
+
+    # 降级：同步文本解析模式
+    result = agent.run("你好！")
 """
 
+import json
 import re
 import logging
-from typing import Optional, List
+from typing import Optional, List, AsyncIterator
 
 from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
@@ -21,7 +37,19 @@ from ..tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-# ── ReAct 提示词模板 ──────────────────────────────────
+# ── Function Calling 模式 system prompt ─────────────────
+FC_SYSTEM_PROMPT = """你是一个具备推理和行动能力的 AI 助手。
+你可以调用工具来获取信息、执行操作，逐步分析问题，最终给出准确的答案。
+
+使用工具时：
+- 一次可以调用多个独立的工具（它们会并行执行）
+- 观察工具返回的结果后，决定是否需要继续调用工具
+- 当你已经获得足够信息时，直接给出最终答案（不调用工具）
+
+不要编造答案。如果工具返回的信息不足以回答问题，继续使用其他工具或调整参数重试。
+"""
+
+# ── ReAct 文本模式提示词模板 (降级兼容) ──────────────────
 REACT_PROMPT = """你是一个具备推理和行动能力的AI助手。你可以通过思考分析问题，然后调用合适的工具来获取信息，最终给出准确的答案。
 
 ## 可用工具
@@ -50,17 +78,64 @@ Action: 选择一个行动，格式必须是以下之一:
 现在开始你的推理和行动:
 """
 
+# ── 流式 progress 中的 step 数据类 ──────────────────────
+
+class ReActProgress:
+    """单轮 ReAct 进度快照，通过 ``arun_stream()`` yield 给上层。
+
+    Attributes:
+        step: 当前轮次（1-based）
+        actions: 本轮调用的工具名列表
+        tool_calls_detail: ``[{name, arguments, observation}]`` 详情
+        thought: LLM 文本内容（工具调用以外的思考部分）
+        is_final: 是否为本轮后终止
+        final_answer: 若 is_final 为 True，则为最终答案
+    """
+
+    __slots__ = (
+        "step", "actions", "tool_calls_detail", "thought",
+        "is_final", "final_answer",
+    )
+
+    def __init__(
+        self,
+        step: int,
+        actions: list[str] | None = None,
+        tool_calls_detail: list[dict] | None = None,
+        thought: str = "",
+        is_final: bool = False,
+        final_answer: str = "",
+    ):
+        self.step = step
+        self.actions = actions or []
+        self.tool_calls_detail = tool_calls_detail or []
+        self.thought = thought
+        self.is_final = is_final
+        self.final_answer = final_answer
+
+    def to_dict(self) -> dict:
+        return {
+            "step": self.step,
+            "actions": self.actions,
+            "tool_calls_detail": self.tool_calls_detail,
+            "thought": self.thought[:500],
+            "is_final": self.is_final,
+            "final_answer": self.final_answer,
+        }
+
 
 class ReActAgent(Agent):
     """ReAct (Reasoning + Acting) Agent
 
     核心循环:
-    1. 构建 prompt → 2. LLM 推理 → 3. 解析 Thought/Action →
-    4. 执行 Action → 5. 观察结果 → 回到 1 或 Finish
+    1. 构建 messages → 2. LLM 推理 (FC 或文本) →
+    3. 解析 tool_calls / Thought-Action → 4. 执行工具 →
+    5. 观察结果 → 回到 1 或返回最终答案
 
     Attributes:
         max_steps: 最大循环步数，防止无限循环
-        custom_prompt: 自定义提示词模板（可选）
+        use_native_fc: 是否使用原生 Function Calling（默认 True）
+        custom_prompt: 自定义提示词模板（仅文本模式使用）
     """
 
     def __init__(
@@ -71,17 +146,55 @@ class ReActAgent(Agent):
         system_prompt: Optional[str] = None,
         config: Optional[Config] = None,
         max_steps: int = 5,
+        use_native_fc: bool = True,
         custom_prompt: Optional[str] = None,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
         self.max_steps = max_steps
+        self.use_native_fc = use_native_fc
         self.current_history: List[str] = []
         self.prompt_template = custom_prompt or REACT_PROMPT
-        logger.info("✅ %s 初始化完成，最大步数: %d", name, max_steps)
+        logger.info(
+            "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
+            name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
+        )
+
+    # ═══════════════════════════════════════════════════════
+    # Public API
+    # ═══════════════════════════════════════════════════════
+
+    async def arun(self, input_text: str, **kwargs) -> str:
+        """异步运行 ReAct 循环（推荐入口）。
+
+        当 ``use_native_fc=True`` 且有工具注册时使用原生 Function Calling；
+        否则降级到同步文本解析 ``run()``。
+        """
+        if self.use_native_fc and self.tool_registry:
+            return await self._arun_with_fc(input_text, **kwargs)
+        logger.info("⚡ %s 降级到文本解析模式", self.name)
+        return self.run(input_text, **kwargs)
+
+    async def arun_stream(self, input_text: str, **kwargs) -> AsyncIterator[ReActProgress]:
+        """流式运行 ReAct 循环 — 每轮 yield :class:`ReActProgress`。
+
+        用于前端实时展示、编排层监控等需要逐轮获取进度的场景。
+
+        当 ``use_native_fc=False`` 时，自动降级为仅 yield 最终结果。
+        """
+        if self.use_native_fc and self.tool_registry:
+            async for progress in self._arun_with_fc_stream(input_text, **kwargs):
+                yield progress
+        else:
+            # 降级：同步 run() 只产出一个最终结果
+            result = self.run(input_text, **kwargs)
+            yield ReActProgress(step=1, is_final=True, final_answer=result)
 
     def run(self, input_text: str, **kwargs) -> str:
-        """运行 ReAct 循环"""
+        """同步运行 ReAct 循环（文本解析模式，向后兼容）。
+
+        使用 Thought:/Action: 正则解析。保留给不支持 FC 的模型。
+        """
         self.current_history = []
         current_step = 0
 
@@ -138,7 +251,215 @@ class ReActAgent(Agent):
         logger.warning("⚠️ %s 达到最大步数 %d", self.name, self.max_steps)
         return final_answer
 
-    # ── 解析逻辑 ─────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    # Function Calling 核心
+    # ═══════════════════════════════════════════════════════
+
+    def _build_fc_system_prompt(self) -> str:
+        """构建 FC 模式的 system prompt。"""
+        base = self.system_prompt or FC_SYSTEM_PROMPT
+        return base
+
+    async def _arun_with_fc(self, input_text: str, **kwargs) -> str:
+        """一次性 FC 循环 — 收集流式输出，返回最终答案。"""
+        final_answer = ""
+        async for progress in self._arun_with_fc_stream(input_text, **kwargs):
+            if progress.is_final:
+                final_answer = progress.final_answer
+        if not final_answer:
+            final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
+        return final_answer
+
+    async def _arun_with_fc_stream(
+        self, input_text: str, **kwargs
+    ) -> AsyncIterator[ReActProgress]:
+        """原生 Function Calling 驱动的流式主循环。
+
+        每轮 yield :class:`ReActProgress` — 包含步骤号、工具调用详情、
+        思考内容、是否为最终轮。
+
+        流程:
+        1. 构建 messages（system + user）
+        2. 调用 llm.ainvoke_with_tools(tool_specs)
+        3. 遍历 tool_calls → 全部执行（支持多工具并行）
+        4. yield ReActProgress → 追加 assistant + tool 消息
+        5. 重复直到模型返回纯文本或达到 max_steps
+        """
+        tool_specs = self.tool_registry.get_openai_specs()
+        messages: list[dict] = [
+            {"role": "system", "content": self._build_fc_system_prompt()},
+            {"role": "user", "content": input_text},
+        ]
+
+        # 注入已有的对话历史（多轮场景）
+        for msg in self._history:
+            messages.append({"role": msg.role, "content": msg.content})
+
+        self.current_history = []
+        no_tool_call_streak = 0
+        tool_executed = False
+
+        for step in range(1, self.max_steps + 1):
+            logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
+
+            # 1. 调用 LLM（带工具 schemas）
+            response = await self.llm.ainvoke_with_tools(
+                messages=messages,
+                tools=tool_specs,
+                tool_choice="auto",
+                temperature=kwargs.get("temperature", 0.3),
+            )
+
+            tool_calls = response.get("tool_calls")
+            content = response.get("content") or ""
+
+            # 2. 无 tool_calls → 纯文本回复
+            if not tool_calls:
+                no_tool_call_streak += 1
+                self.current_history.append(
+                    f"Step {step}: 模型返回纯文本 ({len(content)} 字符)"
+                )
+                logger.info("  → 无工具调用，streak=%d，内容预览: %s",
+                           no_tool_call_streak, content[:120])
+
+                messages.append({"role": "assistant", "content": content})
+
+                # 工具执行后有实质内容 → 最终答案
+                if tool_executed and content.strip():
+                    logger.info("🏁 %s FC 完成（工具执行后返回最终答案）", self.name)
+                    yield ReActProgress(
+                        step=step, thought=content,
+                        is_final=True, final_answer=content,
+                    )
+                    break
+
+                if no_tool_call_streak >= 2:
+                    logger.info("🏁 %s FC 完成（连续无工具调用）", self.name)
+                    yield ReActProgress(
+                        step=step, thought=content,
+                        is_final=True, final_answer=content,
+                    )
+                    break
+
+                # 第一轮纯文本且无内容？提示模型使用工具
+                if step == 1 and not content.strip():
+                    messages.append({
+                        "role": "user",
+                        "content": "请调用合适的工具来回答问题。如果需要更多信息，"
+                                   "可以多次调用工具。",
+                    })
+                    yield ReActProgress(
+                        step=step, thought="(empty)", actions=[],
+                        is_final=False,
+                    )
+                else:
+                    yield ReActProgress(
+                        step=step, thought=content, actions=[],
+                        is_final=False,
+                    )
+                continue
+
+            # 3. 有 tool_calls → 全部执行
+            no_tool_call_streak = 0
+            tool_executed = True
+            tool_results: list[dict] = []
+            actions: list[str] = []
+            details: list[dict] = []
+
+            for tc in tool_calls:
+                fn = tc["function"]
+                tool_name = fn["name"]
+
+                # 解析参数
+                try:
+                    tool_args = json.loads(fn["arguments"])
+                except json.JSONDecodeError:
+                    err_obs = (
+                        f"Invalid JSON arguments for '{tool_name}'. "
+                        f"Raw: {fn.get('arguments', '')[:200]}. "
+                        f"Please re-send with valid JSON."
+                    )
+                    self.current_history.append(
+                        f"Step {step}: {tool_name} → JSON解析失败"
+                    )
+                    tool_results.append({
+                        "tool_call_id": tc["id"],
+                        "content": err_obs,
+                    })
+                    actions.append(tool_name)
+                    details.append({
+                        "name": tool_name,
+                        "arguments": fn.get("arguments", ""),
+                        "observation": err_obs,
+                    })
+                    continue
+
+                # 执行工具
+                result = await self.tool_registry.aexecute_tool_with_params(
+                    tool_name, tool_args,
+                )
+                observation = str(result)[:2000]
+
+                self.current_history.append(
+                    f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
+                    f" → {observation[:150]}"
+                )
+                tool_results.append({
+                    "tool_call_id": tc["id"],
+                    "content": observation,
+                })
+                actions.append(tool_name)
+                details.append({
+                    "name": tool_name,
+                    "arguments": tool_args,
+                    "observation": observation,
+                })
+                logger.info("  🔧 %s(%s) → %s",
+                           tool_name,
+                           json.dumps(tool_args, ensure_ascii=False)[:80],
+                           observation[:80])
+
+            # 4. 追加 assistant + tool 消息到对话
+            messages.append({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": tool_calls,
+            })
+            for tr in tool_results:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr["tool_call_id"],
+                    "content": tr["content"],
+                })
+
+            yield ReActProgress(
+                step=step,
+                actions=actions,
+                tool_calls_detail=details,
+                thought=content,
+                is_final=False,
+            )
+
+        # ── 最终处理 — 从 messages 中提取最后一条 assistant 内容 ──
+        final_answer = ""
+        for msg in reversed(messages):
+            if msg["role"] == "assistant" and msg.get("content"):
+                final_answer = msg["content"]
+                break
+
+        if not final_answer:
+            final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
+
+        self.add_message(Message(input_text, "user"))
+        self.add_message(Message(final_answer, "assistant"))
+        logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
+
+        # 除了已 yield 的 progress 外，不再额外 yield
+        # — 调用方已经拿到了最终答案
+
+    # ═══════════════════════════════════════════════════════
+    # 文本解析 (降级兼容)
+    # ═══════════════════════════════════════════════════════
 
     def _parse_output(self, text: str) -> tuple:
         """解析 LLM 输出，提取 (Thought, Action)"""

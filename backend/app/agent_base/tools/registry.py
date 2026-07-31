@@ -74,6 +74,41 @@ class ToolRegistry:
             descriptions.append(f"- {name}: {info['description']}")
         return "\n".join(descriptions) if descriptions else "暂无可用工具"
 
+    def get_openai_specs(self) -> list[dict]:
+        """收集所有工具的 OpenAI Function Calling schema。
+
+        - 注册的 Tool 对象调用 ``to_openai_schema()``
+        - :meth:`register_function` 注册的简装工具自动生成最简 schema
+          （单一 ``input`` 字符串参数）
+        """
+        specs = []
+        for tool in self._tools.values():
+            specs.append(tool.to_openai_schema())
+        for name, info in self._functions.items():
+            specs.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": info["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": info["description"],
+                            },
+                        },
+                        "required": ["input"],
+                    },
+                },
+            })
+        return specs
+
+    def get_openai_specs_for(self, names: list[str]) -> list[dict]:
+        """根据名称列表筛选 spec（用于限制本轮可用的工具）"""
+        all_specs = {s["function"]["name"]: s for s in self.get_openai_specs()}
+        return [all_specs[n] for n in names if n in all_specs]
+
     def list_tools(self) -> list[str]:
         """列出所有工具名称"""
         names = list(self._tools.keys()) + list(self._functions.keys())
@@ -110,17 +145,65 @@ class ToolRegistry:
 
         Tool 对象直接接收参数字典，函数工具忽略额外参数。
         """
+        import asyncio
+
         tool = self._tools.get(name)
         if tool:
             try:
-                return tool.run(parameters)
+                result = tool.run(parameters)
+                # Handle async tools — if we get a coroutine back, this is
+                # a sync context error. Callers should use aexecute_tool_with_params.
+                if asyncio.coroutines.iscoroutine(result):
+                    return (
+                        "ERROR: async tool returned coroutine in sync context. "
+                        "Use aexecute_tool_with_params() instead."
+                    )
+                return str(result) if not isinstance(result, str) else result
             except Exception as e:
                 return f"❌ 工具 '{name}' 执行失败: {e}"
 
         func_info = self._functions.get(name)
         if func_info:
             try:
-                return func_info["func"](parameters.get("input", ""))
+                result = func_info["func"](parameters.get("input", ""))
+                if asyncio.coroutines.iscoroutine(result):
+                    return (
+                        "ERROR: async function returned coroutine in sync context. "
+                        "Use aexecute_tool_with_params() instead."
+                    )
+                return str(result) if not isinstance(result, str) else result
+            except Exception as e:
+                return f"❌ 工具 '{name}' 执行失败: {e}"
+
+        return f"❌ 未找到工具: '{name}'"
+
+    async def aexecute_tool_with_params(
+        self, name: str, parameters: Dict[str, Any]
+    ) -> str:
+        """异步执行工具 — 正确处理 async 工具的 coroutine。
+
+        当工具 run() 返回 coroutine 时，此方法会 await 它。
+        ReActAgent FC 循环应优先使用此方法。
+        """
+        import asyncio
+
+        tool = self._tools.get(name)
+        if tool:
+            try:
+                result = tool.run(parameters)
+                if asyncio.coroutines.iscoroutine(result):
+                    result = await result
+                return str(result) if not isinstance(result, str) else result
+            except Exception as e:
+                return f"❌ 工具 '{name}' 执行失败: {e}"
+
+        func_info = self._functions.get(name)
+        if func_info:
+            try:
+                result = func_info["func"](parameters.get("input", ""))
+                if asyncio.coroutines.iscoroutine(result):
+                    result = await result
+                return str(result) if not isinstance(result, str) else result
             except Exception as e:
                 return f"❌ 工具 '{name}' 执行失败: {e}"
 

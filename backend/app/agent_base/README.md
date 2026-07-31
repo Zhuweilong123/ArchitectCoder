@@ -14,6 +14,12 @@
 agent_base/
 ├── __init__.py                     # 统一导出入口
 │
+├── agentTest/                      # 测试和演示代码（非生产代码）
+│   ├── demo_reflection.py          # ReflectionAgent 使用示例
+│   ├── demo_simple.py              # SimpleAgent + ReActAgent 使用示例
+│   ├── demo_uml_tool.py            # UmlValidationTool 使用示例
+│   └── demo_dev_system.py          # 对话 Agent 完整开发流程演示
+│
 ├── core/                           # 核心层
 │   ├── exceptions.py               # 异常体系 (BaseAgentsException + 4 子类)
 │   ├── config.py                   # 配置管理 (Pydantic, 支持 from_env())
