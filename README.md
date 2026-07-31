@@ -8,7 +8,7 @@
 
 </div>
 
-支持类图、时序图、组件图，从设计到代码生成、测试构建、代码优化的全流程闭环。
+支持类图、时序图、组件图，从设计到代码生成、测试构建、代码优化的全流程闭环；并内置 **对话 Agent**、**知识图谱** 与 **BaseAgents Agent 框架**，让 AI 真正参与架构设计与开发。
 
 https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 架构图不该是画完就过期的文档——它们应该是驱动整个开发流程的**唯一真相源**。
 
 - **大规模一致性检验，机器比人可靠。** 50 个类、30 个组件、成千上万个引用关系，没人能手工逐一核对。我们的自动校验引擎可以——5 项跨图一致性检查，模糊匹配自动修复，在你发现之前就帮你修正。
-- **设计意图贯穿始终，不随开发偏移。** Stage 1 自动提取关键设计约束——哪些实体不可变、哪些关系必须保留、哪些架构决策是基石——注入到代码生成和测试阶段，相当于架构师盯着每一行代码落地。
+- **设计意图贯穿始终，不随开发偏移。** AI 自动提取关键设计约束——哪些实体不可变、哪些关系必须保留、哪些架构决策是基石——注入到代码生成和测试阶段，相当于架构师盯着每一行代码落地。
 - **从自然语言到可运行的代码，一条龙打通。** 产品经理用自然语言描述需求 → 自动生成全套 UML 架构 → 代码生成 + ReAct 验证 → 测试生成 + pytest 真跑 → 失败反馈回修源码。每一步都有 AI 看护。
 
 ## 功能特性
@@ -55,6 +55,18 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 | **单图设计** | 工具栏蓝色按钮 | 仅优化/生成当前打开的这张图（类图/时序图/组件图），弹窗收集需求 |
 | **全局优化** | 工具栏紫色按钮 | 需求驱动的综合设计——交叉校验所有图的一致性，**无需预设空白图**，从自然语言描述直接生成全部所需 UML 设计 |
 
+#### 对话 Agent（AI 开发助手 · 浮动对话面板）
+
+右下角机器人按钮打开可拖拽/缩放的对话面板，**一个 ReActAgent 承接全部消息**——闲聊直接文本回复，开发需求则自动编排工具完成完整开发流程。
+
+- **单 Agent 设计**：意图分类仅用于徽章/日志标注，不再分流；同一 Agent 依据 system prompt 自行决定是否调用工具，跨轮复用对话历史
+- **7 个开发工具 + 人工审核**：`optimize_uml`（UML 优化）→ `generate_code`（代码生成）→ `validate_code`（ReAct 验证）→ `generate_tests`（测试生成）→ `run_tests`（pytest 真跑）→ `fix_code`（失败修复）→ `write_files`（落盘），外加 `request_review` 关键节点人工审批
+- **知识图谱感知**：注册 4 个图谱查询工具（`kg_query`/`kg_expand`/`kg_trace`/`kg_diff`），并注入项目结构摘要，使 Agent 能按需主动查询项目结构而非被动接收全部内容
+- **流式进度**：每一步的工具调用、参数与返回实时推送到面板，开发过程全程可见
+- **中断控制**：随时停止 Agent 执行，优雅终止工具循环
+- **会话日志**：每次会话落盘 `temp/chat_log/` —— 人读 Markdown（`chat_*.md`）+ 机器可回放 JSONL trace（`trace_*.jsonl`，含 LLM 原始往返、工具调用、审核记录）
+- **消息持久化**：刷新页面不丢失对话历史
+
 #### 全局优化（需求驱动 · 无需预设空白图）
 - **从零生成**：用户只需输入需求描述（如"设计一个车机 OTA 升级系统，包含云端下发、TBox 转发、MDC 执行三层架构"），LLM 自动生成组件图、类图、时序图（支持同类型多张图）
 - **自动创建图标签页**：前端根据 LLM 返回的 `diagrams` 数组自动创建对应的图标签页，无需手动添加空白图
@@ -62,7 +74,6 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 - **`component_id` 语义自动识别**：LLM 自动建立组件-图的层级关联
 - **两种模式**：完整模式（一次性返回）+ 流式模式（动态绘图，边生成边显示，支持中途取消）
 - **多图 Diff 面板**：结果支持按图切换查看对比，可逐图接受或继续优化
-- 流水线 Stage 1 同样使用全局优化
 
 #### 跨图引用索引与自动校验（全局优化增强）
 - **预计算引用索引**：LLM 调用前，后端自动扫描所有图的类、生命线、组件、接口，生成结构化的跨图引用索引注入 prompt，让 LLM 有完整的上下文而非自行扫描 JSON
@@ -71,7 +82,7 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
   - 时序图消息方法名 → 类方法签名匹配
   - 图 `component_id` → 组件 ID 有效性
   - 组件接口 ↔ 类接口一致性
-  - **🆕 组件覆盖率**：检查每个组件是否有关联的类图和时序图（❌缺失 → warning / ⚠️缺少某一类 → info）
+  - **组件覆盖率**：检查每个组件是否有关联的类图和时序图（❌缺失 → warning / ⚠️缺少某一类 → info）
 - **自动修复**：明确的引用错误（如 `class_ref` 指向不存在的 ID）通过名称模糊匹配自动修正，标记为"已自动修复"
 - **Diff 面板分类展示**：一致性报告区分 ❌错误 / ⚠️警告 / 🟢已自动修复，一目了然
 - **跨图设计指南**：`uml_guide/cross_diagram_guide.md`，包含 `component_id`/`class_ref` 使用规范、三图一致性检查清单、典型设计模式、常见错误与修正示例
@@ -101,27 +112,49 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 - **代码生成**: 调用 LLM 生成 12 种编程语言代码（类图）
 - **已有代码适配**: 加载已有源码，LLM 根据 UML 设计适配/优化
 - **增量测试更新**: 加载已有测试，LLM 根据用例变更增量修改，ReAct 校验测试代码正确性
-- **ReAct 代码看护**: Stage 3 源码生成 + Stage 5 测试生成后均有 ReAct 引擎自动验证（原生 Function Calling）。验证工具链：`check_imports`（从磁盘读取 → 语法+导入检测）、`run_module`（从磁盘读取 → 运行时验证）、`run_bash`（白名单安全沙箱 → 环境查询/测试执行）、`analyze_error`（错误定位分析）、`finish_optimization`（退出信号）。配置变更上限（%）后自动拦截超大改动，要求 LLM 精简
+- **ReAct 代码看护**: 源码生成 + 测试生成后均有 ReAct 引擎自动验证（原生 Function Calling）。验证工具链：`check_imports`（从磁盘读取 → 语法+导入检测）、`run_module`（从磁盘读取 → 运行时验证）、`run_bash`（白名单安全沙箱 → 环境查询/测试执行）、`analyze_error`（错误定位分析）、`finish_optimization`（退出信号）。配置变更上限（%）后自动拦截超大改动，要求 LLM 精简
 - **LLM 调用可靠性**:
   - 空响应自愈：API 返回空 / 被截断时自动重试（降级 json_mode + 翻倍 max_tokens）
   - 响应 fallback 解析：JSON 解析失败时自动降级提取 markdown 代码块或包装原始输出
   - 工具参数 JSON 截断防护：Function Calling 参数异常时拒绝并反馈，避免静默崩溃
   - 代码文件先落盘再校验：生成代码写入 `generated/src/` 后 ReAct 验证，工具从磁盘读取无需搬运源码
-- **设计约束跨阶段传递**: Stage 1 优化完成后 LLM 自动提取关键设计约束（不可变实体、保留关系、设计理由），注入 Stage 3/5/6 的 system prompt，防止后续阶段偏离原始设计意图
+- **设计约束跨阶段传递**: 设计优化完成后 LLM 自动提取关键设计约束（不可变实体、保留关系、设计理由），注入后续代码生成与测试阶段的 system prompt，防止偏离原始设计意图
 - **逐文件测试生成**: 有大量用例时按模块拆分调用 LLM，每次只生成单个源文件对应的测试（含 UML 全局架构 + 依赖类 API 签名），避免单次调用 token 上限截断
 
-### 自动化流水线（6 阶段）
+### 知识图谱系统
 
-| 阶段 | 说明 |
-|------|------|
-| 1. 设计优化 | LLM 交叉校验三张图一致性并协同优化，自动提取 `design_constraints` 传递至后续阶段，结果推送 Diff 面板 |
-| 2. 开发确认 | 人工审查优化结果，接受/拒绝/跳过/追加优化 |
-| 3. 代码生成 + ReAct 验证 | 从 UML 生成代码 → 落盘 `generated/src/` → ReAct 5 轮校验（`check_imports` 编译检查 + `run_module` 导入检查 + `run_bash` 环境查询）。连续 2 轮无工具调用自动提前终止，API 超时 120s |
-| 4. 用例检视 | 加载 Excel 用例库，支持目录浏览选择、双击编辑、增删查改 |
-| 5. 测试生成 + ReAct 校验 | **逐文件生成**（按模块拆分，每次调用含 UML 全局架构 + 被测类源码 + 依赖类 API 签名），ReAct 3 轮校验语法和导入正确性 |
-| 6. 测试执行 + 代码优化 | 真实 pytest 执行，基于失败反馈优化源码（最多 3 轮，轮间记忆 + 回归回退 + 僵化退出） |
+**从"被动注入"到"主动探索"** — 为 AI 助手提供结构化的项目理解能力，让模型按需查询项目结构，而非预先塞满上下文窗口。
 
-**流水线配置项**: 选择已有源码/测试目录、设置代码变更上限（%），超过阈值自动要求 LLM 精简改动。每次运行自动生成详细 Markdown 报告至 `temp/pipeline_log/`，LLM 原始输出同步保存至同目录 `llm_raw_*.txt` 便于故障排查。UML 评审和用例审核记录统一归入 `temp/dev_review.txt`。
+- **三层 knowledge**：项目层（项目有哪些图）→ 实体层（图里有哪些类/方法/属性）→ 关系层（继承/组合/依赖等关联 + 设计-代码映射 + 测试覆盖）
+- **SQLite 图数据库 + FTS5 全文索引**：节点/边/全文三表，content-sync 模式触发器自动维护索引，无需额外数据库服务
+- **双源构建**：
+  - **设计层（声明式）**：项目保存时 daemon 线程自动从 UML JSON 幂等重建
+  - **代码层（探索式）**：Agent 首次调用 diff 时自动 AST 解析源码目录，`IMPLEMENTS` 边打通设计与代码
+- **4 个 Agent 工具**：`kg_query`（BM25 全文检索）、`kg_expand`（n-hop 邻域展开）、`kg_trace`（依赖路径追踪）、`kg_diff`（设计 vs 代码差异检测：缺失实现/多余代码/签名不匹配/无测试覆盖）
+- **集成点**：`file_service` 保存 Hook 自动重建 + 对话 Agent 工具注册，全程对用户透明
+
+### 跨会话记忆系统
+
+基于 **SQLite + FTS5 + jieba 分词** 的记忆模块（`memory_system/`），为 Agent 提供跨会话上下文感知能力：
+
+- **BM25 全文检索**：中文语义分词，召回精度显著优于字符级 bigram；jieba 缺失时自动回退
+- **自动记忆提取**：LLM 交互后自动提取 summary + original_text 双字段记忆
+- **生命周期管理**：强化（reinforce）/ 衰减（decay）/ 淘汰（prune）三阶段机制，LFU 淘汰保护 pinned + 热记忆
+- **WAL 模式**：支持并发读写，原子操作；内置 `migrate.py` 从旧版 JSON 存储迁移
+
+### BaseAgents — 轻量 Agent 框架
+
+项目内置一套**分层解耦、职责单一、接口统一**的 Agent 框架（`backend/app/agent_base/`）：
+
+| 层 | 模块 | 职责 |
+|----|------|------|
+| **core** | `agent` / `llm` / `message` / `config` / `exceptions` | 抽象基类 + 统一 LLM 接口 + 消息与配置 |
+| **agents** | `SimpleAgent` / `ReActAgent` / `ReflectionAgent` / `PlanAndSolveAgent` | 四种经典 Agent 范式 |
+| **tools** | `base` / `registry` / `chain` / `async_executor` | 万物皆为工具，注册/发现/执行/并行 |
+
+- **四种范式**：Simple（基础对话）、ReAct（思考→行动→观察循环）、Reflection（生成→审查→精炼，支持外部验证 Hook）、Plan-and-Solve（先规划后执行）
+- **工具系统**：Tool ABC + ToolRegistry + ToolChain + AsyncToolExecutor，支持原生 Function Calling
+- **开箱即用**：`BaseAgentsLLM.from_settings()` 一行对接项目现有配置；`optimize_project_v2` 以三阶段反射循环替代原有单次调用
 
 ### 安全
 - Bearer Token API 鉴权（可配置，本地开发自动跳过）
@@ -138,6 +171,9 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 | UI 组件库 | Ant Design 5 |
 | 代码编辑器 | Monaco Editor |
 | 后端框架 | FastAPI (Python) |
+| Agent 框架 | BaseAgents（Simple / ReAct / Reflection / Plan-and-Solve） |
+| 知识图谱 | SQLite 图数据库 + FTS5 全文索引 |
+| 记忆系统 | SQLite + FTS5 + jieba 分词 |
 | LLM | DeepSeek API（v4-pro + v4-flash 双模型） |
 | 测试框架 | pytest (真实子进程执行) |
 | 构建工具 | Vite |
@@ -153,6 +189,7 @@ uml_designer/
 │   │   │   │   ├── UMLEditor.tsx   # 类图编辑器
 │   │   │   │   ├── SeqEditor.tsx   # 时序图编辑器
 │   │   │   │   └── CompEditor.tsx  # 组件图编辑器
+│   │   │   ├── AgentChat/          # 对话 Agent 浮动面板 (WebSocket)
 │   │   │   ├── PropertyPanel/      # 属性编辑面板
 │   │   │   ├── Toolbar/            # 工具栏
 │   │   │   ├── CodeViewer/         # 代码查看器 (Monaco)
@@ -161,27 +198,31 @@ uml_designer/
 │   │   │   ├── PipelineConsole/    # 流水线控制台
 │   │   │   └── DiffViewer/         # Diff 对比视图
 │   │   ├── stores/                 # Zustand 状态管理
-│   │   ├── services/               # API 服务层
+│   │   ├── services/               # API 服务层 (含 agentChat WebSocket)
 │   │   ├── types/                  # TypeScript 类型 (uml, sequence, component, pipeline)
 │   │   └── App.tsx
 │   ├── package.json
 │   └── vite.config.ts
 ├── backend/                        # FastAPI 后端
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket 路由
+│   │   ├── api/                    # REST + WebSocket 路由 (含 /api/agent/ws/chat)
 │   │   ├── core/                   # 配置 / 鉴权 / 安全
 │   │   ├── models/                 # Pydantic 数据模型
-│   │   ├── services/               # LLM / 代码生成 / ReAct / 流水线
+│   │   ├── services/               # LLM / 代码生成 / ReAct / 流水线 / 对话 Agent / trace
+│   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
 │   │   └── main.py
 │   ├── requirements.txt
 │   └── .env
+├── knowledge_graph/                # 知识图谱系统 (SQLite + FTS5)
+├── memory_system/                  # 跨会话记忆系统 (SQLite + FTS5 + jieba)
+├── uml_guide/                      # UML 设计指南 (含跨图一致性规范)
 ├── generated/                      # 生成的代码输出 (src/ + test/)
 ├── temp/                           # 后端临时文件（不上库）
 │   ├── uml_files/                  # UML / umlproj 保存目录
+│   ├── chat_log/                   # 对话 Agent 会话日志 (chat_*.md + trace_*.jsonl)
 │   ├── pipeline_log/               # 流水线运行报告 + LLM 交互日志
 │   ├── testHub/                    # Excel 用例库默认目录
 │   └── dev_review.txt              # 统一评审记录
-├── memory/                         # 知识归档
 ├── .claude/                        # Claude Code 配置
 └── README.md
 ```
@@ -271,25 +312,35 @@ VITE_API_TOKEN=你的随机密钥
 - **组件右键菜单**: 右键组件节点 → 查看该组件关联的类图和时序图 → 一键新建或切换
 - **属性面板**: 选中组件后在右侧面板查看关联图列表，支持快捷新建
 
+### 对话 Agent（AI 开发助手）
+
+右下角机器人按钮打开对话面板——把它当作一位能动手写代码的 AI 同事。
+
+1. 点击右下角 **🤖 AI 开发助手** 按钮打开浮动对话面板（可拖拽、可放大）
+2. 直接输入需求，例如：*"设计一个用户认证系统，包含注册、登录、密码重置"* 或 *"创建一个计算器系统，支持加减乘除"*
+3. 闲聊会直接回复；开发需求会自动编排工具完成 UML 设计 → 代码生成 → 验证 → 测试 → 修复 → 落盘
+4. 面板实时展示每一步的工具调用、参数与返回，开发过程全程可见
+5. 关键节点可弹出**人工审核**（批准/拒绝/稍后），把 AI 开发关进护栏
+6. 随时点击 **停止** 中断 Agent 执行；对话历史刷新不丢失
+7. 已打开 `.umlproj` 工程并设置了源码/测试目录时，Agent 自动感知项目上下文，并可调用知识图谱查询项目结构
+
 ### 全局优化（需求驱动）
 
 **无需预设空白图**——只需描述需求，LLM 自动生成全部所需 UML 设计。
 
-1. 工具栏点击"全局优化"按钮（紫色图标）或通过流水线 Stage 1 启动
+1. 工具栏点击"全局优化"按钮（紫色图标）
 2. 输入需求描述，例如：*"设计一个车机 OTA 升级系统，包含云端、TBox、MDC 三层组件架构，支持 OTA 任务调度和鸡叫任务管理"*
 3. 勾选"动态绘图"可启用流式实时渲染（边生成边显示）
 4. 完整模式：LLM 返回后自动创建图标签页并填充内容，Diff 面板支持按图切换对比
 5. 流式模式：LLM 实时逐元素输出到画布，自动创建所需图类型
 6. LLM 可生成同类型多张图（如两个时序图分别描述不同业务场景）
 
-### 流水线
+### 代码生成与测试
 
-1. 右侧面板切换到"流水线"标签
-2. 可选选择已有源码/测试目录（留空则全新生成）
-3. 可选设置"变更上限"（已有项目限制 LLM 修改比例，0=不限）
-4. 点击"启动流水线"，输入全局优化需求（可留空跳过）
-5. 优化完成后在 Diff 面板切换类图/时序图/组件图标签查看对比，接受或继续优化
-6. Stage 3 可展开推理过程查看 ReAct 引擎逐轮验证详情
+1. 在类图上点击 **生成代码** → 选择语言（支持 12 种）
+2. 加载已有源码目录 → **已有代码适配**，LLM 根据 UML 设计优化代码
+3. 加载用例库（Excel）→ 生成测试 → 真实 pytest 执行 → 失败自动回修源码
+4. ReAct 引擎逐轮验证过程可在推理详情中展开查看
 
 ## 快捷键
 
