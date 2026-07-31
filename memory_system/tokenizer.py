@@ -1,88 +1,90 @@
 """
-中英文混合分词器
+中英文混合分词器 (jieba 优先, bigram 兜底)
 
 策略:
-  - 中文: 字符级 bigram (连续2字对), 保留单字作为 unigram 兜底
-  - 英文: 小写化 + 按非字母数字字符分割 + 最小长度过滤(>=2)
-  - 混合: 检测 Unicode 范围, 中文段用 bigram, 英文段用空格分词
-
-保留停用词 — BM25 的 IDF 会自然降低高频词权重。
-零外部依赖, 纯 Python 标准库实现。
+  - jieba 可用时: 使用 jieba.cut_for_search (搜索引擎模式, 召回优先)
+  - jieba 不可用时: 回退到字符级 bigram + 英文空格分词
+  - FTS5 输出: 空格连接的 token 串, 供 FTS5 默认 tokenizer 使用
 """
 
 import re
+import logging
 from typing import List
 
-# Unicode 范围常量
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# jieba 检测
+# ---------------------------------------------------------------------------
+
+_JIEBA_AVAILABLE = False
+_jieba = None
+
+try:
+    import jieba
+    _JIEBA_AVAILABLE = True
+    _jieba = jieba
+    # 首次使用时设置静默日志
+    jieba.setLogLevel(logging.WARNING)
+    logger.info("[tokenizer] jieba 分词已启用")
+except ImportError:
+    logger.info("[tokenizer] jieba 未安装, 使用 bigram 兜底分词")
+
+
+# ---------------------------------------------------------------------------
+# Bigram 兜底实现
+# ---------------------------------------------------------------------------
+
 CJK_RANGES = [
     (0x4E00, 0x9FFF),   # CJK Unified Ideographs
     (0x3400, 0x4DBF),   # CJK Unified Ideographs Extension A
     (0xF900, 0xFAFF),   # CJK Compatibility Ideographs
-    (0x2F800, 0x2FA1F), # CJK Compatibility Ideographs Supplement
 ]
 
-CHINESE_CHAR_PATTERN = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
+_CHINESE_CHAR_PATTERN = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 
 
 def _is_chinese(ch: str) -> bool:
-    """判断单个字符是否为 CJK 字符."""
-    return bool(CHINESE_CHAR_PATTERN.match(ch))
+    return bool(_CHINESE_CHAR_PATTERN.match(ch))
 
 
-def _tokenize_chinese(text: str) -> List[str]:
-    """
-    对中文文本做字符级 bigram 分词.
-
-    "用户偏好组合优于继承"
-    → ["用户", "户偏", "偏好", "好组", "组合", "合优", "优于", "于继", "继承"]
-    """
+def _tokenize_chinese_bigram(text: str) -> List[str]:
+    """字符级 bigram 分词 (jieba 不可用时的兜底)."""
     tokens: List[str] = []
     chars = [ch for ch in text if _is_chinese(ch)]
     n = len(chars)
     if n == 0:
         return tokens
-    # Bigram
     for i in range(n - 1):
         tokens.append(chars[i] + chars[i + 1])
-    # Unigram 兜底 (单字)
-    tokens.extend(chars)
+    tokens.extend(chars)  # unigram 兜底
     return tokens
 
 
 def _tokenize_english(text: str) -> List[str]:
-    """
-    对英文文本做空格 + 标点分割分词.
-
-    "UserRepository pattern"
-    → ["userrepository", "pattern"]
-    """
-    # 小写化, 按非字母数字分割
+    """英文空格 + 标点分割分词."""
     words = re.split(r"[^a-zA-Z0-9]+", text.lower())
-    # 过滤过短词 & 纯数字
     return [w for w in words if len(w) >= 2 and not w.isdigit()]
 
 
-def tokenize(text: str) -> List[str]:
-    """
-    混合分词: 自动检测中英文段, 分别处理.
-
-    Args:
-        text: 输入文本 (可包含中英文混合)
-
-    Returns:
-        分词结果列表 (去重但保持顺序)
-
-    Example:
-        >>> tokenize("UserRepository 用组合优于继承")
-        ['userrepository', '用组', '组合', '合优', '优于', '于继', '继承', '用', '组', '合', '优', '于', '继', '承']
-    """
+def _tokenize_bigram(text: str) -> List[str]:
+    """bigram 混合分词 (中英文分别处理)."""
     if not text or not text.strip():
         return []
 
     tokens: List[str] = []
+    segments = _split_segments(text)
+    for seg_text, is_cj in segments:
+        if is_cj:
+            tokens.extend(_tokenize_chinese_bigram(seg_text))
+        else:
+            tokens.extend(_tokenize_english(seg_text))
+    return _dedupe(tokens)
 
-    # 切分为中英文交替的片段
-    segments: List[tuple[str, bool]] = []  # [(text, is_chinese)]
+
+def _split_segments(text: str) -> List[tuple]:
+    """将文本切分为 [("中文段", True), ("英文段", False), ...]."""
+    segments: List[tuple] = []
     current_chars: List[str] = []
     current_is_chinese: bool | None = None
 
@@ -90,69 +92,109 @@ def tokenize(text: str) -> List[str]:
         is_cj = _is_chinese(ch)
         if current_is_chinese is None:
             current_is_chinese = is_cj
-
         if is_cj == current_is_chinese:
             current_chars.append(ch)
         else:
-            # 片段切换
             segments.append(("".join(current_chars), current_is_chinese))
             current_chars = [ch]
             current_is_chinese = is_cj
-
     if current_chars:
         segments.append(("".join(current_chars), current_is_chinese))
+    return segments
 
-    # 分别处理中文和英文段
-    for seg_text, is_cj in segments:
-        if is_cj:
-            tokens.extend(_tokenize_chinese(seg_text))
-        else:
-            tokens.extend(_tokenize_english(seg_text))
 
-    # 去重保持顺序
-    seen: set[str] = set()
-    unique: List[str] = []
+def _dedupe(tokens: List[str]) -> List[str]:
+    """去重保持顺序."""
+    seen: set = set()
+    result: List[str] = []
     for t in tokens:
         if t not in seen:
             seen.add(t)
-            unique.append(t)
+            result.append(t)
+    return result
 
-    return unique
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def tokenize(text: str) -> List[str]:
+    """
+    通用分词 (去重, 用于展示/分析).
+
+    Args:
+        text: 输入文本 (中英文混合)
+
+    Returns:
+        去重后的 token 列表
+
+    Example:
+        >>> tokenize("用户偏好使用组合模式")
+        ['用户', '偏好', '使用', '组合', '模式']   # jieba
+        ['用户', '户偏', '偏好', ...]              # bigram 兜底
+    """
+    if not text or not text.strip():
+        return []
+
+    if _JIEBA_AVAILABLE:
+        tokens = list(_jieba.cut_for_search(text))
+        # 过滤纯空格和单字符英文
+        tokens = [t.strip() for t in tokens if t.strip() and len(t.strip()) >= 1]
+        return _dedupe(tokens)
+    else:
+        return _tokenize_bigram(text)
 
 
 def tokenize_for_index(text: str) -> List[str]:
     """
-    用于 BM25 索引的分词 —— 包含重复 token (用于 TF 计算).
+    用于索引的分词 (保留重复, 用于 TF 计算).
 
-    与 tokenize() 的区别: 不去重, 保留原始频率信息.
+    Args:
+        text: 输入文本
+
+    Returns:
+        保留频率信息的 token 列表
     """
     if not text or not text.strip():
         return []
 
-    tokens: List[str] = []
+    if _JIEBA_AVAILABLE:
+        tokens = list(_jieba.cut_for_search(text))
+        return [t.strip() for t in tokens if t.strip()]
+    else:
+        # bigram fallback (no dedupe)
+        segments = _split_segments(text)
+        tokens: List[str] = []
+        for seg_text, is_cj in segments:
+            if is_cj:
+                tokens.extend(_tokenize_chinese_bigram(seg_text))
+            else:
+                tokens.extend(_tokenize_english(seg_text))
+        return tokens
 
-    segments: List[tuple[str, bool]] = []
-    current_chars: List[str] = []
-    current_is_chinese: bool | None = None
 
-    for ch in text:
-        is_cj = _is_chinese(ch)
-        if current_is_chinese is None:
-            current_is_chinese = is_cj
-        if is_cj == current_is_chinese:
-            current_chars.append(ch)
-        else:
-            segments.append(("".join(current_chars), current_is_chinese))
-            current_chars = [ch]
-            current_is_chinese = is_cj
+def tokenize_for_fts(text: str) -> str:
+    """
+    用于 FTS5 的查询/索引文本 —— 空格连接的 token 串.
 
-    if current_chars:
-        segments.append(("".join(current_chars), current_is_chinese))
+    FTS5 默认 tokenizer 按空格和标点分割, 我们预分好词后
+    用空格连接, 每个 jieba/bigram token 就成为 FTS5 的一个 term.
 
-    for seg_text, is_cj in segments:
-        if is_cj:
-            tokens.extend(_tokenize_chinese(seg_text))
-        else:
-            tokens.extend(_tokenize_english(seg_text))
+    Args:
+        text: 输入文本
 
-    return tokens
+    Returns:
+        空格连接的 token 串
+
+    Example:
+        >>> tokenize_for_fts("用户偏好组合模式")
+        "用户 偏好 组合 模式"     # jieba
+        "用户 户偏 偏好 ..."      # bigram
+    """
+    tokens = tokenize_for_index(text)
+    return " ".join(tokens)
+
+
+def is_jieba_available() -> bool:
+    """检测 jieba 是否可用."""
+    return _JIEBA_AVAILABLE
