@@ -18,6 +18,7 @@ import PipelineConsole from './components/PipelineConsole/PipelineConsole';
 import DiffViewer from './components/DiffViewer/DiffViewer';
 import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
 import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
+import AgentChat from './components/AgentChat/AgentChat';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { useDiagramStore } from './stores/diagramStore';
 import './App.css';
@@ -189,6 +190,9 @@ const App: React.FC = () => {
           </Tooltip>
         )}
       </Layout>
+
+      {/* Agent Chat dialog */}
+      <AgentChat />
     </Layout>
   );
 };
