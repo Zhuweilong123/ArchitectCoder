@@ -1,0 +1,168 @@
+"""
+UML 设计验证工具集
+
+将 ``code_generator.py`` 中的核心验证逻辑封装为 BaseAgents 框架的 Tool，
+使 Agent 可以在设计阶段自主调用验证，形成 "生成 → 验证 → 修复" 闭环。
+
+Usage::
+
+    from app.agent_base.tools.my_tools import UmlValidationTool
+
+    tool = UmlValidationTool()
+    result = tool.run({"diagrams_json": ..., "original_diagrams_json": ...})
+"""
+
+import json
+from typing import Dict, Any, List
+
+from app.agent_base.tools.base import Tool, ToolParameter
+
+
+# ── 直接引用 code_generator 中的核心函数，避免代码重复 ──
+from app.services.code_generator import (
+    _build_reference_index,
+    _validate_cross_references,
+    _apply_auto_fixes,
+)
+
+
+class UmlValidationTool(Tool):
+    """UML 跨图引用验证工具
+
+    验证 LLM 生成的 UML 设计，检查：
+    1. 生命线 class_ref → 类 ID 是否有效（模糊匹配自动修复）
+    2. 消息方法名 → 类方法签名是否匹配
+    3. 图 component_id → 组件 ID 是否有效
+    4. 组件接口 → 类图接口一致性
+    5. 组件图覆盖度 — 每个组件是否都有对应的类图/序列图
+
+    输入: LLM 输出的 diagrams JSON + 原始 diagrams JSON（建索引用）
+    输出: 结构化的验证报告
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="validate_uml_design",
+            description=(
+                "验证 UML 设计的一致性和完整性。检查跨图引用（生命线→类、消息→方法签名）、"
+                "组件接口一致性、组件图覆盖度。支持模糊匹配自动修复错误的 class_ref。"
+                "输入参数: diagrams_json(LLM生成的完整结果JSON字符串), "
+                "original_diagrams_json(项目中已有的原始图列表JSON字符串, 可为null)。"
+            ),
+        )
+
+    def get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="diagrams_json",
+                type="string",
+                description="LLM 生成的 UML 设计结果 JSON 字符串，包含 'diagrams' 数组",
+                required=True,
+            ),
+            ToolParameter(
+                name="original_diagrams_json",
+                type="string",
+                description="项目中已有的原始图列表 JSON 字符串（用于构建交叉引用索引），没有则传 null",
+                required=False,
+                default=None,
+            ),
+        ]
+
+    def run(self, parameters: Dict[str, Any]) -> str:
+        """执行 UML 设计验证
+
+        Args:
+            parameters: {"diagrams_json": str, "original_diagrams_json": str|null}
+
+        Returns:
+            格式化的验证报告字符串
+        """
+        diagrams_json = parameters.get("diagrams_json", "")
+        original_json = parameters.get("original_diagrams_json") or "null"
+
+        # ── 解析输入 ──
+        try:
+            result = json.loads(diagrams_json) if isinstance(diagrams_json, str) else diagrams_json
+        except json.JSONDecodeError as e:
+            return f"❌ 验证失败: diagrams_json 不是有效的 JSON — {e}"
+
+        try:
+            original_diagrams = json.loads(original_json) if isinstance(original_json, str) else original_json
+        except json.JSONDecodeError:
+            original_diagrams = None
+
+        if not isinstance(result, dict) or "diagrams" not in result:
+            return (
+                "❌ 验证失败: 输入缺少 'diagrams' 数组。"
+                "请确保输入格式为 {\"diagrams\": [...], ...}"
+            )
+
+        # ── 构建原始索引 ──
+        original_index = _build_reference_index(original_diagrams) if original_diagrams else {}
+
+        # ── 执行验证 ──
+        issues = _validate_cross_references(result, original_index)
+
+        # ── 应用自动修复 ──
+        if issues:
+            _apply_auto_fixes(result, issues)
+
+        # ── 格式化报告 ──
+        return self._format_report(issues, result, original_index)
+
+    def _format_report(self, issues: list, result: dict, original_index: dict) -> str:
+        """将验证结果格式化为可读报告"""
+        if not issues:
+            return "✅ UML 设计验证通过，未发现一致性问题。"
+
+        errors = [i for i in issues if i.get("severity") == "error"]
+        warnings = [i for i in issues if i.get("severity") == "warning"]
+        infos = [i for i in issues if i.get("severity") == "info"]
+        auto_fixed = [i for i in issues if i.get("auto_fixed")]
+
+        lines = [
+            f"## UML 设计验证报告",
+            f"",
+            f"**总计:** {len(issues)} 个问题 "
+            f"（{len(errors)} 错误, {len(warnings)} 警告, {len(infos)} 提示）",
+            f"**自动修复:** {len(auto_fixed)} 个",
+            f"",
+        ]
+
+        if auto_fixed:
+            lines.append("### 🔧 自动修复")
+            for i, item in enumerate(auto_fixed, 1):
+                lines.append(f"  {i}. {item['msg']}")
+            lines.append("")
+
+        if errors:
+            lines.append("### ❌ 错误（必须修复）")
+            for i, item in enumerate(errors, 1):
+                lines.append(f"  {i}. [{item.get('type', '')}] {item['msg']}")
+            lines.append("")
+
+        if warnings:
+            lines.append("### ⚠️ 警告（建议修复）")
+            for i, item in enumerate(warnings, 1):
+                lines.append(f"  {i}. [{item.get('type', '')}] {item['msg']}")
+            lines.append("")
+
+        if infos:
+            lines.append("### ℹ️ 提示")
+            for i, item in enumerate(infos, 1):
+                if item.get("auto_fixed"):
+                    continue  # 自动修复类已在上面展示
+                lines.append(f"  {i}. {item['msg']}")
+            lines.append("")
+
+        # 输出修复后的 diagrams JSON（仅当有自动修复时）
+        if auto_fixed:
+            fixed_json = json.dumps(result, indent=2, ensure_ascii=False)
+            lines.append("### 修复后的设计")
+            lines.append("```json")
+            lines.append(fixed_json[:3000])
+            if len(fixed_json) > 3000:
+                lines.append(f"... (共 {len(fixed_json)} 字符，已截断)")
+            lines.append("```")
+
+        return "\n".join(lines)
