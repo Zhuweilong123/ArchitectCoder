@@ -19,7 +19,6 @@ import {
 } from '../../types/pipeline';
 import {
   createPipelineWs, confirmStage, getPipeline, createPipeline,
-  browseDirectory, type BrowseResult,
 } from '../../services/api';
 import * as Diff from 'diff';
 import './PipelineConsole.css';
@@ -29,7 +28,6 @@ const PipelineConsole: React.FC = () => {
   const {
     selectedLanguage, activePipelineId, setActivePipelineId,
     pipelineSourceDir, pipelineTestDir,
-    setPipelineSourceDir, setPipelineTestDir,
   } = useUiStore();
 
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
@@ -42,46 +40,6 @@ const PipelineConsole: React.FC = () => {
   const [expandedReActStage, setExpandedReActStage] = useState<string | null>(null);
   const [maxChangeRatio, setMaxChangeRatio] = useState(50);  // 0=disabled, default 50%
   const wsRef = useRef<WebSocket | null>(null);
-
-  // ── Directory browsing state ─────────────────────────
-  const [sourceBrowseVisible, setSourceBrowseVisible] = useState(false);
-  const [testBrowseVisible, setTestBrowseVisible] = useState(false);
-  const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
-  const [browsePath, setBrowsePath] = useState('');
-  const [browseTarget, setBrowseTarget] = useState<'source' | 'test'>('source');
-
-  const openBrowse = useCallback(async (target: 'source' | 'test', path?: string) => {
-    setBrowseTarget(target);
-    try {
-      const result = await browseDirectory(path || '', false);  // false = unrestricted browsing
-      setBrowseResult(result);
-      setBrowsePath(result.current);
-      if (target === 'source') setSourceBrowseVisible(true);
-      else setTestBrowseVisible(true);
-    } catch {
-      message.error('加载目录失败');
-    }
-  }, []);
-
-  const handleBrowseDir = useCallback((dirPath: string) => {
-    openBrowse(browseTarget, dirPath);
-  }, [openBrowse, browseTarget]);
-
-  const handleBrowseParent = useCallback(() => {
-    if (browseResult?.parent) {
-      openBrowse(browseTarget, browseResult.parent);
-    }
-  }, [openBrowse, browseTarget, browseResult]);
-
-  const handleSelectDir = useCallback(() => {
-    if (browseTarget === 'source') {
-      setPipelineSourceDir(browsePath);
-      setSourceBrowseVisible(false);
-    } else {
-      setPipelineTestDir(browsePath);
-      setTestBrowseVisible(false);
-    }
-  }, [browseTarget, browsePath, setPipelineSourceDir, setPipelineTestDir]);
 
   // ── Continue with pipeline logic ─────────────────────
 
@@ -566,50 +524,23 @@ const PipelineConsole: React.FC = () => {
         </>
       )}
 
-      {/* ── Directory selection (always visible, persisted to localStorage) ── */}
+      {/* ── Directory selection (global — managed via top Toolbar) ── */}
       {!running && (
-        <div style={{ marginBottom: 12, textAlign: 'left', padding: '0 4px' }}>
-          <div style={{ marginBottom: 6 }}>
-            <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 2 }}>
-              源代码目录（可选，留空则从 UML 生成）：
-            </label>
-            <Input.Group compact>
-              <Input
-                size="small"
-                value={pipelineSourceDir}
-                placeholder="选择已有源码目录..."
-                readOnly
-                style={{ width: 'calc(100% - 64px)' }}
-              />
-              <Button size="small" icon={<FolderOpenOutlined />} onClick={() => openBrowse('source')} />
-              {pipelineSourceDir && (
-                <Button size="small" icon={<CloseOutlined />} onClick={() => setPipelineSourceDir('')} />
-              )}
-            </Input.Group>
-            {pipelineSourceDir && (
-              <Tag color="blue" style={{ marginTop: 2, fontSize: 11 }}>{pipelineSourceDir}</Tag>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 2 }}>
-              测试代码目录（可选，留空则从用例生成）：
-            </label>
-            <Input.Group compact>
-              <Input
-                size="small"
-                value={pipelineTestDir}
-                placeholder="选择已有测试目录..."
-                readOnly
-                style={{ width: 'calc(100% - 64px)' }}
-              />
-              <Button size="small" icon={<FolderOpenOutlined />} onClick={() => openBrowse('test')} />
-              {pipelineTestDir && (
-                <Button size="small" icon={<CloseOutlined />} onClick={() => setPipelineTestDir('')} />
-              )}
-            </Input.Group>
-            {pipelineTestDir && (
-              <Tag color="green" style={{ marginTop: 2, fontSize: 11 }}>{pipelineTestDir}</Tag>
-            )}
+        <div style={{ marginBottom: 12, textAlign: 'left', padding: '0 4px', fontSize: 12, color: '#888' }}>
+          {pipelineSourceDir ? (
+            <div style={{ marginBottom: 4 }}>
+              📁 源码目录: <Tag color="blue" style={{ fontSize: 11 }}>{pipelineSourceDir}</Tag>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 4 }}>📁 源码目录: 未设置（将从 UML 全新生成代码）</div>
+          )}
+          {pipelineTestDir ? (
+            <div>🧪 测试目录: <Tag color="green" style={{ fontSize: 11 }}>{pipelineTestDir}</Tag></div>
+          ) : (
+            <div>🧪 测试目录: 未设置（将自动生成 pytest 测试）</div>
+          )}
+          <div style={{ marginTop: 4 }}>
+            💡 在顶部工具栏设置项目目录，全局生效
           </div>
         </div>
       )}
@@ -624,58 +555,6 @@ const PipelineConsole: React.FC = () => {
           </ol>
         </div>
       )}
-
-      {/* ── Directory Browse Modal ─────────────────── */}
-      <Modal
-        title={browseTarget === 'source' ? '选择源代码目录' : '选择测试代码目录'}
-        open={sourceBrowseVisible || testBrowseVisible}
-        onCancel={() => {
-          setSourceBrowseVisible(false);
-          setTestBrowseVisible(false);
-        }}
-        footer={[
-          <Button key="cancel" onClick={() => {
-            setSourceBrowseVisible(false);
-            setTestBrowseVisible(false);
-          }}>
-            取消
-          </Button>,
-          <Button key="select" type="primary" onClick={handleSelectDir}>
-            选择此目录
-          </Button>,
-        ]}
-        width={550}
-      >
-        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Button size="small" onClick={handleBrowseParent}
-            disabled={!browseResult?.parent}>
-            上级目录
-          </Button>
-          <span style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>
-            {browseResult?.current || ''}
-          </span>
-        </div>
-        <div style={{ maxHeight: 320, overflow: 'auto' }}>
-          {browseResult?.dirs?.map((dir) => (
-            <div
-              key={dir.path}
-              onClick={() => handleBrowseDir(dir.path)}
-              style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 8 }}
-            >
-              <FolderOpenOutlined style={{ color: '#faad14' }} />
-              <span style={{ fontSize: 13 }}>{dir.name}</span>
-            </div>
-          ))}
-          {(!browseResult?.dirs || browseResult.dirs.length === 0) && (
-            <div style={{ color: '#999', fontSize: 12, padding: 8 }}>此目录下无子目录</div>
-          )}
-        </div>
-        {browseResult?.files && browseResult.files.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 11, color: '#888' }}>
-            此目录包含 {browseResult.files.length} 个文件（.uml 等）
-          </div>
-        )}
-      </Modal>
 
       {/* ── Optimization Instructions Modal ──────────── */}
       <Modal

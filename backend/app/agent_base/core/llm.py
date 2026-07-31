@@ -260,12 +260,15 @@ class BaseAgentsLLM:
     # ── 异步调用 ───────────────────────────────────────────
 
     async def ainvoke(self, messages: list[dict], **kwargs) -> str:
-        """异步调用 LLM，返回文本响应"""
+        """异步调用 LLM，返回文本响应
+
+        支持 ``model=`` 参数覆盖实例默认模型。
+        """
         if self._async_client is None:
             raise RuntimeError("BaseAgentsLLM async client未初始化，请配置有效的 api_key。")
 
         call_kwargs = dict(
-            model=self.model,
+            model=kwargs.pop("model", self.model),
             messages=messages,
             temperature=kwargs.get("temperature", self.temperature),
         )

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 from app.models.uml import UmlDiagram, Project, create_default_project
 from app.core.config import get_settings
@@ -152,6 +153,7 @@ def save_project(project: Project, filepath: str | None = None) -> str:
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(project.model_dump(), f, indent=2, ensure_ascii=False)
     logger.info(f"[Project] Saved project '{project.name}' ({len(project.diagrams)} diagrams) → {filepath}")
+    _rebuild_kg_async(project, filepath)
     return filepath
 
 
@@ -198,3 +200,46 @@ def list_projects() -> list[dict]:
                 })
     logger.debug(f"[Project] Listed {len(files)} .umlproj projects")
     return sorted(files, key=lambda f: f["modified"], reverse=True)
+
+
+# ── Knowledge Graph rebuild hook ──────────────────────────
+
+def _rebuild_kg_async(project: Project, filepath: str) -> None:
+    """在后台线程重建知识图谱，不阻塞 HTTP 保存操作.
+
+    每次 save_project() 成功后自动触发。
+    设计层节点会全量重建 (先删旧再建新)。
+
+    因 builder 使用独立 DB 连接 + WAL 模式 + executemany 批量写入，
+    并发保存同一项目时后者覆盖前者 (upsert 语义), 不会丢数据。
+    """
+    project_id = os.path.splitext(os.path.basename(filepath))[0]
+
+    def _run():
+        try:
+            from knowledge_graph.builder import GraphBuilder
+
+            # KG DB 路径: 放在 uml_dir 同级 data/ 目录
+            kg_db_path = os.path.join(
+                os.path.dirname(settings.uml_dir),
+                "data", "knowledge_graph.db",
+            )
+            kg_db_path = os.path.normpath(os.path.abspath(kg_db_path))
+
+            builder = GraphBuilder(db_path=kg_db_path)
+            try:
+                # 先清旧, 再建新 (使用同一连接, 确保原子性)
+                _db = builder.db
+                _db.delete_nodes_by_project_source(project_id, "design")
+                stats = builder.build_from_project(project, project_id)
+                logger.info(
+                    f"[KG] Declarative rebuild for '{project_id}': "
+                    f"+{stats.nodes_added} nodes, +{stats.edges_added} edges, "
+                    f"-{stats.nodes_removed} old nodes, {stats.elapsed_ms:.0f}ms"
+                )
+            finally:
+                builder.close()
+        except Exception:
+            logger.exception(f"[KG] Rebuild failed for project '{project_id}'")
+
+    threading.Thread(target=_run, daemon=True, name=f"kg-rebuild-{project_id}").start()

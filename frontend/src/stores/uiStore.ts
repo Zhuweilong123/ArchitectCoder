@@ -55,6 +55,10 @@ interface UiState {
   codeGenLoading: boolean;
   currentBrowsePath: string;
 
+  // Agent Chat dialog
+  agentChatVisible: boolean;
+  agentChatExpanded: boolean;
+
   // Actions
   toggleRightPanel: () => void;
   setRightPanelVisible: (visible: boolean) => void;
@@ -93,6 +97,10 @@ interface UiState {
   setExportDialogVisible: (visible: boolean) => void;
   setCodeGenLoading: (loading: boolean) => void;
   setCurrentBrowsePath: (path: string) => void;
+
+  // Agent Chat
+  setAgentChatVisible: (visible: boolean) => void;
+  setAgentChatExpanded: (expanded: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -119,12 +127,14 @@ export const useUiStore = create<UiState>((set, get) => ({
   showTestCaseInCanvas: false,
   testCaseData: '',
   activePipelineId: null,
-  pipelineSourceDir: localStorage.getItem('pipelineSourceDir') || '',
-  pipelineTestDir: localStorage.getItem('pipelineTestDir') || '',
+  pipelineSourceDir: localStorage.getItem('pipelineSourceDir') || 'D:\\AI_tools\\uml_designer\\generated\\source',
+  pipelineTestDir: localStorage.getItem('pipelineTestDir') || 'D:\\AI_tools\\uml_designer\\generated\\test',
   fileDialogVisible: false,
   exportDialogVisible: false,
   codeGenLoading: false,
   currentBrowsePath: '',
+  agentChatVisible: false,
+  agentChatExpanded: false,
 
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelVisible: (visible: boolean) => set({ rightPanelVisible: visible }),
@@ -212,4 +222,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   setExportDialogVisible: (visible) => set({ exportDialogVisible: visible }),
   setCodeGenLoading: (loading) => set({ codeGenLoading: loading }),
   setCurrentBrowsePath: (path) => set({ currentBrowsePath: path }),
+
+  setAgentChatVisible: (visible) => set({ agentChatVisible: visible }),
+  setAgentChatExpanded: (expanded) => set({ agentChatExpanded: expanded }),
 }));

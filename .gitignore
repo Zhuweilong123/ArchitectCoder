@@ -34,3 +34,8 @@ backend/.env
 /uml_designer/
 /temp/
 
+# Runtime artifacts (regenerated, never commit)
+*.db
+*.tsbuildinfo
+/data/
+

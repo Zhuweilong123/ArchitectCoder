@@ -2,7 +2,7 @@
 集成示例：使用 BaseAgents ReflectionAgent 接入 DeepSeek 模型
 
 运行方式:
-    cd backend && python app/agent_base/demo_reflection.py
+    cd backend && python app/agent_base/agentTest/demo_reflection.py
 """
 
 import sys
@@ -11,7 +11,7 @@ import os
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from app.agent_base import BaseAgentsLLM, ReflectionAgent, Config
 

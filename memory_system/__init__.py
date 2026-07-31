@@ -1,17 +1,24 @@
 """
-Memory System — 基于 BM25 稀疏向量的 LLM 跨会话记忆系统
+Memory System — 基于 SQLite + FTS5 + jieba 的 Agent 记忆系统
 
 核心组件:
-  - MemoryManager: 顶层 API (remember / recall / inject / forget)
-  - BM25Index:     BM25 检索索引
-  - MemoryStore:   JSON 文件持久化
-  - MemoryEntry:   记忆数据模型
-  - tokenize():    中英混合分词
+  - MemoryManager:   顶层 API (remember / recall / inject / forget / reinforce)
+  - MemoryDatabase:  SQLite + FTS5 存储层
+  - LifecycleManager: 记忆生命周期 (强化 / 衰减 / 淘汰)
+  - MemoryEntry:     记忆数据模型
+  - MemoryConfig:    全局配置
+  - tokenize / tokenize_for_fts: jieba 分词工具
+  - EmbeddingService: 嵌入服务协议 (预留)
+
+检索模式:
+  - BM25 (FTS5 + jieba):  当前可用
+  - Vector (Embedding):   接口预留, 后续接入
+  - Hybrid (RRF 融合):    接口预留, 后续接入
 
 快速使用:
-    from memory_system import MemoryManager, MemoryEntry, MemoryType, RecallResult
+    from memory_system import MemoryManager, MemoryConfig
 
-    manager = MemoryManager(storage_dir="./my_memories")
+    manager = MemoryManager(db_path="./memories.db")
 
     # LLM 调用后记录
     entries = await manager.remember(
@@ -28,23 +35,44 @@ Memory System — 基于 BM25 稀疏向量的 LLM 跨会话记忆系统
 
     # 注入 system prompt
     prompt = manager.inject_memories(system_prompt, results)
+
+    # 强化 (记忆被使用后)
+    manager.reinforce(results)
+
+    # 定期维护
+    manager.maintenance("blog_app")
 """
 
 from .manager import MemoryManager
-from .models import MemoryEntry, MemoryType, RecallResult
-from .bm25 import BM25Index
-from .store import MemoryStore
-from .tokenizer import tokenize, tokenize_for_index
+from .models import (
+    MemoryEntry, MemoryType, MemoryConfig,
+    RecallResult, RetrieveMode,
+)
+from .database import MemoryDatabase
+from .lifecycle import LifecycleManager
+from .tokenizer import tokenize, tokenize_for_index, tokenize_for_fts, is_jieba_available
+from .embedding import EmbeddingService, cosine_similarity, normalize_vector
 
 __all__ = [
+    # Core
     "MemoryManager",
+    "MemoryDatabase",
+    "LifecycleManager",
+    # Models
     "MemoryEntry",
     "MemoryType",
+    "MemoryConfig",
     "RecallResult",
-    "BM25Index",
-    "MemoryStore",
+    "RetrieveMode",
+    # Tokenizer
     "tokenize",
     "tokenize_for_index",
+    "tokenize_for_fts",
+    "is_jieba_available",
+    # Embedding (reserved)
+    "EmbeddingService",
+    "cosine_similarity",
+    "normalize_vector",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

@@ -2,9 +2,9 @@
  * Top Toolbar – file operations, LLM actions, view controls.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Button, Select, Tooltip, Dropdown, Modal, List, message,
+  Button, Select, Tooltip, Dropdown, Modal, List, message, Tag,
   Divider, Input, Form, Slider, Checkbox,
 } from 'antd';
 import {
@@ -15,7 +15,7 @@ import {
   AppstoreOutlined, EyeInvisibleOutlined,
   PlusSquareOutlined, DownOutlined, TableOutlined,
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
-  BlockOutlined,
+  BlockOutlined, MessageOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -63,6 +63,9 @@ const Toolbar: React.FC = () => {
     setOptimizationResult,
     setActivePipelineId, fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
+    agentChatVisible, setAgentChatVisible,
+    pipelineSourceDir, pipelineTestDir,
+    setPipelineSourceDir, setPipelineTestDir,
   } = useUiStore();
 
   const [fileList, setFileList] = useState<Array<{
@@ -449,6 +452,50 @@ const Toolbar: React.FC = () => {
   const browseUnsafe = useRef(false);  // track whether we're browsing outside project
   const currentFileSafe = useRef(true);  // safe flag matching the currently opened file
 
+  // ── Project directory selection (for AI Agent & Pipeline) ──
+  const [projDirBrowseVisible, setProjDirBrowseVisible] = useState(false);
+  const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'source' | 'test'>('source');
+  const [projDirBrowseResult, setProjDirBrowseResult] = useState<BrowseResult | null>(null);
+  const [projDirBrowsePath, setProjDirBrowsePath] = useState('');
+
+  const handleBrowseDirFor = useCallback(async (target: 'source' | 'test', path?: string) => {
+    setProjDirBrowseTarget(target);
+    try {
+      // 默认从当前设置的值或默认路径开始浏览
+      const initialPath = path || (
+        target === 'source'
+          ? (pipelineSourceDir || 'D:/AI_tools/uml_designer/generated/source')
+          : (pipelineTestDir || 'D:/AI_tools/uml_designer/generated/test')
+      );
+      const result = await browseDirectory(initialPath, false);
+      setProjDirBrowseResult(result);
+      setProjDirBrowsePath(result.current);
+      setProjDirBrowseVisible(true);
+    } catch {
+      message.error('加载目录失败');
+    }
+  }, []);
+
+  const handleProjDirSelect = useCallback((dirPath: string) => {
+    if (projDirBrowseTarget === 'source') {
+      setPipelineSourceDir(dirPath);
+    } else {
+      setPipelineTestDir(dirPath);
+    }
+    setProjDirBrowseVisible(false);
+    message.success(`已设置${projDirBrowseTarget === 'source' ? '源码' : '测试'}目录: ${dirPath}`);
+  }, [projDirBrowseTarget, setPipelineSourceDir, setPipelineTestDir]);
+
+  const handleProjDirNav = useCallback((dirPath: string) => {
+    handleBrowseDirFor(projDirBrowseTarget, dirPath);
+  }, [handleBrowseDirFor, projDirBrowseTarget]);
+
+  const handleProjDirParent = useCallback(() => {
+    if (projDirBrowseResult?.parent) {
+      handleBrowseDirFor(projDirBrowseTarget, projDirBrowseResult.parent);
+    }
+  }, [handleBrowseDirFor, projDirBrowseTarget, projDirBrowseResult]);
+
   const handleOpen = async (path?: string, forceUnsafe = false) => {
     setFileDialogVisible(true);
     try {
@@ -788,7 +835,43 @@ const Toolbar: React.FC = () => {
       <div className="toolbar-right" />
       </div>
 
-      {/* Row 2: LLM + Export + View */}
+      {/* Row 2: Project directories (global — shared by Agent, Pipeline, etc.) */}
+      <div className="toolbar-row" style={{ padding: '2px 0' }}>
+        <div className="toolbar-left" style={{ gap: 10, flexWrap: 'wrap', width: '100%' }}>
+          <Tooltip title="选择已有项目源码目录后，AI 助手和流水线将基于已有代码进行增量开发。留空则从 UML 设计全新生成代码。">
+            <Tag
+              icon={<FolderOpenOutlined />}
+              color={pipelineSourceDir ? 'blue' : 'default'}
+              style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              onClick={() => handleBrowseDirFor('source')}
+            >
+              源码目录{pipelineSourceDir ? `: ${pipelineSourceDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+            </Tag>
+          </Tooltip>
+          {pipelineSourceDir && (
+            <Tooltip title="清除源码目录">
+              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setPipelineSourceDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
+            </Tooltip>
+          )}
+          <Tooltip title="选择已有测试代码目录后，AI 助手和流水线将运行已有测试而非从零生成。留空则自动生成 pytest 测试。">
+            <Tag
+              icon={<FolderOpenOutlined />}
+              color={pipelineTestDir ? 'green' : 'default'}
+              style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              onClick={() => handleBrowseDirFor('test')}
+            >
+              测试目录{pipelineTestDir ? `: ${pipelineTestDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+            </Tag>
+          </Tooltip>
+          {pipelineTestDir && (
+            <Tooltip title="清除测试目录">
+              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setPipelineTestDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
+            </Tooltip>
+          )}
+        </div>
+      </div>
+
+      {/* Row 3: LLM + Export + View */}
       <div className="toolbar-row">
       <div className="toolbar-left">
         {/* LLM */}
@@ -817,6 +900,16 @@ const Toolbar: React.FC = () => {
         <Tooltip title="启动自动化流水线">
           <Button icon={<PlayCircleOutlined />} onClick={handleStartPipeline}>
             流水线
+          </Button>
+        </Tooltip>
+        <Tooltip title="AI 开发助手（对话驱动开发）">
+          <Button
+            icon={<MessageOutlined />}
+            onClick={() => setAgentChatVisible(true)}
+            type={agentChatVisible ? 'primary' : 'default'}
+            style={agentChatVisible ? { color: '#fff', borderColor: '#1677ff', background: '#1677ff' } : {}}
+          >
+            AI 助手
           </Button>
         </Tooltip>
 
@@ -1152,6 +1245,74 @@ const Toolbar: React.FC = () => {
           rows={6}
           autoFocus
         />
+      </Modal>
+
+      {/* ── Project Directory Browse Modal ─────────── */}
+      <Modal
+        title={`选择${projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
+        open={projDirBrowseVisible}
+        onCancel={() => setProjDirBrowseVisible(false)}
+        footer={null}
+        width={600}
+      >
+        <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Button size="small" onClick={handleProjDirParent}
+            disabled={!projDirBrowseResult?.parent}>
+            上级目录
+          </Button>
+          <span style={{ fontSize: 12, color: '#666', wordBreak: 'break-all', flex: 1 }}>
+            {projDirBrowseResult?.current || ''}
+          </span>
+        </div>
+        <div style={{ marginBottom: 8, display: 'flex', gap: 8 }}>
+          <Input
+            size="small"
+            value={projDirBrowsePath}
+            onChange={(e) => setProjDirBrowsePath(e.target.value)}
+            onPressEnter={() => handleProjDirNav(projDirBrowsePath)}
+            placeholder="输入目录路径，按回车跳转..."
+            style={{ flex: 1 }}
+            allowClear
+          />
+          <Button size="small" type="primary" onClick={() => handleProjDirNav(projDirBrowsePath)}>
+            跳转
+          </Button>
+        </div>
+        <div style={{ marginBottom: 10, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {QUICK_PATHS.map((qp) => (
+            <Button key={qp.path} size="small" onClick={() => handleProjDirNav(qp.path)} style={{ fontSize: 11 }}>
+              {qp.label}
+            </Button>
+          ))}
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<FolderOpenOutlined />}
+            onClick={() => handleProjDirSelect(projDirBrowseResult?.current || projDirBrowsePath)}
+          >
+            选择当前目录
+          </Button>
+        </div>
+        <List
+          size="small"
+          style={{ maxHeight: 300, overflow: 'auto' }}
+          locale={{ emptyText: '暂无子目录' }}
+        >
+          {projDirBrowseResult?.dirs?.map((dir) => (
+            <List.Item
+              key={dir.path}
+              onClick={() => handleProjDirSelect(dir.path)}
+              style={{ cursor: 'pointer' }}
+            >
+              <List.Item.Meta
+                avatar={<FolderOpenOutlined style={{ fontSize: 16, color: '#faad14' }} />}
+                title={<span style={{ fontSize: 13 }}>{dir.name}</span>}
+              />
+            </List.Item>
+          ))}
+        </List>
       </Modal>
 
     </div>
