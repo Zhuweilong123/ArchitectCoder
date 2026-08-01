@@ -45,6 +45,7 @@ const AgentChat: React.FC = () => {
   const {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
+    agentChatPosition, setAgentChatPosition,
     pipelineSourceDir, pipelineTestDir,
   } = useUiStore();
 
@@ -66,6 +67,39 @@ const AgentChat: React.FC = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  // ── 拖拽（header 拖动整个面板） ──
+  const handleHeaderMouseDown = useCallback((e: React.MouseEvent) => {
+    // 点击 header 右侧按钮（放大/关闭）时不触发拖拽
+    if ((e.target as HTMLElement).closest('.agent-chat-header-right')) return;
+    if (e.button !== 0) return;
+
+    const panel = (e.currentTarget as HTMLElement).closest('.agent-chat-panel');
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+
+    dragOffsetRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    setDragging(true);
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      if (!dragOffsetRef.current) return;
+      const x = Math.max(0, Math.min(window.innerWidth - rect.width, moveEvent.clientX - dragOffsetRef.current.dx));
+      const y = Math.max(0, Math.min(window.innerHeight - 40, moveEvent.clientY - dragOffsetRef.current.dy));
+      setAgentChatPosition({ x, y });
+    };
+    const handleUp = () => {
+      dragOffsetRef.current = null;
+      setDragging(false);
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+    };
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+  }, [setAgentChatPosition]);
 
   // ── 持久化消息（流式中跳过） ──
   useEffect(() => {
@@ -290,8 +324,19 @@ const AgentChat: React.FC = () => {
   }, [busy, handleStop, setAgentChatVisible]);
 
   const toggleExpand = useCallback(() => {
-    setAgentChatExpanded(!agentChatExpanded);
-  }, [agentChatExpanded, setAgentChatExpanded]);
+    const expanding = !agentChatExpanded;
+    const curW = panelRef.current?.offsetWidth || (agentChatExpanded ? 520 : 420);
+    const nextW = expanding ? 520 : 420;
+    const nextH = expanding ? window.innerHeight - 60 : 520;
+
+    // 保持右边缘对齐：展开时若右边缘超出可视区则左移
+    const rightEdge = Math.min(agentChatPosition.x + curW, window.innerWidth - 8);
+    const x = Math.max(0, rightEdge - nextW);
+    const y = Math.max(0, Math.min(agentChatPosition.y, window.innerHeight - nextH));
+
+    setAgentChatExpanded(expanding);
+    setAgentChatPosition({ x, y });
+  }, [agentChatExpanded, setAgentChatPosition, agentChatPosition]);
 
   // ── 渲染工具调用步骤 ──
   const renderSteps = (steps: AgentProgressEvent[]) => {
@@ -355,9 +400,16 @@ const AgentChat: React.FC = () => {
 
       {/* 对话面板 */}
       {agentChatVisible && (
-        <div className={`agent-chat-panel ${agentChatExpanded ? 'expanded' : 'collapsed'}`}>
+        <div
+          ref={panelRef}
+          className={`agent-chat-panel ${agentChatExpanded ? 'expanded' : 'collapsed'}`}
+          style={{ left: agentChatPosition.x, top: agentChatPosition.y }}
+        >
           {/* Header */}
-          <div className="agent-chat-header">
+          <div
+            className={`agent-chat-header${dragging ? ' dragging' : ''}`}
+            onMouseDown={handleHeaderMouseDown}
+          >
             <div className="agent-chat-header-left">
               <RobotOutlined style={{ marginRight: 8 }} />
               <span>AI 开发助手</span>
