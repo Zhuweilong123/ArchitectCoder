@@ -59,12 +59,14 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
 右下角机器人按钮打开可拖拽/缩放的对话面板，**一个 ReActAgent 承接全部消息**——闲聊直接文本回复，开发需求则自动编排工具完成完整开发流程。
 
-- **单 Agent 设计**：同一 Agent 依据 system prompt 自行决定是否调用工具，闲聊直接回复，开发需求自动编排工具；跨轮复用对话历史
-- **7 个开发工具 + 人工审核**：`optimize_uml`（UML 优化）→ `generate_code`（代码生成）→ `validate_code`（ReAct 验证）→ `generate_tests`（测试生成）→ `run_tests`（pytest 真跑）→ `fix_code`（失败修复）→ `write_files`（落盘），外加 `request_review` 关键节点人工审批
-- **知识图谱感知**：注册 4 个图谱查询工具（`kg_query`/`kg_expand`/`kg_trace`/`kg_diff`），并注入项目结构摘要，使 Agent 能按需主动查询项目结构而非被动接收全部内容
+- **单 Agent 设计**：同一 Agent 依据精简的 system prompt（纯英文行为准则）自行决定是否调用工具；跨轮复用对话历史
+- **行为准则**：直接给答案不重复问题、涉及代码先看已有实现、用户未提明确任务（仅问候/感谢/评论/聊天）时简短回复不调工具——避免闲聊被过度工具化
+- **13 个工具 + 人工审核**：开发工具 `optimize_uml`→`generate_code`→`validate_code`→`generate_tests`→`run_tests`→`fix_code`→`write_files`，知识图谱 `kg_query`/`kg_expand`/`kg_trace`/`kg_diff`，项目信息 `project_info`、文件读取 `read_file`，外加 `request_review` 关键节点人工审批
+- **知识图谱主动探索**：`kg_query` 支持按需构建（空库自动从设计文件重建）、空 pattern 枚举全部节点、驼峰类名模糊匹配；`kg_expand`/`kg_query` 序列化结果带 `source_file` 绝对路径，实现"**KG 定位元素 → 找到文件 → read_file 读整文件**"的闭环
+- **项目信息按需获取**：`project_info` 返回设计文件/源码/测试目录文件清单（递归含子包），`read_file` 读取文件完整内容（限定项目目录内）——不再每轮注入 prompt，首轮 token 更省、信息永远新鲜
 - **流式进度**：每一步的工具调用、参数与返回实时推送到面板，开发过程全程可见
 - **中断控制**：随时停止 Agent 执行，优雅终止工具循环
-- **会话日志**：每次会话落盘 `temp/chat_log/` —— 人读 Markdown（`chat_*.md`）+ 机器可回放 JSONL trace（`trace_*.jsonl`，含 LLM 原始往返、工具调用、审核记录）
+- **会话日志**：每次会话落盘 `temp/chat_log/` —— 人读 Markdown（`chat_*.md`）+ 机器可回放 JSONL trace（`trace_*.jsonl`，含 LLM 原始往返、工具调用、审核记录；system prompt 置顶、tools 沉底、`system_prompt` 字段与 `messages` 去重）
 - **消息持久化**：刷新页面不丢失对话历史
 
 #### 全局优化（需求驱动 · 无需预设空白图）
@@ -129,8 +131,9 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 - **SQLite 图数据库 + FTS5 全文索引**：节点/边/全文三表，content-sync 模式触发器自动维护索引，无需额外数据库服务
 - **双源构建**：
   - **设计层（声明式）**：项目保存时 daemon 线程自动从 UML JSON 幂等重建
-  - **代码层（探索式）**：Agent 首次调用 diff 时自动 AST 解析源码目录，`IMPLEMENTS` 边打通设计与代码
-- **4 个 Agent 工具**：`kg_query`（BM25 全文检索）、`kg_expand`（n-hop 邻域展开）、`kg_trace`（依赖路径追踪）、`kg_diff`（设计 vs 代码差异检测：缺失实现/多余代码/签名不匹配/无测试覆盖）
+  - **代码层（探索式）**：Agent 首次调用 `kg_diff` 时自动递归 AST 解析源码目录（支持子包结构），`IMPLEMENTS` 边打通设计与代码；code 层 class/method/attribute 节点携带 `filename` 定位属性
+- **4 个 Agent 工具**：`kg_query`（BM25 全文检索 + 名称模糊匹配，空 pattern 枚举全部节点，项目未索引时自动按需构建）、`kg_expand`（n-hop 邻域展开）、`kg_trace`（依赖路径追踪）、`kg_diff`（设计 vs 代码差异检测：缺失实现/多余代码/签名不匹配/无测试覆盖）
+- **代码定位能力**：`kg_query`/`kg_expand` 序列化 code 层节点时附加 `source_file` 绝对路径，配合 `read_file` 工具实现"KG 定位元素 → 读取源码文件"——知识图谱作为加载哪些原始文件的依据
 - **集成点**：`file_service` 保存 Hook 自动重建 + 对话 Agent 工具注册，全程对用户透明
 
 ### 跨会话记忆系统

@@ -58,6 +58,7 @@ interface UiState {
   // Agent Chat dialog
   agentChatVisible: boolean;
   agentChatExpanded: boolean;
+  agentChatPosition: { x: number; y: number }; // 面板左上角 (left/top, px)
 
   // Actions
   toggleRightPanel: () => void;
@@ -101,6 +102,7 @@ interface UiState {
   // Agent Chat
   setAgentChatVisible: (visible: boolean) => void;
   setAgentChatExpanded: (expanded: boolean) => void;
+  setAgentChatPosition: (position: { x: number; y: number }) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -135,6 +137,22 @@ export const useUiStore = create<UiState>((set, get) => ({
   currentBrowsePath: '',
   agentChatVisible: false,
   agentChatExpanded: false,
+  agentChatPosition: (() => {
+    try {
+      const saved = localStorage.getItem('agentChatPosition');
+      if (saved) {
+        const p = JSON.parse(saved);
+        if (typeof p?.x === 'number' && typeof p?.y === 'number') {
+          // 若可视区变化导致位置出界，收敛回可视区
+          return {
+            x: Math.max(0, Math.min(p.x, window.innerWidth - 120)),
+            y: Math.max(0, Math.min(p.y, window.innerHeight - 60)),
+          };
+        }
+      }
+    } catch { /* ignore */ }
+    return { x: window.innerWidth - 420 - 24, y: window.innerHeight - 520 - 24 };
+  })(),
 
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelVisible: (visible: boolean) => set({ rightPanelVisible: visible }),
@@ -225,4 +243,10 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setAgentChatVisible: (visible) => set({ agentChatVisible: visible }),
   setAgentChatExpanded: (expanded) => set({ agentChatExpanded: expanded }),
+  setAgentChatPosition: (position) => {
+    try {
+      localStorage.setItem('agentChatPosition', JSON.stringify(position));
+    } catch { /* ignore */ }
+    set({ agentChatPosition: position });
+  },
 }));
