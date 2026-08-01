@@ -19,6 +19,7 @@ Cross-reference:
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 import logging
 import os
@@ -221,6 +222,122 @@ class GraphBuilder:
         logger.info(f"[KG] build_from_project: {stats}")
         return stats
 
+    def rebuild_project(self, project: Any,  # app.models.uml.Project
+                        project_id: str) -> BuildStats:
+        """增量重建整个项目: 逐图更新, 而非全量删除重建.
+
+        与 build_from_project() 的区别:
+          - 只删除每张图下的旧实体, 不整库清空 design 层
+          - 处理图删除场景: 移除当前 project 中已不存在的旧 diagram 节点
+          - 重跑跨图引用 (references 边依赖所有图, 需在增量后重建)
+
+        用于 save_project() 钩子, 大型工程改一张图不再触发全量重建.
+        """
+        t0 = time.monotonic()
+        stats = BuildStats(source="declarative")
+
+        # ── 确保 PROJECT 节点存在 (首存时创建, 已有则更新属性) ──
+        project_node = GraphNode(
+            id=self._make_id("project", project_id, project.name, "design"),
+            node_type=NodeType.PROJECT,
+            name=project.name,
+            project_id=project_id,
+            source="design",
+            properties={
+                "version": getattr(project, "version", "1.0"),
+                "diagram_count": len(getattr(project, "diagrams", [])),
+            },
+        )
+        project_node.content_text = _build_content_text(
+            NodeType.PROJECT, project_node.name, project_node.properties,
+        )
+        self.db.upsert_node(project_node)
+        stats.nodes_added += 1
+
+        # ── 图删除场景: 移除当前 project 中已不存在的旧 diagram 节点 ──
+        current_diag_names = {
+            getattr(d, "name", f"Diagram_{i + 1}")
+            for i, d in enumerate(getattr(project, "diagrams", []))
+        }
+        existing_diags = self.db.find_nodes(
+            project_id, node_type="diagram", name="", source="design",
+        )
+        for old_diag in existing_diags:
+            if old_diag.name not in current_diag_names:
+                old_ids = self.db.get_descendant_ids(old_diag.id)
+                to_del = old_ids + [old_diag.id]
+                removed = self.db.delete_nodes_by_ids(to_del)
+                stats.nodes_removed += removed
+                logger.info(
+                    f"[KG] rebuild_project: removed deleted diagram "
+                    f"'{old_diag.name}' (-{removed})"
+                )
+
+        # ── 逐图增量重建 ──
+        if not hasattr(project, "diagrams"):
+            stats.elapsed_ms = (time.monotonic() - t0) * 1000
+            return stats
+
+        for i, diagram in enumerate(project.diagrams):
+            diag_name = getattr(diagram, "name", f"Diagram_{i + 1}")
+            d_stats = self.rebuild_diagram(
+                diagram, project_id, diag_name, project_node.id,
+            )
+            stats.nodes_added += d_stats.nodes_added
+            stats.nodes_removed += d_stats.nodes_removed
+            stats.edges_added += d_stats.edges_added
+
+            # 确保 PROJECT → DIAGRAM contains 边存在
+            diag_node = self._find_diagram_node(project_id, diag_name)
+            if diag_node:
+                edge = GraphEdge(
+                    id=self._make_id("edge", project_node.id, diag_node.id, "contains"),
+                    source_id=project_node.id,
+                    target_id=diag_node.id,
+                    edge_type=EdgeType.CONTAINS,
+                    properties={"index": i},
+                )
+                self.db.upsert_edge(edge)
+                stats.edges_added += 1
+
+        # ── 跨图引用重建 (references 边依赖所有图) ──
+        cross_stats = self._build_cross_references(project, project_id)
+        stats.edges_added += cross_stats.edges_added
+
+        stats.elapsed_ms = (time.monotonic() - t0) * 1000
+        logger.info(f"[KG] rebuild_project('{project_id}'): {stats}")
+        return stats
+
+    def rebuild_diagram(self, diagram: Any,  # app.models.uml.UmlDiagram
+                        project_id: str,
+                        diagram_name: str,
+                        parent_project_id: str) -> BuildStats:
+        """增量重建单张图的设计层节点和边.
+
+        对比全量 build_from_project():
+          - 只删除该图下的旧实体 (DIAGRAM → contains → * 递归后代), 不动其他图
+          - 重新构建该图的 DIAGRAM 节点与实体层
+          - 保留 PROJECT → DIAGRAM 的 contains 边 (由调用方维护, 见 rebuild_project)
+
+        用于保存时按图增量更新, 避免大型工程全量重建.
+        """
+        # 1. 删除该图下的旧实体 (递归后代, 避免悬空)
+        diag_node = self._find_diagram_node(project_id, diagram_name)
+        removed = 0
+        if diag_node:
+            old_ids = self.db.get_descendant_ids(diag_node.id)
+            if old_ids:
+                removed = self.db.delete_nodes_by_ids(old_ids)
+
+        # 2. 重新构建该图 (upsert DIAGRAM 节点 + 实体层)
+        stats = self.build_from_diagram(
+            diagram, project_id, diagram_name, parent_project_id,
+        )
+        stats.nodes_removed = removed
+        logger.info(f"[KG] rebuild_diagram('{diagram_name}'): "
+                    f"+{stats.nodes_added} nodes, -{removed} old, {stats.elapsed_ms:.0f}ms")
+        return stats
+
     def build_from_diagram(self, diagram: Any,  # app.models.uml.UmlDiagram
                            project_id: str,
                            diagram_name: str,
@@ -358,13 +475,23 @@ class GraphBuilder:
                 design_classes = self.db.find_nodes(
                     project_id, node_type="class", name=node.name, source="design",
                 )
+                # 改名容错: 精确匹配失败时, 用相似度/包含关系做 fallback
+                if not design_classes:
+                    design_classes = _find_design_classes_fuzzy(
+                        self.db, project_id, node.name,
+                    )
                 for dc in design_classes:
+                    match_method = (
+                        "exact_name"
+                        if dc.name == node.name
+                        else "fuzzy_name"
+                    )
                     edges_to_add.append(GraphEdge(
                         id=self._make_id("edge", source_node.id, dc.id, "implements"),
                         source_id=source_node.id,
                         target_id=dc.id,
                         edge_type=EdgeType.IMPLEMENTS,
-                        properties={"match_method": "exact_name"},
+                        properties={"match_method": match_method},
                     ))
 
             elif isinstance(node, ast.FunctionDef):
@@ -430,6 +557,17 @@ class GraphBuilder:
         agg.elapsed_ms = (time.monotonic() - t0) * 1000
         logger.info(f"[KG] build_from_source_dir({dir_path}): {agg}")
         return agg
+
+    def rebuild_code_layer(self, project_id: str, source_dir: str) -> BuildStats:
+        """重建代码层: 先清后建 (不碰设计层).
+
+        与设计层对称的增量入口, 供 diff() 检测到源码变更时调用.
+        """
+        removed = self.db.delete_nodes_by_project_source(project_id, "code")
+        stats = self.build_from_source_dir(source_dir, project_id)
+        stats.nodes_removed = removed
+        logger.info(f"[KG] rebuild_code_layer({project_id}): {stats}")
+        return stats
 
     def build_test_coverage(self, test_dir: str,
                             project_id: str) -> BuildStats:
@@ -998,6 +1136,49 @@ class GraphBuilder:
             project_id, node_type="lifeline", name=name, source="design",
         )
         return nodes[0] if nodes else None
+
+
+# ── Name matching helpers ──────────────────────────────────────
+
+def _name_similarity(a: str, b: str) -> float:
+    """两个名称的相似度 (0.0-1.0).
+
+    - 先忽略大小写与下划线
+    - SequenceMatcher 比值
+    - 一方包含另一方 (如 UserServiceImpl 包含 User) 额外加分
+    """
+    norm = lambda s: s.lower().replace("_", "")
+    na, nb = norm(a), norm(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    base = difflib.SequenceMatcher(None, na, nb).ratio()
+    if na in nb or nb in na:
+        base += 0.15
+    return min(base, 1.0)
+
+
+def _find_design_classes_fuzzy(db: KnowledgeGraphDB, project_id: str,
+                               name: str) -> list[GraphNode]:
+    """精确匹配失败时, 按相似度查找设计层 CLASS 节点 (改名容错).
+
+    阈值 0.8: 覆盖大小写变化、前后缀增删 (如 UserService → UserServiceImpl).
+    为避免误配, 只有严格大于精确名且得分达标才返回.
+    """
+    candidates = db.find_nodes(
+        project_id, node_type="class", name="", source="design",
+    )
+    best = [
+        n for n in candidates
+        if n.name != name and _name_similarity(name, n.name) >= 0.8
+    ]
+    # 按相似度降序, 只取最高分 (避免一个源码类匹配多个设计类)
+    if not best:
+        return []
+    best.sort(key=lambda n: _name_similarity(name, n.name), reverse=True)
+    top_score = _name_similarity(name, best[0].name)
+    return [n for n in best if _name_similarity(name, n.name) == top_score]
 
 
 # ── AST extraction helpers ──────────────────────────────────────

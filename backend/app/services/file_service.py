@@ -208,7 +208,7 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
     """在后台线程重建知识图谱，不阻塞 HTTP 保存操作.
 
     每次 save_project() 成功后自动触发。
-    设计层节点会全量重建 (先删旧再建新)。
+    设计层采用增量重建 (rebuild_project): 只更新变更的图, 不整库清空。
 
     因 builder 使用独立 DB 连接 + WAL 模式 + executemany 批量写入，
     并发保存同一项目时后者覆盖前者 (upsert 语义), 不会丢数据。
@@ -228,12 +228,9 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
 
             builder = GraphBuilder(db_path=kg_db_path)
             try:
-                # 先清旧, 再建新 (使用同一连接, 确保原子性)
-                _db = builder.db
-                _db.delete_nodes_by_project_source(project_id, "design")
-                stats = builder.build_from_project(project, project_id)
+                stats = builder.rebuild_project(project, project_id)
                 logger.info(
-                    f"[KG] Declarative rebuild for '{project_id}': "
+                    f"[KG] Declarative incremental rebuild for '{project_id}': "
                     f"+{stats.nodes_added} nodes, +{stats.edges_added} edges, "
                     f"-{stats.nodes_removed} old nodes, {stats.elapsed_ms:.0f}ms"
                 )

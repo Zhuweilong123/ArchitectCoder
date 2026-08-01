@@ -399,11 +399,13 @@ class KgDiffTool(AsyncTool):
 
     async def _execute(self, params: dict) -> str:
         source_dir = params.get("source_dir", self.source_dir)
+        force_rebuild = bool(params.get("force", False))
         retriever = _open_retriever(self.db_path)
         try:
             diff_result = await retriever.diff(
                 project_id=params["project_id"],
                 source_dir=source_dir or None,
+                force_rebuild=force_rebuild,
             )
 
             result_dict = diff_result.to_dict()
@@ -455,7 +457,11 @@ class KgDiffTool(AsyncTool):
                         },
                         "source_dir": {
                             "type": "string",
-                            "description": "源码目录路径（如未预先索引，将在此目录上自动构建代码层图谱）",
+                            "description": "源码目录路径。代码层缺失或源码变更时会自动重建；设置 force=true 可强制重建",
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "设为 true 时强制重建代码层，忽略变更检测（源码刚生成、未落盘修改 mtime 时有用）",
                         },
                     },
                     "required": ["project_id"],
