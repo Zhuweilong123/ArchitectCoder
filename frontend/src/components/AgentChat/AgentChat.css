@@ -250,6 +250,23 @@
 
 /* ── 工具调用步骤 ──────────────────────────────────── */
 
+.agent-steps-collapse .ant-collapse-header {
+  padding: 4px 0 !important;
+  color: #1677ff;
+  font-size: 12px;
+}
+
+.agent-steps-header-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.agent-steps-collapse .ant-collapse-content-box {
+  padding: 0 !important;
+}
+
 .agent-steps {
   margin-top: 8px;
   display: flex;
@@ -262,6 +279,22 @@
   border: 1px solid #f0f0f0;
   border-radius: 6px;
   padding: 6px 10px;
+}
+
+.agent-step-thought {
+  margin: 4px 0 4px 0;
+  font-size: 12px;
+  color: #888;
+  background: #fffbe6;
+  border-left: 3px solid #faad14;
+  padding: 4px 8px;
+  border-radius: 0 4px 4px 0;
+}
+
+.agent-step-label {
+  font-weight: 600;
+  color: #d48806;
+  margin-right: 6px;
 }
 
 .agent-step-header {
