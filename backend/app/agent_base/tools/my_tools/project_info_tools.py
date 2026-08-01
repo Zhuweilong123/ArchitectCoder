@@ -15,6 +15,18 @@ from typing import Any, Dict, List
 from app.agent_base.tools.base import Tool, ToolParameter
 
 
+def _collect_py_files(root: str) -> list[str]:
+    """递归收集目录下所有 .py 文件（相对 root 的路径，正斜杠），含子包。"""
+    py_files: list[str] = []
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if f.endswith(".py"):
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                py_files.append(rel.replace("\\", "/"))
+    py_files.sort()
+    return py_files
+
+
 def build_project_context(
     source_dir: str,
     test_dir: str,
@@ -36,9 +48,8 @@ def build_project_context(
     # ── 源码目录 ──
     if source_dir and os.path.isdir(source_dir):
         try:
-            files = [f for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]
-            py_files = [f for f in files if f.endswith('.py')]
-            lines.append(f"- 源码目录: {source_dir} ({len(files)} 文件, {len(py_files)} 个 .py)")
+            py_files = _collect_py_files(source_dir)
+            lines.append(f"- 源码目录: {source_dir} ({len(py_files)} 个 .py)")
             if py_files:
                 sample = py_files[:20]
                 lines.append(f"  源码文件: {', '.join(sample)}" + (f" ... 等{len(py_files)}个" if len(py_files) > 20 else ""))
@@ -52,9 +63,11 @@ def build_project_context(
     # ── 测试目录 ──
     if test_dir and os.path.isdir(test_dir):
         try:
-            files = [f for f in os.listdir(test_dir) if os.path.isfile(os.path.join(test_dir, f))]
-            test_files = [f for f in files if f.startswith('test_') or f.endswith('_test.py')]
-            lines.append(f"- 测试目录: {test_dir} ({len(files)} 文件, {len(test_files)} 个测试)")
+            py_files = _collect_py_files(test_dir)
+            test_files = [f for f in py_files
+                          if os.path.basename(f).startswith('test_')
+                          or os.path.basename(f).endswith('_test.py')]
+            lines.append(f"- 测试目录: {test_dir} ({len(py_files)} 文件, {len(test_files)} 个测试)")
             if test_files:
                 sample = test_files[:20]
                 lines.append(f"  测试文件: {', '.join(sample)}" + (f" ... 等{len(test_files)}个" if len(test_files) > 20 else ""))
@@ -92,11 +105,13 @@ class ProjectInfoTool(Tool):
         super().__init__(
             name="project_info",
             description=(
-                "获取当前项目的基本信息：设计文件路径/大小、源码目录文件列表、"
-                "测试目录文件列表，以及增量 vs 全新开发策略。"
-                "需要了解项目布局时调用此工具（通常在新会话开始时调用一次）。"
-                "如需查询 UML 设计元素（类、组件、接口、图），"
-                "请使用 kg_query / kg_expand / kg_trace 等知识图谱工具。"
+                "Get basic project information: design file path/size, source "
+                "directory file list, test directory file list, and the incremental "
+                "vs greenfield development strategy. Call this when you need to "
+                "understand the project layout (usually once at the start of a "
+                "session). For UML design elements (classes, components, interfaces, "
+                "diagrams), use the knowledge-graph tools kg_query / kg_expand / "
+                "kg_trace."
             ),
         )
         self.source_dir = source_dir
@@ -130,10 +145,13 @@ class ReadFileTool(Tool):
         super().__init__(
             name="read_file",
             description=(
-                "读取项目内文件的完整内容。输入文件路径（相对项目根或绝对路径），"
-                "返回文件内容。用于：查看 .umlproj 设计的完整 JSON、读取源码/测试"
-                "文件内容、核对设计细节。知识图谱只提供摘要，本工具提供原始内容。"
-                "可读范围限于项目相关目录（设计文件、源码目录、测试目录）。"
+                "Read the full content of a file inside the project. Input a file "
+                "path (relative to the project root or absolute); returns the file "
+                "content. Use to: view the complete JSON of a .umlproj design, read "
+                "source/test file contents, or verify design details. The knowledge "
+                "graph only provides summaries; this tool provides the raw content. "
+                "Read scope is limited to project directories (design file, source "
+                "directory, test directory)."
             ),
         )
         self.source_dir = source_dir
@@ -147,8 +165,9 @@ class ReadFileTool(Tool):
                 name="path",
                 type="string",
                 description=(
-                    "要读取的文件路径。可用相对路径（如 'src/app.py'）或绝对路径。"
-                    "路径应位于项目设计文件、源码目录或测试目录内。"
+                    "File path to read. May be a relative path (e.g. 'src/app.py') "
+                    "or an absolute path. The path should be inside the project "
+                    "design file, source directory, or test directory."
                 ),
                 required=True,
             ),
@@ -165,29 +184,59 @@ class ReadFileTool(Tool):
         common = os.path.commonpath([os.path.abspath(r) for r in roots])
         return common
 
+    def _resolve_allowed_path(self, raw_path: str) -> str | None:
+        """把用户路径解析为允许根内的绝对路径；无法解析返回 None。
+
+        优先按绝对路径处理；相对路径分别相对每个允许根目录尝试拼接，
+        首个存在的命中。仍失败则回退到相对后端 cwd 解析（配合安全边界）。
+        """
+        allowed = self._allowed_root()
+        # 绝对路径
+        if os.path.isabs(raw_path):
+            return self._normalize_allowed(raw_path, allowed)
+
+        candidates: list[str] = []
+        roots = [self.source_dir, self.test_dir]
+        if self.project_file:
+            roots.append(os.path.dirname(self.project_file))
+        for root in roots:
+            if root:
+                candidates.append(os.path.abspath(os.path.join(root, raw_path)))
+        candidates.append(os.path.abspath(raw_path))  # 相对 cwd 兜底
+
+        for cand in candidates:
+            if os.path.isfile(cand):
+                return self._normalize_allowed(cand, allowed)
+        return None
+
+    def _normalize_allowed(self, path: str, allowed: str) -> str | None:
+        """检查 path 是否在 allowed 内，是则返回，否则 None。"""
+        try:
+            common = os.path.commonpath([os.path.abspath(path), allowed])
+        except ValueError:
+            return None
+        if common != allowed:
+            return None
+        return os.path.abspath(path)
+
     def run(self, parameters: Dict[str, Any]) -> str:
         raw_path = str(parameters.get("path", "")).strip()
         if not raw_path:
             return "请提供要读取的文件路径。"
 
-        abs_path = os.path.abspath(raw_path)
         allowed = self._allowed_root()
-        # 安全边界：解析后的路径必须在允许根目录内，防任意文件读取
-        try:
-            common = os.path.commonpath([abs_path, allowed])
-        except ValueError:
-            return f"路径无效: {raw_path}"
-        if common != allowed:
+        resolved = self._resolve_allowed_path(raw_path)
+        if resolved is None:
             return (
                 f"路径超出允许范围（仅可读项目设计/源码/测试目录）。"
                 f"给定: {raw_path}，允许根: {allowed}"
             )
 
-        if not os.path.isfile(abs_path):
+        if not os.path.isfile(resolved):
             return f"文件不存在: {raw_path}"
 
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(resolved, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError as e:
             return f"读取失败: {e}"

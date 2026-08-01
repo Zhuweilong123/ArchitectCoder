@@ -24,7 +24,7 @@ from ..tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 # ── 默认系统提示词 ─────────────────────────────────────
-DEFAULT_SYSTEM_PROMPT = "你是一个有用的AI助手，请用简洁明了的方式回答问题。"
+DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Answer questions in a concise and clear manner."
 
 
 class SimpleAgent(Agent):
@@ -121,17 +121,17 @@ class SimpleAgent(Agent):
             return base_prompt
 
         tools_desc = self.tool_registry.get_tools_description()
-        if not tools_desc or tools_desc == "暂无可用工具":
+        if not tools_desc or tools_desc == "no tools available":
             return base_prompt
 
-        tools_section = "\n\n## 可用工具\n"
-        tools_section += "你可以使用以下工具来帮助回答问题:\n"
+        tools_section = "\n\n## Available tools\n"
+        tools_section += "You can use the following tools to help answer questions:\n"
         tools_section += tools_desc + "\n"
-        tools_section += "\n## 工具调用格式\n"
-        tools_section += "当需要使用工具时，请使用以下格式:\n"
+        tools_section += "\n## Tool call format\n"
+        tools_section += "When you need to use a tool, use this format:\n"
         tools_section += "`[TOOL_CALL:{tool_name}:{parameters}]`\n"
-        tools_section += "例如:`[TOOL_CALL:search:Python编程]` 或 `[TOOL_CALL:memory:recall=用户信息]`\n\n"
-        tools_section += "工具调用结果会自动插入到对话中，然后你可以基于结果继续回答。\n"
+        tools_section += "For example: `[TOOL_CALL:search:Python programming]` or `[TOOL_CALL:memory:recall=user info]`\n\n"
+        tools_section += "Tool call results are automatically inserted into the conversation, and you can continue answering based on them.\n"
 
         return base_prompt + tools_section
 

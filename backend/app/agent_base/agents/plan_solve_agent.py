@@ -25,36 +25,36 @@ logger = logging.getLogger(__name__)
 
 # ── 默认提示词模板 ────────────────────────────────────
 DEFAULT_PLANNER_PROMPT = """
-你是一个顶级的AI规划专家。你的任务是将用户提出的复杂问题分解成一个由多个简单步骤组成的行动计划。
-请确保计划中的每个步骤都是一个独立的、可执行的子任务，并且严格按照逻辑顺序排列。
-你的输出必须是一个Python列表，其中每个元素都是一个描述子任务的字符串。
+You are a top-tier AI planning expert. Your task is to decompose the user's complex question into an action plan made of multiple simple steps.
+Make sure each step in the plan is an independent, executable sub-task, and arrange them strictly in logical order.
+Your output must be a Python list where each element is a string describing a sub-task.
 
-问题: {question}
+Question: {question}
 
-请严格按照以下格式输出你的计划:
+Output your plan strictly in this format:
 ```python
-["步骤1", "步骤2", "步骤3", ...]
+["step 1", "step 2", "step 3", ...]
 ```
 """
 
 DEFAULT_EXECUTOR_PROMPT = """
-你是一位顶级的AI执行专家。你的任务是严格按照给定的计划，一步步地解决问题。
-你将收到原始问题、完整的计划、以及到目前为止已经完成的步骤和结果。
-请你专注于解决"当前步骤"，并仅输出该步骤的最终答案，不要输出任何额外的解释或对话。
+You are a top-tier AI execution expert. Your task is to solve the problem step by step, strictly following the given plan.
+You will receive the original question, the complete plan, and the steps/results completed so far.
+Focus on solving the "current step" only, and output only the final answer for that step, without any extra explanation or conversation.
 
-# 原始问题:
+# Original question:
 {question}
 
-# 完整计划:
+# Complete plan:
 {plan}
 
-# 历史步骤与结果:
+# History of steps and results:
 {history}
 
-# 当前步骤:
+# Current step:
 {current_step}
 
-请仅输出针对"当前步骤"的回答:
+Output only the answer for the "current step":
 """
 
 

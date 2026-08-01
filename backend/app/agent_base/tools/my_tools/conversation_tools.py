@@ -193,10 +193,10 @@ class OptimizeUmlTool(AsyncTool):
         super().__init__(
             name="optimize_uml",
             description=(
-                "优化 UML 设计（类图、时序图、组件图）。"
-                "基于用户指令对现有图集进行交叉验证优化。"
-                "自动检查跨图引用一致性并修复。"
-                "返回优化后的 diagrams JSON 和设计约束。"
+                "Optimize UML design (class, sequence, component diagrams). "
+                "Cross-validate and optimize the existing diagrams based on user "
+                "instructions. Automatically check and fix cross-diagram reference "
+                "consistency. Returns optimized diagrams JSON and design constraints."
             ),
         )
         self.llm = llm
@@ -265,11 +265,11 @@ class OptimizeUmlTool(AsyncTool):
                     "properties": {
                         "diagrams_json": {
                             "type": "string",
-                            "description": "现有图列表 JSON 字符串，格式为 [{\"type\":\"class\",\"data\":{...}}, ...]。空数组表示从零生成。",
+                            "description": "JSON string of the existing diagram list, format [{\"type\":\"class\",\"data\":{...}}, ...]. Empty array means generate from scratch.",
                         },
                         "instructions": {
                             "type": "string",
-                            "description": "用户的优化指令，例如'增加支付模块，完善异常处理'",
+                            "description": "User optimization instructions, e.g. 'add a payment module, improve exception handling'",
                         },
                     },
                     "required": ["instructions"],
@@ -294,11 +294,11 @@ class ValidateCodeTool(AsyncTool):
         super().__init__(
             name="validate_code",
             description=(
-                "验证 Python 代码文件的正确性。"
-                "检查语法错误、导入错误、运行时错误。"
-                "发现错误会自动修复并重新验证。"
-                "返回验证报告和（可能修复后的）代码文件。"
-                "code_files_json 传入 {\"filename\": \"content\", ...} 格式的 JSON 字符串。"
+                "Validate the correctness of Python code files. "
+                "Checks syntax errors, import errors, and runtime errors. "
+                "Automatically fixes errors found and re-validates. "
+                "Returns a validation report and (possibly fixed) code files. "
+                "code_files_json must be a JSON string like {\"filename\": \"content\", ...}."
             ),
         )
         self.llm = llm
@@ -369,11 +369,11 @@ class ValidateCodeTool(AsyncTool):
                     "properties": {
                         "code_files_json": {
                             "type": "string",
-                            "description": "代码文件 JSON 字符串: {\"filename.py\": \"source code\", ...}",
+                            "description": "JSON string of code files: {\"filename.py\": \"source code\", ...}",
                         },
                         "task": {
                             "type": "string",
-                            "description": "验证任务的简短描述",
+                            "description": "Short description of the validation task",
                         },
                     },
                     "required": ["code_files_json"],
@@ -398,9 +398,10 @@ class FixCodeTool(AsyncTool):
         super().__init__(
             name="fix_code",
             description=(
-                "修复源码以通过测试。使用 pytest 运行测试，分析失败原因，"
-                "修改源码，然后重新运行测试，循环直到所有测试通过。"
-                "source_files_json 和 test_files_json 都是 {\"filename\": \"content\", ...} 的 JSON 字符串。"
+                "Fix source code to pass tests. Run pytest, analyze failures, "
+                "modify the source, then re-run tests, looping until all tests pass. "
+                "source_files_json and test_files_json are both JSON strings like "
+                "{\"filename\": \"content\", ...}."
             ),
         )
         self.llm = llm
@@ -465,15 +466,15 @@ class FixCodeTool(AsyncTool):
                     "properties": {
                         "source_files_json": {
                             "type": "string",
-                            "description": "源码文件 JSON: {\"app.py\": \"code...\", ...}",
+                            "description": "JSON string of source files: {\"app.py\": \"code...\", ...}",
                         },
                         "test_files_json": {
                             "type": "string",
-                            "description": "测试文件 JSON: {\"test_app.py\": \"code...\", ...}",
+                            "description": "JSON string of test files: {\"test_app.py\": \"code...\", ...}",
                         },
                         "task": {
                             "type": "string",
-                            "description": "修复任务描述",
+                            "description": "Description of the fix task",
                         },
                     },
                     "required": ["source_files_json", "test_files_json"],
@@ -493,9 +494,9 @@ class GenerateCodeTool(AsyncTool):
         super().__init__(
             name="generate_code",
             description=(
-                "从 UML 设计图（类图 JSON）生成 Python 源码。"
-                "输入 diagram_json — 单张类图的 JSON 表示。"
-                "返回生成的代码文件字典。"
+                "Generate Python source code from a UML class diagram (JSON). "
+                "Input diagram_json — the JSON representation of a single class diagram. "
+                "Returns a dict of generated code files."
             ),
         )
         self.llm = llm
@@ -529,11 +530,11 @@ class GenerateCodeTool(AsyncTool):
                     "properties": {
                         "diagram_json": {
                             "type": "string",
-                            "description": "UML 类图的 JSON 表示（从 optimize_uml 返回的 diagrams 数组中取 class 类型的图）",
+                            "description": "JSON representation of the UML class diagram (take the class-type diagram from the diagrams array returned by optimize_uml)",
                         },
                         "language": {
                             "type": "string",
-                            "description": "目标语言，默认 python",
+                            "description": "Target language, default python",
                         },
                     },
                     "required": ["diagram_json"],
@@ -553,9 +554,9 @@ class GenerateTestsTool(AsyncTool):
         super().__init__(
             name="generate_tests",
             description=(
-                "从 Python 源码生成 pytest 测试文件。"
-                "自动为每个模块创建对应的 test_<module>.py 文件。"
-                "覆盖正常路径、边界情况和错误处理。"
+                "Generate pytest test files from Python source code. "
+                "Automatically creates a test_<module>.py file for each module. "
+                "Covers normal paths, edge cases, and error handling."
             ),
         )
         self.llm = llm
@@ -595,15 +596,15 @@ class GenerateTestsTool(AsyncTool):
                     "properties": {
                         "source_files_json": {
                             "type": "string",
-                            "description": "源码文件 JSON: {\"app.py\": \"code...\", ...}",
+                            "description": "JSON string of source files: {\"app.py\": \"code...\", ...}",
                         },
                         "test_cases": {
                             "type": "string",
-                            "description": "测试用例描述（可选），如 '验证登录、注册、密码重置'",
+                            "description": "Optional test case description, e.g. 'verify login, register, password reset'",
                         },
                         "language": {
                             "type": "string",
-                            "description": "目标语言，默认 python",
+                            "description": "Target language, default python",
                         },
                     },
                     "required": ["source_files_json"],
@@ -624,8 +625,8 @@ class RunTestsTool(AsyncTool):
         super().__init__(
             name="run_tests",
             description=(
-                "运行 pytest 测试。用于快速检查测试是否通过。"
-                "返回测试输出、通过率、失败详情。"
+                "Run pytest tests. Use to quickly check whether tests pass. "
+                "Returns test output, pass rate, and failure details."
             ),
         )
         self.source_dir = source_dir
@@ -675,11 +676,11 @@ class RunTestsTool(AsyncTool):
                     "properties": {
                         "source_files_json": {
                             "type": "string",
-                            "description": "源码文件 JSON",
+                            "description": "JSON string of source files",
                         },
                         "test_files_json": {
                             "type": "string",
-                            "description": "测试文件 JSON",
+                            "description": "JSON string of test files",
                         },
                     },
                     "required": ["source_files_json", "test_files_json"],
@@ -700,9 +701,9 @@ class WriteFilesTool(AsyncTool):
         super().__init__(
             name="write_files",
             description=(
-                "将代码文件写入磁盘。用于保存最终版本的源码和测试文件。"
-                "files_json: {\"filename\": \"content\", ...} 的 JSON 字符串。"
-                "file_type: 'source' 或 'test'。"
+                "Write code files to disk. Use to save the final versions of source "
+                "and test files. files_json: a JSON string like "
+                "{\"filename\": \"content\", ...}. file_type: 'source' or 'test'."
             ),
         )
         self.source_dir = source_dir
@@ -748,11 +749,11 @@ class WriteFilesTool(AsyncTool):
                     "properties": {
                         "files_json": {
                             "type": "string",
-                            "description": "文件 JSON: {\"filename.py\": \"code...\", ...}",
+                            "description": "JSON string of files: {\"filename.py\": \"code...\", ...}",
                         },
                         "file_type": {
                             "type": "string",
-                            "description": "'source' 或 'test'",
+                            "description": "'source' or 'test'",
                         },
                     },
                     "required": ["files_json"],

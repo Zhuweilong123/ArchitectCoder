@@ -33,42 +33,42 @@ logger = logging.getLogger(__name__)
 # ── 代码修复专用提示词模板 ───────────────────────────────
 
 FIXER_PROMPTS = {
-    "initial": """你是一个专业的 Python 代码修复专家。
+    "initial": """You are a professional Python code fixing expert.
 
-## 任务:
+## Task:
 {task}
 
-## 项目上下文:
+## Project context:
 {context}
 
-请分析源码和测试代码，修复源码中的 bug，确保所有测试通过。
-只输出修复后的完整源码文件（每个文件用 ### filename 标记），不要其他解释。
+Analyze the source and test code, fix the bugs in the source so that all tests pass.
+Output only the fixed complete source files (mark each file with ### filename), no other explanation.
 """,
-    "reflect": """你是一个代码审查专家。请审查以下修复后的代码。
+    "reflect": """You are a code review expert. Review the fixed code below.
 
-## 代码:
+## Code:
 {content}
 
-## 自动测试结果:
+## Automated test result:
 {auto_feedback}
 
-请分析:
-1. 哪些测试还在失败？失败原因是什么？
-2. 修复是否正确，没有引入新的 bug？
-3. 是否还有边界情况未处理？
+Analyze:
+1. Which tests still fail? What are the failure reasons?
+2. Is the fix correct, without introducing new bugs?
+3. Are there any unhandled edge cases?
 
-如果所有测试通过且修复正确，请回答"无需改进"。
-否则，给出具体的修改建议。
+If all tests pass and the fix is correct, reply "no improvement needed".
+Otherwise, give specific modification suggestions.
 """,
-    "refine": """你是一个代码修复专家。请根据反馈修复代码。
+    "refine": """You are a code fixing expert. Fix the code based on the feedback.
 
-## 上一版代码:
+## Previous code:
 {last_attempt}
 
-## 审查反馈:
+## Review feedback:
 {feedback}
 
-只输出修复后的完整代码文件，每个文件用 ### filename 标记开始。
+Output only the fixed complete code files, marking each file's start with ### filename.
 """,
 }
 
@@ -201,24 +201,30 @@ class CodeFixer:
         # 源码和测试代码作为 JSON 放在 context 里，避免被二次解析
         FIXER_PROMPTS_SIMPLE = {
             "initial": (
-                "你是一个专业的 Python 代码修复专家。\n\n"
-                "## 任务:\n{task}\n\n"
-                "## 项目上下文:\n{context}\n\n"
-                "请分析源码和测试代码，修复源码中的 bug，确保所有测试通过。\n"
-                "只输出修复后的完整源码文件（每个文件用 ### filename 标记），不要其他解释。"
+                "You are a professional Python code fixing expert.\n\n"
+                "## Task:\n{task}\n\n"
+                "## Project context:\n{context}\n\n"
+                "Analyze the source and test code, fix the bugs in the source so "
+                "that all tests pass.\n"
+                "Output only the fixed complete source files (mark each file with "
+                "### filename), no other explanation."
             ),
             "reflect": (
-                "你是代码审查专家。请审查以下修复后的代码。\n\n"
-                "## 代码:\n{content}\n\n"
-                "## 自动测试结果:\n{auto_feedback}\n\n"
-                "分析: 1.哪些测试还在失败？2.修复是否正确？3.还有边界问题吗？\n"
-                "如果所有测试通过且修复正确，请回答\"无需改进\"。否则给出具体修改建议。"
+                "You are a code review expert. Review the fixed code below.\n\n"
+                "## Code:\n{content}\n\n"
+                "## Automated test result:\n{auto_feedback}\n\n"
+                "Analyze: 1. Which tests still fail? 2. Is the fix correct? "
+                "3. Any unhandled edge cases?\n"
+                "If all tests pass and the fix is correct, reply \"no improvement "
+                "needed\". Otherwise give specific modification suggestions."
             ),
             "refine": (
-                "你是代码修复专家。请根据反馈修复代码。\n\n"
-                "## 上一版代码:\n{last_attempt}\n\n"
-                "## 审查反馈:\n{feedback}\n\n"
-                "只输出修复后的完整代码文件，每个文件用 ### filename 标记开始。"
+                "You are a code fixing expert. Fix the code based on the "
+                "feedback.\n\n"
+                "## Previous code:\n{last_attempt}\n\n"
+                "## Review feedback:\n{feedback}\n\n"
+                "Output only the fixed complete code files, marking each file's "
+                "start with ### filename."
             ),
         }
 

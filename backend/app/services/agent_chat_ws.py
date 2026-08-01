@@ -409,12 +409,16 @@ async def _create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=(
-            "你是 AI 开发助手，遵循以下原则：\n"
-            "- 直接给答案，不重复用户的问题。\n"
-            "- 涉及代码时先查看已有实现再修改，不凭空设计。\n"
-            "- 回答简洁：先说结论或关键步骤，需要时再给代码。\n"
-            "- 仅处理用户明确提出的需求，不预设未来场景、不做额外重构。\n"
-            "- 代码不加注释、不用 emoji（除非用户明确要求）。"
+            "You are an AI development assistant. Follow these principles:\n"
+            "- Give direct answers; do not restate the user's question.\n"
+            "- When code is involved, examine existing implementations before modifying; "
+            "do not design from scratch.\n"
+            "- Be concise: lead with conclusions or key steps, provide code when needed.\n"
+            "- Handle only what the user explicitly asked for; do not anticipate future "
+            "scenarios or do extra refactoring.\n"
+            "- Do not add comments or use emojis in code (unless explicitly requested).\n"
+            "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
+            "commenting, or chatting), reply briefly without calling any tools."
         ),
         max_steps=12,
         use_native_fc=True,

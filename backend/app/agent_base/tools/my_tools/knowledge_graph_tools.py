@@ -140,11 +140,13 @@ class KgQueryTool(AsyncTool):
         super().__init__(
             name="kg_query",
             description=(
-                "在项目知识图谱中全文检索节点。"
-                "支持按节点类型过滤（class/component/method/attribute/source_file/lifeline/interface/...）。"
-                "返回匹配的节点列表，包含 BM25 相关性得分。"
-                "使用场景：查找某个类、组件、方法是否存在；搜索特定功能在代码中的位置；"
-                "了解项目中有哪些已设计好的类。"
+                "Full-text search nodes in the project knowledge graph. "
+                "Supports filtering by node type "
+                "(class/component/method/attribute/source_file/lifeline/interface/...). "
+                "Returns a list of matching nodes with BM25 relevance scores. "
+                "Use cases: check whether a class/component/method exists; locate a "
+                "feature in code; list designed classes. To enumerate ALL nodes of a "
+                "type, pass an empty pattern with node_types set."
             ),
         )
         self.db_path = db_path
@@ -231,7 +233,7 @@ class KgQueryTool(AsyncTool):
                         db.close()
                         logger.exception("[KG] Enumerate failed")
                         return json.dumps({
-                            "message": "枚举节点失败，请重试或换非空 pattern 检索。",
+                            "message": "Failed to enumerate nodes; retry or use a non-empty pattern.",
                             "results": [],
                             "count": 0,
                         }, ensure_ascii=False)
@@ -239,9 +241,11 @@ class KgQueryTool(AsyncTool):
                 # 无 node_types 且 pattern 为空：给出引导而非报错
                 return json.dumps({
                     "message": (
-                        "kg_query 需要非空的 pattern 做全文检索；"
-                        "或提供 node_types（如 'class,component,diagram'）以枚举该类型全部节点。"
-                        "例如：pattern='diagram' 检索图，或 node_types='class' 枚举所有类。"
+                        "kg_query needs a non-empty pattern for full-text search; "
+                        "or provide node_types (e.g. 'class,component,diagram') to "
+                        "enumerate all nodes of those types. "
+                        "Example: pattern='diagram' to search diagrams, or "
+                        "node_types='class' to enumerate all classes."
                     ),
                     "results": [],
                     "count": 0,
@@ -262,10 +266,11 @@ class KgQueryTool(AsyncTool):
             if not serialized:
                 return json.dumps({
                     "message": (
-                        f"在项目 '{project_id}' 中未找到与 '{pattern}' 匹配的节点。"
-                        f"建议：1) 换更通用的关键词（如 'class'、'component'、"
-                        f"图名中的核心名词）；2) 改用 kg_expand 从已知的 diagram/"
-                        f"class 节点 ID 展开查看结构；3) 确认 project_id 是否正确。"
+                        f"No nodes matching '{pattern}' found in project "
+                        f"'{project_id}'. Suggestions: 1) use broader keywords "
+                        f"(e.g. 'class', 'component', a core noun from a diagram "
+                        f"name); 2) use kg_expand to expand from a known diagram/"
+                        f"class node ID; 3) verify project_id is correct."
                     ),
                     "results": [],
                     "count": 0,
@@ -290,33 +295,35 @@ class KgQueryTool(AsyncTool):
                     "properties": {
                         "project_id": {
                             "type": "string",
-                            "description": "项目标识（可用图表名或项目文件名）",
+                            "description": "Project identifier (diagram name or project file name)",
                         },
                         "pattern": {
                             "type": "string",
                             "description": (
-                                "查询文本，如 'User login method' 或具体类名/组件名。"
-                                "用于全文检索；若留空将返回使用引导而非报错。"
+                                "Query text, e.g. 'User login method' or a specific "
+                                "class/component name. Used for full-text search; if "
+                                "left empty, returns guidance instead of an error."
                             ),
                         },
                         "node_types": {
                             "type": "string",
                             "description": (
-                                "逗号分隔的节点类型过滤，如 'class,method,component'。"
-                                "可用类型: project, diagram, class, component, lifeline, "
-                                "source_file, test_file, method, attribute, interface。"
-                                "注意: message/messages 是边类型不是节点，查询时序图消息"
-                                "请用 lifeline 或 kg_expand。"
-                                "不传则查所有类型。"
+                                "Comma-separated node type filter, e.g. "
+                                "'class,method,component'. Available types: project, "
+                                "diagram, class, component, lifeline, source_file, "
+                                "test_file, method, attribute, interface. "
+                                "Note: message/messages are edge types, not nodes; to "
+                                "query sequence diagram messages use lifeline or "
+                                "kg_expand. Omit to search all types."
                             ),
                         },
                         "source": {
                             "type": "string",
-                            "description": "来源过滤: 'design' (UML设计) | 'code' (源码) | 'test' (测试)。不传则查所有。",
+                            "description": "Source filter: 'design' (UML design) | 'code' (source) | 'test' (tests). Omit to search all.",
                         },
                         "top_k": {
                             "type": "integer",
-                            "description": "最大返回条数，默认20",
+                            "description": "Maximum number of results, default 20",
                         },
                     },
                     "required": ["project_id", "pattern"],
@@ -336,11 +343,12 @@ class KgExpandTool(AsyncTool):
         super().__init__(
             name="kg_expand",
             description=(
-                "展开知识图谱中的节点关系，查看节点的邻域结构。"
-                "支持 1-2 层深度展开，按边类型过滤，控制展开方向。"
-                "使用场景：了解一个类有哪些方法/属性/父类/依赖关系；"
-                "理解组件内部由哪些子组件和接口构成；"
-                "查看某个节点的完整上下文。"
+                "Expand node relationships in the knowledge graph to view a node's "
+                "neighborhood structure. Supports 1-2 level depth expansion, edge-type "
+                "filtering, and expansion direction control. "
+                "Use cases: see what methods/attributes/parents/dependencies a class "
+                "has; understand which sub-components and interfaces a component "
+                "contains; view a node's full context."
             ),
         )
         self.db_path = db_path
@@ -403,29 +411,29 @@ class KgExpandTool(AsyncTool):
                     "properties": {
                         "node_ids": {
                             "type": "string",
-                            "description": "逗号分隔的节点 ID 列表（从 kg_query 结果中获取）",
+                            "description": "Comma-separated node IDs (from kg_query results)",
                         },
                         "depth": {
                             "type": "integer",
-                            "description": "展开深度: 1=直接邻居, 2=邻居的邻居。最大2。默认1。",
+                            "description": "Expansion depth: 1=direct neighbors, 2=neighbors of neighbors. Max 2. Default 1.",
                         },
                         "edge_types": {
                             "type": "string",
                             "description": (
-                                "逗号分隔的边类型过滤，如 'contains,inherits,implements'。"
-                                "可用: contains, inherits, composition, aggregation, "
-                                "association, realization, dependency, implements, "
-                                "imports, tests, references, messages。"
-                                "不传则展开所有边类型。"
+                                "Comma-separated edge type filter, e.g. "
+                                "'contains,inherits,implements'. Available: contains, "
+                                "inherits, composition, aggregation, association, "
+                                "realization, dependency, implements, imports, tests, "
+                                "references, messages. Omit to expand all edge types."
                             ),
                         },
                         "direction": {
                             "type": "string",
-                            "description": "展开方向: 'outgoing' (出边) | 'incoming' (入边) | 'both' (双向)。默认 'outgoing'。",
+                            "description": "Expansion direction: 'outgoing' | 'incoming' | 'both'. Default 'outgoing'.",
                         },
                         "max_nodes": {
                             "type": "integer",
-                            "description": "最大返回节点数，默认50",
+                            "description": "Maximum number of nodes returned, default 50",
                         },
                     },
                     "required": ["node_ids"],
@@ -445,10 +453,12 @@ class KgTraceTool(AsyncTool):
         super().__init__(
             name="kg_trace",
             description=(
-                "在知识图谱中追踪两个节点之间的所有依赖路径。"
-                "使用场景：理解类之间的继承/依赖链（如 'User 如何间接依赖 Logger'）；"
-                "分析从某组件到某接口的调用路径；排查循环依赖。"
-                "返回所有路径，每条路径包含经过的节点序列和边类型。"
+                "Trace all dependency paths between two nodes in the knowledge graph. "
+                "Use cases: understand inheritance/dependency chains between classes "
+                "(e.g. how 'User' indirectly depends on 'Logger'); analyze the call "
+                "path from a component to an interface; troubleshoot circular "
+                "dependencies. Returns all paths, each with the node sequence and "
+                "edge types traversed."
             ),
         )
         self.db_path = db_path
@@ -476,10 +486,10 @@ class KgTraceTool(AsyncTool):
             if not serialized:
                 return json.dumps({
                     "message": (
-                        f"未找到从 '{params['source_id'][:12]}...' 到 "
-                        f"'{params['target_id'][:12]}...' 的路径 "
-                        f"(max_depth={params.get('max_depth', 10)})。"
-                        f"可能两个节点之间没有直接或间接的连接。"
+                        f"No path found from '{params['source_id'][:12]}...' to "
+                        f"'{params['target_id'][:12]}...' "
+                        f"(max_depth={params.get('max_depth', 10)}). "
+                        f"The two nodes may have no direct or indirect connection."
                     ),
                     "paths": [],
                     "count": 0,
@@ -505,19 +515,19 @@ class KgTraceTool(AsyncTool):
                     "properties": {
                         "source_id": {
                             "type": "string",
-                            "description": "起点节点 ID（从 kg_query 结果中获取）",
+                            "description": "Start node ID (from kg_query results)",
                         },
                         "target_id": {
                             "type": "string",
-                            "description": "终点节点 ID（从 kg_query 结果中获取）",
+                            "description": "End node ID (from kg_query results)",
                         },
                         "max_depth": {
                             "type": "integer",
-                            "description": "最大搜索深度，默认10。大于10会被截断。",
+                            "description": "Maximum search depth, default 10. Values above 10 are truncated.",
                         },
                         "edge_types": {
                             "type": "string",
-                            "description": "逗号分隔的边类型过滤。不传则使用所有边类型。",
+                            "description": "Comma-separated edge type filter. Omit to use all edge types.",
                         },
                     },
                     "required": ["source_id", "target_id"],
@@ -538,11 +548,12 @@ class KgDiffTool(AsyncTool):
         super().__init__(
             name="kg_diff",
             description=(
-                "对比 UML 设计与源码实现，找出差异。"
-                "检测 3 类问题: missing_implementation (设计有但代码没实现)、"
-                "extra_code (代码有但设计没定义)、mismatch (方法签名不一致)。"
-                "使用场景：代码生成后验证完整性；重构前评估差距；"
-                "确保设计与实现同步。"
+                "Compare UML design against source code implementations and find "
+                "differences. Detects 3 problem types: missing_implementation (design "
+                "has it but code does not), extra_code (code has it but design does "
+                "not), mismatch (method signatures differ). "
+                "Use cases: verify completeness after code generation; assess the gap "
+                "before refactoring; keep design and implementation in sync."
             ),
         )
         self.db_path = db_path
@@ -566,25 +577,25 @@ class KgDiffTool(AsyncTool):
             s = result_dict["summary"]
             if s["missing_implementations"] > 0:
                 suggestions.append(
-                    f"{s['missing_implementations']} 个设计类未实现，"
-                    f"调用 generate_code 生成代码"
+                    f"{s['missing_implementations']} design classes not implemented; "
+                    f"call generate_code to generate them"
                 )
             if s["mismatches"] > 0:
                 suggestions.append(
-                    f"{s['mismatches']} 个方法签名不一致，"
-                    f"需要同步设计或代码"
+                    f"{s['mismatches']} method signature mismatches; "
+                    f"sync design or code"
                 )
             if s["extra_code"] > 0:
                 suggestions.append(
-                    f"{s['extra_code']} 个源码类在设计 UML 中不存在，"
-                    f"可能需要反向工程到 UML 或删除冗余代码"
+                    f"{s['extra_code']} source classes not in the design UML; "
+                    f"consider reverse-engineering into UML or removing redundant code"
                 )
             if s.get("no_coverage", 0) > 0:
                 suggestions.append(
-                    f"{s['no_coverage']} 个文件缺少测试覆盖"
+                    f"{s['no_coverage']} files lack test coverage"
                 )
             if not suggestions:
-                suggestions.append("设计与代码完全一致 ✅")
+                suggestions.append("Design and code are fully consistent")
 
             result_dict["suggestions"] = suggestions
 
@@ -604,15 +615,15 @@ class KgDiffTool(AsyncTool):
                     "properties": {
                         "project_id": {
                             "type": "string",
-                            "description": "项目标识",
+                            "description": "Project identifier",
                         },
                         "source_dir": {
                             "type": "string",
-                            "description": "源码目录路径。代码层缺失或源码变更时会自动重建；设置 force=true 可强制重建",
+                            "description": "Source directory path. Auto-rebuilt when the code layer is missing or source changed; set force=true to force a rebuild",
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "设为 true 时强制重建代码层，忽略变更检测（源码刚生成、未落盘修改 mtime 时有用）",
+                            "description": "Set true to force a code layer rebuild, ignoring change detection (useful when source was just generated and mtime was not updated)",
                         },
                     },
                     "required": ["project_id"],

@@ -29,47 +29,47 @@ logger = logging.getLogger(__name__)
 # ── 默认三阶段提示词 ────────────────────────────────────
 DEFAULT_PROMPTS = {
     "initial": """
-请根据以下要求完成任务:
+Complete the following task:
 
 {context}
-任务: {task}
+Task: {task}
 
-请提供一个完整、准确的回答。
+Provide a complete and accurate answer.
 """,
     "reflect": """
-请仔细审查以下回答，并找出可能的问题或改进空间:
+Carefully review the answer below and find possible problems or room for improvement:
 
-# 上下文信息:
+# Context:
 {context}
 
-# 原始任务:
+# Original task:
 {task}
 
-# 当前回答:
+# Current answer:
 {content}
 
-# 自动验证结果:
+# Automated validation result:
 {auto_feedback}
 
-请结合自动验证结果，分析这个回答的质量，指出不足之处，并提出具体的改进建议。
-如果回答已经很好且自动验证无问题，请回答"无需改进"。
+Combine the automated validation result, analyze the quality of this answer, point out its shortcomings, and give specific improvement suggestions.
+If the answer is already good and automated validation found no problems, reply "no improvement needed".
 """,
     "refine": """
-请根据反馈意见改进你的回答:
+Improve your answer based on the feedback:
 
-# 上下文信息:
+# Context:
 {context}
 
-# 原始任务:
+# Original task:
 {task}
 
-# 上一轮回答:
+# Previous answer:
 {last_attempt}
 
-# 反馈意见:
+# Feedback:
 {feedback}
 
-请提供一个改进后的回答。
+Provide an improved answer.
 """,
 }
 
@@ -173,7 +173,7 @@ class ReflectionAgent(Agent):
             logger.info("🔍 反馈: %s", feedback[:120])
 
             # 检查是否无需改进
-            if "无需改进" in feedback:
+            if "no improvement needed" in feedback.lower():
                 logger.info("✅ 回答已被判定为满意，停止迭代")
                 break
 
