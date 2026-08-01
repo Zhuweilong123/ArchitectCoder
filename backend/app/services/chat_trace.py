@@ -41,6 +41,15 @@ def new_trace_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
+def _extract_system_prompt(messages: list) -> str:
+    """从 messages 中提取 system prompt（首条 system 消息），无则返回空串。"""
+    for msg in messages or []:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            content = msg.get("content")
+            return content if isinstance(content, str) else ""
+    return ""
+
+
 # ── 事件类型常量 ─────────────────────────────────────
 
 EVT_SESSION_START = "session_start"
@@ -134,12 +143,11 @@ class ChatTraceLogger:
 
     # ── 生命周期 ─────────────────────────────────────
 
-    def start(self, *, mode: str = "", user_message: str = "",
+    def start(self, *, user_message: str = "",
               project_file: str = "", source_dir: str = "",
               test_dir: str = "", env_snapshot: dict | None = None) -> None:
         """会话开始事件 — 记录环境快照便于复现。"""
         payload = {
-            "mode": mode,
             "user_message": user_message,
             "project_file": project_file,
             "source_dir": source_dir,
@@ -172,18 +180,23 @@ class ChatTraceLogger:
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
                     span_id: str = "") -> str:
-        """记录 LLM 请求（原始 prompt）。返回 span_id 供 response 关联。"""
+        """记录 LLM 请求（原始 prompt）。返回 span_id 供 response 关联。
+
+        字段排序约定: 系统提示词置顶（system_prompt），tools 沉底，便于人工翻阅 trace。
+        """
         sid = span_id or new_trace_id()
+        system_prompt = _extract_system_prompt(messages)
         self._write({
             **_event(self.session_id, EVT_LLM_REQUEST,
                      trace_id=self._trace_id, span_id=sid),
+            "system_prompt": system_prompt,
             "provider": provider,
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "tools": tools,
             "tool_choice": tool_choice,
             "messages": messages,
+            "tools": tools,
         })
         return sid
 
@@ -247,8 +260,8 @@ class ChatTraceLogger:
     def review_response(self, *, review_id: int, response: str) -> None:
         self.event(EVT_REVIEW_RESPONSE, review_id=review_id, response=response)
 
-    def done(self, *, mode: str, answer: str) -> None:
-        self.event(EVT_DONE, mode=mode, answer=answer)
+    def done(self, *, answer: str) -> None:
+        self.event(EVT_DONE, answer=answer)
 
     def error(self, *, event_type: str, message: str) -> None:
         self.event(EVT_ERROR, source=event_type, message=message)
