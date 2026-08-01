@@ -2,7 +2,7 @@
 Agent 对话 WebSocket 端点 — 前端对话框驱动开发的后端服务
 
 架构：
-    用户消息 → 意图分类 → chat 模式（轻量闲聊）或 dev 模式（ReActAgent + 工具）
+    用户消息 → 单 ReActAgent（依据 system prompt 自行决定聊天回复或调用工具）
 
 WebSocket 协议:
     客户端 → 服务端: JSON
@@ -156,9 +156,6 @@ class ChatSessionLogger:
         ts = datetime.now().strftime("%H:%M:%S")
         self._append(f"## 👤 用户 [{ts}]\n\n{message}\n\n")
 
-    def add_intent(self, intent: str) -> None:
-        self._append(f"> 意图分类: **{intent}**\n\n")
-
     def add_chat_ctx(self, label: str, content: str) -> None:
         if not content:
             return
@@ -225,40 +222,6 @@ class ChatSessionLogger:
             logger.info("[ChatLog] Session logged → %s", self.path)
         except Exception:
             logger.exception("[ChatLog] Failed to finalize %s", self.path)
-
-# ── 意图分类 prompt ────────────────────────────────────
-
-INTENT_CLASSIFY_PROMPT = """你是一个消息分类器。判断用户消息属于哪种类型，只回复一个单词：
-
-- **dev** — 用户想开发/创建/设计/修改软件系统、代码、UML图、架构。包括：
-  创建项目、生成代码、设计类图/时序图、修复bug、写测试、
-  优化代码、重构、实现功能、添加模块 等。
-
-- **chat** — 其他一切：打招呼、闲聊、询问概念、问问题、
-  讨论技术但不涉及具体代码开发 等。
-
-只回复 "dev" 或 "chat"，不要任何解释。"""
-
-
-# ── 意图分类 ─────────────────────────────────────────
-
-async def _classify_intent(llm: BaseAgentsLLM, message: str) -> str:
-    """使用 LLM 分类用户意图 — chat 或 dev。"""
-    try:
-        response = await llm.ainvoke([
-            {"role": "system", "content": INTENT_CLASSIFY_PROMPT},
-            {"role": "user", "content": message},
-        ], temperature=0.0, max_tokens=4, model="deepseek-v4-flash")
-
-        result = response.strip().lower()
-        if "dev" in result:
-            return "dev"
-        return "chat"
-
-    except Exception:
-        logger.exception("[AgentChat] Intent classification failed, defaulting to chat")
-        return "chat"
-
 
 # ── 开发模式 — ReActAgent + 工具 ───────────────────────
 
@@ -727,15 +690,9 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 stop_requested = False
 
-                # ── 意图分类（仅用于前端徽章/日志标注，不再决定分流） ──
-                intent = await _classify_intent(llm, user_message)
-                logger.info("[AgentChat] Intent: %s | message: %s", intent, user_message[:80])
-
-                # 记录用户消息与意图（markdown + trace）
+                # 记录用户消息（markdown + trace）
                 chat_log.add_user(user_message)
-                chat_log.add_intent(intent)
                 trace_log.user_message(user_message, project_file=project_file)
-                trace_log.intent(intent)
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:

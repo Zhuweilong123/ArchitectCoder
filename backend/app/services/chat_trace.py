@@ -55,7 +55,6 @@ EVT_REVIEW_REQUEST = "review_request"
 EVT_REVIEW_RESPONSE = "review_response"
 EVT_DONE = "done"
 EVT_ERROR = "error"
-EVT_INTENT = "intent"
 EVT_KG_INJECT = "kg_inject"
 
 
@@ -164,9 +163,6 @@ class ChatTraceLogger:
 
     def user_message(self, message: str, project_file: str = "") -> None:
         self.event(EVT_USER_MESSAGE, message=message, project_file=project_file)
-
-    def intent(self, intent: str, raw: str = "") -> None:
-        self.event(EVT_INTENT, intent=intent, raw=raw)
 
     def kg_inject(self, context: str, query: str = "") -> None:
         """记录注入给模型的知识图谱上下文（去隐私/去敏感后）。"""
