@@ -82,9 +82,25 @@ class KgQueryTool(AsyncTool):
                     if t.strip()
                 ]
 
+            project_id = params.get("project_id", "")
+            pattern = params.get("pattern", "").strip()
+
+            # 空 pattern 无法做 BM25 检索：给出引导而非报错
+            if not pattern:
+                return json.dumps({
+                    "message": (
+                        "kg_query 需要非空的 pattern 做全文检索。"
+                        "如果想枚举项目结构，请先用 kg_query 检索 diagram 节点"
+                        "（如 pattern='diagram' 或图名关键词），再用 kg_expand "
+                        "从 diagram 节点 ID 展开查看其内容；或提供更具体的关键词。"
+                    ),
+                    "results": [],
+                    "count": 0,
+                }, ensure_ascii=False)
+
             results = await retriever.query(
-                project_id=params["project_id"],
-                pattern=params["pattern"],
+                project_id=project_id,
+                pattern=pattern,
                 node_types=node_types,
                 source=params.get("source"),
                 top_k=params.get("top_k", 20),
@@ -92,13 +108,14 @@ class KgQueryTool(AsyncTool):
 
             serialized = _serialize_node_results(results)
 
-            # 如果没有结果, 返回帮助信息
+            # 如果没有结果, 返回引导信息, 避免 Agent 原地盲目重试
             if not serialized:
                 return json.dumps({
                     "message": (
-                        f"在项目 '{params['project_id']}' 中未找到与 "
-                        f"'{params['pattern']}' 匹配的节点。"
-                        f"请尝试更通用的关键词或检查项目 ID。"
+                        f"在项目 '{project_id}' 中未找到与 '{pattern}' 匹配的节点。"
+                        f"建议：1) 换更通用的关键词（如 'class'、'component'、"
+                        f"图名中的核心名词）；2) 改用 kg_expand 从已知的 diagram/"
+                        f"class 节点 ID 展开查看结构；3) 确认 project_id 是否正确。"
                     ),
                     "results": [],
                     "count": 0,
@@ -127,7 +144,10 @@ class KgQueryTool(AsyncTool):
                         },
                         "pattern": {
                             "type": "string",
-                            "description": "查询文本，如 'User login method' 或具体类名/组件名",
+                            "description": (
+                                "查询文本，如 'User login method' 或具体类名/组件名。"
+                                "用于全文检索；若留空将返回使用引导而非报错。"
+                            ),
                         },
                         "node_types": {
                             "type": "string",

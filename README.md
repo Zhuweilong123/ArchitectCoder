@@ -59,7 +59,7 @@ https://github.com/user-attachments/assets/6e78effa-e00b-4e69-bdfb-2c3edbb011b9
 
 右下角机器人按钮打开可拖拽/缩放的对话面板，**一个 ReActAgent 承接全部消息**——闲聊直接文本回复，开发需求则自动编排工具完成完整开发流程。
 
-- **单 Agent 设计**：意图分类仅用于徽章/日志标注，不再分流；同一 Agent 依据 system prompt 自行决定是否调用工具，跨轮复用对话历史
+- **单 Agent 设计**：同一 Agent 依据 system prompt 自行决定是否调用工具，闲聊直接回复，开发需求自动编排工具；跨轮复用对话历史
 - **7 个开发工具 + 人工审核**：`optimize_uml`（UML 优化）→ `generate_code`（代码生成）→ `validate_code`（ReAct 验证）→ `generate_tests`（测试生成）→ `run_tests`（pytest 真跑）→ `fix_code`（失败修复）→ `write_files`（落盘），外加 `request_review` 关键节点人工审批
 - **知识图谱感知**：注册 4 个图谱查询工具（`kg_query`/`kg_expand`/`kg_trace`/`kg_diff`），并注入项目结构摘要，使 Agent 能按需主动查询项目结构而非被动接收全部内容
 - **流式进度**：每一步的工具调用、参数与返回实时推送到面板，开发过程全程可见

@@ -59,7 +59,7 @@ Architecture diagrams shouldn't be throw-away documentation that rots the moment
 
 Click the robot button in the bottom-right corner to open a draggable/resizable chat panel. **A single ReActAgent handles every message** — small talk gets a direct text reply, while development requests are automatically orchestrated through tools for the full development workflow.
 
-- **Single-agent design**: intent classification is used only for badge/log annotations, not routing; the same Agent decides whether to call tools based on its system prompt, reusing conversation history across turns
+- **Single-agent design**: the same Agent decides whether to call tools based on its system prompt — small talk gets a direct reply, development requests are auto-orchestrated through tools — reusing conversation history across turns
 - **7 development tools + human review**: `optimize_uml` (UML optimization) → `generate_code` (code generation) → `validate_code` (ReAct verification) → `generate_tests` (test generation) → `run_tests` (real pytest) → `fix_code` (failure-driven repair) → `write_files` (write to disk), plus `request_review` for human approval at critical decision points
 - **Knowledge-graph aware**: registers 4 graph query tools (`kg_query`/`kg_expand`/`kg_trace`/`kg_diff`) and injects a project-structure summary, so the Agent proactively queries project structure on demand instead of passively receiving everything
 - **Streaming progress**: every tool call, its arguments, and its result stream to the panel in real time — the whole process is visible
