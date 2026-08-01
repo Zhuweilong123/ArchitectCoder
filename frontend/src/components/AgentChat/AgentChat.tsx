@@ -37,8 +37,6 @@ interface ChatMessage {
   timestamp: number;
   steps?: AgentProgressEvent[];
   review?: AgentReviewEvent;
-  /** 回复模式: chat（轻量对话）| dev（Agent 工具驱动） */
-  mode?: 'chat' | 'dev';
 }
 
 // ── 组件 ──────────────────────────────────────────────
@@ -68,7 +66,6 @@ const AgentChat: React.FC = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
-  const modeRef = useRef<'chat' | 'dev'>('chat');
 
   // ── 持久化消息（流式中跳过） ──
   useEffect(() => {
@@ -116,7 +113,6 @@ const AgentChat: React.FC = () => {
 
         // ── 开发进度 ──
         case 'progress': {
-          modeRef.current = 'dev';
           setCurrentSteps((prev) => {
             const existing = prev.findIndex((s) => s.step === event.step);
             if (existing >= 0) {
@@ -148,8 +144,6 @@ const AgentChat: React.FC = () => {
         // ── 完成 ──
         case 'done': {
           setBusy(false);
-          // 单 agent 模式：所有回复以完整 result 追加（后端判定 mode）
-          const finalMode = event.mode ?? (modeRef.current === 'dev' ? 'dev' : 'chat');
           const steps = [...currentSteps];
           setCurrentSteps([]);
           setMessages((prev) => [
@@ -160,7 +154,6 @@ const AgentChat: React.FC = () => {
               content: event.result || '(空回复)',
               timestamp: Date.now(),
               steps: steps.length ? steps : undefined,
-              mode: finalMode,
             },
           ]);
           break;
@@ -174,7 +167,7 @@ const AgentChat: React.FC = () => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: modeRef.current }
+                ? { ...m, id: m.id.replace('stream_', 'agent_') }
                 : m,
             ),
           );
@@ -198,7 +191,7 @@ const AgentChat: React.FC = () => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_'), mode: modeRef.current }
+                ? { ...m, id: m.id.replace('stream_', 'agent_') }
                 : m,
             ),
           );
@@ -253,7 +246,6 @@ const AgentChat: React.FC = () => {
     setBusy(true);
     setCurrentSteps([]);
     setPendingReview(null);
-    modeRef.current = 'chat';  // 乐观默认聊天，progress 事件会纠正
   }, [inputValue, busy, connect, pipelineSourceDir, pipelineTestDir, currentFilepath]);
 
   // ── 中断 ──
@@ -417,11 +409,6 @@ const AgentChat: React.FC = () => {
                   <div className="agent-message-avatar">
                     {msg.role === 'user' ? <UserOutlined /> : msg.role === 'agent' ? <RobotOutlined /> : null}
                   </div>
-                  {msg.role === 'agent' && (
-                    <span className={`agent-mode-badge ${msg.mode === 'dev' ? 'mode-dev' : 'mode-chat'}`}>
-                      {msg.mode === 'dev' ? 'dev' : 'chat'}
-                    </span>
-                  )}
                 </div>
                 <div className="agent-message-body">
                   <div className="agent-message-content">
@@ -439,7 +426,6 @@ const AgentChat: React.FC = () => {
               <div className="agent-message agent-message-agent">
                 <div className="agent-message-avatar-wrap">
                   <div className="agent-message-avatar"><RobotOutlined /></div>
-                  <span className="agent-mode-badge mode-dev">dev</span>
                 </div>
                 <div className="agent-message-body">
                   <Spin size="small" style={{ marginRight: 8 }} />

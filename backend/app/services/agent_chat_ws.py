@@ -201,9 +201,9 @@ class ChatSessionLogger:
         ts = datetime.now().strftime("%H:%M:%S")
         self._append(f"## ✅ 审核回复 [{ts}]\n\n{response}\n\n---\n\n")
 
-    def add_done(self, answer: str, mode: str = "dev") -> None:
+    def add_done(self, answer: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## 🏁 完成 ({mode}) [{ts}]\n\n{answer}\n\n---\n\n")
+        self._append(f"## 🏁 完成 [{ts}]\n\n{answer}\n\n---\n\n")
 
     def add_error(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -223,75 +223,10 @@ class ChatSessionLogger:
         except Exception:
             logger.exception("[ChatLog] Failed to finalize %s", self.path)
 
-# ── 开发模式 — ReActAgent + 工具 ───────────────────────
-
-def _build_project_context(
-    source_dir: str,
-    test_dir: str,
-    project_file: str,
-) -> str:
-    """构建项目上下文摘要（文件路径信息，不包含文件内容）。"""
-    lines: list[str] = []
-
-    # ── 设计文件 ──
-    if project_file and os.path.isfile(project_file):
-        fname = os.path.basename(project_file)
-        fsize = os.path.getsize(project_file)
-        lines.append(f"- 设计文件: {project_file} ({fname}, {fsize} bytes)")
-    elif project_file:
-        lines.append(f"- 设计文件: {project_file} (未保存或路径无效)")
-    else:
-        lines.append("- 设计文件: 未保存")
-
-    # ── 源码目录 ──
-    if source_dir and os.path.isdir(source_dir):
-        try:
-            files = [f for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]
-            py_files = [f for f in files if f.endswith('.py')]
-            lines.append(f"- 源码目录: {source_dir} ({len(files)} 文件, {len(py_files)} 个 .py)")
-            if py_files:
-                sample = py_files[:20]
-                lines.append(f"  源码文件: {', '.join(sample)}" + (f" ... 等{len(py_files)}个" if len(py_files) > 20 else ""))
-        except OSError:
-            lines.append(f"- 源码目录: {source_dir} (无法读取)")
-    elif source_dir:
-        lines.append(f"- 源码目录: {source_dir} (目录不存在)")
-    else:
-        lines.append("- 源码目录: 未设置（将从 UML 新生成代码）")
-
-    # ── 测试目录 ──
-    if test_dir and os.path.isdir(test_dir):
-        try:
-            files = [f for f in os.listdir(test_dir) if os.path.isfile(os.path.join(test_dir, f))]
-            test_files = [f for f in files if f.startswith('test_') or f.endswith('_test.py')]
-            lines.append(f"- 测试目录: {test_dir} ({len(files)} 文件, {len(test_files)} 个测试)")
-            if test_files:
-                sample = test_files[:20]
-                lines.append(f"  测试文件: {', '.join(sample)}" + (f" ... 等{len(test_files)}个" if len(test_files) > 20 else ""))
-        except OSError:
-            lines.append(f"- 测试目录: {test_dir} (无法读取)")
-    elif test_dir:
-        lines.append(f"- 测试目录: {test_dir} (目录不存在)")
-    else:
-        lines.append("- 测试目录: 未设置（将自动生成 pytest 测试）")
-
-    has_source = bool(source_dir and os.path.isdir(source_dir))
-    has_test = bool(test_dir and os.path.isdir(test_dir))
-
-    if has_source and has_test:
-        lines.append("\n这是已有项目！优先增量修改而非全量覆盖。先检查已有代码和测试状态再决定策略。")
-    elif has_source:
-        lines.append("\n基于已有源码增量开发。先了解现有代码再修改。")
-    elif has_test:
-        lines.append("\n可能需要从测试反推代码实现（TDD）。")
-    else:
-        lines.append("\n全新项目：需求 → UML 设计 → 代码生成 → 验证 → 测试。")
-
-    return "\n".join(lines)
-
+# ── 对话 Agent — ReActAgent + 工具 ──────────────────────
 
 async def _build_kg_chat_context(project_file: str, user_message: str) -> str:
-    """从知识图谱检索与用户消息相关的项目内容，生成 chat 模式的上下文.
+    """从知识图谱检索与用户消息相关的项目内容，生成对话上下文.
 
     Args:
         project_file: .umlproj 文件路径
@@ -455,33 +390,26 @@ async def _create_dev_agent(
     for t in tools:
         registry.register_tool(t)
 
-    context = _build_project_context(source_dir, test_dir, project_file)
-
-    # ── 注入知识图谱结构摘要，让 agent 在纯问答/总结时也能感知真实设计内容 ──
-    kg_summary = ""
-    try:
-        if project_file and os.path.isfile(project_file):
-            kg_summary = await _build_kg_chat_context(project_file, "")
-            if kg_summary and kg_summary.startswith("（"):
-                kg_summary = ""  # 提示性文案不需要注入
-    except Exception:
-        logger.exception("[AgentChat] Failed to build KG summary for dev agent")
+    # ── 项目信息工具（按需获取，不再注入 prompt，首轮 token 更省、信息永远新鲜）──
+    from app.agent_base.tools.my_tools.project_info_tools import ProjectInfoTool
+    registry.register_tool(ProjectInfoTool(
+        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+    ))
 
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
         tool_registry=registry,
         system_prompt=(
-            "你是 AI 开发助手。\n"
-            "## 核心原则\n"
-            "- 有需要就调用工具，没需要就直接正常回复。\n"
-            "- 简单问候、寒暄（如\"你好\"、\"谢谢\"、\"再见\"）一两句话简短回应即可，不要展开。\n"
-            "- 用户没明确要求时，不要主动查询或总结项目内容。\n"
+            "你是 AI 开发助手，遵循以下原则：\n"
+            "- 直接给答案，不重复用户的问题。\n"
+            "- 涉及代码时先查看已有实现再修改，不凭空设计。\n"
+            "- 回答简洁：先说结论或关键步骤，需要时再给代码。\n"
+            "- 仅处理用户明确提出的需求，不预设未来场景、不做额外重构。\n"
+            "- 代码不加注释、不用 emoji（除非用户明确要求）。\n"
             "\n"
-            "## 项目信息\n"
-            + context + "\n"
-            + (("参考项目结构（仅在用户询问时使用，不要主动复述）:\n"
-                + kg_summary + "\n") if kg_summary else "")
+            "需要了解项目文件结构时调用 project_info 工具；"
+            "需要查询设计元素（类/组件/接口/图）时使用 kg_query / kg_expand 等知识图谱工具。"
         ),
         max_steps=12,
         use_native_fc=True,
@@ -522,7 +450,6 @@ async def _handle_dev(
     是否调用工具（闲聊直接文本回复，开发调工具）。
     """
     try:
-        called_tools = False  # 本轮是否调用过工具（决定 done 的 mode 标注）
         async for progress in agent.arun_stream(user_message):
             if stop_check():
                 await _ws_send(websocket, {
@@ -583,8 +510,6 @@ async def _handle_dev(
                         tool_name=td.get("name", ""),
                         observation=str(td.get("observation", "")),
                     )
-                if d["tool_calls_detail"]:
-                    called_tools = True
 
             ok = await _ws_send(websocket, {
                 "event": "progress",
@@ -601,13 +526,11 @@ async def _handle_dev(
                 ],
                 "is_final": d["is_final"],
                 "final_answer": d["final_answer"] if d["is_final"] else "",
-                "mode": "dev" if called_tools else "chat",
             })
             if not ok:
                 return
 
             if d["is_final"]:
-                mode = "dev" if called_tools else "chat"
                 # 跨轮记忆：本轮 user + assistant 一起写入 agent 历史
                 try:
                     from app.agent_base.core.message import Message
@@ -617,13 +540,12 @@ async def _handle_dev(
                 except Exception:
                     logger.exception("[AgentChat] Failed to append messages to agent history")
                 if chat_log:
-                    chat_log.add_done(d["final_answer"], mode=mode)
+                    chat_log.add_done(d["final_answer"])
                 if trace_log:
-                    trace_log.done(mode=mode, answer=d["final_answer"])
+                    trace_log.done(answer=d["final_answer"])
                 ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],
-                    "mode": mode,
                 })
                 if not ok:
                     return

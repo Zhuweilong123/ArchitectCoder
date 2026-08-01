@@ -17,8 +17,6 @@ export interface AgentProgressEvent {
   }>;
   is_final: boolean;
   final_answer: string;
-  /** 后端判定: 'dev'（本轮调用了工具）| 'chat'（纯文本） */
-  mode?: 'chat' | 'dev';
 }
 
 export interface AgentChatChunkEvent {
@@ -40,8 +38,6 @@ export interface AgentDoneEvent {
   event: 'done';
   result: string;
   history?: string[];
-  /** 后端判定的本轮模式: 'chat'（纯文本）| 'dev'（调用了工具） */
-  mode?: 'chat' | 'dev';
 }
 
 export interface AgentStoppedEvent {
