@@ -12,7 +12,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Input, Button, message, Tag, Space, Spin, Alert, Tooltip,
+  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse,
 } from 'antd';
 import {
   SendOutlined, StopOutlined, RobotOutlined,
@@ -39,6 +39,17 @@ interface ChatMessage {
   review?: AgentReviewEvent;
 }
 
+// 持久化时裁剪 tool observation，避免撑爆 localStorage（5MB）
+const OBS_LIMIT = 500;
+const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] =>
+  steps.map((s) => ({
+    ...s,
+    tool_calls_detail: s.tool_calls_detail?.map((td) => ({
+      ...td,
+      observation: String(td.observation).slice(0, OBS_LIMIT),
+    })),
+  }));
+
 // ── 组件 ──────────────────────────────────────────────
 
 const AgentChat: React.FC = () => {
@@ -63,6 +74,8 @@ const AgentChat: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [currentSteps, setCurrentSteps] = useState<AgentProgressEvent[]>([]);
   const [pendingReview, setPendingReview] = useState<AgentReviewEvent | null>(null);
+  // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
+  const liveStepsRef = useRef<AgentProgressEvent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -101,12 +114,15 @@ const AgentChat: React.FC = () => {
     document.addEventListener('mouseup', handleUp);
   }, [setAgentChatPosition]);
 
-  // ── 持久化消息（流式中跳过） ──
+  // ── 持久化消息（流式中跳过；工具观察结果裁剪后存储） ──
   useEffect(() => {
     try {
       const hasStreaming = messages.some((m) => m.id.startsWith('stream_'));
       if (!hasStreaming) {
-        localStorage.setItem('agentChatMessages', JSON.stringify(messages.slice(-100)));
+        const toSave = messages.slice(-100).map((m) =>
+          m.steps ? { ...m, steps: clampStepForStorage(m.steps) } : m,
+        );
+        localStorage.setItem('agentChatMessages', JSON.stringify(toSave));
       }
     } catch { /* ignore */ }
   }, [messages]);
@@ -147,15 +163,12 @@ const AgentChat: React.FC = () => {
 
         // ── 开发进度 ──
         case 'progress': {
-          setCurrentSteps((prev) => {
-            const existing = prev.findIndex((s) => s.step === event.step);
-            if (existing >= 0) {
-              const copy = [...prev];
-              copy[existing] = event;
-              return copy;
-            }
-            return [...prev, event];
-          });
+          liveStepsRef.current = [
+            ...liveStepsRef.current.filter((s) => s.step !== event.step),
+            event,
+          ].sort((a, b) => a.step - b.step);
+          // 只同步最新一步触发渲染，避免每步全量 setState
+          setCurrentSteps([...liveStepsRef.current]);
           break;
         }
 
@@ -178,7 +191,8 @@ const AgentChat: React.FC = () => {
         // ── 完成 ──
         case 'done': {
           setBusy(false);
-          const steps = [...currentSteps];
+          const steps = liveStepsRef.current;
+          liveStepsRef.current = [];
           setCurrentSteps([]);
           setMessages((prev) => [
             ...prev,
@@ -196,6 +210,7 @@ const AgentChat: React.FC = () => {
         // ── 停止 ──
         case 'stopped': {
           setBusy(false);
+          liveStepsRef.current = [];
           setCurrentSteps([]);
           // 聊天模式下把流式消息 finalize
           setMessages((prev) =>
@@ -220,6 +235,7 @@ const AgentChat: React.FC = () => {
         // ── 错误 ──
         case 'error': {
           setBusy(false);
+          liveStepsRef.current = [];
           setCurrentSteps([]);
           // 聊天流式半途断掉，finalize 已收到的部分
           setMessages((prev) =>
@@ -245,7 +261,7 @@ const AgentChat: React.FC = () => {
 
     wsRef.current = ws;
     return ws;
-  }, [currentSteps]);
+  }, []);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -278,6 +294,7 @@ const AgentChat: React.FC = () => {
     ]);
     setInputValue('');
     setBusy(true);
+    liveStepsRef.current = [];
     setCurrentSteps([]);
     setPendingReview(null);
   }, [inputValue, busy, connect, pipelineSourceDir, pipelineTestDir, currentFilepath]);
@@ -339,9 +356,16 @@ const AgentChat: React.FC = () => {
   }, [agentChatExpanded, setAgentChatPosition, agentChatPosition]);
 
   // ── 渲染工具调用步骤 ──
-  const renderSteps = (steps: AgentProgressEvent[]) => {
+  const renderSteps = (steps: AgentProgressEvent[], collapsible: boolean) => {
     if (!steps.length) return null;
-    return (
+
+    const panelHeader = (
+      <span className="agent-steps-header-label">
+        <ToolOutlined /> 工具调用 {steps.length} 步
+      </span>
+    );
+
+    const body = (
       <div className="agent-steps">
         {steps.map((s) => (
           <div key={s.step} className="agent-step">
@@ -352,6 +376,12 @@ const AgentChat: React.FC = () => {
               ))}
               {s.is_final && <Tag color="success">完成</Tag>}
             </div>
+            {s.thought && (
+              <div className="agent-step-thought">
+                <span className="agent-step-label">推理</span>
+                {s.thought}
+              </div>
+            )}
             {s.tool_calls_detail?.map((td, i) => (
               <div key={i} className="agent-tool-call">
                 <div className="agent-tool-name">
@@ -370,6 +400,19 @@ const AgentChat: React.FC = () => {
           </div>
         ))}
       </div>
+    );
+
+    // 执行中或已有步骤的实时区域 → 直接展示；收进消息的 → 可折叠
+    return collapsible ? (
+      <Collapse
+        ghost
+        size="small"
+        className="agent-steps-collapse"
+        defaultActiveKey={[]}
+        items={[{ key: 'steps', label: panelHeader, children: body }]}
+      />
+    ) : (
+      body
     );
   };
 
@@ -468,7 +511,7 @@ const AgentChat: React.FC = () => {
                       <span key={i}>{line}<br /></span>
                     ))}
                   </div>
-                  {msg.steps && renderSteps(msg.steps)}
+                  {msg.steps && renderSteps(msg.steps, true)}
                 </div>
               </div>
             ))}
@@ -482,7 +525,7 @@ const AgentChat: React.FC = () => {
                 <div className="agent-message-body">
                   <Spin size="small" style={{ marginRight: 8 }} />
                   <span style={{ color: '#888' }}>正在执行...</span>
-                  {renderSteps(currentSteps)}
+                  {renderSteps(currentSteps, false)}
                 </div>
               </div>
             )}
