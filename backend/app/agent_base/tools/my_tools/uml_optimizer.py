@@ -123,46 +123,46 @@ class UmlOptimizer:
         # ── Step 2: 准备 UML 专用提示词 ──
         uml_prompts = {
             "initial": prompt,  # 复用原有的完整 prompt（已预填充 instructions）
-            "reflect": """你是UML审查专家。请结合自动验证结果和语义审查，分析以下UML设计的质量。
+            "reflect": """You are a UML review expert. Combine the automated validation result and semantic review to analyze the quality of the following UML design.
 
-## 设计上下文:
+## Design context:
 {context}
 
-## 原始需求:
+## Original requirements:
 {task}
 
-## 当前设计:
+## Current design:
 {content}
 
-## 自动验证结果:
+## Automated validation result:
 {auto_feedback}
 
-请从以下维度补充语义审查（自动验证已覆盖结构性问题）:
-1. 设计是否完整覆盖了用户需求？
-2. 类的职责划分是否合理？
-3. 交互流程是否完整？
-4. 是否有遗漏的实体或关系？
-5. 设计模式选择是否恰当？
+Add semantic review from the following dimensions (automated validation already covers structural issues):
+1. Does the design fully cover the user's requirements?
+2. Are the class responsibilities reasonably divided?
+3. Is the interaction flow complete?
+4. Are there any missing entities or relationships?
+5. Is the design pattern choice appropriate?
 
-如果有改进空间，请给出具体的修改建议。
-如果设计已满足需求且自动验证通过，请回答"无需改进"。
+If there is room for improvement, give specific modification suggestions.
+If the design satisfies the requirements and automated validation passed, reply "no improvement needed".
 """,
-            "refine": """你是UML设计专家。请根据审查反馈修正UML设计。
+            "refine": """You are a UML design expert. Fix the UML design based on the review feedback.
 
-## 设计上下文:
+## Design context:
 {context}
 
-## 原始需求:
+## Original requirements:
 {task}
 
-## 上一版设计:
+## Previous design:
 {last_attempt}
 
-## 审查反馈:
+## Review feedback:
 {feedback}
 
-请输出修正后的完整JSON（保持原有格式，包含 diagrams 数组）。
-只输出JSON对象，不要其他文字。
+Output the corrected complete JSON (keep the original format, including the diagrams array).
+Output only the JSON object, no other text.
 """,
         }
 
@@ -184,7 +184,7 @@ class UmlOptimizer:
 
         # ── Step 4: 运行反射循环 ──
         raw_answer = agent.run(
-            input_text=instructions or "设计完整的UML图系统",
+            input_text=instructions or "Design a complete UML diagram system",
             reflect_hook=self._validate_hook,
             post_process=self._post_process_hook,
         )

@@ -38,44 +38,44 @@ from ..tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 # ── Function Calling 模式 system prompt ─────────────────
-FC_SYSTEM_PROMPT = """你是一个具备推理和行动能力的 AI 助手。
-你可以调用工具来获取信息、执行操作，逐步分析问题，最终给出准确的答案。
+FC_SYSTEM_PROMPT = """You are an AI assistant with reasoning and action capabilities.
+You can call tools to fetch information, perform operations, analyze problems step by step, and finally give an accurate answer.
 
-使用工具时：
-- 一次可以调用多个独立的工具（它们会并行执行）
-- 观察工具返回的结果后，决定是否需要继续调用工具
-- 当你已经获得足够信息时，直接给出最终答案（不调用工具）
+When using tools:
+- You may call multiple independent tools at once (they run in parallel)
+- Observe the results, then decide whether to continue calling tools
+- When you have enough information, give the final answer directly (no tool calls)
 
-不要编造答案。如果工具返回的信息不足以回答问题，继续使用其他工具或调整参数重试。
+Never fabricate answers. If the tool results are insufficient, continue using other tools or retry with adjusted parameters.
 """
 
 # ── ReAct 文本模式提示词模板 (降级兼容) ──────────────────
-REACT_PROMPT = """你是一个具备推理和行动能力的AI助手。你可以通过思考分析问题，然后调用合适的工具来获取信息，最终给出准确的答案。
+REACT_PROMPT = """You are an AI assistant with reasoning and action capabilities. Analyze the problem by thinking, call the appropriate tools to gather information, and finally produce an accurate answer.
 
-## 可用工具
+## Available tools
 {tools}
 
-## 工作流程
-请严格按照以下格式进行回应，每次只能执行一个步骤:
+## Workflow
+Respond strictly in the following format, one step at a time:
 
-Thought: 分析当前问题，思考需要什么信息或采取什么行动。
-Action: 选择一个行动，格式必须是以下之一:
-- `{{tool_name}}[{{tool_input}}]` - 调用指定工具
-- `Finish[最终答案]` - 当你有足够信息给出最终答案时
+Thought: Analyze the current problem; think about what information or action is needed.
+Action: Choose one action in one of these formats:
+- `{{tool_name}}[{{tool_input}}]` - call the specified tool
+- `Finish[final answer]` - when you have enough information to answer
 
-## 重要提醒
-1. 每次回应必须包含Thought和Action两部分
-2. 工具调用的格式必须严格遵循:工具名[参数]
-3. 只有当你确信有足够信息回答问题时，才使用Finish
-4. 如果工具返回的信息不够，继续使用其他工具或相同工具的不同参数
+## Important notes
+1. Every response must include both Thought and Action.
+2. Tool call format must strictly follow: tool_name[parameters]
+3. Only use Finish when you are confident you have enough information.
+4. If tool results are insufficient, continue with other tools or different parameters of the same tool.
 
-## 当前任务
+## Current task
 **Question:** {question}
 
-## 执行历史
+## Execution history
 {history}
 
-现在开始你的推理和行动:
+Now begin your reasoning and actions:
 """
 
 # ── 流式 progress 中的 step 数据类 ──────────────────────
@@ -338,8 +338,8 @@ class ReActAgent(Agent):
                 if step == 1:
                     messages.append({
                         "role": "user",
-                        "content": "请调用合适的工具来回答问题。如果需要更多信息，"
-                                   "可以多次调用工具。",
+                        "content": "Please call appropriate tools to answer the question. "
+                                   "If you need more information, you may call tools multiple times.",
                     })
                     yield ReActProgress(
                         step=step, thought="(empty)", actions=[],

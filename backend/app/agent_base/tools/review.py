@@ -157,10 +157,11 @@ class RequestReviewTool(Tool):
         super().__init__(
             name="request_review",
             description=(
-                "当你需要人工审核代码、测试用例或设计决策时调用此工具。"
-                "调用此工具后，你的执行会暂停，等待人类反馈。"
-                "人类的回复会作为工具返回值注入，你可以基于回复继续工作。"
-                "review_type 可选值: code(代码审核), test(测试审核), design(设计审核)"
+                "Call this tool when you need human review of code, test cases, or "
+                "design decisions. After calling, your execution pauses to wait for "
+                "human feedback. The human's reply is injected as the tool return "
+                "value, and you can continue based on it. review_type values: "
+                "code (code review), test (test review), design (design review)"
             ),
         )
         self.manager = manager
@@ -171,25 +172,25 @@ class RequestReviewTool(Tool):
             ToolParameter(
                 name="review_type",
                 type="string",
-                description="审核类型: code, test, 或 design",
+                description="Review type: code, test, or design",
                 required=True,
             ),
             ToolParameter(
                 name="title",
                 type="string",
-                description="审核标题（一句话概括需要审核什么）",
+                description="Review title (one sentence summarizing what needs review)",
                 required=True,
             ),
             ToolParameter(
                 name="content",
                 type="string",
-                description="需要人工审核的具体内容（代码片段、测试列表、设计描述等）",
+                description="The specific content to review (code snippet, test list, design description, etc.)",
                 required=True,
             ),
             ToolParameter(
                 name="question",
                 type="string",
-                description="需要人工回答的具体问题（例如：'这个修复方式正确吗？'）",
+                description="The specific question for the human to answer (e.g. 'Is this fix approach correct?')",
                 required=True,
             ),
         ]
