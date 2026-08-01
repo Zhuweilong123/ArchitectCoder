@@ -127,22 +127,51 @@ class KgQueryTool(AsyncTool):
             project_id = params.get("project_id", "")
             pattern = params.get("pattern", "").strip()
 
-            # 空 pattern 无法做 BM25 检索：给出引导而非报错
+            # 按需构建兜底: 项目未索引时从设计文件构建
+            if project_id:
+                self._ensure_project_indexed(project_id)
+
+            # 空 pattern + 指定 node_types → 枚举该类型全部节点（绕过 BM25）
             if not pattern:
+                if node_types:
+                    from knowledge_graph.database import KnowledgeGraphDB
+                    from knowledge_graph.models import NodeResult
+                    db = KnowledgeGraphDB(self.db_path)
+                    try:
+                        nodes: list[dict] = []
+                        for nt in node_types:
+                            for node in db.find_nodes(
+                                project_id, node_type=nt,
+                                source=params.get("source"), limit=500,
+                            ):
+                                nodes.append(_serialize_node_result(
+                                    NodeResult(node=node, score=0.0)
+                                ))
+                        db.close()
+                        return json.dumps({
+                            "results": nodes,
+                            "count": len(nodes),
+                            "mode": "enumerate",
+                        }, ensure_ascii=False)
+                    except Exception:
+                        db.close()
+                        logger.exception("[KG] Enumerate failed")
+                        return json.dumps({
+                            "message": "枚举节点失败，请重试或换非空 pattern 检索。",
+                            "results": [],
+                            "count": 0,
+                        }, ensure_ascii=False)
+
+                # 无 node_types 且 pattern 为空：给出引导而非报错
                 return json.dumps({
                     "message": (
-                        "kg_query 需要非空的 pattern 做全文检索。"
-                        "如果想枚举项目结构，请先用 kg_query 检索 diagram 节点"
-                        "（如 pattern='diagram' 或图名关键词），再用 kg_expand "
-                        "从 diagram 节点 ID 展开查看其内容；或提供更具体的关键词。"
+                        "kg_query 需要非空的 pattern 做全文检索；"
+                        "或提供 node_types（如 'class,component,diagram'）以枚举该类型全部节点。"
+                        "例如：pattern='diagram' 检索图，或 node_types='class' 枚举所有类。"
                     ),
                     "results": [],
                     "count": 0,
                 }, ensure_ascii=False)
-
-            # 按需构建兜底: 项目未索引时从设计文件构建
-            if project_id:
-                self._ensure_project_indexed(project_id)
 
             results = await retriever.query(
                 project_id=project_id,
