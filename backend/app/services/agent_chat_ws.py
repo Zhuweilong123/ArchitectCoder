@@ -394,8 +394,13 @@ async def _create_dev_agent(
         registry.register_tool(t)
 
     # ── 项目信息工具（按需获取，不再注入 prompt，首轮 token 更省、信息永远新鲜）──
-    from app.agent_base.tools.my_tools.project_info_tools import ProjectInfoTool
+    from app.agent_base.tools.my_tools.project_info_tools import (
+        ProjectInfoTool, ReadFileTool,
+    )
     registry.register_tool(ProjectInfoTool(
+        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+    ))
+    registry.register_tool(ReadFileTool(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
 

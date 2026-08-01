@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 from app.agent_base.tools.base import Tool
@@ -34,21 +35,93 @@ def _open_retriever(db_path: str):
     return GraphRetriever(db_path)
 
 
-def _serialize_node_result(r) -> dict:
-    """序列化一个 NodeResult 为 Agent 友好的 dict."""
-    return {
-        "id": r.node.id,
-        "node_type": r.node.node_type.value,
-        "name": r.node.name,
-        "source": r.node.source,
+def _serialize_node_result(r, file_map: dict | None = None) -> dict:
+    """序列化一个 NodeResult 为 Agent 友好的 dict.
+
+    code 层节点（class/method/attribute）附加 source_file 定位信息，
+    便于 Agent 用 read_file 读取对应源码文件。
+    """
+    node = r.node
+    props = node.properties
+    result = {
+        "id": node.id,
+        "node_type": node.node_type.value,
+        "name": node.name,
+        "source": node.source,
         "score": r.score,
         "depth": r.depth,
-        "properties": r.node.properties,
+        "properties": props,
     }
+    if node.source == "code":
+        fname = props.get("filename") if isinstance(props, dict) else ""
+        result["source_file"] = (file_map or {}).get(fname, fname)
+    return result
 
 
-def _serialize_node_results(results) -> list[dict]:
-    return [_serialize_node_result(r) for r in results]
+def _serialize_node_results(results, file_map: dict | None = None) -> list[dict]:
+    return [_serialize_node_result(r, file_map) for r in results]
+
+
+def _normalize_file_path(path: str) -> str:
+    """规范化文件路径为 Agent 可用的绝对路径（正斜杠）。
+
+    源码层 path 常是相对后端运行目录的 '../generated/src/...'，基准不一致
+    且混用反斜杠。统一为绝对路径，确保 read_file 能直接读取。
+    """
+    if not path:
+        return path
+    try:
+        abs_path = os.path.abspath(path)
+        return abs_path.replace("\\", "/")
+    except Exception:
+        return path.replace("\\", "/")
+
+
+def _build_file_map(db, project_id: str = "") -> dict:
+    """构建 filename → 完整绝对路径 映射（用于 code 节点定位源码文件）。"""
+    fmap: dict[str, str] = {}
+    try:
+        from knowledge_graph.database import KnowledgeGraphDB
+        if not isinstance(db, KnowledgeGraphDB):
+            return fmap
+        rows = db.find_nodes(
+            project_id, node_type="source_file", source="code", limit=2000,
+        )
+        for n in rows:
+            if n.name:
+                path = n.properties.get("path") if isinstance(n.properties, dict) else ""
+                fmap[n.name] = _normalize_file_path(path) or n.name
+    except Exception:
+        logger.warning("[KG] Failed to build file map", exc_info=True)
+    return fmap
+
+
+def _build_file_map_all(db) -> dict:
+    """构建 filename → 路径 映射，不限定 project（kg_expand 无 project_id 时用）。"""
+    fmap: dict[str, str] = {}
+    try:
+        from knowledge_graph.database import KnowledgeGraphDB
+        if not isinstance(db, KnowledgeGraphDB):
+            return fmap
+        conn = db.conn
+        rows = conn.execute(
+            "SELECT name, properties FROM kg_nodes "
+            "WHERE node_type='source_file' AND source='code'"
+        ).fetchall()
+        for row in rows:
+            name = row["name"]
+            path = ""
+            try:
+                import json as _json
+                props = _json.loads(row["properties"])
+                path = props.get("path", "")
+            except Exception:
+                pass
+            if name:
+                fmap[name] = _normalize_file_path(path) or name
+    except Exception:
+        logger.warning("[KG] Failed to build file map (all)", exc_info=True)
+    return fmap
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -138,6 +211,7 @@ class KgQueryTool(AsyncTool):
                     from knowledge_graph.models import NodeResult
                     db = KnowledgeGraphDB(self.db_path)
                     try:
+                        file_map = _build_file_map(db, project_id)
                         nodes: list[dict] = []
                         for nt in node_types:
                             for node in db.find_nodes(
@@ -145,7 +219,7 @@ class KgQueryTool(AsyncTool):
                                 source=params.get("source"), limit=500,
                             ):
                                 nodes.append(_serialize_node_result(
-                                    NodeResult(node=node, score=0.0)
+                                    NodeResult(node=node, score=0.0), file_map
                                 ))
                         db.close()
                         return json.dumps({
@@ -181,7 +255,8 @@ class KgQueryTool(AsyncTool):
                 top_k=params.get("top_k", 20),
             )
 
-            serialized = _serialize_node_results(results)
+            file_map = _build_file_map(retriever.db, project_id)
+            serialized = _serialize_node_results(results, file_map)
 
             # 如果没有结果, 返回引导信息, 避免 Agent 原地盲目重试
             if not serialized:
@@ -295,7 +370,8 @@ class KgExpandTool(AsyncTool):
                 max_nodes=params.get("max_nodes", 50),
             )
 
-            serialized = _serialize_node_results(results)
+            file_map = _build_file_map_all(retriever.db)
+            serialized = _serialize_node_results(results, file_map)
 
             # 按深度分组
             by_depth = {}
