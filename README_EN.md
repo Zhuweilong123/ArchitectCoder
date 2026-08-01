@@ -59,12 +59,14 @@ Architecture diagrams shouldn't be throw-away documentation that rots the moment
 
 Click the robot button in the bottom-right corner to open a draggable/resizable chat panel. **A single ReActAgent handles every message** — small talk gets a direct text reply, while development requests are automatically orchestrated through tools for the full development workflow.
 
-- **Single-agent design**: the same Agent decides whether to call tools based on its system prompt — small talk gets a direct reply, development requests are auto-orchestrated through tools — reusing conversation history across turns
-- **7 development tools + human review**: `optimize_uml` (UML optimization) → `generate_code` (code generation) → `validate_code` (ReAct verification) → `generate_tests` (test generation) → `run_tests` (real pytest) → `fix_code` (failure-driven repair) → `write_files` (write to disk), plus `request_review` for human approval at critical decision points
-- **Knowledge-graph aware**: registers 4 graph query tools (`kg_query`/`kg_expand`/`kg_trace`/`kg_diff`) and injects a project-structure summary, so the Agent proactively queries project structure on demand instead of passively receiving everything
+- **Single-agent design**: the same Agent decides whether to call tools based on a concise English-only system prompt of behavioral rules — reusing conversation history across turns
+- **Behavioral rules**: give direct answers without restating the question, inspect existing implementations before touching code, and reply briefly without calling tools when the user has not asked for anything (only greeting, thanking, commenting, or chatting) — preventing over-tooling on casual messages
+- **13 tools + human review**: development tools `optimize_uml` → `generate_code` → `validate_code` → `generate_tests` → `run_tests` → `fix_code` → `write_files`, knowledge-graph `kg_query`/`kg_expand`/`kg_trace`/`kg_diff`, project info `project_info`, file reading `read_file`, plus `request_review` for human approval at critical decision points
+- **Active knowledge-graph exploration**: `kg_query` supports on-demand indexing (auto-rebuilds from the design file on an empty DB), enumerating all nodes with an empty pattern, and fuzzy matching for camelCase class names; `kg_expand`/`kg_query` results attach a `source_file` absolute path, closing the loop of "**KG locates an element → find the file → read_file reads the whole file**"
+- **On-demand project info**: `project_info` returns the design/source/test file listings (recursive, including sub-packages), `read_file` reads full file content (scoped to project directories) — no longer injected into the prompt every turn, saving first-turn tokens with always-fresh information
 - **Streaming progress**: every tool call, its arguments, and its result stream to the panel in real time — the whole process is visible
 - **Interrupt control**: stop the Agent at any time, gracefully terminating the tool loop
-- **Session logs**: every session lands in `temp/chat_log/` — human-readable Markdown (`chat_*.md`) + machine-replayable JSONL trace (`trace_*.jsonl`, including raw LLM round-trips, tool calls, and review records)
+- **Session logs**: every session lands in `temp/chat_log/` — human-readable Markdown (`chat_*.md`) + machine-replayable JSONL trace (`trace_*.jsonl`, including raw LLM round-trips, tool calls, and review records; `system_prompt` field placed first and deduplicated from `messages`, `tools` at the end)
 - **Message persistence**: conversation history survives page refresh
 
 #### Global Optimization (Requirement-Driven · No Blank Diagram Needed)
@@ -129,8 +131,9 @@ Click the robot button in the bottom-right corner to open a draggable/resizable 
 - **SQLite graph database + FTS5 full-text index**: node/edge/full-text tables with content-sync triggers auto-maintaining the index — no extra database service needed
 - **Dual-source building**:
   - **Design layer (declarative)**: daemon thread automatically rebuilds idempotently from UML JSON when a project is saved
-  - **Code layer (exploratory)**: the first Agent `kg_diff` call auto-parses the source directory via AST; `IMPLEMENTS` edges bridge design and code
-- **4 Agent tools**: `kg_query` (BM25 full-text search), `kg_expand` (n-hop neighborhood expansion), `kg_trace` (dependency path tracing), `kg_diff` (design-vs-code diff: missing implementation / extra code / signature mismatch / no test coverage)
+  - **Code layer (exploratory)**: the first Agent `kg_diff` call auto-parses the source directory recursively via AST (sub-package support); `IMPLEMENTS` edges bridge design and code; code-layer class/method/attribute nodes carry a `filename` locating attribute
+- **4 Agent tools**: `kg_query` (BM25 full-text search + name fuzzy matching, enumerate-all with an empty pattern, auto on-demand indexing when the project is missing), `kg_expand` (n-hop neighborhood expansion), `kg_trace` (dependency path tracing), `kg_diff` (design-vs-code diff: missing implementation / extra code / signature mismatch / no test coverage)
+- **Code locating**: `kg_query`/`kg_expand` serialize code-layer nodes with a `source_file` absolute path; combined with the `read_file` tool this closes the "KG locates an element → read the source file" loop — the knowledge graph acts as the basis for deciding which raw files to load
 - **Integration points**: `file_service` save hooks auto-rebuild + Agent tool registration in the conversational agent — transparent to the user
 
 ### Cross-Session Memory System
