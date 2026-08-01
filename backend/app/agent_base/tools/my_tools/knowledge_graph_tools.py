@@ -56,9 +56,14 @@ def _serialize_node_results(results) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════
 
 class KgQueryTool(AsyncTool):
-    """全文检索知识图谱 — BM25 + 类型过滤."""
+    """全文检索知识图谱 — BM25 + 类型过滤.
 
-    def __init__(self, db_path: str = "./data/knowledge_graph.db"):
+    查询前检查目标项目是否已索引；若知识图谱缺少该项目数据且提供了
+    project_file，则从 .umlproj 立即构建，避免 agent 面对空库抓瞎。
+    """
+
+    def __init__(self, db_path: str = "./data/knowledge_graph.db",
+                 project_file: str = ""):
         super().__init__(
             name="kg_query",
             description=(
@@ -70,6 +75,43 @@ class KgQueryTool(AsyncTool):
             ),
         )
         self.db_path = db_path
+        self.project_file = project_file
+
+    def _ensure_project_indexed(self, project_id: str) -> bool:
+        """确保 project_id 已索引；缺失时尝试从 project_file 按需构建.
+
+        Returns:
+            True 表示项目数据可查（原本就有或构建成功），否则 False。
+        """
+        try:
+            from knowledge_graph.database import KnowledgeGraphDB
+            db = KnowledgeGraphDB(self.db_path)
+            existing = db.find_nodes(project_id, limit=1)
+            db.close()
+            if existing:
+                return True
+        except Exception:
+            logger.warning("[KG] Failed to check project index", exc_info=True)
+            return False
+
+        if not self.project_file:
+            return False
+        try:
+            import os as _os
+            if not _os.path.isfile(self.project_file):
+                logger.warning("[KG] project_file missing: %s", self.project_file)
+                return False
+            from knowledge_graph.builder import GraphBuilder
+            from app.services.file_service import load_project
+            project = load_project(self.project_file)
+            builder = GraphBuilder(db_path=self.db_path)
+            stats = builder.build_from_project(project, project_id)
+            builder.close()
+            logger.info("[KG] On-demand build for '%s': %s", project_id, stats)
+            return True
+        except Exception:
+            logger.exception("[KG] On-demand build failed for '%s'", project_id)
+            return False
 
     async def _execute(self, params: dict) -> str:
         retriever = _open_retriever(self.db_path)
@@ -97,6 +139,10 @@ class KgQueryTool(AsyncTool):
                     "results": [],
                     "count": 0,
                 }, ensure_ascii=False)
+
+            # 按需构建兜底: 项目未索引时从设计文件构建
+            if project_id:
+                self._ensure_project_indexed(project_id)
 
             results = await retriever.query(
                 project_id=project_id,
@@ -478,6 +524,7 @@ def create_kg_tools(
     db_path: str = "./data/knowledge_graph.db",
     source_dir: str = "",
     test_dir: str = "",
+    project_file: str = "",
 ) -> list[Tool]:
     """创建知识图谱相关的所有工具.
 
@@ -485,18 +532,20 @@ def create_kg_tools(
         db_path:    知识图谱数据库路径
         source_dir: 源码目录 (kg_diff 按需索引时使用)
         test_dir:   测试目录 (保留, 暂未使用)
+        project_file: .umlproj 路径 (kg_query 按需构建时使用)
 
     Returns:
         [KgQueryTool, KgExpandTool, KgTraceTool, KgDiffTool]
     """
     tools: list[Tool] = [
-        KgQueryTool(db_path=db_path),
+        KgQueryTool(db_path=db_path, project_file=project_file),
         KgExpandTool(db_path=db_path),
         KgTraceTool(db_path=db_path),
         KgDiffTool(db_path=db_path, source_dir=source_dir),
     ]
     logger.info(
         f"[KG] Created {len(tools)} knowledge graph tools "
-        f"(db={db_path}, source_dir={source_dir or 'N/A'})"
+        f"(db={db_path}, source_dir={source_dir or 'N/A'}, "
+        f"project_file={project_file or 'N/A'})"
     )
     return tools

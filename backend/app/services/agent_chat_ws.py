@@ -380,7 +380,10 @@ async def _create_dev_agent(
         _kg_db = _os.path.normpath(_os.path.abspath(
             _os.path.join(_os.path.dirname(_settings.uml_dir), "data", "knowledge_graph.db"),
         ))
-        kg_tools = create_kg_tools(db_path=_kg_db, source_dir=source_dir, test_dir=test_dir)
+        kg_tools = create_kg_tools(
+            db_path=_kg_db, source_dir=source_dir, test_dir=test_dir,
+            project_file=project_file,
+        )
         tools.extend(kg_tools)
         logger.info(f"[AgentChat] Registered {len(kg_tools)} KG tools (db={_kg_db})")
     except Exception:

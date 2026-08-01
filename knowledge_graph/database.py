@@ -497,7 +497,12 @@ class KnowledgeGraphDB:
         node_type: Optional[str] = None,
         source: Optional[str] = None,
     ) -> list[NodeResult]:
-        """BM25 全文检索.
+        """BM25 全文检索 + 名称模糊匹配.
+
+        FTS5 默认分词器把驼峰类名（如 ``WaveformGenerator``）当作单个 token，
+        搜 ``Waveform`` 命中不了。因此在 BM25 之外补充 name 的大小写不敏感
+        包含匹配（``name LIKE '%query%'``），与 BM25 结果取并集，保证按类名
+        检索总能命中。查询过短（<3 字符）时跳过 LIKE，避免返回过多噪音。
 
         Args:
             project_id: 项目标识
@@ -548,6 +553,34 @@ class KnowledgeGraphDB:
                 node=self._row_to_node(row),
                 score=score,
             ))
+
+        # ── 名称模糊匹配兜底: 命中 BM25 索引不了的驼峰/部分类名 ──
+        name_like = query.strip()
+        if len(name_like) >= 3:
+            like_clauses = ["project_id = ?", "name LIKE ?"]
+            like_params: list = [project_id, f"%{name_like}%"]
+            if node_type:
+                like_clauses.append("node_type = ?")
+                like_params.append(node_type)
+            if source:
+                like_clauses.append("source = ?")
+                like_params.append(source)
+            like_where = " AND ".join(like_clauses)
+            like_rows = self.conn.execute(
+                f"SELECT * FROM kg_nodes WHERE {like_where} LIMIT ?",
+                like_params + [top_k],
+            ).fetchall()
+            seen: set[str] = {r.node.id for r in results}
+            for row in like_rows:
+                if row["id"] in seen:
+                    continue
+                # 名称精确包含的节点给予较高相关度
+                results.append(NodeResult(
+                    node=self._row_to_node(row),
+                    score=0.9,
+                ))
+                seen.add(row["id"])
+
         return results
 
     # ── Neighbor expansion ─────────────────────────────────
