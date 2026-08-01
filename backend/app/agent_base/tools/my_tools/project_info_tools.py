@@ -109,3 +109,89 @@ class ProjectInfoTool(Tool):
 
     def run(self, parameters: Dict[str, Any]) -> str:
         return build_project_context(self.source_dir, self.test_dir, self.project_file)
+
+
+class ReadFileTool(Tool):
+    """读取项目内文件内容，供 Agent 拿到完整、新鲜、无截断的原始内容。
+
+    与 KG 摘要互补：KG 告诉 Agent 项目里有什么（路径/结构），本工具负责
+    按路径读取文件内容，让 Agent 基于原始文件做精确分析（总结、改代码、
+    查细节）。知识图谱作为"加载哪些原始文件的依据"，原始文件本身才是
+    权威真相源。
+    """
+
+    def __init__(
+        self,
+        source_dir: str = "",
+        test_dir: str = "",
+        project_file: str = "",
+        max_chars: int = 20000,
+    ):
+        super().__init__(
+            name="read_file",
+            description=(
+                "读取项目内文件的完整内容。输入文件路径（相对项目根或绝对路径），"
+                "返回文件内容。用于：查看 .umlproj 设计的完整 JSON、读取源码/测试"
+                "文件内容、核对设计细节。知识图谱只提供摘要，本工具提供原始内容。"
+                "可读范围限于项目相关目录（设计文件、源码目录、测试目录）。"
+            ),
+        )
+        self.source_dir = source_dir
+        self.test_dir = test_dir
+        self.project_file = project_file
+        self.max_chars = max_chars
+
+    def get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="path",
+                type="string",
+                description=(
+                    "要读取的文件路径。可用相对路径（如 'src/app.py'）或绝对路径。"
+                    "路径应位于项目设计文件、源码目录或测试目录内。"
+                ),
+                required=True,
+            ),
+        ]
+
+    def _allowed_root(self) -> str:
+        """计算允许读取的根目录（取三个项目目录中已存在的最近公共根）。"""
+        roots = [d for d in (self.source_dir, self.test_dir) if d]
+        if self.project_file:
+            roots.append(os.path.dirname(self.project_file))
+        if not roots:
+            return os.getcwd()
+        # 用所有根的最短共同前缀做安全边界（宽松，足够阻止任意路径穿越）
+        common = os.path.commonpath([os.path.abspath(r) for r in roots])
+        return common
+
+    def run(self, parameters: Dict[str, Any]) -> str:
+        raw_path = str(parameters.get("path", "")).strip()
+        if not raw_path:
+            return "请提供要读取的文件路径。"
+
+        abs_path = os.path.abspath(raw_path)
+        allowed = self._allowed_root()
+        # 安全边界：解析后的路径必须在允许根目录内，防任意文件读取
+        try:
+            common = os.path.commonpath([abs_path, allowed])
+        except ValueError:
+            return f"路径无效: {raw_path}"
+        if common != allowed:
+            return (
+                f"路径超出允许范围（仅可读项目设计/源码/测试目录）。"
+                f"给定: {raw_path}，允许根: {allowed}"
+            )
+
+        if not os.path.isfile(abs_path):
+            return f"文件不存在: {raw_path}"
+
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError as e:
+            return f"读取失败: {e}"
+
+        if len(content) > self.max_chars:
+            content = content[: self.max_chars] + "\n...[内容过长已截断]"
+        return content

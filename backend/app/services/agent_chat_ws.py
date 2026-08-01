@@ -380,7 +380,10 @@ async def _create_dev_agent(
         _kg_db = _os.path.normpath(_os.path.abspath(
             _os.path.join(_os.path.dirname(_settings.uml_dir), "data", "knowledge_graph.db"),
         ))
-        kg_tools = create_kg_tools(db_path=_kg_db, source_dir=source_dir, test_dir=test_dir)
+        kg_tools = create_kg_tools(
+            db_path=_kg_db, source_dir=source_dir, test_dir=test_dir,
+            project_file=project_file,
+        )
         tools.extend(kg_tools)
         logger.info(f"[AgentChat] Registered {len(kg_tools)} KG tools (db={_kg_db})")
     except Exception:
@@ -391,8 +394,13 @@ async def _create_dev_agent(
         registry.register_tool(t)
 
     # ── 项目信息工具（按需获取，不再注入 prompt，首轮 token 更省、信息永远新鲜）──
-    from app.agent_base.tools.my_tools.project_info_tools import ProjectInfoTool
+    from app.agent_base.tools.my_tools.project_info_tools import (
+        ProjectInfoTool, ReadFileTool,
+    )
     registry.register_tool(ProjectInfoTool(
+        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+    ))
+    registry.register_tool(ReadFileTool(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
 
@@ -406,10 +414,7 @@ async def _create_dev_agent(
             "- 涉及代码时先查看已有实现再修改，不凭空设计。\n"
             "- 回答简洁：先说结论或关键步骤，需要时再给代码。\n"
             "- 仅处理用户明确提出的需求，不预设未来场景、不做额外重构。\n"
-            "- 代码不加注释、不用 emoji（除非用户明确要求）。\n"
-            "\n"
-            "需要了解项目文件结构时调用 project_info 工具；"
-            "需要查询设计元素（类/组件/接口/图）时使用 kg_query / kg_expand 等知识图谱工具。"
+            "- 代码不加注释、不用 emoji（除非用户明确要求）。"
         ),
         max_steps=12,
         use_native_fc=True,

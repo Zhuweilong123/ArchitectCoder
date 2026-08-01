@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 from app.agent_base.tools.base import Tool
@@ -34,21 +35,93 @@ def _open_retriever(db_path: str):
     return GraphRetriever(db_path)
 
 
-def _serialize_node_result(r) -> dict:
-    """序列化一个 NodeResult 为 Agent 友好的 dict."""
-    return {
-        "id": r.node.id,
-        "node_type": r.node.node_type.value,
-        "name": r.node.name,
-        "source": r.node.source,
+def _serialize_node_result(r, file_map: dict | None = None) -> dict:
+    """序列化一个 NodeResult 为 Agent 友好的 dict.
+
+    code 层节点（class/method/attribute）附加 source_file 定位信息，
+    便于 Agent 用 read_file 读取对应源码文件。
+    """
+    node = r.node
+    props = node.properties
+    result = {
+        "id": node.id,
+        "node_type": node.node_type.value,
+        "name": node.name,
+        "source": node.source,
         "score": r.score,
         "depth": r.depth,
-        "properties": r.node.properties,
+        "properties": props,
     }
+    if node.source == "code":
+        fname = props.get("filename") if isinstance(props, dict) else ""
+        result["source_file"] = (file_map or {}).get(fname, fname)
+    return result
 
 
-def _serialize_node_results(results) -> list[dict]:
-    return [_serialize_node_result(r) for r in results]
+def _serialize_node_results(results, file_map: dict | None = None) -> list[dict]:
+    return [_serialize_node_result(r, file_map) for r in results]
+
+
+def _normalize_file_path(path: str) -> str:
+    """规范化文件路径为 Agent 可用的绝对路径（正斜杠）。
+
+    源码层 path 常是相对后端运行目录的 '../generated/src/...'，基准不一致
+    且混用反斜杠。统一为绝对路径，确保 read_file 能直接读取。
+    """
+    if not path:
+        return path
+    try:
+        abs_path = os.path.abspath(path)
+        return abs_path.replace("\\", "/")
+    except Exception:
+        return path.replace("\\", "/")
+
+
+def _build_file_map(db, project_id: str = "") -> dict:
+    """构建 filename → 完整绝对路径 映射（用于 code 节点定位源码文件）。"""
+    fmap: dict[str, str] = {}
+    try:
+        from knowledge_graph.database import KnowledgeGraphDB
+        if not isinstance(db, KnowledgeGraphDB):
+            return fmap
+        rows = db.find_nodes(
+            project_id, node_type="source_file", source="code", limit=2000,
+        )
+        for n in rows:
+            if n.name:
+                path = n.properties.get("path") if isinstance(n.properties, dict) else ""
+                fmap[n.name] = _normalize_file_path(path) or n.name
+    except Exception:
+        logger.warning("[KG] Failed to build file map", exc_info=True)
+    return fmap
+
+
+def _build_file_map_all(db) -> dict:
+    """构建 filename → 路径 映射，不限定 project（kg_expand 无 project_id 时用）。"""
+    fmap: dict[str, str] = {}
+    try:
+        from knowledge_graph.database import KnowledgeGraphDB
+        if not isinstance(db, KnowledgeGraphDB):
+            return fmap
+        conn = db.conn
+        rows = conn.execute(
+            "SELECT name, properties FROM kg_nodes "
+            "WHERE node_type='source_file' AND source='code'"
+        ).fetchall()
+        for row in rows:
+            name = row["name"]
+            path = ""
+            try:
+                import json as _json
+                props = _json.loads(row["properties"])
+                path = props.get("path", "")
+            except Exception:
+                pass
+            if name:
+                fmap[name] = _normalize_file_path(path) or name
+    except Exception:
+        logger.warning("[KG] Failed to build file map (all)", exc_info=True)
+    return fmap
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -56,9 +129,14 @@ def _serialize_node_results(results) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════
 
 class KgQueryTool(AsyncTool):
-    """全文检索知识图谱 — BM25 + 类型过滤."""
+    """全文检索知识图谱 — BM25 + 类型过滤.
 
-    def __init__(self, db_path: str = "./data/knowledge_graph.db"):
+    查询前检查目标项目是否已索引；若知识图谱缺少该项目数据且提供了
+    project_file，则从 .umlproj 立即构建，避免 agent 面对空库抓瞎。
+    """
+
+    def __init__(self, db_path: str = "./data/knowledge_graph.db",
+                 project_file: str = ""):
         super().__init__(
             name="kg_query",
             description=(
@@ -70,6 +148,43 @@ class KgQueryTool(AsyncTool):
             ),
         )
         self.db_path = db_path
+        self.project_file = project_file
+
+    def _ensure_project_indexed(self, project_id: str) -> bool:
+        """确保 project_id 已索引；缺失时尝试从 project_file 按需构建.
+
+        Returns:
+            True 表示项目数据可查（原本就有或构建成功），否则 False。
+        """
+        try:
+            from knowledge_graph.database import KnowledgeGraphDB
+            db = KnowledgeGraphDB(self.db_path)
+            existing = db.find_nodes(project_id, limit=1)
+            db.close()
+            if existing:
+                return True
+        except Exception:
+            logger.warning("[KG] Failed to check project index", exc_info=True)
+            return False
+
+        if not self.project_file:
+            return False
+        try:
+            import os as _os
+            if not _os.path.isfile(self.project_file):
+                logger.warning("[KG] project_file missing: %s", self.project_file)
+                return False
+            from knowledge_graph.builder import GraphBuilder
+            from app.services.file_service import load_project
+            project = load_project(self.project_file)
+            builder = GraphBuilder(db_path=self.db_path)
+            stats = builder.build_from_project(project, project_id)
+            builder.close()
+            logger.info("[KG] On-demand build for '%s': %s", project_id, stats)
+            return True
+        except Exception:
+            logger.exception("[KG] On-demand build failed for '%s'", project_id)
+            return False
 
     async def _execute(self, params: dict) -> str:
         retriever = _open_retriever(self.db_path)
@@ -85,14 +200,48 @@ class KgQueryTool(AsyncTool):
             project_id = params.get("project_id", "")
             pattern = params.get("pattern", "").strip()
 
-            # 空 pattern 无法做 BM25 检索：给出引导而非报错
+            # 按需构建兜底: 项目未索引时从设计文件构建
+            if project_id:
+                self._ensure_project_indexed(project_id)
+
+            # 空 pattern + 指定 node_types → 枚举该类型全部节点（绕过 BM25）
             if not pattern:
+                if node_types:
+                    from knowledge_graph.database import KnowledgeGraphDB
+                    from knowledge_graph.models import NodeResult
+                    db = KnowledgeGraphDB(self.db_path)
+                    try:
+                        file_map = _build_file_map(db, project_id)
+                        nodes: list[dict] = []
+                        for nt in node_types:
+                            for node in db.find_nodes(
+                                project_id, node_type=nt,
+                                source=params.get("source"), limit=500,
+                            ):
+                                nodes.append(_serialize_node_result(
+                                    NodeResult(node=node, score=0.0), file_map
+                                ))
+                        db.close()
+                        return json.dumps({
+                            "results": nodes,
+                            "count": len(nodes),
+                            "mode": "enumerate",
+                        }, ensure_ascii=False)
+                    except Exception:
+                        db.close()
+                        logger.exception("[KG] Enumerate failed")
+                        return json.dumps({
+                            "message": "枚举节点失败，请重试或换非空 pattern 检索。",
+                            "results": [],
+                            "count": 0,
+                        }, ensure_ascii=False)
+
+                # 无 node_types 且 pattern 为空：给出引导而非报错
                 return json.dumps({
                     "message": (
-                        "kg_query 需要非空的 pattern 做全文检索。"
-                        "如果想枚举项目结构，请先用 kg_query 检索 diagram 节点"
-                        "（如 pattern='diagram' 或图名关键词），再用 kg_expand "
-                        "从 diagram 节点 ID 展开查看其内容；或提供更具体的关键词。"
+                        "kg_query 需要非空的 pattern 做全文检索；"
+                        "或提供 node_types（如 'class,component,diagram'）以枚举该类型全部节点。"
+                        "例如：pattern='diagram' 检索图，或 node_types='class' 枚举所有类。"
                     ),
                     "results": [],
                     "count": 0,
@@ -106,7 +255,8 @@ class KgQueryTool(AsyncTool):
                 top_k=params.get("top_k", 20),
             )
 
-            serialized = _serialize_node_results(results)
+            file_map = _build_file_map(retriever.db, project_id)
+            serialized = _serialize_node_results(results, file_map)
 
             # 如果没有结果, 返回引导信息, 避免 Agent 原地盲目重试
             if not serialized:
@@ -220,7 +370,8 @@ class KgExpandTool(AsyncTool):
                 max_nodes=params.get("max_nodes", 50),
             )
 
-            serialized = _serialize_node_results(results)
+            file_map = _build_file_map_all(retriever.db)
+            serialized = _serialize_node_results(results, file_map)
 
             # 按深度分组
             by_depth = {}
@@ -478,6 +629,7 @@ def create_kg_tools(
     db_path: str = "./data/knowledge_graph.db",
     source_dir: str = "",
     test_dir: str = "",
+    project_file: str = "",
 ) -> list[Tool]:
     """创建知识图谱相关的所有工具.
 
@@ -485,18 +637,20 @@ def create_kg_tools(
         db_path:    知识图谱数据库路径
         source_dir: 源码目录 (kg_diff 按需索引时使用)
         test_dir:   测试目录 (保留, 暂未使用)
+        project_file: .umlproj 路径 (kg_query 按需构建时使用)
 
     Returns:
         [KgQueryTool, KgExpandTool, KgTraceTool, KgDiffTool]
     """
     tools: list[Tool] = [
-        KgQueryTool(db_path=db_path),
+        KgQueryTool(db_path=db_path, project_file=project_file),
         KgExpandTool(db_path=db_path),
         KgTraceTool(db_path=db_path),
         KgDiffTool(db_path=db_path, source_dir=source_dir),
     ]
     logger.info(
         f"[KG] Created {len(tools)} knowledge graph tools "
-        f"(db={db_path}, source_dir={source_dir or 'N/A'})"
+        f"(db={db_path}, source_dir={source_dir or 'N/A'}, "
+        f"project_file={project_file or 'N/A'})"
     )
     return tools

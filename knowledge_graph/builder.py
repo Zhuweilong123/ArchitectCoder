@@ -508,6 +508,8 @@ class GraphBuilder:
                         "visibility": "+",
                         "is_static": False,
                         "is_abstract": False,
+                        "filename": filename,
+                        "parent_class": "",
                     },
                 )
                 method_node.content_text = _build_content_text(
@@ -534,7 +536,7 @@ class GraphBuilder:
 
     def build_from_source_dir(self, dir_path: str,
                               project_id: str) -> BuildStats:
-        """从整个源码目录构建代码层节点."""
+        """从整个源码目录递归构建代码层节点."""
         t0 = time.monotonic()
         agg = BuildStats(source="exploratory")
 
@@ -543,11 +545,12 @@ class GraphBuilder:
             agg.elapsed_ms = (time.monotonic() - t0) * 1000
             return agg
 
-        py_files = [
-            os.path.join(dir_path, f)
-            for f in os.listdir(dir_path)
-            if f.endswith(".py") and os.path.isfile(os.path.join(dir_path, f))
-        ]
+        # 递归收集所有 .py（支持包/子目录结构），跳过 __init__ 外的隐藏文件
+        py_files: list[str] = []
+        for root, _dirs, files in os.walk(dir_path):
+            for f in files:
+                if f.endswith(".py"):
+                    py_files.append(os.path.join(root, f))
 
         for py_file in py_files:
             stats = self.build_from_source_file(py_file, project_id)
@@ -1203,9 +1206,26 @@ def _extract_class_ast(
         if isinstance(b, (ast.Name, ast.Attribute))
     ]
 
-    # 方法名列表 (用于 content_text)
+    # ── CLASS 节点本身 (此前缺失，导致 code 层无 class、无法定位文件) ──
     method_names: list[str] = []
     attr_names: list[str] = []
+    cls_node_obj = GraphNode(
+        id=cls_id,
+        node_type=NodeType.CLASS,
+        name=cls_node.name,
+        project_id=project_id,
+        source="code",
+        properties={
+            "bases": bases,
+            "filename": filename,
+            "methods": [],
+            "attributes": [],
+        },
+    )
+    cls_node_obj.content_text = _build_content_text(
+        NodeType.CLASS, cls_node_obj.name, cls_node_obj.properties,
+    )
+    nodes.append(cls_node_obj)
 
     for item in cls_node.body:
         if isinstance(item, ast.FunctionDef):
@@ -1225,6 +1245,8 @@ def _extract_class_ast(
                     "visibility": "+",  # AST 无法区分 public/private
                     "is_static": _is_static(item),
                     "is_abstract": _is_abstract(item),
+                    "filename": filename,
+                    "parent_class": cls_node.name,
                 },
             )
             m_node.content_text = _build_content_text(
@@ -1254,6 +1276,8 @@ def _extract_class_ast(
                     "visibility": "+",
                     "is_static": False,
                     "default_value": None,
+                    "filename": filename,
+                    "parent_class": cls_node.name,
                 },
             )
             a_node.content_text = _build_content_text(
