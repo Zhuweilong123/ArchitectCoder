@@ -564,7 +564,15 @@ const Toolbar: React.FC = () => {
       return;
     }
     try {
-      const result = await saveProject(project, currentFilepath, currentFileSafe.current);
+      // 若工程名仍是默认值，则用当前文件路径的文件名同步工程名
+      let proj = project;
+      const curName = currentFilepath.replace(/[\\/]+/g, '/').split('/').pop() || '';
+      const curBase = curName.replace(/\.umlproj$/i, '').replace(/\.uml$/i, '');
+      if (!proj.name || proj.name === 'Untitled') {
+        proj = { ...proj, name: curBase };
+        setProject(proj);
+      }
+      const result = await saveProject(proj, currentFilepath, currentFileSafe.current);
       setCurrentFilepath(result.filepath);
       message.success(`项目已保存: ${result.filename}`);
     } catch {
@@ -587,8 +595,13 @@ const Toolbar: React.FC = () => {
     setSaving(true);
     try {
       const fname = saveFilename.trim() || project.name || 'Untitled';
+      // 同步工程名到 store，使 .umlproj 文件与知识图谱 project 节点使用一致的名字
+      const projName = fname.replace(/\.umlproj$/i, '');
+      if (projName !== project.name) {
+        setProject({ ...project, name: projName });
+      }
       // Always save as project (.umlproj)
-      const result = await saveProject(project, fname);
+      const result = await saveProject({ ...project, name: projName }, fname);
       setCurrentFilepath(result.filepath);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);

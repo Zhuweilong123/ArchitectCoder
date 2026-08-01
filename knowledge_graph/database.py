@@ -297,6 +297,46 @@ class KnowledgeGraphDB:
         self.conn.commit()
         return cur.rowcount
 
+    def get_descendant_ids(self, node_id: str,
+                           edge_type: str = "contains") -> list[str]:
+        """BFS 递归收集指定节点的所有后代节点 ID (通过指定边类型).
+
+        用于增量重建某张图时, 找出该图下的全部旧实体 (含多级嵌套,
+        如 DIAGRAM → CLASS → METHOD/ATTRIBUTE), 避免只删一层留下悬空节点.
+        """
+        all_ids: set[str] = set()
+        frontier: list[str] = [node_id]
+        while frontier:
+            placeholders = ",".join("?" * len(frontier))
+            rows = self.conn.execute(
+                f"SELECT target_id FROM kg_edges "
+                f"WHERE source_id IN ({placeholders}) AND edge_type = ?",
+                [*frontier, edge_type],
+            ).fetchall()
+            nxt: list[str] = []
+            for (tid,) in rows:
+                if tid not in all_ids and tid != node_id:
+                    all_ids.add(tid)
+                    nxt.append(tid)
+            frontier = nxt
+        return list(all_ids)
+
+    def delete_nodes_by_ids(self, ids: list[str]) -> int:
+        """批量删除指定 ID 的节点及所有关联边 (FTS5 触发器自动清理索引)."""
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        self.conn.execute(
+            f"DELETE FROM kg_edges WHERE source_id IN ({placeholders}) "
+            f"OR target_id IN ({placeholders})",
+            ids + ids,
+        )
+        cur = self.conn.execute(
+            f"DELETE FROM kg_nodes WHERE id IN ({placeholders})", ids,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def get_node(self, node_id: str) -> Optional[GraphNode]:
         row = self.conn.execute(
             "SELECT * FROM kg_nodes WHERE id = ?", (node_id,)

@@ -18,7 +18,10 @@ Usage:
 
 from __future__ import annotations
 
+import glob
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -31,6 +34,27 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso_dt(s: str) -> datetime:
+    """解析 ISO 时间串 (如 updated_at) 为带 UTC 的 datetime; 失败时返回 epoch."""
+    if not s:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _mtime_dt(path: str) -> datetime:
+    """文件 mtime → 带 UTC 的 datetime (与 _parse_iso_dt 可比)."""
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    except OSError:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -230,25 +254,43 @@ class GraphRetriever:
         self,
         project_id: str,
         source_dir: Optional[str] = None,
+        force_rebuild: bool = False,
     ) -> DiffResult:
         """对比设计层 vs 代码层.
 
         Args:
             project_id: 项目标识
             source_dir: 源码目录 (如果代码层尚未构建, 则在此目录上先构建)
+            force_rebuild: 强制重建代码层 (忽略 mtime 检测)
 
         Returns:
             DiffResult 包含汇总和详细差异列表.
         """
-        # ── 自动构建代码层 (如果还没有) ──
-        existing_code = self.db.find_nodes(project_id, source="code", limit=1)
-        if not existing_code and source_dir:
-            logger.info(
-                f"[Retriever] No code-layer nodes found, building from {source_dir}"
-            )
-            builder = GraphBuilder(self.db_path)
-            builder.build_from_source_dir(source_dir, project_id)
-            builder.close()
+        # ── 代码层按需重索引: 无代码层 / 源码变更 / 强制重建 时触发 ──
+        if source_dir:
+            need_rebuild = force_rebuild
+            if not need_rebuild:
+                existing_code = self.db.find_nodes(project_id, source="code", limit=1)
+                if not existing_code:
+                    need_rebuild = True
+                elif os.path.isdir(source_dir):
+                    # 检测是否有源码文件比代码层最新节点更新 (同步演进)
+                    latest_kg_dt = _parse_iso_dt(
+                        max((n.updated_at for n in existing_code), default="")
+                    )
+                    for f in glob.glob(os.path.join(source_dir, "**", "*.py"),
+                                       recursive=True):
+                        if _mtime_dt(f) > latest_kg_dt:
+                            need_rebuild = True
+                            break
+            if need_rebuild:
+                logger.info(
+                    f"[Retriever] Rebuilding code layer from {source_dir}"
+                    f"{' (force)' if force_rebuild else ' (stale)'}"
+                )
+                builder = GraphBuilder(self.db_path)
+                builder.rebuild_code_layer(project_id, source_dir)
+                builder.close()
 
         summary = DiffSummary()
         items: list[DiffItem] = []
