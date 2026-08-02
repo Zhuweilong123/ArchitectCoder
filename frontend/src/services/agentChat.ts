@@ -50,13 +50,20 @@ export interface AgentErrorEvent {
   message: string;
 }
 
+export interface AgentDesignUpdatedEvent {
+  event: 'design_updated';
+  diagrams: Array<{ type: string; name: string; component_id: string; data: Record<string, unknown> }>;
+  saved_to?: string;
+}
+
 export type AgentEvent =
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
   | AgentDoneEvent
   | AgentStoppedEvent
-  | AgentErrorEvent;
+  | AgentErrorEvent
+  | AgentDesignUpdatedEvent;
 
 export type AgentEventCallback = (event: AgentEvent) => void;
 
