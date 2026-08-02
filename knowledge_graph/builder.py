@@ -105,7 +105,8 @@ def _build_content_text(node_type: NodeType, name: str,
     elif node_type == NodeType.LIFELINE:
         parts.append(properties.get("class_ref", ""))
 
-    # 去重
+    elif node_type == NodeType.FRAGMENT:
+        parts.append(properties.get("fragment_type", ""))
     raw_text = " ".join(set(p for p in parts if p))
 
     # ── jieba 预分词 ──
@@ -852,7 +853,7 @@ class GraphBuilder:
 
     def _build_sequence_layer(self, diagram: Any, project_id: str,
                               parent_diag_id: str) -> BuildStats:
-        """构建时序图: LIFELINE + MESSAGES 边."""
+        """构建时序图: LIFELINE + MESSAGES 边 + FRAGMENTS."""
         stats = BuildStats(source="declarative")
         nodes_to_add: list[GraphNode] = []
         edges_to_add: list[GraphEdge] = []
@@ -905,6 +906,44 @@ class GraphBuilder:
                         "note": getattr(msg, "note", ""),
                     },
                 ))
+
+        # ── FRAGMENTS ──
+        for frag in getattr(diagram, "fragments", []):
+            frag_id = getattr(frag, "id", "")
+            frag_type = getattr(frag, "type", "")
+            frag_label = getattr(frag, "label", "")
+            # Include frag_id in name to avoid unique-constraint collisions
+            # when multiple fragments share the same type+label (e.g. two loop
+            # fragments both labeled "[retry up to 3 times]").
+            frag_name = f"{frag_label or frag_type} ({frag_id})"
+            frag_node_id = self._make_id("fragment", project_id,
+                                         frag_name, "design")
+            frag_node = GraphNode(
+                id=frag_node_id,
+                node_type=NodeType.FRAGMENT,
+                name=frag_name,
+                project_id=project_id,
+                source="design",
+                properties={
+                    "fragment_type": frag_type,
+                    "x": getattr(frag, "x", 0),
+                    "width": getattr(frag, "width", 0),
+                    "y_start": getattr(frag, "y_start", 0),
+                    "y_end": getattr(frag, "y_end", 0),
+                },
+            )
+            frag_node.content_text = _build_content_text(
+                NodeType.FRAGMENT, frag_node.name, frag_node.properties,
+            )
+            nodes_to_add.append(frag_node)
+
+            # DIAGRAM → FRAGMENT
+            edges_to_add.append(GraphEdge(
+                id=self._make_id("edge", parent_diag_id, frag_node_id, "fragments"),
+                source_id=parent_diag_id,
+                target_id=frag_node_id,
+                edge_type=EdgeType.FRAGMENTS,
+            ))
 
         # 批量写入
         if nodes_to_add:

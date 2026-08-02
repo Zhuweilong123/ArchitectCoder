@@ -12,8 +12,7 @@ from app.models.uml import (
 )
 from app.services.llm_service import chat
 from app.services.code_generator import (
-    SUPPORTED_LANGUAGES, generate_code, optimize_uml, optimize_project,
-    optimize_project_stream,
+    SUPPORTED_LANGUAGES, generate_code, optimize_uml,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,65 +68,3 @@ async def optimize_uml_endpoint(req: UmlOptimizeRequest):
     except Exception as e:
         logger.exception(f"UML optimization failed: {e}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
-
-
-class GlobalOptimizeRequest(BaseModel):
-    """Request for global (multi-diagram) optimization.
-
-    Send existing diagrams as a list in ``existing_diagrams`` for reference.
-    The old per-type fields (class_diagram, sequence_diagram, component_diagram)
-    are still accepted for backward compatibility.
-    """
-    instructions: str = ""
-    existing_diagrams: list[dict] = Field(default_factory=list)
-    # Deprecated — kept for backward compatibility:
-    class_diagram: dict | None = None
-    sequence_diagram: dict | None = None
-    component_diagram: dict | None = None
-
-
-@router.post("/optimize-project")
-async def optimize_project_endpoint(req: GlobalOptimizeRequest):
-    """Cross-validate and globally optimize all diagrams in a project."""
-    try:
-        # Build diagrams list — prefer new existing_diagrams, fall back to old fields
-        diagrams = list(req.existing_diagrams) if req.existing_diagrams else []
-        if not diagrams:
-            for d in (req.class_diagram, req.sequence_diagram, req.component_diagram):
-                if d:
-                    diagrams.append(d)
-        result = await optimize_project(
-            diagrams=diagrams if diagrams else None,
-            instructions=req.instructions,
-        )
-        return result
-    except Exception as e:
-        logger.exception(f"Global optimization failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/optimize-project-stream")
-async def optimize_project_stream_endpoint(req: GlobalOptimizeRequest):
-    """Streaming global optimization — yields entities one by one as SSE."""
-
-    # Build diagrams list — prefer new existing_diagrams, fall back to old fields
-    diagrams = list(req.existing_diagrams) if req.existing_diagrams else []
-    if not diagrams:
-        for d in (req.class_diagram, req.sequence_diagram, req.component_diagram):
-            if d:
-                diagrams.append(d)
-
-    async def event_stream():
-        async for payload in optimize_project_stream(
-            diagrams=diagrams if diagrams else None,
-            instructions=req.instructions,
-        ):
-            if payload == "DONE":
-                yield "data: DONE\n\n"
-            else:
-                # Multi-line SSE: each line of the payload prefixed with "data: "
-                for pline in payload.split("\n"):
-                    yield f"data: {pline}\n"
-                yield "\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")

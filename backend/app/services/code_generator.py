@@ -1327,96 +1327,17 @@ async def optimize_project(
 ) -> dict:
     """Cross-validate and optimize all project diagrams together.
 
+    统一委托到 UmlOptimizer.optimize()（ReflectionAgent 生成→验证→修复循环）。
+
     Accepts a list of existing diagram dicts as optional reference.
-    - Pre-computes a cross-diagram reference index and injects it into the prompt.
-    - Post-validates the LLM output against the index (class_ref, method names, etc.).
-    - Applies auto-fixes for clear reference errors (fuzzy class_ref matching).
     Returns a dict with ``diagrams`` array (new format).
     """
-    _logger = logging.getLogger(__name__)
-    _logger.info("[OptimizeProject] Global optimization request")
+    from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
+    from app.agent_base.core.llm import BaseAgentsLLM
 
-    # ── Step 1: Build cross-diagram reference index ──
-    original_index = _build_reference_index(diagrams) if diagrams else {}
-    if original_index:
-        _logger.info(
-            f"[OptimizeProject] Index: {len(original_index['classes'])} classes, "
-            f"{len(original_index['lifelines'])} lifelines, "
-            f"{len(original_index['components'])} components, "
-            f"{len(original_index['orphan_lifelines'])} orphans, "
-            f"{len(original_index['unlinked_diagrams'])} unlinked"
-        )
-
-    prompt, full_system, is_empty = _build_global_prompt(
-        diagrams=diagrams, instructions=instructions, index=original_index,
-    )
-
-    # Save prompt + response for diagnostics
-    try:
-        from pathlib import Path as _P3
-        _log_d = _P3(__file__).resolve().parent.parent.parent.parent / "temp" / "pipeline_log"
-        _log_d.mkdir(exist_ok=True)
-        _ts = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
-        _f = _log_d / f"llm_global_optimize_{_ts}.md"
-        _f.write_text(f"# Global Optimize ({'GENERATE' if is_empty else 'OPTIMIZE'})\n\n## System Prompt\n```\n{full_system}\n```\n\n## User Prompt\n```\n{prompt}\n```", encoding="utf-8")
-        _logger.info(f"[OptimizeProject] Prompt saved: {_f}")
-    except Exception:
-        _f = None
-
-    response = await chat(
-        prompt=prompt,
-        system_prompt=full_system,
-        temperature=0.5,
-        max_tokens=8192,
-    )
-
-    # Append response to log
-    if _f:
-        try:
-            _current = _f.read_text(encoding="utf-8")
-            _f.write_text(_current + f"\n\n## Response\n```\n{response}\n```", encoding="utf-8")
-        except Exception:
-            pass
-
-    try:
-        cleaned = clean_llm_json_response(response)
-        result = json.loads(cleaned)
-        _logger.info(f"[OptimizeProject] Result keys: {list(result.keys())}")
-
-        # ── Normalize format (old→new) ──
-        result = _normalize_optimize_result(result)
-
-        # ── Apply per-diagram field normalization ──
-        for dspec in result.get("diagrams", []):
-            if isinstance(dspec.get("data"), dict):
-                dspec["data"] = _normalize_llm_output(dspec["data"])
-
-        # ── Post-validate cross-diagram references ──
-        post_issues = _validate_cross_references(result, original_index)
-        if post_issues:
-            existing = result.get("consistency_report", [])
-            result["consistency_report"] = existing + post_issues
-            _logger.info(
-                f"[OptimizeProject] Post-validation: {len(post_issues)} issues "
-                f"({sum(1 for i in post_issues if i.get('auto_fixed'))} auto-fixed, "
-                f"{sum(1 for i in post_issues if i.get('severity') == 'error')} errors)"
-            )
-            # Apply auto-fixes
-            _apply_auto_fixes(result, post_issues)
-
-        # ── Auto-layout: reposition newly-generated elements to avoid overlap ──
-        result = auto_layout(result)
-
-        return result
-    except json.JSONDecodeError:
-        _logger.warning("[OptimizeProject] JSON parse failed")
-        return {
-            "diagrams": [],
-            "consistency_report": [],
-            "changes_summary": "Failed to parse LLM response",
-            "design_constraints": {},
-            "diff": response,
-        }
+    llm = BaseAgentsLLM.from_settings()
+    optimizer = UmlOptimizer(llm, max_iterations=3)
+    return await optimizer.optimize(diagrams=diagrams, instructions=instructions)
 
 
 async def optimize_project_stream(
@@ -1426,247 +1347,23 @@ async def optimize_project_stream(
     """Streaming version: extracts complete JSON elements from the LLM stream
     and yields them for real-time rendering.
 
+    统一委托到 UmlOptimizer.optimize_stream()（流式生成 + 后验证修复）。
+
     Accepts a list of existing diagram dicts as optional reference.
     """
-    import logging as _log2
-    _l = _log2.getLogger(__name__)
-    _l.info("[OptimizeStream] Starting streaming optimization (JSON mode)")
-    _lf = None
+    from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
+    from app.agent_base.core.llm import BaseAgentsLLM
 
-    # ── Build reference index for prompt injection ──
-    original_index = _build_reference_index(diagrams) if diagrams else {}
-
-    prompt, full_system, is_empty = _build_global_prompt(
-        diagrams=diagrams, instructions=instructions, index=original_index,
-    )
-
-    # Save prompt for diagnostics
-    try:
-        from pathlib import Path as _PP2
-        _ld = _PP2(__file__).resolve().parent.parent.parent.parent / "temp" / "pipeline_log"
-        _ld.mkdir(exist_ok=True)
-        _ts = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
-        _lf = _ld / f"llm_stream_optimize_{_ts}.md"
-        _lf.write_text(
-            f"# Stream Optimize ({'GENERATE' if is_empty else 'OPTIMIZE'})\n\n"
-            f"## System Prompt\n```\n{full_system}\n```\n\n"
-            f"## User Prompt\n```\n{prompt}\n```",
-            encoding="utf-8"
-        )
-        _l.info(f"[OptimizeStream] Prompt saved: {_lf}")
-    except Exception:
-        _lf = None
-
-    _l.info("[OptimizeStream] Starting LLM stream (JSON mode)")
-    full_response = ""
-
-    # Use element extractor to yield complete JSON objects as they arrive
-    extractor = _JsonElementExtractor()
-    elem_count = 0
-    async for chunk in chat_stream(
-        prompt=prompt,
-        system_prompt=full_system,
-        temperature=0.5,
-        max_tokens=8192,
+    llm = BaseAgentsLLM.from_settings()
+    optimizer = UmlOptimizer(llm, max_iterations=3)
+    async for elem_type, elem_json in optimizer.optimize_stream(
+        diagrams=diagrams, instructions=instructions,
     ):
-        full_response += chunk
-        for elem_type, elem_json in extractor.feed(chunk):
-            elem_count += 1
-            _l.info(f"[OptimizeStream] Element #{elem_count}: {elem_type} ({len(elem_json)} chars)")
-            yield f"{elem_type}:{elem_json}"
-
+        yield f"{elem_type}:{elem_json}"
     yield "DONE"
-    _l.info(f"[OptimizeStream] Stream ended. Total: {elem_count} elements, {len(full_response)} chars")
-
-    # Append full response to log
-    if _lf:
-        try:
-            _current = _lf.read_text(encoding="utf-8")
-            _lf.write_text(_current + f"\n\n## Response\n```\n{full_response}\n```", encoding="utf-8")
-        except Exception:
-            pass
 
 
-class _JsonElementExtractor:
-    """Extracts complete JSON objects from a streaming JSON text via brace-depth tracking.
-
-    Elements at depth 4 inside arrays (classes, relations, lifelines, etc.) are
-    extracted and classified. Nested sub-objects at depth 5+ (attributes, methods)
-    are correctly ignored.
-    """
-
-    # Keys whose appearance at depth 2 signals a section change.
-    # Also used to refine relation vs comp_rel classification.
-    _SECTION_KEYS = ('class', 'sequence', 'component')
-
-    def __init__(self):
-        self._buf = ""
-        self._pos = 0
-        self._depth = 0        # brace depth ({ only, [ ] are ignored)
-        self._in_str = False
-        self._esc = False
-        self._elem_start = -1   # buffer offset where current depth-4 element begins
-        self._section = None    # 'class', 'sequence', or 'component'
-        self._scan_pos = 0      # last position scanned for component_id
-        self._seen_cids = set() # avoid duplicate diagram_meta emission
-        self._seen_diagrams = set()  # avoid duplicate diagram_create emission
-        self._diagram_scan_pos = 0   # last position scanned for diagram_create
-
-    def feed(self, chunk: str) -> list[tuple[str, str]]:
-        """Feed a new text chunk. Returns (type, json_string) tuples for completed elements."""
-        self._buf += chunk
-        elements: list[tuple[str, str]] = []
-
-        # ── Scan new content for diagram_create events ─────
-        # Detect "type": "class"/"sequence"/"component" patterns in the diagrams array
-        # and extract "name" to emit diagram_create so the frontend can auto-create tabs
-        _new_for_dc = self._buf[self._diagram_scan_pos:]
-        _dc_idx = 0
-        while True:
-            _dc_idx = _new_for_dc.find('"type"', _dc_idx)
-            if _dc_idx < 0:
-                break
-            # Find colon and value
-            _colon = _new_for_dc.find(':', _dc_idx)
-            if _colon < 0: break
-            _vstart = _new_for_dc.find('"', _colon + 1)
-            if _vstart < 0: break
-            _vend = _new_for_dc.find('"', _vstart + 1)
-            if _vend < 0: break
-            _dtype = _new_for_dc[_vstart + 1:_vend]
-            if _dtype in ('class', 'sequence', 'component'):
-                # Find the "name" key nearby (within 300 chars)
-                _search_end = min(len(_new_for_dc), _vend + 300)
-                _name_idx = _new_for_dc.find('"name"', _vend, _search_end)
-                if _name_idx >= 0:
-                    _ncolon = _new_for_dc.find(':', _name_idx)
-                    if _ncolon >= 0:
-                        _nvstart = _new_for_dc.find('"', _ncolon + 1)
-                        if _nvstart >= 0 and _nvstart < _search_end:
-                            _nvend = _new_for_dc.find('"', _nvstart + 1)
-                            if _nvend >= 0 and _nvend < _search_end:
-                                _dname = _new_for_dc[_nvstart + 1:_nvend]
-                                _dkey = f"{_dtype}:{_dname}"
-                                if _dkey not in self._seen_diagrams:
-                                    self._seen_diagrams.add(_dkey)
-                                    # Look for component_id
-                                    _cid = ""
-                                    _cid_idx = _new_for_dc.find('"component_id"', _vend, _search_end)
-                                    if _cid_idx >= 0:
-                                        _ccolon = _new_for_dc.find(':', _cid_idx)
-                                        if _ccolon >= 0:
-                                            _cvstart = _new_for_dc.find('"', _ccolon + 1)
-                                            if _cvstart >= 0 and _cvstart < _search_end:
-                                                _cvend = _new_for_dc.find('"', _cvstart + 1)
-                                                if _cvend >= 0:
-                                                    _cid = _new_for_dc[_cvstart + 1:_cvend]
-                                    elements.append(('diagram_create', json.dumps({
-                                        'type': _dtype,
-                                        'name': _dname,
-                                        'component_id': _cid,
-                                    })))
-            _dc_idx = _vend + 1
-        self._diagram_scan_pos = max(0, len(self._buf) - 1024)
-
-        # ── Scan new content for component_id values ─────
-        new_text = self._buf[self._scan_pos:]
-        idx = 0
-        while True:
-            idx = new_text.find('"component_id"', idx)
-            if idx < 0:
-                break
-            # Find the colon and value string
-            colon_idx = new_text.find(':', idx)
-            if colon_idx < 0:
-                break
-            val_start = new_text.find('"', colon_idx + 1)
-            if val_start < 0:
-                break
-            val_end = new_text.find('"', val_start + 1)
-            if val_end < 0:
-                break
-            cid = new_text[val_start + 1:val_end]
-            if cid and cid not in self._seen_cids:
-                self._seen_cids.add(cid)
-                elements.append(('diagram_meta', json.dumps({
-                    'component_id': cid,
-                    'diagram_type': self._section or 'class',
-                })))
-            idx = val_end + 1
-        self._scan_pos = max(0, len(self._buf) - 512)
-
-        while self._pos < len(self._buf):
-            c = self._buf[self._pos]
-
-            if self._esc:
-                self._esc = False
-            elif c == '\\' and self._in_str:
-                self._esc = True
-            elif c == '"':
-                self._in_str = not self._in_str
-                if not self._in_str and self._depth == 2:
-                    self._update_section()
-            elif not self._in_str:
-                if c == '{':
-                    if self._depth == 3:
-                        self._elem_start = self._pos
-                    self._depth += 1
-                elif c == '}':
-                    self._depth -= 1
-                    if self._depth == 3 and self._elem_start >= 0:
-                        txt = self._buf[self._elem_start:self._pos + 1]
-                        try:
-                            obj = json.loads(txt)
-                            tp = self._classify(obj)
-                            if tp:
-                                elements.append((tp, txt))
-                        except json.JSONDecodeError:
-                            pass  # incomplete object — wait for more data
-                        self._elem_start = -1
-
-            self._pos += 1
-
-        # Trim consumed prefix to bound memory.
-        # Keep a 512-char window before _pos so backward scans (for section keys,
-        # opening braces) still work after strings cross chunk boundaries.
-        _window = 512
-        if self._elem_start >= 0:
-            _keep = max(0, self._elem_start - _window)
-            self._buf = self._buf[_keep:]
-            self._pos -= _keep
-            self._elem_start -= _keep
-        else:
-            _keep = max(0, self._pos - _window)
-            self._buf = self._buf[_keep:]
-            self._pos -= _keep
-
-        return elements
-
-    def _update_section(self):
-        """Called when a string key closes at depth 2 — update section context."""
-        j = self._pos - 1
-        while j >= 0 and self._buf[j] != '"':
-            j -= 1
-        if j >= 0:
-            key = self._buf[j + 1:self._pos]
-            if key in self._SECTION_KEYS:
-                self._section = key
-
-    def _classify(self, obj: dict) -> str | None:
-        """Determine element type from JSON keys with section-context-aware relation vs comp_rel."""
-        if 'stereotype' in obj:
-            return 'class'
-        if 'from_lifeline' in obj:
-            return 'message'
-        if 'y_start' in obj or 'y_end' in obj:
-            return 'fragment'
-        if 'class_ref' in obj:
-            return 'lifeline'
-        if 'source' in obj and 'target' in obj:
-            return 'comp_rel' if self._section == 'component' else 'relation'
-        if 'parent_id' in obj or 'provided_interfaces' in obj:
-            return 'component'
-        return None
+# ── _JsonElementExtractor 已移至 uml_optimizer.py ──
 
 
 def _normalize_llm_output(data: dict) -> dict:
@@ -1703,19 +1400,33 @@ def _normalize_llm_output(data: dict) -> dict:
         "class_name": "name",
     }
 
+    # Message-field aliases (only applied when parent_key == "messages",
+    # not when inside relations which also have source/target fields).
+    MESSAGE_FIELD_ALIASES = {
+        "source": "from_lifeline",
+        "target": "to_lifeline",
+        "name": "label",
+        "arguments": "label",
+    }
+
     import uuid as _uuid
 
     def walk(obj, parent_key=""):
         if isinstance(obj, dict):
             result = {}
-            # Determine context: is this a message (has from_lifeline/to_lifeline)?
+            # Determine context for alias resolution
             _is_message = "from_lifeline" in obj or "to_lifeline" in obj
+            _is_msg_list = parent_key == "messages"
             for k, v in obj.items():
-                # Remap known alias fields
-                mapped_key = FIELD_ALIASES.get(k, k)
+                # Remap known alias fields (message fields use a different mapping
+                # only when inside a messages array to avoid clashing with relation source/target)
+                if parent_key == "messages":
+                    mapped_key = MESSAGE_FIELD_ALIASES.get(k, FIELD_ALIASES.get(k, k))
+                else:
+                    mapped_key = FIELD_ALIASES.get(k, k)
                 # For sequence messages, "label" is the correct field name (method name).
                 # Only remap label→role_name in relations, not messages.
-                if k == "label" and _is_message:
+                if k == "label" and (_is_message or _is_msg_list):
                     mapped_key = "label"  # keep as-is for messages
                 if k == "visibility" and isinstance(v, str):
                     v = VIS_MAP.get(v.lower(), "+")

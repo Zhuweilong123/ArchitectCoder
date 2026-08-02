@@ -368,6 +368,7 @@ async def _create_dev_agent(
     test_dir: str = "",
     project_file: str = "",
     user_message: str = "",
+    progress: ProgressRelay | None = None,
 ):
     """创建对话 Agent 实例，注册全部 12 个工具 (8 核心 + 4 知识图谱)。
 
@@ -376,7 +377,7 @@ async def _create_dev_agent(
     """
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
-        include_review=True,
+        include_review=True, progress=progress,
     )
 
     # 主 Agent 只保留执行类工具 + 探索入口 explore_project。
@@ -540,22 +541,38 @@ async def _handle_dev(
     chat_log: ChatSessionLogger | None = None,
     trace_log: ChatTraceLogger | None = None,
     project_file: str = "",
+    progress: ProgressRelay | None = None,
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
     该函数同时服务闲聊与开发：agent 依据 system prompt 自行决定
     是否调用工具（闲聊直接文本回复，开发调工具）。
+
+    progress (ProgressRelay): 若提供，则将其 design_element 事件转发
+    到 WebSocket 供前端实时渲染（流式优化模式）。
     """
+
+    async def _on_design_element(ev: dict):
+        """将 ProgressRelay 的 design_element 事件转发为 WebSocket 消息"""
+        if ev.get("event") == "design_element":
+            await _ws_send(websocket, {
+                "event": "design_element",
+                "type": ev.get("type", ""),
+                "data": ev.get("data", ""),
+            })
+
+    if progress:
+        progress.on_progress(_on_design_element)
     try:
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
-        async for progress in agent.arun_stream(user_message):
+        async for step_progress in agent.arun_stream(user_message):
             if stop_check():
                 await _ws_send(websocket, {
                     "event": "stopped", "reason": "User requested stop",
                 })
                 return
 
-            d = progress.to_dict()
+            d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
 
             # 检查是否有审核请求
@@ -592,10 +609,10 @@ async def _handle_dev(
 
             # 记录完整工具调用与返回（在截断发给前端之前）
             if chat_log:
-                chat_log.add_dev_step(progress)
+                chat_log.add_dev_step(step_progress)
             if trace_log:
                 trace_log.agent_step(
-                    step=d["step"], thought=progress.thought or "",
+                    step=d["step"], thought=step_progress.thought or "",
                     actions=d["actions"], is_final=d["is_final"],
                 )
                 for td in d.get("tool_calls_detail", []):
@@ -629,18 +646,21 @@ async def _handle_dev(
             if not ok:
                 return
 
-            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端刷新画布
+            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端 DiffViewer 审核
             for td in d.get("tool_calls_detail", []):
                 if td.get("name") == "optimize_uml":
+                    obs_str = str(td.get("observation", ""))
                     try:
-                        obs = json.loads(td.get("observation", ""))
+                        obs = json.loads(obs_str)
                     except (TypeError, json.JSONDecodeError):
                         obs = None
                     if isinstance(obs, dict) and obs.get("diagrams"):
+                        saved_to = obs.get("saved_to", "")
                         await _ws_send(websocket, {
                             "event": "design_updated",
                             "diagrams": obs.get("diagrams", []),
-                            "saved_to": obs.get("saved_to", ""),
+                            "saved_to": saved_to,
+                            "review": True,  # 始终需要用户审核确认
                         })
                     break
 
@@ -699,6 +719,7 @@ async def agent_chat_ws(websocket: WebSocket):
     llm: BaseAgentsLLM | None = None
     dev_agent: ReActAgent | None = None
     review_mgr = None
+    progress: ProgressRelay | None = None
     stop_requested = False
     source_dir = ""
     test_dir = ""
@@ -744,13 +765,16 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:
+                    progress = ProgressRelay()
                     dev_agent, review_mgr = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
+                        progress=progress,
                     )
 
                 await _handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     chat_log=chat_log, trace_log=trace_log, project_file=project_file,
+                    progress=progress,
                 )
 
             # ── 停止对话 ──
