@@ -10,6 +10,7 @@ ProjectInfoTool 零参数，调用时返回当前项目的文件级信息：
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List
 
 from app.agent_base.tools.base import Tool, ToolParameter
@@ -145,13 +146,17 @@ class ReadFileTool(Tool):
         super().__init__(
             name="read_file",
             description=(
-                "Read the full content of a file inside the project. Input a file "
-                "path (relative to the project root or absolute); returns the file "
-                "content. Use to: view the complete JSON of a .umlproj design, read "
-                "source/test file contents, or verify design details. The knowledge "
-                "graph only provides summaries; this tool provides the raw content. "
-                "Read scope is limited to project directories (design file, source "
-                "directory, test directory)."
+                "Read a file inside the project. Input a file path (relative to the "
+                "project root or absolute); returns the file content. Supports two "
+                "paging modes: by line (start_line/line_count — use this to jump "
+                "straight to a line reported by grep) or by character (offset/limit). "
+                "Line numbers are 1-based and returned by grep, so you can feed "
+                "grep's line number directly into start_line. Use to: view the "
+                "complete JSON of a .umlproj design, read source/test file contents, "
+                "or verify design details. The knowledge graph only provides "
+                "summaries; this tool provides the raw content. Read scope is "
+                "limited to project directories (design file, source directory, "
+                "test directory)."
             ),
         )
         self.source_dir = source_dir
@@ -170,6 +175,29 @@ class ReadFileTool(Tool):
                     "design file, source directory, or test directory."
                 ),
                 required=True,
+            ),
+            ToolParameter(
+                name="start_line",
+                type="integer",
+                description=(
+                    "Optional 1-based starting line number to read from. Use with "
+                    "line_count to jump directly to a line reported by grep (e.g. "
+                    "grep returned 'file.py:942' → start_line=942). Mutually "
+                    "exclusive with offset."
+                ),
+                required=False,
+                default=None,
+            ),
+            ToolParameter(
+                name="line_count",
+                type="integer",
+                description=(
+                    "Optional number of lines to read from start_line. Default is "
+                    "up to 500 lines (bounded by max_chars). Only valid with "
+                    "start_line."
+                ),
+                required=False,
+                default=None,
             ),
             ToolParameter(
                 name="offset",
@@ -257,7 +285,36 @@ class ReadFileTool(Tool):
         if not os.path.isfile(resolved):
             return f"文件不存在: {raw_path}"
 
-        # ── 分页：offset/limit（字符偏移），支持大文件分段读取 ──
+        # ── 行号模式（start_line/line_count）：优先，与 grep 行号衔接 ──
+        start_line = parameters.get("start_line")
+        if start_line is not None:
+            try:
+                start_line = max(1, int(start_line))
+                line_count = int(parameters.get("line_count") or 500)
+                line_count = max(1, min(line_count, 2000))
+            except (TypeError, ValueError):
+                return "start_line / line_count 必须为整数。"
+
+            lines: list[str] = []
+            try:
+                with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+                    for lineno, line in enumerate(f, 1):
+                        if lineno < start_line:
+                            continue
+                        if lineno >= start_line + line_count:
+                            break
+                        lines.append(line.rstrip("\n"))
+            except OSError as e:
+                return f"读取失败: {e}"
+
+            line_end = start_line + len(lines) - 1 if lines else start_line - 1
+            block = "\n".join(lines)
+            if len(block) > self.max_chars:
+                block = block[: self.max_chars] + "\n...[行数已按字符上限截断，可用更小的 line_count 继续]"
+            meta = [f"【{os.path.basename(resolved)}】 第 {start_line}–{line_end} 行（1-based）"]
+            return "\n".join(meta + [block])
+
+        # ── 字符偏移模式（offset/limit）──
         offset = parameters.get("offset") or 0
         limit = parameters.get("limit") or self.max_chars
         try:
@@ -303,13 +360,16 @@ class GrepFileTool(Tool):
         super().__init__(
             name="grep",
             description=(
-                "Search for a keyword (substring) inside project files and return "
-                "matching line numbers with context. Use when you need to locate a "
-                "specific field, JSON key, class/method name, or snippet without "
-                "reading whole files. Inputs: pattern (the substring to search), "
-                "path (optional — a single file; if omitted, searches all files in "
-                "the project: design file, source directory, test directory). "
-                "Returns up to a few matches per file with line numbers."
+                "Search for a keyword (regular expression) inside project files and "
+                "return matching line numbers with context. Use when you need to "
+                "locate a specific field, JSON key, class/method name, or snippet "
+                "without reading whole files. Supports regex: e.g. 'fragments|messages' "
+                "matches either word, '\\\\\"type\\\\\": \\\\\"association' finds association-"
+                "typed fields. Inputs: pattern (the regex to search, default substring "
+                "match if not a valid regex), path (optional — a single file; if "
+                "omitted, searches all files in the project: design file, source "
+                "directory, test directory). Returns up to a few matches per file "
+                "with line numbers."
             ),
         )
         self.source_dir = source_dir
@@ -388,6 +448,14 @@ class GrepFileTool(Tool):
         if len(pattern) > 200:
             return "pattern 过长（最多 200 字符）。"
 
+        # 优先按正则编译；非法正则回退为字面子串匹配
+        try:
+            matcher = re.compile(pattern)
+            use_regex = True
+        except re.error:
+            matcher = None
+            use_regex = False
+
         raw_path = parameters.get("path")
         if raw_path:
             target = self._resolve_allowed_path(str(raw_path).strip())
@@ -403,7 +471,8 @@ class GrepFileTool(Tool):
             try:
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                     for lineno, line in enumerate(f, 1):
-                        if pattern in line:
+                        hit = matcher.search(line) if use_regex else (pattern in line)
+                        if hit:
                             total_hits += 1
                             snippet = line.strip()[:200]
                             if total_hits <= self.max_matches:
@@ -413,10 +482,11 @@ class GrepFileTool(Tool):
             except OSError:
                 continue
 
+        mode = "正则" if use_regex else "字面"
         if total_hits == 0:
-            return f"在 {len(files)} 个文件中未找到 '{pattern}'。"
+            return f"在 {len(files)} 个文件中未找到 '{pattern}'（{mode}匹配）。"
 
-        summary = f"找到 {total_hits} 处匹配（{len(files)} 个文件），显示前 {min(total_hits, self.max_matches)} 处："
+        summary = f"找到 {total_hits} 处匹配（{len(files)} 个文件，{mode}匹配），显示前 {min(total_hits, self.max_matches)} 处："
         if total_hits > self.max_matches:
             summary += f"\n...（还有 {total_hits - self.max_matches} 处未显示，可缩小 pattern 或指定单个文件）"
         return "\n".join([summary] + lines_out)
