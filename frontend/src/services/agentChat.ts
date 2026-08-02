@@ -56,6 +56,7 @@ export interface AgentDesignUpdatedEvent {
   event: 'design_updated';
   diagrams: Array<{ type: string; name: string; component_id: string; data: Record<string, unknown> }>;
   saved_to?: string;
+  review?: boolean;
 }
 
 export interface AgentDesignElementEvent {

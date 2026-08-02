@@ -364,8 +364,39 @@ const AgentChat: React.FC = () => {
         case 'design_updated': {
           const diagrams = event.diagrams;
           if (Array.isArray(diagrams) && diagrams.length > 0) {
-            useDiagramStore.getState().addDiagramsFromSpec(diagrams);
-            useDiagramStore.getState().triggerRecenter();
+            if (event.review) {
+              // 需要用户审核 → 推送到 DiffViewer 对比面板
+              const uiState = useUiStore.getState();
+              const store = useDiagramStore.getState();
+              // Build originals from current project state
+              const originals: Record<string, any> = {};
+              const optimizeds: Record<string, any> = {};
+              const diffs: Record<string, string> = {};
+              for (const spec of diagrams) {
+                const dtype = spec.type || 'class';
+                // Find existing diagram of this type
+                const existing = store.project.diagrams.find(
+                  d => (d.diagram_type || 'class') === dtype
+                );
+                const orig = existing || {};
+                const opt = spec.data || spec;
+                originals[dtype] = orig;
+                optimizeds[dtype] = { ...orig, ...opt };
+                diffs[dtype] = JSON.stringify({
+                  before: orig,
+                  after: optimizeds[dtype],
+                }, null, 2);
+              }
+              uiState.setGlobalOptimizationResult(
+                originals, optimizeds, diffs, [], ''
+              );
+              uiState.setRightPanelTab('diff');
+              uiState.setRightPanelVisible(true);
+            } else {
+              // 直接更新画布（已落盘或无审核标记）
+              useDiagramStore.getState().addDiagramsFromSpec(diagrams);
+              useDiagramStore.getState().triggerRecenter();
+            }
           }
           break;
         }

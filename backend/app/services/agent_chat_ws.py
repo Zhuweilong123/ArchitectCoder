@@ -646,7 +646,8 @@ async def _handle_dev(
             if not ok:
                 return
 
-            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端刷新画布
+            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端 DiffViewer 审核
+            # save_to_project=true 时 LLM 已直接落盘，跳过审核直接更新画布
             for td in d.get("tool_calls_detail", []):
                 if td.get("name") == "optimize_uml":
                     obs_str = str(td.get("observation", ""))
@@ -655,10 +656,12 @@ async def _handle_dev(
                     except (TypeError, json.JSONDecodeError):
                         obs = None
                     if isinstance(obs, dict) and obs.get("diagrams"):
+                        saved_to = obs.get("saved_to", "")
                         await _ws_send(websocket, {
                             "event": "design_updated",
                             "diagrams": obs.get("diagrams", []),
-                            "saved_to": obs.get("saved_to", ""),
+                            "saved_to": saved_to,
+                            "review": not bool(saved_to),  # 未落盘 → 需要用户审核
                         })
                     break
 
