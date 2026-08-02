@@ -410,6 +410,13 @@ async def _create_dev_agent(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
 
+    # ── 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）──
+    from app.agent_base.tools.my_tools.explore_project_tools import create_explore_project_tool
+    registry.register_tool(create_explore_project_tool(
+        llm=llm, project_file=project_file,
+        source_dir=source_dir, test_dir=test_dir,
+    ))
+
     base_prompt = (
         "You are an AI development assistant. Follow these principles:\n"
         "- Give direct answers; do not restate the user's question.\n"
@@ -420,7 +427,9 @@ async def _create_dev_agent(
         "scenarios or do extra refactoring.\n"
         "- Do not add comments or use emojis in code (unless explicitly requested).\n"
         "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
-        "commenting, or chatting), reply briefly without calling any tools."
+        "commenting, or chatting), reply briefly without calling any tools.\n"
+        "- For summarizing or overviewing the project's design/code/tests, call "
+        "explore_project instead of reading many files yourself."
     )
     # 注入项目历史记忆（跨任务 recall）
     project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
