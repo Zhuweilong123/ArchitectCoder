@@ -178,21 +178,24 @@ Phase 3: refine  → 根据反馈重新生成
 
 **Hook 机制（关键特性）：**
 
-- `reflect_hook(task, content, context) → feedback_str`：注入外部验证工具实现客观化反馈。返回空字符串表示通过，停止迭代；返回问题描述则注入 prompt 触发 refine。
-- `post_process(content) → processed_content`：每轮 refine 后和最终结果都会调用的后处理 Hook。
+- `validate(content) → feedback_str`：注入外部验证工具实现客观化反馈。返回空字符串表示通过，停止迭代；返回问题描述则作为补充消息追加到对话中，触发 LLM 修正。
+- 使用 `messages` 列表维护全对话上下文，原始需求永远在 `messages[0]` 中，LLM 每轮都能看到完整历史。
 
 ```python
-def pytest_validate(task, content, context):
+def pytest_validate(content):
     """用 pytest 验证代码，而非 LLM 自省"""
     result = run_pytest(content)
     if result.passed:
         return ""                     # 通过 → 停止迭代
     return f"测试失败:\n{result.output}"  # 失败 → 触发 refine
 
-answer = agent.run("修复 bug", reflect_hook=pytest_validate)
+answer = agent.run("修复 bug", validate=pytest_validate)
 ```
 
-**UML 优化场景：** `UmlOptimizer` 用此模式替代了旧版单次 `chat()` 调用——initial 生成设计 → reflect 交叉验证跨图一致性 → refine 修正。
+# 旧的 3 参数 API（见下方）。
+```
+
+**UML 优化场景：** `UmlOptimizer` 用此模式替代了旧版单次 `chat()` 调用——initial 生成设计 → 程序化验证跨图一致性 → 反馈注入 messages → LLM 根据对话历史修正。
 
 ### 4. PlanAndSolveAgent — 先规划后执行
 

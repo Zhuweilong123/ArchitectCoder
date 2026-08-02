@@ -195,55 +195,30 @@ class CodeFixer:
             "test_code": test_text,
         }, ensure_ascii=False)
 
-        # ── 预填充 initial prompt — 绕过 ReflectionAgent 的 .format() ──
-        # ReflectionAgent.run() 会调用 prompts["initial"].format(task=..., context=...)
-        # 我们的模板用 {task} 和 {context} 占位符（匹配 ReflectionAgent 的调用），
-        # 源码和测试代码作为 JSON 放在 context 里，避免被二次解析
-        FIXER_PROMPTS_SIMPLE = {
-            "initial": (
-                "You are a professional Python code fixing expert.\n\n"
-                "## Task:\n{task}\n\n"
-                "## Project context:\n{context}\n\n"
-                "Analyze the source and test code, fix the bugs in the source so "
-                "that all tests pass.\n"
-                "Output only the fixed complete source files (mark each file with "
-                "### filename), no other explanation."
-            ),
-            "reflect": (
-                "You are a code review expert. Review the fixed code below.\n\n"
-                "## Code:\n{content}\n\n"
-                "## Automated test result:\n{auto_feedback}\n\n"
-                "Analyze: 1. Which tests still fail? 2. Is the fix correct? "
-                "3. Any unhandled edge cases?\n"
-                "If all tests pass and the fix is correct, reply \"no improvement "
-                "needed\". Otherwise give specific modification suggestions."
-            ),
-            "refine": (
-                "You are a code fixing expert. Fix the code based on the "
-                "feedback.\n\n"
-                "## Previous code:\n{last_attempt}\n\n"
-                "## Review feedback:\n{feedback}\n\n"
-                "Output only the fixed complete code files, marking each file's "
-                "start with ### filename."
-            ),
-        }
+        # ── 构建统一 prompt（源码+测试+修复指令打包进第一条消息）──
+        task_text = task or "Fix the source code to make all tests pass."
+        prompt = (
+            f"## Task\n{task_text}\n\n"
+            f"## Project context\n{safe_context}\n\n"
+            "Analyze the source and test code, fix the bugs in the source so "
+            "that all tests pass.\n"
+            "Output only the fixed complete source files (mark each file with "
+            "### filename), no other explanation."
+        )
 
         # 创建 ReflectionAgent
         agent = ReflectionAgent(
             name="CodeFixer",
             llm=self.llm,
             max_iterations=self.max_iterations,
-            custom_prompts=FIXER_PROMPTS_SIMPLE,
-            context=safe_context,
         )
 
         logger.info("[CodeFixer] Starting fix loop: %d iterations max", self.max_iterations)
 
-        # 运行 ReflectionAgent — input_text 映射到 initial 模板的 {task}
+        # 运行 ReflectionAgent
         final_answer = agent.run(
-            input_text=task,
-            reflect_hook=self._make_pytest_hook(source_code, test_code),
-            post_process=self._extract_code_files,
+            input_text=prompt,
+            validate=self._make_pytest_hook(source_code, test_code),
         )
 
         # 最终测试运行
@@ -275,8 +250,8 @@ class CodeFixer:
     ):
         """创建 pytest 验证 hook — 返回闭包给 ReflectionAgent 的 reflect_hook。"""
 
-        def hook(task: str, content: str, context: str) -> str:
-            """ReflectionAgent reflect_hook: 跑 pytest 验证当前代码。"""
+        def hook(content: str) -> str:
+            """验证 hook: 跑 pytest 验证当前代码。"""
             current_source = self._parse_code_files(content, source_code)
             return self._pytest_validate(current_source, test_code)
 
