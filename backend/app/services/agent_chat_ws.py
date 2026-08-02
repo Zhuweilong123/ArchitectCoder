@@ -632,8 +632,9 @@ async def _handle_dev(
             # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端刷新画布
             for td in d.get("tool_calls_detail", []):
                 if td.get("name") == "optimize_uml":
+                    obs_str = str(td.get("observation", ""))
                     try:
-                        obs = json.loads(td.get("observation", ""))
+                        obs = json.loads(obs_str)
                     except (TypeError, json.JSONDecodeError):
                         obs = None
                     if isinstance(obs, dict) and obs.get("diagrams"):

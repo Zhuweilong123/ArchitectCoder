@@ -394,21 +394,22 @@ class ReActAgent(Agent):
                     result = await self.tool_registry.aexecute_tool_with_params(
                         tool_name, tool_args,
                     )
-                observation = str(result)[:2000]
+                observation_full = str(result)
+                observation_short = observation_full[:2000]
 
                 self.current_history.append(
                     f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
-                    f" → {observation[:150]}"
+                    f" → {observation_short[:150]}"
                 )
                 tool_results.append({
                     "tool_call_id": tc["id"],
-                    "content": observation,
+                    "content": observation_short,
                 })
                 actions.append(tool_name)
                 details.append({
                     "name": tool_name,
                     "arguments": tool_args,
-                    "observation": observation,
+                    "observation": observation_full,
                 })
                 logger.info("  🔧 %s(%s) → %s",
                            tool_name,
