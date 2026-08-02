@@ -315,16 +315,18 @@ class OptimizeUmlTool(AsyncTool):
                 "status": "done",
             })
 
-            # ── 3) 可选落盘：把优化后的 diagrams 写回 .umlproj ──
+            # ── 3) 可选落盘：只有优化成功时才写回 .umlproj ──
             save_to_project = bool(params.get("save_to_project", False))
             saved_path = ""
-            if save_to_project and loaded_from and result.get("diagrams"):
+            changes_summary = result.get("changes_summary", "")
+            optimization_failed = changes_summary.startswith("Optimization failed:")
+            if save_to_project and loaded_from and result.get("diagrams") and not optimization_failed:
                 saved_path = self._save_to_project(loaded_from, result["diagrams"])
 
             out = {
                 "diagrams": result.get("diagrams", []),
                 "design_constraints": result.get("design_constraints", {}),
-                "changes_summary": result.get("changes_summary", ""),
+                "changes_summary": changes_summary,
                 "consistency_report": result.get("consistency_report", []),
             }
             if saved_path:

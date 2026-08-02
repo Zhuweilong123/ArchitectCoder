@@ -37,6 +37,7 @@ class NodeType(str, Enum):
     METHOD      = "method"        # 类方法 / 文件级函数
     ATTRIBUTE   = "attribute"     # 类属性 / 字段
     INTERFACE   = "interface"     # 提供 / 需要的接口 (独立节点, 可跨组件链接)
+    FRAGMENT    = "fragment"      # 时序图片段 (loop / alt / opt / par 等组合片段)
 
 
 # ── Edge Type ──────────────────────────────────────────────────
@@ -58,6 +59,7 @@ class EdgeType(str, Enum):
     TESTS          = "tests"           # 测试覆盖 (TestFile → SourceFile)
     REFERENCES     = "references"      # 泛引用 (SourceFile / Method → anything)
     MESSAGES       = "messages"        # 时序消息 (Lifeline → Lifeline)
+    FRAGMENTS      = "fragments"       # 时序图片段 (Diagram → Fragment)
 
 
 # ── Diff category ──────────────────────────────────────────────
@@ -343,4 +345,6 @@ class BuildStats:
 |              |  is_abstract}                                          |
 | ATTRIBUTE    | {type, visibility, is_static, default_value}           |
 | INTERFACE    | {direction: "provided"/"required", component_id}       |
+| FRAGMENT     | {fragment_type: "loop"/"alt"/"opt"/..., x, width,       |
+|              |  y_start, y_end}                                       |
 """

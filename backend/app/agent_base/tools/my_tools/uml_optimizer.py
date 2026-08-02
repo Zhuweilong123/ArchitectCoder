@@ -41,19 +41,27 @@ logger = logging.getLogger(__name__)
 
 
 def _make_reflection_llm(llm: BaseAgentsLLM) -> BaseAgentsLLM:
-    """为 ReflectionAgent 创建一个使用 v4-pro 模型的 LLM 副本。
+    """Create a v4-pro model LLM copy for the ReflectionAgent's initial generation.
 
-    ReflectionAgent 的 initial 阶段需要生成大量 JSON（3 张图），
-    v4-flash 的 max_tokens 不足以一次输出完整设计，导致被截断。
-    v4-pro 支持更大的输出窗口（实测 8192+ tokens）。
+    ReflectionAgent's initial phase needs to output large JSON (3 diagrams),
+    and v4-flash's max_tokens isn't enough for a single complete design output,
+    leading to truncation. v4-pro supports a larger output window (tested 8192+).
+
+    Uses manual attribute copy instead of deepcopy because BaseAgentsLLM holds
+    OpenAI client instances that internally contain _thread.RLock objects which
+    cannot be pickled.
     """
-    from copy import deepcopy
-    _llm = deepcopy(llm)
-    _llm.model = _llm.model.replace("flash", "pro") if "flash" in _llm.model else "deepseek-v4-pro"
+    _llm = BaseAgentsLLM.__new__(BaseAgentsLLM)
+    _llm.provider = llm.provider
+    _llm.api_key = llm.api_key
+    _llm.base_url = llm.base_url
+    _llm.temperature = llm.temperature
     _llm.max_tokens = 8192
-    # 同步 client 也需要重建（invoke 用同步 client）
+    _llm.timeout = llm.timeout
+    _llm.model = llm.model.replace("flash", "pro") if "flash" in llm.model else "deepseek-v4-pro"
     from openai import OpenAI
     _llm._client = OpenAI(api_key=_llm.api_key, base_url=_llm.base_url, timeout=_llm.timeout)
+    _llm._async_client = None
     return _llm
 
 
