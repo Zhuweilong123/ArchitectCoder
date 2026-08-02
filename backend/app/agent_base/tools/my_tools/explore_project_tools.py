@@ -267,6 +267,29 @@ class ExploreProjectTool(AsyncTool):
             ),
         ]
 
+    def to_openai_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "what": {
+                            "type": "string",
+                            "description": "Resource to explore: 'uml' | 'source' | 'test' | 'all'. 'all' explores whichever resources exist.",
+                        },
+                        "question": {
+                            "type": "string",
+                            "description": "The question to answer about the resource, e.g. 'summarize the design', 'list the main classes'.",
+                        },
+                    },
+                    "required": ["what"],
+                },
+            },
+        }
+
     async def _execute(self, params: dict) -> str:
         what = str(params.get("what", "all")).strip().lower()
         question = str(params.get("question", "summarize the structure")).strip() or "summarize the structure"
