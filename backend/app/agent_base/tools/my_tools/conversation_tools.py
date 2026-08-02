@@ -220,7 +220,11 @@ class OptimizeUmlTool(AsyncTool):
         instructions = params.get("instructions", "")
 
         # ── 1) 优先从 project_file 加载现有图 ──
-        project_file = params.get("project_file") or self.project_file
+        # self.project_file (构造时注入的实际路径) 优先级高于 LLM 传入的猜测值。
+        # LLM 可能猜错文件名（如 "radar_uml.umlproj" vs 实际 "radar_design_0730.umlproj"），
+        # 所以只用 LLM 的 project_file 当 self.project_file 未设置时作为回退。
+        llm_project_file = params.get("project_file", "")
+        project_file = self.project_file or llm_project_file
         diagrams: list[dict] = []
         loaded_from = ""
         if project_file and os.path.isfile(project_file):
@@ -231,6 +235,12 @@ class OptimizeUmlTool(AsyncTool):
                 loaded_from = project_file
             except Exception as e:
                 logger.warning("[OptimizeUmlTool] load_project failed: %s", e)
+        elif llm_project_file and not os.path.isfile(llm_project_file):
+            # LLM 传了错的路径 — 给明确错误信息让 Agent 纠正
+            logger.warning(
+                "[OptimizeUmlTool] project_file not found: '%s' (self.project_file='%s')",
+                llm_project_file, self.project_file,
+            )
 
         # ── 2) 回退：用 diagrams_json 传入的图列表 ──
         if not diagrams:
@@ -247,6 +257,27 @@ class OptimizeUmlTool(AsyncTool):
 
         logger.info("[OptimizeUmlTool] %d diagrams (from %s), instructions=%s",
                     len(diagrams), loaded_from or "diagrams_json", instructions[:80])
+
+        # ── 安全阀：无图可改且无 project_file → 不触发"从零生成" ──
+        if not diagrams and not loaded_from:
+            msg = (
+                "No diagrams found to modify. The project_file was not provided or "
+                "is invalid. Provide the correct .umlproj path as project_file, "
+                "or pass the existing diagrams via diagrams_json."
+            )
+            if llm_project_file and not os.path.isfile(llm_project_file):
+                msg = (
+                    f"Project file '{llm_project_file}' not found. "
+                    "Ask explore_project or the user for the correct .umlproj path, "
+                    "then retry with the correct project_file."
+                )
+            return json.dumps({
+                "error": msg,
+                "diagrams": [],
+                "design_constraints": {},
+                "changes_summary": "No design data available to modify",
+                "consistency_report": [{"severity": "error", "msg": msg}],
+            }, ensure_ascii=False)
 
         try:
             optimizer = UmlOptimizer(self.llm, max_iterations=3)
