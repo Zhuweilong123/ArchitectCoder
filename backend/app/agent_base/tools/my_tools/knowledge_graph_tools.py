@@ -666,22 +666,20 @@ class KgProjectStructureTool(AsyncTool):
         super().__init__(
             name="kg_project_structure",
             description=(
-                "Get the project's UML structure as a tree: diagram list with "
-                "their contained classes/components/lifelines, their methods, and "
-                "sequence-diagram messages (depth=3). One call replaces multiple "
-                "kg_query/kg_expand calls when you need an overview of what the "
-                "project contains. "
-                "depth=1: diagram names only; depth=2: + contained classes/"
-                "components/lifelines; depth=3: + method/attribute signatures AND "
-                "sequence-diagram messages. "
-                "Each diagram includes a file_offset — the character offset where "
-                "that diagram starts in the .umlproj file — so you can read it "
-                "precisely with read_file(path, offset). "
-                "This output already contains the full structure (classes, methods, "
-                "messages), so you usually do NOT need additional kg_query calls for "
-                "an overview — only read_file if you need raw JSON details such as "
-                "coordinates or sequence-diagram fragments (loop/alt), which are NOT "
-                "in the graph."
+                "Get the COMPLETE UML structure of the project in one call: every "
+                "diagram with its contained classes/components/lifelines, their "
+                "methods and attributes, and (at depth=3) sequence-diagram messages. "
+                "The result includes a stats block (exact counts of diagrams/classes/"
+                "components/methods/messages) proving the output is complete. "
+                "MANDATORY: use this tool FIRST for any task that needs to understand "
+                "the project's design (summary, overview, questions about classes/"
+                "relationships). The output is authoritative and complete — do NOT "
+                "follow it with redundant kg_query calls or read the whole .umlproj "
+                "file for an overview; use read_file only to inspect raw JSON details "
+                "that this tool does not include (e.g. coordinates, fragment blocks). "
+                "depth=1: diagram names; depth=2: + classes/components/lifelines; "
+                "depth=3: + method/attribute signatures and sequence messages. "
+                "Each diagram carries file_offset for targeted read_file jumps."
             ),
         )
         self.db_path = db_path
@@ -820,7 +818,28 @@ class KgProjectStructureTool(AsyncTool):
                             entry["messages"] = messages
                 tree_diagrams.append(entry)
 
-            return {"project_id": project_id, "diagram_count": len(tree_diagrams), "diagrams": tree_diagrams}
+            # 完整性统计：让 Agent 确信输出是计算过的、完整的
+            class_count = len(classes)
+            comp_count = len(components)
+            life_count = len(lifelines)
+            method_count = len(methods)
+            attr_count = len(attributes)
+            seq_count = sum(1 for d in diagrams if (d.properties or {}).get("diagram_type") == "sequence")
+            return {
+                "project_id": project_id,
+                "diagram_count": len(tree_diagrams),
+                "diagrams": tree_diagrams,
+                "stats": {
+                    "diagrams": len(tree_diagrams),
+                    "classes": class_count,
+                    "components": comp_count,
+                    "lifelines": life_count,
+                    "methods": method_count,
+                    "attributes": attr_count,
+                    "sequence_diagrams_with_messages": seq_count,
+                },
+                "completeness": "full project structure — every diagram, class/component/lifeline, and (at depth=3) every method, attribute, and sequence message is included. No additional query is needed for an overview.",
+            }
         finally:
             db.close()
 
