@@ -912,12 +912,16 @@ class GraphBuilder:
             frag_id = getattr(frag, "id", "")
             frag_type = getattr(frag, "type", "")
             frag_label = getattr(frag, "label", "")
+            # Include frag_id in name to avoid unique-constraint collisions
+            # when multiple fragments share the same type+label (e.g. two loop
+            # fragments both labeled "[retry up to 3 times]").
+            frag_name = f"{frag_label or frag_type} ({frag_id})"
             frag_node_id = self._make_id("fragment", project_id,
-                                         f"{frag_type}:{frag_label}", "design")
+                                         frag_name, "design")
             frag_node = GraphNode(
                 id=frag_node_id,
                 node_type=NodeType.FRAGMENT,
-                name=frag_label or frag_type,
+                name=frag_name,
                 project_id=project_id,
                 source="design",
                 properties={
