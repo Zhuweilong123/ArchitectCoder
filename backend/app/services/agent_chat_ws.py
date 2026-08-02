@@ -634,7 +634,7 @@ async def _handle_dev(
                     {
                         "name": td.get("name", ""),
                         "arguments": td.get("arguments", {}),
-                        "observation": str(td.get("observation", ""))[:500],
+                        "observation": str(td.get("observation", ""))[:3000],
                     }
                     for td in d.get("tool_calls_detail", [])[:5]
                 ],

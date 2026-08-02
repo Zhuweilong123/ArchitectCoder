@@ -83,7 +83,7 @@ async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, q
         f"{json.dumps(structure, ensure_ascii=False)[:6000]}\n\n"
         f"## 用户问题\n{question}\n\n"
         f"请基于结构直接回答，输出简洁总结，覆盖: 有哪些图、每张图的组成、"
-        f"关键类与方法、时序流程。不要提及结构被截断。"
+        f"关键类与方法、时序流程。控制在 1500 字符内，不要提及结构被截断。"
     )
     return await llm.ainvoke([{"role": "user", "content": prompt}])
 
@@ -124,7 +124,7 @@ async def _explore_source(llm: BaseAgentsLLM, source_dir: str, question: str) ->
         f"根据以下项目的源代码文件，用中文回答用户问题。\n\n"
         f"## 源码文件\n{src_text}\n\n"
         f"## 用户问题\n{question}\n\n"
-        f"请总结项目的代码结构、主要模块与职责。"
+        f"请总结项目的代码结构、主要模块与职责。控制在 1500 字符内。"
     )
     return await llm.ainvoke([{"role": "user", "content": prompt}])
 
@@ -150,7 +150,7 @@ async def _explore_test(llm: BaseAgentsLLM, test_dir: str, question: str) -> str
         f"根据以下项目的测试文件，用中文回答用户问题。\n\n"
         f"## 测试文件\n{test_text}\n\n"
         f"## 用户问题\n{question}\n\n"
-        f"请总结测试覆盖的范围、测试了哪些模块与功能。"
+        f"请总结测试覆盖的范围、测试了哪些模块与功能。控制在 1500 字符内。"
     )
     return await llm.ainvoke([{"role": "user", "content": prompt}])
 
