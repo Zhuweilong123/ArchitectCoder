@@ -680,6 +680,16 @@ async def agent_chat_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         stop_requested = True
         logger.info("[AgentChat] WebSocket disconnected")
+    except RuntimeError as e:
+        # 前端断开时 Starlette 会在 receive_text()/send_json() 抛这个错误；
+        # 识别为正常断开，优雅收尾，不当作服务端错误处理。
+        if "WebSocket is not connected" in str(e) or "not connected" in str(e):
+            stop_requested = True
+            logger.info("[AgentChat] WebSocket closed (client disconnected)")
+        else:
+            logger.exception("[AgentChat] Unexpected error")
+            chat_log.add_error(f"Server error: {e}")
+            trace_log.error(event_type="server", message=f"Server error: {e}")
     except Exception as e:
         logger.exception("[AgentChat] Unexpected error")
         chat_log.add_error(f"Server error: {e}")
