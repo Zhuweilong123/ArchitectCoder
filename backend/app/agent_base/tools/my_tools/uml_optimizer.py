@@ -56,7 +56,7 @@ def _make_reflection_llm(llm: BaseAgentsLLM) -> BaseAgentsLLM:
     _llm.api_key = llm.api_key
     _llm.base_url = llm.base_url
     _llm.temperature = llm.temperature
-    _llm.max_tokens = 8192
+    _llm.max_tokens = 16384
     _llm.timeout = llm.timeout
     _llm.model = llm.model.replace("flash", "pro") if "flash" in llm.model else "deepseek-v4-pro"
     from openai import OpenAI

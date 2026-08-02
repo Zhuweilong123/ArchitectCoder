@@ -861,13 +861,24 @@ def _build_global_prompt(
         pass
     global_guide = "\n\n".join(guide_parts) if guide_parts else ""
 
-    # Collect existing diagram data from list
+    # Collect existing diagram data from list.
+    # Only include FULL JSON for diagrams the user explicitly asked to modify;
+    # other diagrams are summarized via the index block to keep prompt size manageable.
     parts = []
     if diagrams:
+        # Determine which diagrams the user is targeting (fuzzy match on instructions)
+        target_diagrams: set[str] = set()  # set of (type, name) keys
+        if instructions:
+            il = instructions.lower()
+            for d in diagrams:
+                dtype = d.get("diagram_type") or d.get("type") or "class"
+                dname = d.get("name", "Untitled")
+                if dname.lower() in il or (dtype in ("sequence",) and "时序" in instructions):
+                    target_diagrams.add(f"{dtype}:{dname}")
+
         for d in diagrams:
             dtype = d.get("diagram_type") or d.get("type") or "class"
             dname = d.get("name", "Untitled")
-            # Check both top-level AND data-wrapped fields (supports both API formats)
             _inner = d.get("data") or {}
             has_content = False
             if dtype in ("class",):
@@ -883,10 +894,38 @@ def _build_global_prompt(
                 has_content = bool(d.get("classes") or d.get("lifelines") or d.get("components")
                                    or _inner.get("classes") or _inner.get("lifelines") or _inner.get("components"))
             if has_content:
+                key = f"{dtype}:{dname}"
+                is_target = key in target_diagrams
                 _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
                                 "component": "Component Diagram"}
                 label = _type_labels.get(dtype, f"{dtype} Diagram")
-                parts.append(f"""## {label} "{dname}":
+                if is_target:
+                    parts.append(f"""## {label} "{dname}" (FULL — optimize this diagram):
+```json
+{json.dumps(d, indent=2, ensure_ascii=False)}
+```""")
+                else:
+                    # Summary only — the index block already covers key info
+                    parts.append(f"""- {label} "{dname}" ({dtype}) — see index above for structure""")
+        # If no specific targets were identified, fall back to including all full diagrams
+        # so the LLM can determine which ones need changes.
+        if not target_diagrams:
+            parts.clear()
+            for d in diagrams:
+                dtype = d.get("diagram_type") or d.get("type") or "class"
+                dname = d.get("name", "Untitled")
+                _inner = d.get("data") or {}
+                has_content = bool(
+                    d.get("classes") or d.get("relations") or d.get("lifelines")
+                    or d.get("messages") or d.get("fragments") or d.get("components")
+                    or d.get("comp_relations")
+                    or _inner.get("classes") or _inner.get("lifelines") or _inner.get("components")
+                )
+                if has_content:
+                    _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
+                                    "component": "Component Diagram"}
+                    label = _type_labels.get(dtype, f"{dtype} Diagram")
+                    parts.append(f"""## {label} "{dname}":
 ```json
 {json.dumps(d, indent=2, ensure_ascii=False)}
 ```""")
