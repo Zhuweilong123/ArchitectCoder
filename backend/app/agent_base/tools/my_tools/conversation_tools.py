@@ -168,7 +168,15 @@ class ProgressRelay:
         """发送进度事件。"""
         self._events.append(event)
         if self._on_progress:
-            self._on_progress(event)
+            result = self._on_progress(event)
+            # 如果回调是协程，需要调度到事件循环执行
+            import asyncio
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    pass  # 无事件循环时忽略
 
     def clear(self):
         self._events.clear()
