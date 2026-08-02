@@ -285,6 +285,8 @@ class ReActAgent(Agent):
         4. yield ReActProgress → 追加 assistant + tool 消息
         5. 重复直到模型返回纯文本或达到 max_steps
         """
+        from app.services.chat_trace import trace_span
+
         tool_specs = self.tool_registry.get_openai_specs()
         messages: list[dict] = [
             {"role": "system", "content": self._build_fc_system_prompt()},
@@ -302,12 +304,13 @@ class ReActAgent(Agent):
             logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
 
             # 1. 调用 LLM（带工具 schemas）
-            response = await self.llm.ainvoke_with_tools(
-                messages=messages,
-                tools=tool_specs,
-                tool_choice="auto",
-                temperature=kwargs.get("temperature", 0.3),
-            )
+            with trace_span(f"{self.name}"):
+                response = await self.llm.ainvoke_with_tools(
+                    messages=messages,
+                    tools=tool_specs,
+                    tool_choice="auto",
+                    temperature=kwargs.get("temperature", 0.3),
+                )
 
             tool_calls = response.get("tool_calls")
             content = response.get("content") or ""
@@ -387,9 +390,10 @@ class ReActAgent(Agent):
                     continue
 
                 # 执行工具
-                result = await self.tool_registry.aexecute_tool_with_params(
-                    tool_name, tool_args,
-                )
+                with trace_span(f"{self.name}/{tool_name}"):
+                    result = await self.tool_registry.aexecute_tool_with_params(
+                        tool_name, tool_args,
+                    )
                 observation = str(result)[:2000]
 
                 self.current_history.append(

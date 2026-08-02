@@ -129,13 +129,16 @@ class ReflectionAgent(Agent):
         """
         logger.info("🤖 %s 开始处理: %s", self.name, input_text[:80])
 
+        from app.services.chat_trace import trace_span
+
         # Phase 1: 初始生成
-        initial_prompt = self.prompts["initial"].format(
-            task=input_text,
-            context=self.context,
-        )
-        messages = [{"role": "user", "content": initial_prompt}]
-        current_answer = self.llm.invoke(messages, **kwargs)
+        with trace_span(f"{self.name}/initial"):
+            initial_prompt = self.prompts["initial"].format(
+                task=input_text,
+                context=self.context,
+            )
+            messages = [{"role": "user", "content": initial_prompt}]
+            current_answer = self.llm.invoke(messages, **kwargs)
         logger.info("📝 初始回答生成完成 (%d 字符)", len(current_answer))
 
         # 后处理
@@ -150,7 +153,8 @@ class ReflectionAgent(Agent):
             auto_feedback = ""
             if reflect_hook:
                 try:
-                    auto_feedback = reflect_hook(input_text, current_answer, self.context)
+                    with trace_span(f"{self.name}/reflect_hook"):
+                        auto_feedback = reflect_hook(input_text, current_answer, self.context)
                     logger.info("🔧 外部验证: %s", auto_feedback[:120])
                 except Exception as e:
                     auto_feedback = f"外部验证执行失败: {e}"
@@ -162,14 +166,15 @@ class ReflectionAgent(Agent):
                     break
 
             # LLM 语义审查（含自动验证结果）
-            reflect_prompt = self.prompts["reflect"].format(
-                task=input_text,
-                content=current_answer,
-                context=self.context,
-                auto_feedback=auto_feedback or "（未启用自动验证）",
-            )
-            messages = [{"role": "user", "content": reflect_prompt}]
-            feedback = self.llm.invoke(messages, **kwargs)
+            with trace_span(f"{self.name}/reflect"):
+                reflect_prompt = self.prompts["reflect"].format(
+                    task=input_text,
+                    content=current_answer,
+                    context=self.context,
+                    auto_feedback=auto_feedback or "（未启用自动验证）",
+                )
+                messages = [{"role": "user", "content": reflect_prompt}]
+                feedback = self.llm.invoke(messages, **kwargs)
             logger.info("🔍 反馈: %s", feedback[:120])
 
             # 检查是否无需改进
@@ -178,14 +183,15 @@ class ReflectionAgent(Agent):
                 break
 
             # 3. 精炼
-            refine_prompt = self.prompts["refine"].format(
-                task=input_text,
-                context=self.context,
-                last_attempt=current_answer,
-                feedback=feedback,
-            )
-            messages = [{"role": "user", "content": refine_prompt}]
-            current_answer = self.llm.invoke(messages, **kwargs)
+            with trace_span(f"{self.name}/refine"):
+                refine_prompt = self.prompts["refine"].format(
+                    task=input_text,
+                    context=self.context,
+                    last_attempt=current_answer,
+                    feedback=feedback,
+                )
+                messages = [{"role": "user", "content": refine_prompt}]
+                current_answer = self.llm.invoke(messages, **kwargs)
             logger.info("🔧 精炼后回答 (%d 字符)", len(current_answer))
 
             # 后处理

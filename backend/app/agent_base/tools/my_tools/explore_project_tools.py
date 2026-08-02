@@ -149,6 +149,8 @@ async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, q
     if not structure.get("diagrams"):
         return "（项目中无 UML 设计图）"
 
+    from app.services.chat_trace import trace_span
+
     prompt = (
         f"根据以下项目的 UML 结构，用中文回答用户问题。\n\n"
         f"## UML 结构（完整，含所有图、类、方法、消息）\n"
@@ -157,7 +159,8 @@ async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, q
         f"请基于结构直接回答，输出简洁总结，覆盖: 有哪些图、每张图的组成、"
         f"关键类与方法、时序流程。控制在 1500 字符内，不要提及结构被截断。"
     )
-    return await llm.ainvoke([{"role": "user", "content": prompt}])
+    with trace_span("explore_project/uml_summary"):
+        return await llm.ainvoke([{"role": "user", "content": prompt}])
 
 
 def _list_py_files(root: str, prefix: str = "") -> list[str]:
@@ -192,13 +195,16 @@ async def _explore_source(llm: BaseAgentsLLM, source_dir: str, question: str) ->
             continue
     src_text = "\n\n".join(chunks)[:6000]
 
+    from app.services.chat_trace import trace_span
+
     prompt = (
         f"根据以下项目的源代码文件，用中文回答用户问题。\n\n"
         f"## 源码文件\n{src_text}\n\n"
         f"## 用户问题\n{question}\n\n"
         f"请总结项目的代码结构、主要模块与职责。控制在 1500 字符内。"
     )
-    return await llm.ainvoke([{"role": "user", "content": prompt}])
+    with trace_span("explore_project/source_summary"):
+        return await llm.ainvoke([{"role": "user", "content": prompt}])
 
 
 async def _explore_test(llm: BaseAgentsLLM, test_dir: str, question: str) -> str:
@@ -218,13 +224,16 @@ async def _explore_test(llm: BaseAgentsLLM, test_dir: str, question: str) -> str
             continue
     test_text = "\n\n".join(chunks)[:6000]
 
+    from app.services.chat_trace import trace_span
+
     prompt = (
         f"根据以下项目的测试文件，用中文回答用户问题。\n\n"
         f"## 测试文件\n{test_text}\n\n"
         f"## 用户问题\n{question}\n\n"
         f"请总结测试覆盖的范围、测试了哪些模块与功能。控制在 1500 字符内。"
     )
-    return await llm.ainvoke([{"role": "user", "content": prompt}])
+    with trace_span("explore_project/test_summary"):
+        return await llm.ainvoke([{"role": "user", "content": prompt}])
 
 
 async def _recall_inject(project_id: str, query: str, system_prompt: str) -> str:

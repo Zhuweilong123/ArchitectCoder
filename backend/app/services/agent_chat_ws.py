@@ -46,9 +46,13 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     由 llm.py 的 _trace_hook() 调用，签名: (kind, **kwargs)。
     kind: 'llm_request' | 'llm_response'
     """
+    from app.services.chat_trace import current_trace_spans
+
     tracer = _TRACE_BRIDGE.get("tracer")
     if tracer is None:
         return None
+    spans = current_trace_spans()
+    span_path = "/".join(spans) if spans else ""
     try:
         if kind == "llm_request":
             return tracer.llm_request(
@@ -59,6 +63,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 max_tokens=kwargs.get("max_tokens"),
                 tools=kwargs.get("tools"),
                 tool_choice=kwargs.get("tool_choice"),
+                span_path=span_path,
             )
         elif kind == "llm_response":
             tracer.llm_response(
@@ -68,6 +73,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 usage=kwargs.get("usage"),
                 error=kwargs.get("error", ""),
                 duration_ms=kwargs.get("duration_ms", 0.0),
+                span_path=span_path,
             )
             return None
     except Exception:
@@ -387,20 +393,29 @@ async def _create_dev_agent(
         source_dir=source_dir, test_dir=test_dir,
     ))
 
-    base_prompt = (
-        "You are an AI development assistant. Follow these principles:\n"
-        "- Give direct answers; do not restate the user's question.\n"
+    base_prompt_parts = [
+        "You are an AI development assistant. Follow these principles:",
+        "- Give direct answers; do not restate the user's question.",
         "- When code is involved, examine existing implementations before modifying; "
-        "do not design from scratch.\n"
-        "- Be concise: lead with conclusions or key steps, provide code when needed.\n"
+        "do not design from scratch.",
+        "- Be concise: lead with conclusions or key steps, provide code when needed.",
         "- Handle only what the user explicitly asked for; do not anticipate future "
-        "scenarios or do extra refactoring.\n"
-        "- Do not add comments or use emojis in code (unless explicitly requested).\n"
+        "scenarios or do extra refactoring.",
+        "- Do not add comments or use emojis in code (unless explicitly requested).",
         "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
-        "commenting, or chatting), reply briefly without calling any tools.\n"
+        "commenting, or chatting), reply briefly without calling any tools.",
         "- For summarizing or overviewing the project's design/code/tests, call "
-        "explore_project instead of reading many files yourself."
-    )
+        "explore_project instead of reading many files yourself.",
+    ]
+    # ── 注入项目上下文 ──
+    if project_file:
+        base_prompt_parts.append(
+            f"\n## Project Context\n"
+            f"- Current project file: {project_file}\n"
+            f"  (use this exact path as project_file parameter for optimize_uml; "
+            f"do NOT guess or shorten the filename)"
+        )
+    base_prompt = "\n".join(base_prompt_parts)
     # 注入项目历史记忆（跨任务 recall）
     project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
     system_prompt = await _build_memory_system_prompt(base_prompt, project_id, user_message)

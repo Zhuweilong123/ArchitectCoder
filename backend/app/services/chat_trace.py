@@ -192,12 +192,15 @@ class ChatTraceLogger:
     def llm_request(self, *, provider: str, model: str, messages: list,
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
-                    span_id: str = "") -> str:
+                    span_id: str = "", span_path: str = "") -> str:
         """记录 LLM 请求（原始 prompt）。返回 span_id 供 response 关联。
 
         字段排序约定: 系统提示词置顶（system_prompt），tools 沉底，便于人工翻阅 trace。
         system_prompt 从 messages 中拆出独立记录，messages 只留对话流，避免重复。
         复现请求: `[{"role":"system","content":system_prompt}] + messages`。
+
+        span_path 是子 Agent 调用栈路径（如 "UmlOptimizer/reflect"），
+        由全局 hook 自动注入，用于区分 LLM 调用来源。
         """
         sid = span_id or new_trace_id()
         system_prompt, stripped = _split_system_prompt(messages)
@@ -210,6 +213,7 @@ class ChatTraceLogger:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "tool_choice": tool_choice,
+            "span_path": span_path,
             "messages": stripped,
             "tools": tools,
         })
@@ -218,8 +222,12 @@ class ChatTraceLogger:
     def llm_response(self, *, span_id: str, content: str,
                      tool_calls: list | None = None,
                      usage: dict | None = None, error: str = "",
-                     duration_ms: float = 0.0) -> None:
-        """记录 LLM 响应（完整 completion/tool_calls/usage）。"""
+                     duration_ms: float = 0.0,
+                     span_path: str = "") -> None:
+        """记录 LLM 响应（完整 completion/tool_calls/usage）。
+
+        span_path 由全局 hook 自动注入，与对应 llm_request 一致。
+        """
         self._write({
             **_event(self.session_id, EVT_LLM_RESPONSE,
                      trace_id=self._trace_id, span_id=span_id,
@@ -229,6 +237,7 @@ class ChatTraceLogger:
             "usage": usage,
             "error": error,
             "duration_ms": round(duration_ms, 1),
+            "span_path": span_path,
         })
 
     def agent_step(self, *, step: int, thought: str = "", actions: list | None = None,
@@ -289,6 +298,56 @@ def _chat_log_dir() -> str:
     return os.path.normpath(os.path.abspath(
         os.path.join(os.path.dirname(settings.uml_dir), "chat_log"),
     ))
+
+
+# ── trace_span — 调用栈标记（contextvars，线程+异步安全）────
+# 子 Agent 入口处用 `with trace_span("UmlOptimizer"):` 包裹，
+# 全局 LLM hook 自动将 span_path 注入每个 llm_request/llm_response 事件。
+
+import contextvars
+
+_trace_spans: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
+    "trace_spans", default=[]
+)
+
+
+class trace_span:
+    """上下文管理器 — 在 LLM trace 中标记当前调用栈层级。
+
+    用法::
+
+        with trace_span("UmlOptimizer"):
+            with trace_span("reflect"):
+                feedback = llm.invoke(...)  # span_path = "UmlOptimizer/reflect"
+
+    span_path 自动写入全局 hook 的 llm_request / llm_response 事件中。
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+        self._token = None
+
+    def __enter__(self):
+        spans = list(_trace_spans.get())
+        spans.append(self._name)
+        self._token = _trace_spans.set(spans)
+        return self
+
+    def __exit__(self, *args):
+        if self._token is not None:
+            _trace_spans.reset(self._token)
+            self._token = None
+
+    async def __aenter__(self):
+        return self.__enter__()
+
+    async def __aexit__(self, *args):
+        self.__exit__(*args)
+
+
+def current_trace_spans() -> list[str]:
+    """返回当前线程/协程的 span_path 列表（最内层在末尾）。"""
+    return _trace_spans.get()
 
 
 # ── 全局 LLM trace 钩子 ──────────────────────────────
