@@ -18,6 +18,7 @@ WebSocket 协议:
         {"event": "error", "message": "..."}
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -360,6 +361,7 @@ async def _create_dev_agent(
     source_dir: str = "",
     test_dir: str = "",
     project_file: str = "",
+    user_message: str = "",
 ):
     """创建对话 Agent 实例，注册全部 12 个工具 (8 核心 + 4 知识图谱)。
 
@@ -408,26 +410,113 @@ async def _create_dev_agent(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
 
+    base_prompt = (
+        "You are an AI development assistant. Follow these principles:\n"
+        "- Give direct answers; do not restate the user's question.\n"
+        "- When code is involved, examine existing implementations before modifying; "
+        "do not design from scratch.\n"
+        "- Be concise: lead with conclusions or key steps, provide code when needed.\n"
+        "- Handle only what the user explicitly asked for; do not anticipate future "
+        "scenarios or do extra refactoring.\n"
+        "- Do not add comments or use emojis in code (unless explicitly requested).\n"
+        "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
+        "commenting, or chatting), reply briefly without calling any tools."
+    )
+    # 注入项目历史记忆（跨任务 recall）
+    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+    system_prompt = await _build_memory_system_prompt(base_prompt, project_id, user_message)
+
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
         tool_registry=registry,
-        system_prompt=(
-            "You are an AI development assistant. Follow these principles:\n"
-            "- Give direct answers; do not restate the user's question.\n"
-            "- When code is involved, examine existing implementations before modifying; "
-            "do not design from scratch.\n"
-            "- Be concise: lead with conclusions or key steps, provide code when needed.\n"
-            "- Handle only what the user explicitly asked for; do not anticipate future "
-            "scenarios or do extra refactoring.\n"
-            "- Do not add comments or use emojis in code (unless explicitly requested).\n"
-            "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
-            "commenting, or chatting), reply briefly without calling any tools."
-        ),
+        system_prompt=system_prompt,
         max_steps=12,
         use_native_fc=True,
     )
     return agent, review_mgr
+
+
+# ── 记忆系统（跨任务归档 + 注入） ───────────────────────────
+# 复用 memory_system.MemoryManager：任务结束 (done) 后异步归档工具过程 + 结论，
+# 新任务开始时 recall 相关记忆注入 system prompt。
+
+def _memory_db_path() -> str:
+    """记忆数据库路径：与 knowledge_graph.db 同目录。"""
+    try:
+        from app.core.config import get_settings as _get
+        _settings = _get()
+        return os.path.normpath(os.path.abspath(
+            os.path.join(os.path.dirname(_settings.uml_dir), "data", "memories.db"),
+        ))
+    except Exception:
+        return os.path.normpath(os.path.abspath(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "memories.db"),
+        ))
+
+
+def _tool_steps_summary(tool_calls_detail: list[dict], max_steps: int = 8) -> str:
+    """把一次任务的工具调用序列整理成结构化摘要文本（喂给记忆提取）。"""
+    lines: list[str] = []
+    for td in (tool_calls_detail or [])[:max_steps]:
+        name = td.get("name", "?")
+        args = td.get("arguments", {})
+        obs = str(td.get("observation", ""))[:300]
+        args_str = json.dumps(args, ensure_ascii=False)[:150] if isinstance(args, dict) else str(args)[:150]
+        lines.append(f"[{name}] 参数:{args_str}\n返回:{obs}")
+    return "\n".join(lines)
+
+
+def _extract_fn_for(llm: BaseAgentsLLM):
+    """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。"""
+    async def _extract(prompt: str) -> str:
+        return await llm.ainvoke([{"role": "user", "content": prompt}])
+    return _extract
+
+
+async def _archive_task_to_memory(
+    project_id: str,
+    user_message: str,
+    final_answer: str,
+    tool_calls_detail: list[dict],
+    llm: BaseAgentsLLM,
+) -> None:
+    """任务结束后异步归档：工具过程摘要 + 结论 → 记忆系统。
+
+    在后台任务中调用（不阻塞主对话返回）。失败不影响主流程。
+    """
+    try:
+        from memory_system.manager import MemoryManager
+        mgr = MemoryManager(db_path=_memory_db_path())
+
+        # 方案 B：把工具过程组装进 llm_output，让提取器捕捉关键事实
+        steps_text = _tool_steps_summary(tool_calls_detail)
+        combined = f"## 工具执行过程\n{steps_text}\n\n## 最终结论\n{final_answer}"
+        await mgr.remember(
+            project_id=project_id,
+            context=f"对话 Agent 任务: {user_message[:100]}",
+            llm_call_type="agent_task",
+            user_input=user_message,
+            llm_output=combined[:2000],
+            extract_fn=_extract_fn_for(llm),
+        )
+        logger.info("[Memory] Archived task to memory (project=%s)", project_id)
+    except Exception:
+        logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
+
+
+async def _build_memory_system_prompt(system_prompt: str, project_id: str, user_message: str) -> str:
+    """recall 项目相关记忆并注入 system prompt（失败则原样返回）。"""
+    if not project_id:
+        return system_prompt
+    try:
+        from memory_system.manager import MemoryManager
+        mgr = MemoryManager(db_path=_memory_db_path())
+        results = await mgr.recall(project_id, user_message, top_k=5)
+        return mgr.inject_memories(system_prompt, results)
+    except Exception:
+        logger.warning("[Memory] Inject memory failed (non-fatal)", exc_info=True)
+        return system_prompt
 
 
 async def _ws_send(websocket: WebSocket, payload: dict) -> bool:
@@ -456,6 +545,7 @@ async def _handle_dev(
     stop_check,
     chat_log: ChatSessionLogger | None = None,
     trace_log: ChatTraceLogger | None = None,
+    project_file: str = "",
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -463,6 +553,7 @@ async def _handle_dev(
     是否调用工具（闲聊直接文本回复，开发调工具）。
     """
     try:
+        task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         async for progress in agent.arun_stream(user_message):
             if stop_check():
                 await _ws_send(websocket, {
@@ -471,6 +562,7 @@ async def _handle_dev(
                 return
 
             d = progress.to_dict()
+            task_tool_calls.extend(d.get("tool_calls_detail", []))
 
             # 检查是否有审核请求
             if d["tool_calls_detail"] and review_mgr and review_mgr.has_pending():
@@ -571,6 +663,18 @@ async def _handle_dev(
                     chat_log.add_done(d["final_answer"])
                 if trace_log:
                     trace_log.done(answer=d["final_answer"])
+
+                # 异步后台归档到记忆系统（不阻塞返回 done）
+                project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+                if project_id and task_tool_calls:
+                    asyncio.create_task(_archive_task_to_memory(
+                        project_id=project_id,
+                        user_message=user_message,
+                        final_answer=d["final_answer"] or "",
+                        tool_calls_detail=task_tool_calls,
+                        llm=getattr(agent, "llm", None),
+                    ))
+
                 ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],
@@ -647,12 +751,12 @@ async def agent_chat_ws(websocket: WebSocket):
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:
                     dev_agent, review_mgr = await _create_dev_agent(
-                        llm, source_dir, test_dir, project_file,
+                        llm, source_dir, test_dir, project_file, user_message,
                     )
 
                 await _handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
-                    chat_log=chat_log, trace_log=trace_log,
+                    chat_log=chat_log, trace_log=trace_log, project_file=project_file,
                 )
 
             # ── 停止对话 ──
