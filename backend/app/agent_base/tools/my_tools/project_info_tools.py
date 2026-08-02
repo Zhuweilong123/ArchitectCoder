@@ -445,8 +445,8 @@ class GrepFileTool(Tool):
         pattern = str(parameters.get("pattern", "")).strip()
         if not pattern:
             return "请提供要搜索的关键词 pattern。"
-        if len(pattern) > 200:
-            return "pattern 过长（最多 200 字符）。"
+        if len(pattern) > 500:
+            return "pattern 过长（最多 500 字符）。"
 
         # 优先按正则编译；非法正则回退为字面子串匹配
         try:

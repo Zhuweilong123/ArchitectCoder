@@ -77,6 +77,18 @@ def _normalize_file_path(path: str) -> str:
         return path.replace("\\", "/")
 
 
+def _normalize_project_id(project_id: str) -> str:
+    """归一化 project_id：剥离 .umlproj / .uml 后缀。
+
+    Agent 可能从 project_info 拿到带后缀的文件名（如 radar_design_0730.umlproj），
+    而 KG 存储的 project_id 是去后缀后的 basename。统一剥离后缀，避免查空。
+    """
+    pid = (project_id or "").strip()
+    if pid.lower().endswith(".umlproj") or pid.lower().endswith(".uml"):
+        pid = pid[:-len(".umlproj")] if pid.lower().endswith(".umlproj") else pid[:-len(".uml")]
+    return pid
+
+
 def _build_file_map(db, project_id: str = "") -> dict:
     """构建 filename → 完整绝对路径 映射（用于 code 节点定位源码文件）。"""
     fmap: dict[str, str] = {}
@@ -205,7 +217,7 @@ class KgQueryTool(AsyncTool):
                     if t.strip()
                 ]
 
-            project_id = params.get("project_id", "")
+            project_id = _normalize_project_id(params.get("project_id", ""))
             pattern = params.get("pattern", "").strip()
 
             # 按需构建兜底: 项目未索引时从设计文件构建
@@ -655,16 +667,21 @@ class KgProjectStructureTool(AsyncTool):
             name="kg_project_structure",
             description=(
                 "Get the project's UML structure as a tree: diagram list with "
-                "their contained classes/components/lifelines and their methods. "
-                "One call replaces multiple kg_query/kg_expand calls when you need "
-                "an overview of what the project contains. "
+                "their contained classes/components/lifelines, their methods, and "
+                "sequence-diagram messages (depth=3). One call replaces multiple "
+                "kg_query/kg_expand calls when you need an overview of what the "
+                "project contains. "
                 "depth=1: diagram names only; depth=2: + contained classes/"
-                "components/lifelines; depth=3: + method/attribute signatures. "
+                "components/lifelines; depth=3: + method/attribute signatures AND "
+                "sequence-diagram messages. "
                 "Each diagram includes a file_offset — the character offset where "
                 "that diagram starts in the .umlproj file — so you can read it "
                 "precisely with read_file(path, offset). "
-                "NOTE: sequence-diagram fragments (loop/alt) are NOT in the graph; "
-                "read the .umlproj file at file_offset to inspect them."
+                "This output already contains the full structure (classes, methods, "
+                "messages), so you usually do NOT need additional kg_query calls for "
+                "an overview — only read_file if you need raw JSON details such as "
+                "coordinates or sequence-diagram fragments (loop/alt), which are NOT "
+                "in the graph."
             ),
         )
         self.db_path = db_path
@@ -719,6 +736,9 @@ class KgProjectStructureTool(AsyncTool):
                     diag_children[ed.source_id].append(ed.target_id)
                 elif ed.source_id in class_ids and ed.target_id in member_ids:
                     class_members[ed.source_id].append(ed.target_id)
+
+            # ── MESSAGES 边：lifeline→lifeline，时序图消息（label/order/note）──
+            msg_edges: list[GraphEdge] = db.find_edges(edge_type="messages", limit=3000)
 
             node_by_id = {n.id: n for n in diagrams + classes + components + lifelines + methods + attributes}
 
@@ -778,6 +798,26 @@ class KgProjectStructureTool(AsyncTool):
                                 "class_ref": n.properties.get("class_ref", "") if n.properties else "",
                             })
                     entry["children"] = children
+                    # 时序图消息：depth>=3 时输出 MESSAGES 边摘要
+                    if dtype == "sequence" and depth >= 3:
+                        life_names = {n.id: n.name for n in lifelines}
+                        messages = []
+                        for ed in msg_edges:
+                            src_name = life_names.get(ed.source_id, "")
+                            tgt_name = life_names.get(ed.target_id, "")
+                            if not src_name and not tgt_name:
+                                continue
+                            ep = ed.properties
+                            messages.append({
+                                "from": src_name,
+                                "to": tgt_name,
+                                "label": ep.get("label", "") if ep else "",
+                                "order": ep.get("order", 0) if ep else 0,
+                                "note": ep.get("note", "") if ep else "",
+                            })
+                        messages.sort(key=lambda m: m["order"])
+                        if messages:
+                            entry["messages"] = messages
                 tree_diagrams.append(entry)
 
             return {"project_id": project_id, "diagram_count": len(tree_diagrams), "diagrams": tree_diagrams}
@@ -785,7 +825,7 @@ class KgProjectStructureTool(AsyncTool):
             db.close()
 
     async def _execute(self, params: dict) -> str:
-        project_id = params.get("project_id", "").strip()
+        project_id = _normalize_project_id(params.get("project_id", ""))
         if not project_id:
             return json.dumps({"error": "kg_project_structure requires project_id"}, ensure_ascii=False)
 
