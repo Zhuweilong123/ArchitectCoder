@@ -389,6 +389,7 @@ const AgentChat: React.FC = () => {
             );
             uiState.setRightPanelTab('diff');
             uiState.setRightPanelVisible(true);
+          }
           break;
         }
 
