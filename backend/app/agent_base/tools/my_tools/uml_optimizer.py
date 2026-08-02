@@ -40,6 +40,23 @@ from app.services.llm_service import chat_stream as _chat_stream, chat as _chat
 logger = logging.getLogger(__name__)
 
 
+def _make_reflection_llm(llm: BaseAgentsLLM) -> BaseAgentsLLM:
+    """为 ReflectionAgent 创建一个使用 v4-pro 模型的 LLM 副本。
+
+    ReflectionAgent 的 initial 阶段需要生成大量 JSON（3 张图），
+    v4-flash 的 max_tokens 不足以一次输出完整设计，导致被截断。
+    v4-pro 支持更大的输出窗口（实测 8192+ tokens）。
+    """
+    from copy import deepcopy
+    _llm = deepcopy(llm)
+    _llm.model = _llm.model.replace("flash", "pro") if "flash" in _llm.model else "deepseek-v4-pro"
+    _llm.max_tokens = 8192
+    # 同步 client 也需要重建（invoke 用同步 client）
+    from openai import OpenAI
+    _llm._client = OpenAI(api_key=_llm.api_key, base_url=_llm.base_url, timeout=_llm.timeout)
+    return _llm
+
+
 class UmlOptimizer:
     """基于 ReflectionAgent 的 UML 全局优化器
 
@@ -176,7 +193,7 @@ Output only the JSON object, no other text.
         # ── Step 3: 创建 ReflectionAgent ──
         agent = ReflectionAgent(
             name="UML设计助手",
-            llm=self.llm,
+            llm=_make_reflection_llm(self.llm),
             system_prompt=full_system,
             config=Config(temperature=self.temperature, max_tokens=self.max_tokens),
             max_iterations=self.max_iterations,
