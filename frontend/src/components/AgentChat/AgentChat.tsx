@@ -291,8 +291,6 @@ const AgentChat: React.FC = () => {
 
   // ── 连接 WebSocket ──
   const connect = useCallback(() => {
-    if (isAgentConnected()) return;
-
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat((event: AgentEvent) => {
       switch (event.event) {

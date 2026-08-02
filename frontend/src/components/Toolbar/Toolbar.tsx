@@ -31,6 +31,10 @@ import {
 import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
 import './Toolbar.css';
 
+// 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
+// AgentChat 打开后通过 connectAgentChat 把自己的回调注入进去。
+function _noopAgentEvent(_event: any) {}
+
 const { TextArea } = Input;
 
 const LANGUAGES = [
@@ -115,7 +119,9 @@ const Toolbar: React.FC = () => {
     const proj = useDiagramStore.getState().project;
 
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
-    connectAgentChat(() => {/* Toolbar doesn't need callbacks — AgentChat handles */}, token);
+    // 占位连接：确保 WebSocket 在 AgentChat 打开前就已连接
+    // _noopEvent 回调在 connectAgentChat 中不会被覆盖
+    connectAgentChat(_noopAgentEvent, token);
 
     const messageText = globalInstructions.trim()
       ? `请对当前项目进行全局UML优化: ${globalInstructions}`
