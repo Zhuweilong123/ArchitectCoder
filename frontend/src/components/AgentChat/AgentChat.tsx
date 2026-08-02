@@ -368,23 +368,21 @@ const AgentChat: React.FC = () => {
               // 需要用户审核 → 推送到 DiffViewer 对比面板
               const uiState = useUiStore.getState();
               const store = useDiagramStore.getState();
-              // Build originals from current project state
               const originals: Record<string, any> = {};
               const optimizeds: Record<string, any> = {};
               const diffs: Record<string, string> = {};
               for (const spec of diagrams) {
                 const dtype = spec.type || 'class';
-                // Find existing diagram of this type
                 const existing = store.project.diagrams.find(
                   d => (d.diagram_type || 'class') === dtype
                 );
-                const orig = existing || {};
-                const opt = spec.data || spec;
+                const orig = existing ? { ...existing } : {};
+                const opt = spec.data ? { ...spec.data } : {};
                 originals[dtype] = orig;
-                optimizeds[dtype] = { ...orig, ...opt };
+                optimizeds[dtype] = opt;
                 diffs[dtype] = JSON.stringify({
                   before: orig,
-                  after: optimizeds[dtype],
+                  after: opt,
                 }, null, 2);
               }
               uiState.setGlobalOptimizationResult(

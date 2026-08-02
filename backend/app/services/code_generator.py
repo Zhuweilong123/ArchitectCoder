@@ -1400,19 +1400,33 @@ def _normalize_llm_output(data: dict) -> dict:
         "class_name": "name",
     }
 
+    # Message-field aliases (only applied when parent_key == "messages",
+    # not when inside relations which also have source/target fields).
+    MESSAGE_FIELD_ALIASES = {
+        "source": "from_lifeline",
+        "target": "to_lifeline",
+        "name": "label",
+        "arguments": "label",
+    }
+
     import uuid as _uuid
 
     def walk(obj, parent_key=""):
         if isinstance(obj, dict):
             result = {}
-            # Determine context: is this a message (has from_lifeline/to_lifeline)?
+            # Determine context for alias resolution
             _is_message = "from_lifeline" in obj or "to_lifeline" in obj
+            _is_msg_list = parent_key == "messages"
             for k, v in obj.items():
-                # Remap known alias fields
-                mapped_key = FIELD_ALIASES.get(k, k)
+                # Remap known alias fields (message fields use a different mapping
+                # only when inside a messages array to avoid clashing with relation source/target)
+                if parent_key == "messages":
+                    mapped_key = MESSAGE_FIELD_ALIASES.get(k, FIELD_ALIASES.get(k, k))
+                else:
+                    mapped_key = FIELD_ALIASES.get(k, k)
                 # For sequence messages, "label" is the correct field name (method name).
                 # Only remap label→role_name in relations, not messages.
-                if k == "label" and _is_message:
+                if k == "label" and (_is_message or _is_msg_list):
                     mapped_key = "label"  # keep as-is for messages
                 if k == "visibility" and isinstance(v, str):
                     v = VIS_MAP.get(v.lower(), "+")

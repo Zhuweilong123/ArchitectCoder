@@ -436,30 +436,34 @@ class OptimizeUmlTool(AsyncTool):
         return list(diagram_map.values())
 
     def _save_to_project(self, project_file: str, diagrams: list[dict]) -> str:
-        """把优化后的 diagrams（dict 列表）写回 .umlproj 文件。成功返回路径，失败返回空串。"""
+        """Normalize LLM output and write diagrams back to .umlproj. Returns path on success, '' on failure."""
         try:
             from app.services.file_service import load_project, save_project
             from app.models.uml import UmlDiagram
+            from app.services.code_generator import _normalize_llm_output
 
             project = load_project(project_file)
             converted: list[UmlDiagram] = []
             for d in diagrams:
                 data = d.get("data") if isinstance(d, dict) else None
                 if isinstance(data, dict):
+                    # Normalize LLM output to match Pydantic field names
+                    data = _normalize_llm_output(data)
                     if "diagram_type" not in data and "type" in d:
                         data = {**data, "diagram_type": d["type"]}
                     converted.append(UmlDiagram(**data))
                 elif isinstance(d, dict):
-                    converted.append(UmlDiagram(**d))
+                    data = _normalize_llm_output(d)
+                    converted.append(UmlDiagram(**data))
             if not converted:
-                logger.warning("[OptimizeUmlTool] 无有效 diagram 可落盘")
+                logger.warning("[OptimizeUmlTool] No valid diagrams to save")
                 return ""
             project.diagrams = converted
             saved = save_project(project, project_file)
-            logger.info("[OptimizeUmlTool] 已保存 %d 张图 → %s", len(converted), saved)
+            logger.info("[OptimizeUmlTool] Saved %d diagrams → %s", len(converted), saved)
             return saved
         except Exception as e:
-            logger.exception("[OptimizeUmlTool] 落盘失败")
+            logger.exception("[OptimizeUmlTool] Save to project failed: %s", e)
             return ""
 
     def to_openai_schema(self) -> dict:
