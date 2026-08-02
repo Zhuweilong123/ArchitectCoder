@@ -61,6 +61,78 @@ def _kg_db_path() -> str:
 # 确定性探索流程（不走 ReAct，避免子代理重复验证）
 # ═══════════════════════════════════════════════════════════════
 
+def _locate_in_file(project_file: str, target: str, context: int = 3) -> list[dict]:
+    """在 .umlproj 里按关键词定位目标，返回结构化位置。
+
+    target 可以是单词或短语（如 'loop', 'loop fragment', 类名）。多词短语
+    拆成单词用 | 正则匹配，避免空格字面匹配失败。返回 [{line, offset, snippet}]。
+    """
+    import re
+    if not project_file or not os.path.isfile(project_file):
+        return []
+    # 拆词：去掉标点，取每个单词，构造 "word1|word2|..." 正则
+    words = [w for w in re.split(r'[\s,.;:]+', target) if w]
+    if not words:
+        return []
+    pattern = "|".join(re.escape(w) for w in words)
+    try:
+        matcher = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        matcher = None
+
+    hits: list[dict] = []
+    with open(project_file, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    offset = 0
+    for i, line in enumerate(lines):
+        if matcher and matcher.search(line):
+            hits.append({
+                "line": i + 1,
+                "offset": offset,
+                "snippet": line.strip()[:200],
+                "context": [l.strip()[:120] for l in lines[max(0, i - context):i + context + 1]],
+            })
+        offset += len(line)
+    return hits[:10]
+
+
+async def _locate_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, target: str) -> str:
+    """uml 定位：在 .umlproj 里按目标关键词定位元素，返回位置 + 结构化信息。"""
+    # 先尝试从 KG 结构拿节点（如类/组件/方法），再回退文件定位
+    located: list[dict] = []
+    try:
+        from app.agent_base.tools.my_tools.knowledge_graph_tools import KgProjectStructureTool
+        struct_tool = KgProjectStructureTool(db_path=_kg_db_path(), project_file=project_file)
+        raw = await struct_tool._execute({"project_id": project_id, "depth": 2})
+        structure = json.loads(raw)
+        # 在结构中找匹配 target 的节点
+        for d in structure.get("diagrams", []):
+            for c in d.get("children", []):
+                if target.lower() in c.get("name", "").lower():
+                    located.append({
+                        "type": "node", "diagram": d.get("name"),
+                        "name": c.get("name"), "id": c.get("id"),
+                        "file_offset": d.get("file_offset"),
+                    })
+    except Exception:
+        pass
+
+    # 文件定位（精确行号 + 上下文）
+    file_hits = _locate_in_file(project_file, target)
+    if file_hits:
+        for h in file_hits:
+            located.append({
+                "type": "file", "line": h["line"], "offset": h["offset"],
+                "snippet": h["snippet"],
+            })
+
+    if not located:
+        return f"（未在项目文件中定位到 '{target}'）"
+
+    # 汇总为 JSON 返回，主 Agent 直接喂给 optimize_uml
+    return json.dumps({"target": target, "matches": located[:10]}, ensure_ascii=False)
+
+
 async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, question: str) -> str:
     """uml 探索：kg_project_structure 拿完整结构 → 一次 LLM 总结。"""
     from app.agent_base.tools.my_tools.knowledge_graph_tools import KgProjectStructureTool
@@ -196,15 +268,18 @@ async def _run_explorer(
     source_dir: str,
     test_dir: str,
     question: str,
+    mode: str = "summary",
 ) -> str:
-    """运行单个资源探索（确定性流程，返回总结）。"""
+    """运行单个资源探索（确定性流程，返回总结或定位信息）。"""
     # 记忆注入：给 LLM 调用提供历史上下文
     mem_sys_prompt = await _recall_inject(
         project_id, f"{resource_type} {question}",
         f"你正在探索项目的{RESOURCE_LABELS.get(resource_type, resource_type)}。",
     )
 
-    if resource_type == "uml":
+    if mode == "locate" and resource_type == "uml":
+        result = await _locate_uml(llm, project_id, project_file, question)
+    elif resource_type == "uml":
         result = await _explore_uml(llm, project_id, project_file, question)
     elif resource_type == "source":
         result = await _explore_source(llm, source_dir, question)
@@ -221,9 +296,10 @@ async def _run_explorer(
 
 
 class ExploreProjectTool(AsyncTool):
-    """项目探索工具 — 按资源类型动态探索，返回压缩总结。
+    """项目探索工具 — 单一入口，探索/定位项目资源。
 
-    主 Agent 处理"总结/概览项目"类任务时调用，避免亲自 read_file 累加上下文。
+    主 Agent 的唯一只读入口：总结或定位项目的 uml/source/test 资源。
+    避免主 Agent 直接 read_file/grep/kg_* —— 探索细节在此封装。
     """
 
     def __init__(
@@ -236,13 +312,18 @@ class ExploreProjectTool(AsyncTool):
         super().__init__(
             name="explore_project",
             description=(
-                "Explore the project and return a concise summary of a resource "
-                "type. Use for summarizing or overviewing the project (design, "
-                "code, tests) WITHOUT reading every file yourself — a sub-process "
-                "collects the structure/content and returns a compressed summary. "
-                "what: 'uml' (design), 'source' (code), 'test' (tests), or 'all'. "
-                "The tool detects which resources exist and explores them. "
-                "question: what you want to know about that resource."
+                "Explore or locate the project's resources in one call. This is "
+                "the ONLY read tool you need for understanding the project — use "
+                "it instead of reading files or querying the graph yourself. "
+                "Two modes:\n"
+                "- mode='summary': return a concise summary of a resource type. "
+                "what='uml' (design), 'source' (code), 'test' (tests), or 'all'. "
+                "question: what you want summarized.\n"
+                "- mode='locate': find a specific element and return its exact "
+                "location (id, line, offset) so you can act on it. "
+                "what='uml', question=the element to find (e.g. 'loop fragment', "
+                "a class name, a method). Use this before modifying, so you know "
+                "what to target."
             ),
         )
         self.llm = llm
@@ -253,15 +334,22 @@ class ExploreProjectTool(AsyncTool):
     def get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
+                name="mode",
+                type="string",
+                description="'summary' (default, return a summary) or 'locate' (find an element's exact location).",
+                required=False,
+                default="summary",
+            ),
+            ToolParameter(
                 name="what",
                 type="string",
-                description="Resource to explore: 'uml' | 'source' | 'test' | 'all'. 'all' explores whichever resources exist.",
+                description="Resource: 'uml' | 'source' | 'test' | 'all'. 'all' explores whichever resources exist.",
                 required=True,
             ),
             ToolParameter(
                 name="question",
                 type="string",
-                description="The question to answer about the resource, e.g. 'summarize the design', 'list the main classes'.",
+                description="For summary: what to summarize. For locate: the element to find (e.g. 'loop fragment', 'class EchoSimulator').",
                 required=False,
                 default="summarize the structure",
             ),
@@ -276,13 +364,17 @@ class ExploreProjectTool(AsyncTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "'summary' (default, return a summary) or 'locate' (find an element's exact location).",
+                        },
                         "what": {
                             "type": "string",
-                            "description": "Resource to explore: 'uml' | 'source' | 'test' | 'all'. 'all' explores whichever resources exist.",
+                            "description": "Resource: 'uml' | 'source' | 'test' | 'all'. 'all' explores whichever resources exist.",
                         },
                         "question": {
                             "type": "string",
-                            "description": "The question to answer about the resource, e.g. 'summarize the design', 'list the main classes'.",
+                            "description": "For summary: what to summarize. For locate: the element to find.",
                         },
                     },
                     "required": ["what"],
@@ -291,6 +383,7 @@ class ExploreProjectTool(AsyncTool):
         }
 
     async def _execute(self, params: dict) -> str:
+        mode = str(params.get("mode", "summary")).strip().lower() or "summary"
         what = str(params.get("what", "all")).strip().lower()
         question = str(params.get("question", "summarize the structure")).strip() or "summarize the structure"
 
@@ -323,10 +416,14 @@ class ExploreProjectTool(AsyncTool):
         results = await asyncio.gather(*[
             _run_explorer(
                 self.llm, rt, project_id, self.project_file,
-                self.source_dir, self.test_dir, question,
+                self.source_dir, self.test_dir, question, mode,
             )
             for rt in targets
         ])
+
+        if mode == "locate":
+            # locate 返回结构化 JSON，直接拼起来
+            return "\n\n".join(results)
 
         sections = []
         for rt, res in zip(targets, results):

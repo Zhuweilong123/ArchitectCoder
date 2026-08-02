@@ -373,42 +373,12 @@ async def _create_dev_agent(
         include_review=True,
     )
 
-    # ── 知识图谱工具 ──
-    try:
-        from app.agent_base.tools.my_tools.knowledge_graph_tools import create_kg_tools
-        # KG DB 路径: 与 file_service 保持一致
-        import os as _os
-        from app.core.config import get_settings as _get_settings
-        _settings = _get_settings()
-        _kg_db = _os.path.normpath(_os.path.abspath(
-            _os.path.join(_os.path.dirname(_settings.uml_dir), "data", "knowledge_graph.db"),
-        ))
-        kg_tools = create_kg_tools(
-            db_path=_kg_db, source_dir=source_dir, test_dir=test_dir,
-            project_file=project_file,
-        )
-        tools.extend(kg_tools)
-        logger.info(f"[AgentChat] Registered {len(kg_tools)} KG tools (db={_kg_db})")
-    except Exception:
-        logger.exception("[AgentChat] Failed to register KG tools, continuing without them")
+    # 主 Agent 只保留执行类工具 + 探索入口 explore_project。
+    # 只读探索（kg_* / read_file / grep / project_info）收敛进 explore_project。
 
     registry = ToolRegistry()
     for t in tools:
         registry.register_tool(t)
-
-    # ── 项目信息工具（按需获取，不再注入 prompt，首轮 token 更省、信息永远新鲜）──
-    from app.agent_base.tools.my_tools.project_info_tools import (
-        ProjectInfoTool, ReadFileTool, GrepFileTool,
-    )
-    registry.register_tool(ProjectInfoTool(
-        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
-    ))
-    registry.register_tool(ReadFileTool(
-        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
-    ))
-    registry.register_tool(GrepFileTool(
-        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
-    ))
 
     # ── 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）──
     from app.agent_base.tools.my_tools.explore_project_tools import create_explore_project_tool
