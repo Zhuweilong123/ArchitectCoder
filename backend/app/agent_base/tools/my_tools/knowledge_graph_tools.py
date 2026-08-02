@@ -639,6 +639,204 @@ class KgDiffTool(AsyncTool):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Tool 5: kg_project_structure — 项目结构摘要
+# ═══════════════════════════════════════════════════════════════
+
+class KgProjectStructureTool(AsyncTool):
+    """项目结构摘要 — 一步获取"图→类→方法"树状结构。
+
+    渐进式披露的核心入口：Agent 不再需要多轮 kg_query/kg_expand 拼结构，
+    一次调用拿到整棵结构树，配合 read_file 的 file_offset 精确读单张图。
+    """
+
+    def __init__(self, db_path: str = "./data/knowledge_graph.db",
+                 project_file: str = ""):
+        super().__init__(
+            name="kg_project_structure",
+            description=(
+                "Get the project's UML structure as a tree: diagram list with "
+                "their contained classes/components/lifelines and their methods. "
+                "One call replaces multiple kg_query/kg_expand calls when you need "
+                "an overview of what the project contains. "
+                "depth=1: diagram names only; depth=2: + contained classes/"
+                "components/lifelines; depth=3: + method/attribute signatures. "
+                "Each diagram includes a file_offset — the character offset where "
+                "that diagram starts in the .umlproj file — so you can read it "
+                "precisely with read_file(path, offset). "
+                "NOTE: sequence-diagram fragments (loop/alt) are NOT in the graph; "
+                "read the .umlproj file at file_offset to inspect them."
+            ),
+        )
+        self.db_path = db_path
+        self.project_file = project_file
+
+    def _diagram_file_offsets(self) -> dict[str, int]:
+        """从 .umlproj 反查每张图（按 name 匹配）的字符偏移。失败返回空 dict。"""
+        offsets: dict[str, int] = {}
+        if not self.project_file or not os.path.isfile(self.project_file):
+            return offsets
+        try:
+            from app.services.file_service import load_project
+            project = load_project(self.project_file)
+            with open(self.project_file, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            for d in project.diagrams:
+                # 用 name 定位该图 JSON 起点（"name": "<name>", 的冒号位置前推到 {）
+                dname = d.name
+                if not dname:
+                    continue
+                idx = text.find(f'"{dname}"')
+                if idx < 0:
+                    continue
+                offsets[dname] = idx
+        except Exception:
+            logger.warning("[KG] Failed to compute diagram file offsets", exc_info=True)
+        return offsets
+
+    def _build_tree(self, project_id: str, depth: int) -> dict:
+        from knowledge_graph.database import KnowledgeGraphDB
+        db = KnowledgeGraphDB(self.db_path)
+        try:
+            # ── 拉全部节点，按 type 分桶 ──
+            diagrams: list[GraphNode] = db.find_nodes(project_id, node_type="diagram", source="design", limit=500)
+            classes: list[GraphNode] = db.find_nodes(project_id, node_type="class", source="design", limit=1000)
+            components: list[GraphNode] = db.find_nodes(project_id, node_type="component", source="design", limit=500)
+            lifelines: list[GraphNode] = db.find_nodes(project_id, node_type="lifeline", source="design", limit=500)
+            methods: list[GraphNode] = db.find_nodes(project_id, node_type="method", source="design", limit=2000)
+            attributes: list[GraphNode] = db.find_nodes(project_id, node_type="attribute", source="design", limit=2000)
+
+            # ── contains 边：diagram→child, class→method/attribute ──
+            diag_ids = {d.id for d in diagrams}
+            class_ids = {c.id for c in classes}
+            comp_ids = {c.id for c in components}
+            life_ids = {l.id for l in lifelines}
+            member_ids = {m.id for m in methods} | {a.id for a in attributes}
+            diag_children: dict[str, list[str]] = {did: [] for did in diag_ids}
+            class_members: dict[str, list[str]] = {cid: [] for cid in class_ids}
+
+            for ed in db.find_edges(edge_type="contains", limit=5000):
+                if ed.source_id in diag_ids and ed.target_id in (class_ids | comp_ids | life_ids):
+                    diag_children[ed.source_id].append(ed.target_id)
+                elif ed.source_id in class_ids and ed.target_id in member_ids:
+                    class_members[ed.source_id].append(ed.target_id)
+
+            node_by_id = {n.id: n for n in diagrams + classes + components + lifelines + methods + attributes}
+
+            def _class_info(cid: str, with_members: bool) -> dict:
+                n = node_by_id.get(cid)
+                if not n:
+                    return {}
+                props = n.properties
+                info = {"id": cid, "name": n.name}
+                if props:
+                    stereo = props.get("stereotype", "")
+                    if stereo and stereo != "class":
+                        info["stereotype"] = stereo
+                if with_members:
+                    members = []
+                    for mid in class_members.get(cid, []):
+                        m = node_by_id.get(mid)
+                        if not m:
+                            continue
+                        mp = m.properties
+                        entry = {"name": m.name, "node_type": m.node_type.value}
+                        if m.node_type.value == "method":
+                            entry["return_type"] = mp.get("return_type", "")
+                            entry["params"] = mp.get("params", "")
+                        members.append(entry)
+                    members.sort(key=lambda x: (x["node_type"], x["name"]))
+                    info["members"] = members
+                return info
+
+            tree_diagrams = []
+            for d in sorted(diagrams, key=lambda x: x.name):
+                dtype = d.properties.get("diagram_type", "") if d.properties else ""
+                entry = {
+                    "name": d.name,
+                    "id": d.id,
+                    "diagram_type": dtype,
+                    "component_id": d.properties.get("component_id", "") if d.properties else "",
+                }
+                if depth >= 2:
+                    children = []
+                    for cid in diag_children.get(d.id, []):
+                        n = node_by_id.get(cid)
+                        if not n:
+                            continue
+                        if n.node_type.value == "class":
+                            children.append(_class_info(cid, depth >= 3))
+                        elif n.node_type.value == "component":
+                            cp = n.properties
+                            children.append({
+                                "name": n.name,
+                                "provided": cp.get("provided_interfaces", []) if cp else [],
+                                "required": cp.get("required_interfaces", []) if cp else [],
+                            })
+                        else:  # lifeline
+                            children.append({
+                                "name": n.name,
+                                "class_ref": n.properties.get("class_ref", "") if n.properties else "",
+                            })
+                    entry["children"] = children
+                tree_diagrams.append(entry)
+
+            return {"project_id": project_id, "diagram_count": len(tree_diagrams), "diagrams": tree_diagrams}
+        finally:
+            db.close()
+
+    async def _execute(self, params: dict) -> str:
+        project_id = params.get("project_id", "").strip()
+        if not project_id:
+            return json.dumps({"error": "kg_project_structure requires project_id"}, ensure_ascii=False)
+
+        # 确保项目已索引（复用按需构建兜底）
+        probe = KgQueryTool(db_path=self.db_path, project_file=self.project_file)
+        probe._ensure_project_indexed(project_id)
+
+        depth = int(params.get("depth", 2))
+        depth = max(1, min(depth, 3))
+
+        tree = self._build_tree(project_id, depth)
+        if not tree["diagrams"]:
+            return json.dumps({
+                "message": f"Project '{project_id}' has no diagrams in the knowledge graph. "
+                           "If the project file was just saved, rebuild the graph and retry.",
+                "diagrams": [],
+            }, ensure_ascii=False)
+
+        # 附带每张图的 file_offset，供 read_file 精确跳转
+        offsets = self._diagram_file_offsets()
+        for d in tree["diagrams"]:
+            if d["name"] in offsets:
+                d["file_offset"] = offsets[d["name"]]
+
+        return json.dumps(tree, ensure_ascii=False)
+
+    def to_openai_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "kg_project_structure",
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project identifier (diagram name or project file name)",
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Structure depth: 1=diagram names only, 2=+ contained classes/components/lifelines, 3=+ method/attribute signatures. Default 2.",
+                        },
+                    },
+                    "required": ["project_id"],
+                },
+            },
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
 # 工厂函数
 # ═══════════════════════════════════════════════════════════════
 
@@ -664,6 +862,7 @@ def create_kg_tools(
         KgExpandTool(db_path=db_path),
         KgTraceTool(db_path=db_path),
         KgDiffTool(db_path=db_path, source_dir=source_dir),
+        KgProjectStructureTool(db_path=db_path, project_file=project_file),
     ]
     logger.info(
         f"[KG] Created {len(tools)} knowledge graph tools "
