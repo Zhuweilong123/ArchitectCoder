@@ -171,6 +171,28 @@ class ReadFileTool(Tool):
                 ),
                 required=True,
             ),
+            ToolParameter(
+                name="offset",
+                type="integer",
+                description=(
+                    "Optional zero-based character offset to start reading from. "
+                    "Use with limit to page through a large file. Default 0."
+                ),
+                required=False,
+                default=0,
+            ),
+            ToolParameter(
+                name="limit",
+                type="integer",
+                description=(
+                    "Optional max number of characters to return in this read. "
+                    "Use with offset to page through a large file (e.g. a 28KB "
+                    ".umlproj — read it in chunks of 20000). Default is the tool "
+                    "max_chars (20000)."
+                ),
+                required=False,
+                default=None,
+            ),
         ]
 
     def _allowed_root(self) -> str:
@@ -235,12 +257,166 @@ class ReadFileTool(Tool):
         if not os.path.isfile(resolved):
             return f"文件不存在: {raw_path}"
 
+        # ── 分页：offset/limit（字符偏移），支持大文件分段读取 ──
+        offset = parameters.get("offset") or 0
+        limit = parameters.get("limit") or self.max_chars
+        try:
+            offset = max(0, int(offset))
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            return "offset / limit 必须为整数。"
+
         try:
             with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+                f.seek(0, os.SEEK_END)
+                total = f.tell()
+                f.seek(offset)
+                content = f.read(limit)
         except OSError as e:
             return f"读取失败: {e}"
 
-        if len(content) > self.max_chars:
-            content = content[: self.max_chars] + "\n...[内容过长已截断]"
-        return content
+        chunk = content[:limit]
+        end = offset + len(chunk)
+        meta_lines = [f"【{os.path.basename(resolved)}】 字符 {offset}–{end} / 共 {total}"]
+
+        if end < total:
+            chunk += "\n...[文件还有更多内容，用更大的 offset 继续读取]"
+        return "\n".join(meta_lines + [chunk])
+
+
+class GrepFileTool(Tool):
+    """在项目文件内按关键词全文搜索，返回命中行号与上下文。
+
+    与 read_file 互补：当 Agent 不知道目标在哪一行（如某个字段、某个
+    JSON key、某段代码）时，先用 grep 定位行号，再用 read_file 的
+    offset 按行读取精确片段。相比逐个 read_file 全量扫描，grep 成本更低，
+    适合在大型 .umlproj 或源码中快速定位。
+    """
+
+    def __init__(
+        self,
+        source_dir: str = "",
+        test_dir: str = "",
+        project_file: str = "",
+        max_matches: int = 40,
+    ):
+        super().__init__(
+            name="grep",
+            description=(
+                "Search for a keyword (substring) inside project files and return "
+                "matching line numbers with context. Use when you need to locate a "
+                "specific field, JSON key, class/method name, or snippet without "
+                "reading whole files. Inputs: pattern (the substring to search), "
+                "path (optional — a single file; if omitted, searches all files in "
+                "the project: design file, source directory, test directory). "
+                "Returns up to a few matches per file with line numbers."
+            ),
+        )
+        self.source_dir = source_dir
+        self.test_dir = test_dir
+        self.project_file = project_file
+        self.max_matches = max_matches
+
+    def get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="pattern",
+                type="string",
+                description=(
+                    "The keyword substring to search for, e.g. 'fragments', "
+                    "'association', 'generateTransmitSignal'. Case-sensitive."
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="path",
+                type="string",
+                description=(
+                    "Optional single file to search (relative or absolute path "
+                    "inside the project). If omitted, searches all project files."
+                ),
+                required=False,
+                default=None,
+            ),
+        ]
+
+    def _candidate_files(self) -> list[str]:
+        """收集可搜索的文件列表：设计文件 + 源码/测试目录下所有文本文件。"""
+        files: list[str] = []
+        if self.project_file and os.path.isfile(self.project_file):
+            files.append(self.project_file)
+        for root in (self.source_dir, self.test_dir):
+            if not root or not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, names in os.walk(root):
+                for n in names:
+                    if n.endswith(".py"):
+                        files.append(os.path.join(dirpath, n))
+        return files
+
+    def _resolve_allowed_path(self, raw_path: str) -> str | None:
+        """与 ReadFileTool 相同的路径解析：绝对或相对项目根。"""
+        allowed_roots = [self.source_dir, self.test_dir]
+        if self.project_file:
+            allowed_roots.append(os.path.dirname(self.project_file))
+        if os.path.isabs(raw_path):
+            p = os.path.abspath(raw_path)
+        else:
+            for root in allowed_roots:
+                if root:
+                    cand = os.path.abspath(os.path.join(root, raw_path))
+                    if os.path.isfile(cand):
+                        return cand
+            p = os.path.abspath(raw_path)
+        if not os.path.isfile(p):
+            return None
+        # 安全边界检查
+        try:
+            if allowed_roots:
+                common = os.path.commonpath([p] + [os.path.abspath(r) for r in allowed_roots if r])
+                allowed = os.path.commonpath([os.path.abspath(r) for r in allowed_roots if r])
+                if os.path.commonpath([p, allowed]) != allowed:
+                    return None
+        except ValueError:
+            return None
+        return p
+
+    def run(self, parameters: Dict[str, Any]) -> str:
+        pattern = str(parameters.get("pattern", "")).strip()
+        if not pattern:
+            return "请提供要搜索的关键词 pattern。"
+        if len(pattern) > 200:
+            return "pattern 过长（最多 200 字符）。"
+
+        raw_path = parameters.get("path")
+        if raw_path:
+            target = self._resolve_allowed_path(str(raw_path).strip())
+            if target is None:
+                return f"路径无效或超出允许范围: {raw_path}"
+            files = [target]
+        else:
+            files = self._candidate_files()
+
+        lines_out: list[str] = []
+        total_hits = 0
+        for fpath in files:
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    for lineno, line in enumerate(f, 1):
+                        if pattern in line:
+                            total_hits += 1
+                            snippet = line.strip()[:200]
+                            if total_hits <= self.max_matches:
+                                lines_out.append(
+                                    f"{os.path.basename(fpath)}:{lineno}: {snippet}"
+                                )
+            except OSError:
+                continue
+
+        if total_hits == 0:
+            return f"在 {len(files)} 个文件中未找到 '{pattern}'。"
+
+        summary = f"找到 {total_hits} 处匹配（{len(files)} 个文件），显示前 {min(total_hits, self.max_matches)} 处："
+        if total_hits > self.max_matches:
+            summary += f"\n...（还有 {total_hits - self.max_matches} 处未显示，可缩小 pattern 或指定单个文件）"
+        return "\n".join([summary] + lines_out)

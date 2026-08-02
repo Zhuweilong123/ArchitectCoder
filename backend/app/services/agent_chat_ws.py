@@ -367,7 +367,8 @@ async def _create_dev_agent(
     也能感知 UML 设计的真实内容（类、组件、接口、图）。
     """
     tools, review_mgr = create_conversation_tools(
-        llm, source_dir=source_dir, test_dir=test_dir, include_review=True,
+        llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+        include_review=True,
     )
 
     # ── 知识图谱工具 ──
@@ -395,12 +396,15 @@ async def _create_dev_agent(
 
     # ── 项目信息工具（按需获取，不再注入 prompt，首轮 token 更省、信息永远新鲜）──
     from app.agent_base.tools.my_tools.project_info_tools import (
-        ProjectInfoTool, ReadFileTool,
+        ProjectInfoTool, ReadFileTool, GrepFileTool,
     )
     registry.register_tool(ProjectInfoTool(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
     registry.register_tool(ReadFileTool(
+        source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+    ))
+    registry.register_tool(GrepFileTool(
         source_dir=source_dir, test_dir=test_dir, project_file=project_file,
     ))
 
@@ -538,6 +542,21 @@ async def _handle_dev(
             })
             if not ok:
                 return
+
+            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端刷新画布
+            for td in d.get("tool_calls_detail", []):
+                if td.get("name") == "optimize_uml":
+                    try:
+                        obs = json.loads(td.get("observation", ""))
+                    except (TypeError, json.JSONDecodeError):
+                        obs = None
+                    if isinstance(obs, dict) and obs.get("diagrams"):
+                        await _ws_send(websocket, {
+                            "event": "design_updated",
+                            "diagrams": obs.get("diagrams", []),
+                            "saved_to": obs.get("saved_to", ""),
+                        })
+                    break
 
             if d["is_final"]:
                 # 跨轮记忆：本轮 user + assistant 一起写入 agent 历史

@@ -185,41 +185,68 @@ class ProgressRelay:
 class OptimizeUmlTool(AsyncTool):
     """UML 设计优化工具 — 包装 UmlOptimizer (ReflectionAgent)。
 
-    对话 Agent 调用此工具来优化 UML 设计，返回优化后的图 JSON
+    对话 Agent 调用此工具来优化/修改 UML 设计，返回优化后的图 JSON
     和设计约束。内部自动完成验证-修复循环。
+
+    优先从 project_file 加载现有图（无需 Agent 手拼 JSON）；若未提供
+    project_file，则回退使用 diagrams_json 参数传入的图列表。
     """
 
-    def __init__(self, llm: BaseAgentsLLM, progress: ProgressRelay | None = None):
+    def __init__(self, llm: BaseAgentsLLM, project_file: str = "",
+                 progress: ProgressRelay | None = None):
         super().__init__(
             name="optimize_uml",
             description=(
-                "Optimize UML design (class, sequence, component diagrams). "
-                "Cross-validate and optimize the existing diagrams based on user "
-                "instructions. Automatically check and fix cross-diagram reference "
-                "consistency. Returns optimized diagrams JSON and design constraints."
+                "Optimize or modify the project's UML design (class, sequence, "
+                "component diagrams). Based on the user's instructions, add, remove, "
+                "or update any element in the diagrams — all element types are "
+                "operable (classes, components, interfaces, lifelines, messages, "
+                "relationships, fragments, etc.). The tool rewrites the full diagram "
+                "set from the instructions, which is expected behavior. It also "
+                "cross-validates and fixes cross-diagram reference consistency. "
+                "Best usage: pass project_file (the .umlproj path from project_info) "
+                "and instructions; the tool loads the existing diagrams itself and "
+                "returns the updated diagrams JSON. Alternatively pass diagrams_json "
+                "with the existing diagram list."
             ),
         )
         self.llm = llm
+        self.project_file = project_file
         self.progress = progress
 
     async def _execute(self, params: dict) -> str:
         from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
 
-        diagrams_json = params.get("diagrams_json", "[]")
         instructions = params.get("instructions", "")
 
-        try:
-            if isinstance(diagrams_json, str):
-                diagrams = json.loads(diagrams_json)
-            elif isinstance(diagrams_json, list):
-                diagrams = diagrams_json
-            else:
-                diagrams = []
-        except json.JSONDecodeError:
-            diagrams = []
+        # ── 1) 优先从 project_file 加载现有图 ──
+        project_file = params.get("project_file") or self.project_file
+        diagrams: list[dict] = []
+        loaded_from = ""
+        if project_file and os.path.isfile(project_file):
+            try:
+                from app.services.file_service import load_project
+                project = load_project(project_file)
+                diagrams = [d.model_dump() for d in project.diagrams]
+                loaded_from = project_file
+            except Exception as e:
+                logger.warning("[OptimizeUmlTool] load_project failed: %s", e)
 
-        logger.info("[OptimizeUmlTool] %d diagrams, instructions=%s",
-                    len(diagrams), instructions[:80])
+        # ── 2) 回退：用 diagrams_json 传入的图列表 ──
+        if not diagrams:
+            diagrams_json = params.get("diagrams_json", "[]")
+            try:
+                if isinstance(diagrams_json, str):
+                    diagrams = json.loads(diagrams_json)
+                elif isinstance(diagrams_json, list):
+                    diagrams = diagrams_json
+                else:
+                    diagrams = []
+            except json.JSONDecodeError:
+                diagrams = []
+
+        logger.info("[OptimizeUmlTool] %d diagrams (from %s), instructions=%s",
+                    len(diagrams), loaded_from or "diagrams_json", instructions[:80])
 
         try:
             optimizer = UmlOptimizer(self.llm, max_iterations=3)
@@ -241,18 +268,56 @@ class OptimizeUmlTool(AsyncTool):
                 "status": "done",
             })
 
-            return json.dumps({
+            # ── 3) 可选落盘：把优化后的 diagrams 写回 .umlproj ──
+            save_to_project = bool(params.get("save_to_project", False))
+            saved_path = ""
+            if save_to_project and loaded_from and result.get("diagrams"):
+                saved_path = self._save_to_project(loaded_from, result["diagrams"])
+
+            out = {
                 "diagrams": result.get("diagrams", []),
                 "design_constraints": result.get("design_constraints", {}),
                 "changes_summary": result.get("changes_summary", ""),
                 "consistency_report": result.get("consistency_report", []),
-            }, ensure_ascii=False)
+            }
+            if saved_path:
+                out["saved_to"] = saved_path
+            elif save_to_project:
+                out["saved_to"] = ""
+            return json.dumps(out, ensure_ascii=False)
         except Exception as e:
             logger.exception("[OptimizeUmlTool] Failed")
             return json.dumps({
                 "error": f"UML optimization failed: {e}",
                 "diagrams": diagrams,
             }, ensure_ascii=False)
+
+    def _save_to_project(self, project_file: str, diagrams: list[dict]) -> str:
+        """把优化后的 diagrams（dict 列表）写回 .umlproj 文件。成功返回路径，失败返回空串。"""
+        try:
+            from app.services.file_service import load_project, save_project
+            from app.models.uml import UmlDiagram
+
+            project = load_project(project_file)
+            converted: list[UmlDiagram] = []
+            for d in diagrams:
+                data = d.get("data") if isinstance(d, dict) else None
+                if isinstance(data, dict):
+                    if "diagram_type" not in data and "type" in d:
+                        data = {**data, "diagram_type": d["type"]}
+                    converted.append(UmlDiagram(**data))
+                elif isinstance(d, dict):
+                    converted.append(UmlDiagram(**d))
+            if not converted:
+                logger.warning("[OptimizeUmlTool] 无有效 diagram 可落盘")
+                return ""
+            project.diagrams = converted
+            saved = save_project(project, project_file)
+            logger.info("[OptimizeUmlTool] 已保存 %d 张图 → %s", len(converted), saved)
+            return saved
+        except Exception as e:
+            logger.exception("[OptimizeUmlTool] 落盘失败")
+            return ""
 
     def to_openai_schema(self) -> dict:
         return {
@@ -263,13 +328,21 @@ class OptimizeUmlTool(AsyncTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "project_file": {
+                            "type": "string",
+                            "description": "Path to the .umlproj project file (from project_info). Preferred — the tool loads the existing diagrams from it. Optional if diagrams_json is provided.",
+                        },
                         "diagrams_json": {
                             "type": "string",
-                            "description": "JSON string of the existing diagram list, format [{\"type\":\"class\",\"data\":{...}}, ...]. Empty array means generate from scratch.",
+                            "description": "JSON string of the existing diagram list, format [{\"type\":\"class\",\"data\":{...}}, ...]. Only needed when project_file is unavailable; empty array means generate from scratch.",
                         },
                         "instructions": {
                             "type": "string",
-                            "description": "User optimization instructions, e.g. 'add a payment module, improve exception handling'",
+                            "description": "User instructions for optimizing or modifying the UML design, e.g. 'add a payment module', 'remove the association fragment from the sequence diagram', 'rename class X to Y'. Any element can be added, removed, or updated; the tool rewrites the full diagram set accordingly.",
+                        },
+                        "save_to_project": {
+                            "type": "boolean",
+                            "description": "Whether to write the optimized diagrams back to the .umlproj file on disk. Default false — set true when the user asked to modify the design (add/remove/update elements), so the change is persisted. When true, requires a valid project_file.",
                         },
                     },
                     "required": ["instructions"],
@@ -770,6 +843,7 @@ def create_conversation_tools(
     llm: BaseAgentsLLM,
     source_dir: str = "",
     test_dir: str = "",
+    project_file: str = "",
     include_review: bool = True,
     progress: ProgressRelay | None = None,
 ) -> tuple[list[Tool], ReviewManager | None]:
@@ -779,7 +853,7 @@ def create_conversation_tools(
         (tools, review_manager) — tool 列表 + 审核管理器（若启用）
     """
     tools: list[Tool] = [
-        OptimizeUmlTool(llm, progress=progress),
+        OptimizeUmlTool(llm, project_file=project_file, progress=progress),
         GenerateCodeTool(llm, progress=progress),
         ValidateCodeTool(llm, source_dir=source_dir, progress=progress),
         GenerateTestsTool(llm, progress=progress),

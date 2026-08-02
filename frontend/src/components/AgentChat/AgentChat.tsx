@@ -207,6 +207,16 @@ const AgentChat: React.FC = () => {
           break;
         }
 
+        // ── 设计更新（optimize_uml 修改后透传）──
+        case 'design_updated': {
+          const diagrams = event.diagrams;
+          if (Array.isArray(diagrams) && diagrams.length > 0) {
+            useDiagramStore.getState().addDiagramsFromSpec(diagrams);
+            useDiagramStore.getState().triggerRecenter();
+          }
+          break;
+        }
+
         // ── 停止 ──
         case 'stopped': {
           setBusy(false);

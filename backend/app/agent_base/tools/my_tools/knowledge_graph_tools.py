@@ -146,7 +146,13 @@ class KgQueryTool(AsyncTool):
                 "Returns a list of matching nodes with BM25 relevance scores. "
                 "Use cases: check whether a class/component/method exists; locate a "
                 "feature in code; list designed classes. To enumerate ALL nodes of a "
-                "type, pass an empty pattern with node_types set."
+                "type, pass an empty pattern with node_types set. "
+                "IMPORTANT: full-text search can miss nodes whose names differ from "
+                "your keywords (e.g. node 'EchoSimulation' won't match phrase "
+                "'simulator transmit'). Prefer empty pattern + node_types to "
+                "enumerate, or kg_expand from a known node, over guessing multi-word "
+                "phrases. Sequence-diagram fragments and messages are NOT indexed in "
+                "the KG — read the .umlproj file (read_file/grep) to inspect them."
             ),
         )
         self.db_path = db_path
