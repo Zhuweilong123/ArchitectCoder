@@ -259,8 +259,21 @@ class BaseAgentsLLM:
         if kwargs.get("json_mode"):
             call_kwargs["response_format"] = {"type": "json_object"}
 
-        response = self._client.chat.completions.create(**call_kwargs)
-        return response.choices[0].message.content or ""
+        span_id = _trace_hook("llm_request", model=call_kwargs["model"],
+                              messages=messages, temperature=call_kwargs.get("temperature"),
+                              max_tokens=call_kwargs.get("max_tokens")) or ""
+        _t0 = time.monotonic()
+        try:
+            response = self._client.chat.completions.create(**call_kwargs)
+            content = response.choices[0].message.content or ""
+        except Exception as exc:
+            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+                        duration_ms=(time.monotonic() - _t0) * 1000)
+            raise
+        _trace_hook("llm_response", span_id=span_id, content=content,
+                    usage=_usage_dict(getattr(response, "usage", None)),
+                    duration_ms=(time.monotonic() - _t0) * 1000)
+        return content
 
     def think(self, messages: list[dict], **kwargs) -> Iterator[str]:
         """同步流式调用，逐块产出文本"""
