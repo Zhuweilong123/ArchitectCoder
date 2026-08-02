@@ -181,12 +181,3 @@ export interface GeneratedDiagram {
   component_id: string;
   data: Record<string, unknown>;  // full diagram fields
 }
-
-/** New-format LLM response for global optimization. */
-export interface GlobalOptimizeResult {
-  diagrams: GeneratedDiagram[];
-  consistency_report: Array<{severity: string; msg: string}>;
-  changes_summary: string;
-  design_constraints: Record<string, unknown>;
-  diff?: string;
-}

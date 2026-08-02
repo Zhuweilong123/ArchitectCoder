@@ -288,10 +288,18 @@ class OptimizeUmlTool(AsyncTool):
                 "message": f"Optimizing {len(diagrams)} diagrams...",
             })
 
-            result = await optimizer.optimize(
-                diagrams=diagrams if diagrams else None,
-                instructions=instructions,
-            )
+            # ── 流式 vs 完整模式 ──
+            stream_mode = params.get("stream_mode", False)
+            if stream_mode and isinstance(stream_mode, str):
+                stream_mode = stream_mode.lower() != "false"
+
+            if stream_mode:
+                result = await self._optimize_stream(optimizer, diagrams, instructions)
+            else:
+                result = await optimizer.optimize(
+                    diagrams=diagrams if diagrams else None,
+                    instructions=instructions,
+                )
 
             self.progress and self.progress.emit({
                 "event": "sub_agent",
@@ -322,6 +330,100 @@ class OptimizeUmlTool(AsyncTool):
                 "error": f"UML optimization failed: {e}",
                 "diagrams": diagrams,
             }, ensure_ascii=False)
+
+    async def _optimize_stream(
+        self, optimizer, diagrams: list[dict], instructions: str,
+    ) -> dict:
+        """流式执行优化：通过 ProgressRelay 逐元素推送到前端，最后返回完整结果。
+
+        Returns 与 optimizer.optimize() 相同格式的 dict。
+        """
+        collected_elements: list[dict] = []
+
+        async for _elem_type, _elem_json in optimizer.optimize_stream(
+            diagrams=diagrams if diagrams else None,
+            instructions=instructions,
+            progress=self.progress,
+        ):
+            try:
+                obj = json.loads(_elem_json)
+            except json.JSONDecodeError:
+                continue
+            collected_elements.append({"type": _elem_type, "obj": obj})
+
+        diagrams_out = self._elements_to_diagrams(collected_elements)
+
+        self.progress and self.progress.emit({
+            "event": "sub_agent",
+            "agent": "UmlOptimizer",
+            "status": "done",
+        })
+
+        return {
+            "diagrams": diagrams_out,
+            "consistency_report": [],
+            "changes_summary": "流式优化完成",
+            "design_constraints": {},
+            "diff": "",
+        }
+
+    @staticmethod
+    def _elements_to_diagrams(elements: list[dict]) -> list[dict]:
+        """将流式元素列表汇总为 diagrams dict 列表。"""
+        diagram_map: dict[str, dict] = {}
+        for el in elements:
+            obj = el.get("obj", {})
+            etype = el.get("type", "")
+            if etype == "diagram_create":
+                dtype = obj.get("type", "class")
+                dname = obj.get("name", dtype)
+                key = f"{dtype}:{dname}"
+                if key not in diagram_map:
+                    diagram_map[key] = {
+                        "type": dtype, "name": dname,
+                        "component_id": obj.get("component_id", ""),
+                        "data": {"name": dname},
+                    }
+            elif etype == "diagram_meta":
+                pass
+            elif etype == "class":
+                for k, d in diagram_map.items():
+                    if d["type"] == "class":
+                        d["data"].setdefault("classes", []).append(obj)
+                        break
+            elif etype == "relation":
+                for k, d in diagram_map.items():
+                    if d["type"] == "class":
+                        d["data"].setdefault("relations", []).append(obj)
+                        break
+            elif etype in ("lifeline", "message", "fragment"):
+                for k, d in diagram_map.items():
+                    if d["type"] == "sequence":
+                        if etype == "lifeline":
+                            d["data"].setdefault("lifelines", []).append(obj)
+                        elif etype == "message":
+                            d["data"].setdefault("messages", []).append(obj)
+                        elif etype == "fragment":
+                            d["data"].setdefault("fragments", []).append(obj)
+                        break
+            elif etype in ("component", "comp_rel"):
+                for k, d in diagram_map.items():
+                    if d["type"] == "component":
+                        if etype == "component":
+                            d["data"].setdefault("components", []).append(obj)
+                        elif etype == "comp_rel":
+                            d["data"].setdefault("comp_relations", []).append(obj)
+                        break
+            elif etype == "diagram_update":
+                dtype = obj.get("type", "class")
+                dname = obj.get("name", dtype)
+                key = f"{dtype}:{dname}"
+                diagram_map[key] = {
+                    "type": dtype, "name": dname,
+                    "component_id": obj.get("component_id", ""),
+                    "data": obj.get("data", obj),
+                }
+        return list(diagram_map.values())
 
     def _save_to_project(self, project_file: str, diagrams: list[dict]) -> str:
         """把优化后的 diagrams（dict 列表）写回 .umlproj 文件。成功返回路径，失败返回空串。"""

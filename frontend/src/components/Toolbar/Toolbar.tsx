@@ -26,8 +26,9 @@ import {
   exportMarkdown, generateCode as apiGenerateCode,
   optimizeUml as apiOptimizeUml, createPipeline,
   browseDirectory, type BrowseResult,
-  saveGeneratedCode, optimizeProject as apiOptimizeProject,
+  saveGeneratedCode,
 } from '../../services/api';
+import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
 import './Toolbar.css';
 
 const { TextArea } = Input;
@@ -108,311 +109,38 @@ const Toolbar: React.FC = () => {
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [globalOptimizing, setGlobalOptimizing] = useState(false);
   const [globalStreamMode, setGlobalStreamMode] = useState(false);
-  // Holds the in-flight streaming request so it can be cancelled on unmount / re-run.
-  const streamAbortRef = useRef<AbortController | null>(null);
 
-  // Cancel any in-flight streaming request when the toolbar unmounts.
-  useEffect(() => {
-    return () => { streamAbortRef.current?.abort(); };
-  }, []);
-
-
-  // ── Global optimize handler (complete mode) ─────────
+  // ── Global optimize handler (unified: via Agent WebSocket) ─────────
   const handleGlobalOptimize = async () => {
     const proj = useDiagramStore.getState().project;
 
-    // Build existing_diagrams list (new format) + keep old fields for backward compat
-    const existingDiagrams = proj.diagrams.map(d => ({
-      type: d.diagram_type || 'class',
-      name: d.name,
-      component_id: d.component_id || '',
-      data: d,
-    }));
-    const classD = proj.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-    const seqD = proj.diagrams.find(d => d.diagram_type === 'sequence');
-    const compD = proj.diagrams.find(d => d.diagram_type === 'component');
+    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    connectAgentChat(() => {/* Toolbar doesn't need callbacks — AgentChat handles */}, token);
 
-    if (globalStreamMode) {
-      // ── Streaming mode ──────────────────────────────
-      setGlobalOptimizing(true);
-      setGlobalOptimizeVisible(false);
-      message.loading({ content: '流式优化中，实时生成设计...', key: 'globalOpt', duration: 0 });
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        const token = import.meta.env.VITE_API_TOKEN;
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        // Cancel any previous stream, then track this one for unmount/re-run cleanup.
-        streamAbortRef.current?.abort();
-        const abort = new AbortController();
-        streamAbortRef.current = abort;
-        const resp = await fetch('/api/llm/optimize-project-stream', {
-          method: 'POST', headers, signal: abort.signal,
-          body: JSON.stringify({
-            instructions: globalInstructions,
-            existing_diagrams: existingDiagrams,
-            class_diagram: classD || {}, sequence_diagram: seqD || {}, component_diagram: compD || {},
-          }),
-        });
-        await handleStreamResponse(resp, proj);
-        useDiagramStore.getState().triggerRecenter();
-        message.success({ content: '流式优化完成', key: 'globalOpt' });
-      } catch (e) {
-        if ((e as Error)?.name === 'AbortError') {
-          message.info({ content: '流式优化已取消', key: 'globalOpt' });
-        } else {
-          message.error({ content: '流式优化失败: ' + String(e), key: 'globalOpt' });
-        }
-      }
-      setGlobalOptimizing(false);
-    } else {
-      // ── Complete mode ────────────────────────────────
-      setGlobalOptimizing(true);
-      setGlobalOptimizeVisible(false);
-      message.loading({ content: '全局优化中...', key: 'globalOpt', duration: 0 });
-      try {
-        const result: any = await apiOptimizeProject({
-          instructions: globalInstructions,
-          existing_diagrams: existingDiagrams,
-          class_diagram: classD as any, sequence_diagram: seqD as any,
-          component_diagram: compD as any,
-        });
-        // New format: {diagrams: [...]} — auto-create/update
-        const specs = result?.diagrams || [];
-        if (specs.length > 0) {
-          const store = useDiagramStore.getState();
-          store.addDiagramsFromSpec(specs);
-          // Refresh canvas: switch to last created diagram and center view
-          store.triggerRecenter();
-          message.success({ content: `全局优化完成，已生成/更新 ${specs.length} 张图`, key: 'globalOpt' });
-        } else {
-          // Old format fallback: {optimized: {class, sequence, component}}
-          const optimized = result?.optimized as any;
-          if (optimized) {
-            const store = useDiagramStore.getState();
-            const diagrams = [...store.project.diagrams];
-            for (const dtype of ['class', 'sequence', 'component'] as const) {
-              if (optimized[dtype]) {
-                const idx = diagrams.findIndex(d =>
-                  (d.diagram_type || 'class') === dtype);
-                if (idx >= 0) {
-                  diagrams[idx] = { ...diagrams[idx], ...optimized[dtype] };
-                } else {
-                  const newD = createDefaultDiagram(optimized[dtype].name || dtype);
-                  newD.diagram_type = dtype;
-                  newD.component_id = optimized[dtype].component_id || '';
-                  diagrams.push({ ...newD, ...optimized[dtype] });
-                }
-              }
-            }
-            store.setProject({ ...store.project, diagrams });
-            store.triggerRecenter();
-          }
-          message.success({ content: '全局优化完成，请查看各图', key: 'globalOpt' });
-        }
-      } catch (e) {
-        message.error({ content: '全局优化失败: ' + String(e), key: 'globalOpt' });
-      }
-      setGlobalOptimizing(false);
+    const messageText = globalInstructions.trim()
+      ? `请对当前项目进行全局UML优化: ${globalInstructions}`
+      : '请对当前项目进行全局UML交叉验证和综合优化';
+
+    setGlobalOptimizing(true);
+    setGlobalOptimizeVisible(false);
+    message.loading({ content: globalStreamMode ? '流式优化中，实时生成设计...' : '全局优化中...', key: 'globalOpt', duration: 0 });
+
+    // Auto-open AgentChat panel so user can see progress
+    const uiState = useUiStore.getState();
+    if (!uiState.agentChatVisible) {
+      uiState.setAgentChatVisible(true);
     }
+
+    sendAgentMessage(messageText, {
+      source_dir: uiState.pipelineSourceDir,
+      test_dir: uiState.pipelineTestDir,
+      project_file: currentFilepath || '',
+      stream_mode: globalStreamMode,
+    });
+
+    message.success({ content: '已发送优化请求到 AI 助手', key: 'globalOpt' });
+    setGlobalOptimizing(false);
   };
-
-  // ── Streaming handler (incremental element-by-element) ─
-  const handleStreamResponse = async (resp: Response, proj: { diagrams: Array<{ diagram_type?: string; name?: string; component_id?: string }> }) => {
-      const reader = resp.body?.getReader();
-      if (!reader) throw new Error('No stream');
-      const decoder = new TextDecoder();
-
-      const idMap = new Map<string, string>();
-      const getMapped = (llmId: string) => idMap.get(llmId) || llmId;
-      let currentType = '';
-
-      const switchTo = (type: string) => {
-        if (currentType === type) return;
-        let idx = type === 'class' ? proj.diagrams.findIndex(d => (d.diagram_type || 'class') === 'class')
-          : type === 'sequence' ? proj.diagrams.findIndex(d => d.diagram_type === 'sequence')
-          : proj.diagrams.findIndex(d => d.diagram_type === 'component');
-        if (idx < 0) {
-          // Auto-create missing diagram type so streaming elements have a target
-          const autoName = type === 'class' ? '类图' : type === 'sequence' ? '时序图' : '组件图';
-          useDiagramStore.getState().addDiagram(type, autoName);
-          idx = useDiagramStore.getState().project.diagrams.length - 1;
-        }
-        if (idx >= 0) { useDiagramStore.getState().setActiveDiagram(idx); currentType = type; }
-      };
-
-      /** Get the last item from an array (most recently added). */
-      function lastOf<T>(arr: T[] | undefined): T | null { return arr && arr.length > 0 ? arr[arr.length - 1] : null; }
-
-      // ── Element dispatch table ────────────────────────
-      const handlers: Record<string, (obj: any) => void> = {
-        diagram_create: (obj) => {
-          // New diagram entry detected in the stream — auto-create the tab
-          const dtype = obj.type || 'class';
-          const dname = obj.name || dtype;
-          const cid = obj.component_id || '';
-          let idx = proj.diagrams.findIndex(
-            d => (d.diagram_type || 'class') === dtype && d.name === dname
-          );
-          if (idx < 0) {
-            useDiagramStore.getState().addDiagram(dtype, dname, cid);
-            idx = useDiagramStore.getState().project.diagrams.length - 1;
-          }
-          useDiagramStore.getState().setActiveDiagram(idx);
-          currentType = dtype;
-        },
-        class: (obj) => {
-          switchTo('class');
-          const s = useDiagramStore.getState();
-          const pos = obj.position || { x: 100, y: 100 };
-          s.addClass({ x: pos.x, y: pos.y });
-          const cls = lastOf(useDiagramStore.getState().diagram.classes);
-          if (cls) {
-            idMap.set(obj.id, cls.id);
-            s.updateClass(cls.id, {
-              name: obj.name || 'Class', stereotype: obj.stereotype || 'class',
-              attributes: obj.attributes || [], methods: obj.methods || [],
-              note: obj.note || '',
-              provided_interfaces: obj.provided_interfaces || [],
-              required_interfaces: obj.required_interfaces || [],
-            });
-            if (obj.size) s.updateClass(cls.id, { size: obj.size } as any);
-          }
-        },
-        relation: (obj) => {
-          switchTo('class');
-          useDiagramStore.getState().addRelation(getMapped(obj.source), getMapped(obj.target));
-          const rel = lastOf(useDiagramStore.getState().diagram.relations);
-          if (rel) {
-            useDiagramStore.getState().updateRelation(rel.id, {
-              type: obj.type || 'association',
-              multiplicity_source: obj.multiplicity_source || '',
-              multiplicity_target: obj.multiplicity_target || '',
-              role_name: obj.role_name || '', note: obj.note || '',
-            });
-          }
-        },
-        lifeline: (obj) => {
-          switchTo('sequence');
-          useDiagramStore.getState().addLifeline(obj.x ?? 200);
-          const ll = lastOf(useDiagramStore.getState().diagram.lifelines);
-          if (ll) {
-            idMap.set(obj.id, ll.id);
-            useDiagramStore.getState().updateLifeline(ll.id, {
-              name: obj.name || 'Participant', class_ref: obj.class_ref || '',
-              activations: obj.activations || [],
-            });
-          }
-        },
-        message: (obj) => {
-          switchTo('sequence');
-          useDiagramStore.getState().addMessage(getMapped(obj.from_lifeline), getMapped(obj.to_lifeline));
-          const msg = lastOf(useDiagramStore.getState().diagram.messages);
-          if (msg) {
-            useDiagramStore.getState().updateMessage(msg.id, {
-              label: obj.label || 'message()', type: obj.type || 'sync',
-              order: obj.order || msg.order, note: obj.note || '', y: obj.y,
-            });
-          }
-        },
-        fragment: (obj) => {
-          switchTo('sequence');
-          useDiagramStore.getState().addFragment(obj.y_start ?? 200);
-          const frag = lastOf(useDiagramStore.getState().diagram.fragments);
-          if (frag) {
-            useDiagramStore.getState().updateFragment(frag.id, {
-              type: obj.type || 'loop', label: obj.label || '',
-              x: obj.x ?? 80, width: obj.width ?? 280,
-              y_start: obj.y_start ?? 200, y_end: obj.y_end ?? 320,
-            } as any);
-          }
-        },
-        component: (obj) => {
-          switchTo('component');
-          useDiagramStore.getState().addComponent({ x: obj.x ?? 150, y: obj.y ?? 100 }, obj.parent_id || '');
-          const comp = lastOf(useDiagramStore.getState().diagram.components);
-          if (comp) {
-            idMap.set(obj.id, comp.id);
-            useDiagramStore.getState().updateComponent(comp.id, {
-              name: obj.name || 'Component', width: obj.width ?? 200, height: obj.height ?? 160,
-              provided_interfaces: obj.provided_interfaces || [],
-              required_interfaces: obj.required_interfaces || [],
-            });
-          }
-        },
-        comp_rel: (obj) => {
-          switchTo('component');
-          useDiagramStore.getState().addCompRelation(getMapped(obj.source), getMapped(obj.target));
-          const crel = lastOf(useDiagramStore.getState().diagram.comp_relations);
-          if (crel) {
-            useDiagramStore.getState().updateCompRelation(crel.id, { type: obj.type || 'dependency' });
-          }
-        },
-        diagram_meta: (obj) => {
-          const dtype = obj.diagram_type || 'class';
-          switchTo(dtype);
-          // Set component_id on the active diagram
-          const store = useDiagramStore.getState();
-          const idx = store.project.active_diagram_index;
-          const diag = store.project.diagrams[idx];
-          if (diag && obj.component_id && !diag.component_id) {
-            const newDiagrams = store.project.diagrams.map((d, i) =>
-              i === idx ? { ...d, component_id: obj.component_id } : d
-            );
-            store.setProject({ ...store.project, diagrams: newDiagrams });
-          }
-        },
-      };
-
-      // ── SSE read loop ────────────────────────────────
-      // Suppress per-element undo snapshots for the whole streaming batch.
-      useDiagramStore.getState().beginBatch();
-      let receivedBytes = 0, sseMsgCount = 0;
-      let textBuffer = '', currentData = '';
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { console.log('[Stream] Reader done, total bytes:', receivedBytes, 'msgs:', sseMsgCount); break; }
-          receivedBytes += value?.length || 0;
-          textBuffer += decoder.decode(value, { stream: true });
-
-          while (true) {
-            const nlIdx = textBuffer.indexOf('\n');
-            if (nlIdx < 0) break;
-            const rawLine = textBuffer.slice(0, nlIdx);
-            textBuffer = textBuffer.slice(nlIdx + 1);
-
-            if (rawLine.startsWith('data: ')) {
-              currentData += rawLine.slice(6);
-            } else if (rawLine === '') {
-              if (!currentData) continue;
-              sseMsgCount++;
-              console.log('[Stream] SSE msg #' + sseMsgCount + ':', currentData.slice(0, 150));
-              if (currentData === 'DONE') {
-                console.log('[Stream] DONE received, total msgs:', sseMsgCount);
-                useDiagramStore.getState().triggerRecenter();
-                return;
-              }
-              const colonIdx = currentData.indexOf(':');
-              if (colonIdx >= 0) {
-                const elemType = currentData.slice(0, colonIdx);
-                const jsonStr = currentData.slice(colonIdx + 1);
-                try {
-                  const obj = JSON.parse(jsonStr);
-                  console.log('[Stream] Element:', elemType, obj.name || obj.label || obj.id);
-                  handlers[elemType]?.(obj);
-                } catch (e) {
-                  console.warn('[Stream] JSON parse failed for', elemType + ':', (e as Error).message, 'json:', jsonStr.slice(0, 100));
-                }
-              }
-              currentData = '';
-            }
-          }
-        }
-      } finally {
-        useDiagramStore.getState().endBatch();
-      }
-  }; // handleStreamResponse
 
   // ── Ctrl+S global save ──────────────────────────────
   useEffect(() => {

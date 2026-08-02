@@ -13,13 +13,14 @@ import Editor from '@monaco-editor/react';
 import * as Diff from 'diff';
 import { useUiStore, DiffDiagramType } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
-import { saveReview, optimizeUml as apiOptimizeUml, optimizeProject as apiOptimizeProject } from '../../services/api';
+import { saveReview, optimizeUml as apiOptimizeUml } from '../../services/api';
+import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
 import './DiffViewer.css';
 
 const { TextArea } = Input;
 
 const DiffViewer: React.FC = () => {
-  const { setDiagram, diagram, setActiveDiagram, project } = useDiagramStore();
+  const { setDiagram, diagram, setActiveDiagram, project, currentFilepath } = useDiagramStore();
   const {
     originalCode, optimizedCode, diffContent,
     originalDiagram, optimizedDiagram,
@@ -179,53 +180,41 @@ const DiffViewer: React.FC = () => {
     message.loading({ content: 'LLM 正在重新优化...', key: 'reoptimize' });
     try {
       if (hasMultiDiagrams) {
-        // Re-run global optimization with all three diagrams
-        const classOrig = originalDiagrams.class || originalDiagram;
-        const result = await apiOptimizeProject({
-          class_diagram: classOrig,
-          sequence_diagram: originalDiagrams.sequence,
-          component_diagram: originalDiagrams.component,
-          instructions: rejectInstructions,
-        }) as any;
-        // Parse and push back to DiffViewer
-        const optimized = result.optimized || {};
-        const originals: Record<string, any> = {};
-        const optimizeds: Record<string, any> = {};
-        const diffs: Record<string, string> = {};
-        for (const type of (Object.keys(optimized) as DiffDiagramType[])) {
-          const orig = originalDiagrams[type] || (type === 'class' ? originalDiagram : null);
-          const opt = optimized[type];
-          if (orig && opt) {
-            originals[type] = orig;
-            // Merge LLM output with original metadata (diagram_type, name, etc.)
-            optimizeds[type] = { ...orig, ...opt };
-            diffs[type] = Diff.createPatch(
-              TYPE_LABELS[type]?.label || type,
-              JSON.stringify(orig, null, 2),
-              JSON.stringify(optimizeds[type], null, 2),
-              'Original', 'Optimized'
-            );
-          }
-        }
-        setGlobalOptimizationResult(originals, optimizeds, diffs,
-          result.consistency_report || [], rejectInstructions);
+        // Re-run global optimization via Agent WebSocket
+        connectAgentChat(() => {});
+        sendAgentMessage(
+          `请对当前项目进行全局UML交叉验证和优化: ${rejectInstructions}`,
+          { project_file: currentFilepath || '' },
+        );
+        // 优化结果通过 Agent WebSocket 的 design_updated 事件异步返回
+        await saveReview({
+          action: 'reject',
+          comment: rejectInstructions || reviewComment || '(继续优化)',
+          requirements: optimizeInstructions,
+          original_name: originalDiagram?.name || '',
+          optimized_name: optimizedDiagram?.name || '',
+          timestamp: new Date().toISOString(),
+        });
+        setRejectModalVisible(false);
+        setResolved(false);
+        setReviewComment('');
+        message.success({ content: '已发送重新优化请求到 AI 助手，请查看聊天面板', key: 'reoptimize' });
       } else if (originalDiagram) {
         const result = await apiOptimizeUml(originalDiagram, rejectInstructions);
         setOptimizationResult(result.original, result.optimized, result.changes_summary, rejectInstructions);
+        await saveReview({
+          action: 'reject',
+          comment: rejectInstructions || reviewComment || '(继续优化)',
+          requirements: optimizeInstructions,
+          original_name: originalDiagram?.name || '',
+          optimized_name: optimizedDiagram?.name || '',
+          timestamp: new Date().toISOString(),
+        });
+        setRejectModalVisible(false);
+        setResolved(false);
+        setReviewComment('');
+        message.success({ content: '重新优化完成，请查看新结果', key: 'reoptimize' });
       }
-      // Save the reject review first
-      await saveReview({
-        action: 'reject',
-        comment: rejectInstructions || reviewComment || '(继续优化)',
-        requirements: optimizeInstructions,
-        original_name: originalDiagram?.name || '',
-        optimized_name: optimizedDiagram?.name || '',
-        timestamp: new Date().toISOString(),
-      });
-      setRejectModalVisible(false);
-      setResolved(false); // allow new accept/reject on the fresh result
-      setReviewComment('');
-      message.success({ content: '重新优化完成，请查看新结果', key: 'reoptimize' });
     } catch (e) {
       message.error({ content: '重新优化失败: ' + String(e), key: 'reoptimize' });
     }
