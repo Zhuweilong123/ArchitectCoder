@@ -414,7 +414,7 @@ class ReActAgent(Agent):
                 logger.info("  🔧 %s(%s) → %s",
                            tool_name,
                            json.dumps(tool_args, ensure_ascii=False)[:80],
-                           observation[:80])
+                           observation_short[:80])
 
             # 4. 追加 assistant + tool 消息到对话
             messages.append({
