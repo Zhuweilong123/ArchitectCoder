@@ -102,27 +102,38 @@ export function connectAgentChat(
 
 function _noopEvent(_event: AgentEvent) { /* placeholder */ }
 
+// ── 待发送队列（WebSocket 未 OPEN 时暂存）───────
+let _pendingMessages: Array<{ message: string; opts: Record<string, unknown> }> = [];
+
 export function sendAgentMessage(message: string, opts?: {
   source_dir?: string;
   test_dir?: string;
   project_file?: string;
   stream_mode?: boolean;
 }) {
-  if (!_ws || _ws.readyState !== WebSocket.OPEN) {
-    console.warn('[AgentChat] Cannot send — WebSocket not open');
-    return false;
-  }
-  _ws.send(JSON.stringify({
+  const payload = {
     type: 'chat',
     message,
     source_dir: opts?.source_dir || '',
     test_dir: opts?.test_dir || '',
     project_file: opts?.project_file || '',
     stream_mode: opts?.stream_mode ? true : undefined,
-  }));
-  // 通知外部监听者（让 UI 可以添加用户消息气泡）
-  _notifyListeners({ event: 'user_message' as any, message });
-  return true;
+  };
+
+  if (_ws && _ws.readyState === WebSocket.OPEN) {
+    _ws.send(JSON.stringify(payload));
+    _notifyListeners({ event: 'user_message' as any, message });
+    return true;
+  }
+
+  // 等待 onopen 后发送
+  if (_ws && _ws.readyState === WebSocket.CONNECTING) {
+    _pendingMessages.push({ message, opts: payload });
+    return false; // 消息会在 onopen 中发送
+  }
+
+  console.warn('[AgentChat] Cannot send — WebSocket not created');
+  return false;
 }
 
 // ── 消息监听（供 AgentChat 注册以追加用户消息）─────────
@@ -185,6 +196,17 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
       if (_onEvent) _onEvent(data as AgentEvent);
     } catch {
       console.error('[AgentChat] Failed to parse WS message:', e.data);
+    }
+  };
+
+  ws.onopen = () => {
+    // 发送连接建立前暂存的消息
+    const pending = _pendingMessages.splice(0);
+    for (const pm of pending) {
+      if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(JSON.stringify(pm.opts));
+        _notifyListeners({ event: 'user_message' as any, message: pm.message });
+      }
     }
   };
 
