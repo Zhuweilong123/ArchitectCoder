@@ -609,10 +609,10 @@ async def _handle_dev(
 
             # 记录完整工具调用与返回（在截断发给前端之前）
             if chat_log:
-                chat_log.add_dev_step(progress)
+                chat_log.add_dev_step(step_progress)
             if trace_log:
                 trace_log.agent_step(
-                    step=d["step"], thought=progress.thought or "",
+                    step=d["step"], thought=step_progress.thought or "",
                     actions=d["actions"], is_final=d["is_final"],
                 )
                 for td in d.get("tool_calls_detail", []):
