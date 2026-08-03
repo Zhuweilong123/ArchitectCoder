@@ -899,6 +899,50 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
         "diagram_links": original_index.get("diagram_links", []) + opt_index.get("diagram_links", []),
     }
 
+    # ── Check 0: class relation source/target validity ──
+    for di, diag in enumerate(opt_diagrams):
+        if diag.get("type") != "class":
+            continue
+        data = diag.get("data", {})
+        diag_classes = {c["id"]: c for c in data.get("classes", [])}
+        # Collect class IDs from this diagram's output, falling back to merged
+        all_class_ids = set(diag_classes.keys()) | set(merged["classes"].keys())
+        for rel in data.get("relations", []):
+            rel_id = rel.get("id", "?")
+            src = rel.get("source", "")
+            tgt = rel.get("target", "")
+            if src and src not in all_class_ids:
+                # Try fuzzy match against merged classes
+                match = _fuzzy_match_class(src, merged["classes"])
+                if match:
+                    rel["source"] = match
+                    issues.append({
+                        "severity": "warning", "type": "bad_relation_source",
+                        "msg": f"Relation '{rel_id}' source='{src}' → auto-fixed to '{merged['classes'][match]['name']}'",
+                        "auto_fixed": True,
+                    })
+                else:
+                    issues.append({
+                        "severity": "error", "type": "bad_relation_source",
+                        "msg": f"Relation '{rel_id}' source='{src}' references non-existent class",
+                        "auto_fixed": False,
+                    })
+            if tgt and tgt not in all_class_ids:
+                match = _fuzzy_match_class(tgt, merged["classes"])
+                if match:
+                    rel["target"] = match
+                    issues.append({
+                        "severity": "warning", "type": "bad_relation_target",
+                        "msg": f"Relation '{rel_id}' target='{tgt}' → auto-fixed to '{merged['classes'][match]['name']}'",
+                        "auto_fixed": True,
+                    })
+                else:
+                    issues.append({
+                        "severity": "error", "type": "bad_relation_target",
+                        "msg": f"Relation '{rel_id}' target='{tgt}' references non-existent class",
+                        "auto_fixed": False,
+                    })
+
     # ── Check 1: class_ref validity ──
     for di, diag in enumerate(opt_diagrams):
         if diag.get("type") != "sequence":
