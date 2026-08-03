@@ -1080,10 +1080,14 @@ Rules:
 Only output the JSON object."""
 
     try:
-        messages = [
-            {"role": "user", "content": scope_prompt},
-        ]
-        raw = await llm.ainvoke(messages, temperature=0.1, max_tokens=500)
+        # Phase 1 scope analysis — 使用 pro 模型避免 flash 空响应问题
+        # flash 模型对某些 prompt 会返回空 completion（API bug），pro 模型更稳定
+        raw_scope = await llm.ainvoke(
+            [{"role": "user", "content": scope_prompt}],
+            temperature=0.1, max_tokens=500,
+            model="deepseek-v4-pro",  # pro for reliability on small tasks
+        )
+        raw = raw_scope
         _logger.info("[scope_analysis] raw (%d chars): %.200s", len(raw), raw)
         if not raw or not raw.strip():
             _logger.warning("[scope_analysis] empty LLM response, falling back to full prompt")
