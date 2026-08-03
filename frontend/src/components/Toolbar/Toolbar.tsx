@@ -28,12 +28,11 @@ import {
   browseDirectory, type BrowseResult,
   saveGeneratedCode,
 } from '../../services/api';
-import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
+import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './Toolbar.css';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
-// AgentChat 打开后通过 connectAgentChat 把自己的回调注入进去。
-function _noopAgentEvent(_event: any) {}
+// (reserved for future use)
 
 const { TextArea } = Input;
 
@@ -118,34 +117,65 @@ const Toolbar: React.FC = () => {
   const handleGlobalOptimize = async () => {
     const proj = useDiagramStore.getState().project;
 
-    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
-    // 占位连接：确保 WebSocket 在 AgentChat 打开前就已连接
-    // _noopEvent 回调在 connectAgentChat 中不会被覆盖
-    connectAgentChat(_noopAgentEvent, token);
-
-    const messageText = globalInstructions.trim()
-      ? `请对当前项目进行全局UML优化: ${globalInstructions}`
-      : '请对当前项目进行全局UML交叉验证和综合优化';
-
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
     message.loading({ content: globalStreamMode ? '流式优化中，实时生成设计...' : '全局优化中...', key: 'globalOpt', duration: 0 });
 
-    // Auto-open AgentChat panel so user can see progress
     const uiState = useUiStore.getState();
-    if (!uiState.agentChatVisible) {
-      uiState.setAgentChatVisible(true);
-    }
 
-    sendAgentMessage(messageText, {
-      source_dir: uiState.pipelineSourceDir,
-      test_dir: uiState.pipelineTestDir,
-      project_file: currentFilepath || '',
-      stream_mode: globalStreamMode,
-    });
+    // ── v2: 连接专用 optimize_v2 WebSocket ──
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/api/optimize_v2/ws${tokenParam}`;
 
-    message.success({ content: '已发送优化请求到 AI 助手', key: 'globalOpt' });
-    setGlobalOptimizing(false);
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        project_file: currentFilepath || '',
+        instructions: globalInstructions.trim(),
+        stream_mode: globalStreamMode,
+      }));
+      // 显示优化画布（不打开 AgentChat 面板）
+      if (!uiState.rightPanelVisible) {
+        uiState.setRightPanelVisible(true);
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.event === 'design_element') {
+          // 流式模式: 实时渲染元素到画布
+          handleDesignElement(useDiagramStore.getState(), { type: data.type, data: data.data });
+        } else if (data.event === 'design_updated') {
+          const diagrams = data.diagrams;
+          if (Array.isArray(diagrams) && diagrams.length > 0) {
+            processDesignUpdated(
+              diagrams,
+              data.consistency_report || [],
+              useUiStore.getState(),
+              useDiagramStore.getState(),
+            );
+          }
+          message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
+          ws.close();
+        } else if (data.event === 'error') {
+          message.error({ content: `优化失败: ${data.message}`, key: 'globalOpt' });
+          ws.close();
+        }
+      } catch { /* ignore parse errors */ }
+    };
+
+    ws.onerror = () => {
+      message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
+      setGlobalOptimizing(false);
+    };
+
+    ws.onclose = () => {
+      setGlobalOptimizing(false);
+    };
   };
 
   // ── Ctrl+S global save ──────────────────────────────

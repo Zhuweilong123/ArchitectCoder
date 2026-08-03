@@ -112,8 +112,8 @@ class ReflectionAgent(Agent):
 
             # 3. 反思 + 修正 — 把反馈追加到对话中，让 LLM 修正
             with trace_span(f"{self.name}/refine"):
-                review_msg = REVIEW_PROMPT + "\n\n" + feedback
-                messages.append({"role": "user", "content": review_msg})
+                refine_msg = REFINE_PROMPT + "\n\n" + feedback
+                messages.append({"role": "user", "content": refine_msg})
 
                 current = self.llm.invoke(messages, **kwargs)
                 messages.append({"role": "assistant", "content": current})

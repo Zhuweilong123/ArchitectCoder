@@ -2,10 +2,14 @@
 
 import json
 import logging
+import os
+import sys
+from pathlib import Path as _Path
 from app.models.uml import UmlDiagram
 from app.services.llm_service import chat, chat_stream
 from app.services.tools import clean_llm_json_response
 from app.services.layout_engine import auto_layout
+from app.core.config import get_settings
 
 SUPPORTED_LANGUAGES = [
     "python", "java", "typescript", "javascript", "csharp", "cpp",
@@ -834,48 +838,378 @@ def _format_index_for_prompt(index: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Scope Analysis (Phase 1) ─────────────────────────────
+# 轻量级 LLM 调用，分析任务范围，决定哪些图/指南/规则需要加载。
+
+_GUIDE_DIR = _Path(__file__).resolve().parent.parent.parent.parent / "uml_guide"
+
+
+def _load_guide(name: str) -> str:
+    """加载单份设计指南的 Markdown 内容。name 不含后缀，如 'sequence_diagram'。"""
+    gf = _GUIDE_DIR / f"{name}_guide.md"
+    return gf.read_text(encoding="utf-8") if gf.exists() else ""
+
+
+# ── 核心规则：精简版（单图/简单变更时用）vs 完整版（跨图场景用）──
+
+_CORE_RULES_SHORT = """## Core Rules
+1. Lifeline class_ref MUST reference existing classes from class diagrams
+2. Message labels MUST match method signatures in the referenced class
+3. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
+4. If the user requests repositioning, adjust coordinates thoughtfully
+5. Validate your output against the Reference Index above — fix any broken cross-references"""
+
+_VALIDATION_RULES_FULL = """## Core Validation Rules
+1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
+2. Sequence diagram method calls MUST match method signatures in class diagrams
+3. Component diagram interfaces MUST be consistent with class diagram provided/required interfaces
+4. Flag any inconsistencies found between diagrams in the consistency_report
+5. If any diagram type is missing from the existing set, generate it based on the others
+6. Optimize each diagram while maintaining consistency across all types
+7. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
+8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions
+
+## Component-Diagram Association Rules
+9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a
+   component diagram node (CompNode.id). Set component_id to the matching component's id when a diagram
+   describes the internals or interactions of a specific component.
+10. COMPONENT MANIFEST USAGE: The Component Manifest above shows every component and its diagram
+    coverage status. When generating or optimizing:
+    - For each missing component, generate at least one class + one sequence diagram
+    - For each partial component, fill the missing diagram type
+    - Use the exact component "id" from the manifest as the diagram's "component_id"
+11. MULTIPLE DIAGRAMS PER COMPONENT: A single component may need MULTIPLE diagrams of the same type:
+    ALL diagrams belonging to the SAME component share the SAME component_id.
+12. COMPONENT HIERARCHY: Parent-child relationships between components (parent_id field) imply
+    architectural nesting. Generate diagrams at the appropriate level.
+13. GENERATION ORDER: Always generate component diagrams FIRST (to establish IDs), then class
+    diagrams (structure), then sequence diagrams (behavior).
+
+## Reference Validation
+14. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their
+    relationships. Use it to validate your output: every lifeline.class_ref must resolve to a
+    class in the Class Directory, every message label should match a method in the target class,
+    every component_id must reference a component in the Component Manifest. Fix any
+    "Issues Detected" listed in the index — they are guidance for what to improve."""
+
+
+# ── KG 辅助：同步 BM25 查询 ─────────────────────────────────
+
+def _fetch_kg_hits(project_file: str, instructions: str,
+                   out: dict[str, set[str]]) -> None:
+    """同步封装：提取 KG BM25 命中实体 → 图映射，存入 out dict。
+
+    对 instructions 进行多粒度搜索（全指令 + 短关键词），
+    确保不同表达方式都能命中实体。"""
+    try:
+        project_id = os.path.splitext(os.path.basename(project_file))[0]
+        _settings = get_settings()
+        kg_db = os.path.normpath(os.path.abspath(
+            os.path.join(os.path.dirname(_settings.uml_dir), "data", "knowledge_graph.db"),
+        ))
+        if not os.path.isfile(kg_db):
+            return
+        # knowledge_graph 在项目根，不在 backend 下，需要确保 path 可达
+        _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))))
+        if _proj_root not in sys.path:
+            sys.path.insert(0, _proj_root)
+        from knowledge_graph.retriever import GraphRetriever
+        _retriever = GraphRetriever(db_path=kg_db)
+        try:
+            # ── 多粒度搜索：全指令 + 2-3 词短词组 ──
+            queries = [instructions]
+            words = instructions.split()
+            if len(words) >= 2:
+                queries.extend([" ".join(words[i:i+3]) for i in range(0, len(words), 2)])
+            # 去重但保序
+            seen = set()
+            queries = [q for q in queries if q and not (q in seen or seen.add(q))]
+            queries = queries[:5]  # 最多 5 条
+
+            for query in queries:
+                _results = _retriever.db.search_bm25(
+                    project_id=project_id,
+                    query=query,
+                    top_k=6,
+                )
+                for _r in _results:
+                    # 如果实体本身是 diagram，直接加入
+                    if _r.node.node_type.value == "diagram":
+                        out.setdefault(_r.node.name, set()).add(
+                            f"{_r.node.name}({_r.node.node_type.value})"
+                        )
+                    # 沿所有 incoming edges 反向查找，直到找到 diagram
+                    # （fragment 用 'fragments' 边，不是 'contains'，所以不限 edge_type）
+                    _to_find = {(_r.node.id, _r.node.name, _r.node.node_type.value)}
+                    _seen_ids = set()
+                    while _to_find:
+                        _cur_id, _cur_name, _cur_type = _to_find.pop()
+                        if _cur_id in _seen_ids:
+                            continue
+                        _seen_ids.add(_cur_id)
+                        # 反向查找，不限制 edge_type（fragment 用 'fragments' 边，不是 'contains'）
+                        _incoming = _retriever.db.conn.execute(
+                            "SELECT e.source_id, s.name, s.node_type FROM kg_edges e "
+                            "JOIN kg_nodes s ON e.source_id = s.id "
+                            "WHERE e.target_id = ?",
+                            (_cur_id,),
+                        ).fetchall()
+                        for _src_id, _src_name, _src_type in _incoming:
+                            if _src_type == "diagram":
+                                out.setdefault(_src_name, set()).add(
+                                    f"{_cur_name}({_cur_type})"
+                                )
+                            elif _src_type == "project":
+                                pass  # 继续往上走找到 diagram
+                            else:
+                                _to_find.add((_src_id, _src_name, _src_type))
+        finally:
+            _retriever.close()
+    except Exception:
+        pass  # KG 不可用时静默退化
+
+
+# ── 项目摘要 ────────────────────────────────────────────
+
+def _build_project_summary(
+    diagrams: list[dict], index: dict,
+    project_file: str = "",
+    instructions: str = "",
+) -> str:
+    """构建轻量项目摘要（<800 chars），供 Phase 1 scope 分析用。
+
+    如果 project_file 存在且 knowledge_graph.db 可用，会用 BM25 搜索
+    instructions 关键词，把匹配到的实体名附加到对应图条目后面，
+    帮助 Phase 1 LLM 在不明确的指令下精确定位目标图。
+    """
+    lines = []
+    nc = len(index.get("classes", {}))
+    nl = len(index.get("lifelines", {}))
+    ncomp = len(index.get("components", {}))
+    issues_count = len(index.get("orphan_lifelines", [])) + len(index.get("unlinked_diagrams", []))
+    lines.append(f"Project: {nc} classes, {nl} lifelines, {ncomp} components, {issues_count} issues")
+    lines.append("Diagrams:")
+
+    # ── KG augmentation: BM25 搜索匹配的实体 → 在图条目中内联显示 ──
+    kg_hits_by_diag: dict[str, set[str]] = {}
+    if project_file and instructions:
+        _fetch_kg_hits(project_file, instructions, kg_hits_by_diag)
+
+    for d in diagrams:
+        dtype = d.get("diagram_type") or d.get("type") or "class"
+        dname = d.get("name", "Untitled")
+        data = d.get("data") or d
+        # 统计元素数量
+        counts = ""
+        if dtype == "class":
+            nc2 = len(data.get("classes") or d.get("classes", []))
+            nr = len(data.get("relations") or d.get("relations", []))
+            counts = f" — {nc2} classes, {nr} relations"
+        elif dtype == "sequence":
+            nll = len(data.get("lifelines") or d.get("lifelines", []))
+            nmsg = len(data.get("messages") or d.get("messages", []))
+            nfrag = len(data.get("fragments") or d.get("fragments", []))
+            counts = f" — {nll} lifelines, {nmsg} messages, {nfrag} fragments"
+        elif dtype == "component":
+            nc2 = len(data.get("components") or d.get("components", []))
+            ncr = len(data.get("comp_relations") or d.get("comp_relations", []))
+            counts = f" — {nc2} components, {ncr} relations"
+
+        line = f"  {dtype} \"{dname}\"{counts}"
+        # 把 KG 命中的实体附加到对应的图行
+        hits = kg_hits_by_diag.get(dname, set())
+        if hits:
+            line += f"  [matched: {', '.join(sorted(hits)[:5])}]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _analyze_scope(
+    instructions: str,
+    diagrams: list[dict],
+    index: dict,
+    llm,  # BaseAgentsLLM or compatible, must have .ainvoke()
+    project_file: str = "",
+) -> dict:
+    """Phase 1: 轻量 LLM 调用，分析优化任务的精确范围。
+
+    返回 dict:
+        target_keys: list[str]  — 需要修改的图，格式 "type:name"，空=全部
+        change_type: str        — "modify" | "add" | "restructure" | "full"
+        guides_needed: list[str] — ["class", "sequence", "component", "cross"]
+        include_index: bool     — 是否需要完整跨图索引
+        include_all_rules: bool — 是否需要全部 14 条验证规则
+        output_scope: str       — "changed_only" | "all"
+        reasoning: str          — 一句话解释
+
+    失败时返回 None（调用方应回退到完整 prompt）。
+    """
+    _logger = logging.getLogger(__name__)
+    summary = _build_project_summary(diagrams, index, project_file, instructions)
+
+    scope_prompt = f"""Analyze this UML design task and return ONLY a JSON object (no other text).
+
+Project Summary:
+{summary}
+
+User Instruction: "{instructions}"
+
+Return JSON with these fields:
+{{
+  "target_keys": ["type:name", ...],
+  "change_type": "modify" | "add" | "restructure" | "full",
+  "guides_needed": ["class", "sequence", "component", "cross"],
+  "include_index": true | false,
+  "include_all_rules": true | false,
+  "output_scope": "changed_only" | "all",
+  "reasoning": "one brief line"
+}}
+
+Rules:
+- target_keys: list "type:name" for each diagram the user wants to modify. Empty array or omitted = ALL diagrams.
+- change_type: "modify" for small edits inside existing diagrams, "add" for creating new diagrams,
+  "restructure" for major refactoring (moving items between diagrams), "full" for comprehensive optimization.
+- guides_needed: only include the design guides actually relevant. "cross" guide is only needed when
+  cross-diagram references (component_id, class_ref, interfaces) change.
+- include_index: true only when the task involves cross-diagram relationships. false for single-diagram edits.
+- include_all_rules: true for multi-diagram or architectural tasks. false for single-diagram minor edits.
+- output_scope: "changed_only" means only output the diagrams that actually change.
+  "all" means output all diagrams of the affected types.
+
+Only output the JSON object."""
+
+    try:
+        messages = [
+            {"role": "user", "content": scope_prompt},
+        ]
+        raw = await llm.ainvoke(messages, temperature=0.1, max_tokens=500)
+        _logger.info("[scope_analysis] raw (%d chars): %.200s", len(raw), raw)
+        if not raw or not raw.strip():
+            _logger.warning("[scope_analysis] empty LLM response, falling back to full prompt")
+            return None
+        # 清理 + 解析
+        cleaned = clean_llm_json_response(raw)
+        if not cleaned or not cleaned.strip():
+            _logger.warning("[scope_analysis] empty after cleaning, raw=%.200s", raw)
+            return None
+        scope = json.loads(cleaned)
+        _logger.info(
+            "[scope_analysis] %s — targets=%s, guides=%s, output=%s, reasoning=%s",
+            instructions[:60],
+            scope.get("target_keys", []),
+            scope.get("guides_needed", []),
+            scope.get("output_scope", "all"),
+            scope.get("reasoning", ""),
+        )
+        return scope
+    except json.JSONDecodeError:
+        _logger.warning("[scope_analysis] JSON parse failed, raw=%.300s", raw)
+        return None
+    except Exception:
+        _logger.exception("[scope_analysis] Failed, will fall back to full prompt")
+        return None
+
+
+# ── 精简的图索引：只包含指定图涉及的实体 ──
+
+def _build_focused_index(diagrams: list[dict], target_keys: set[str]) -> dict:
+    """构建只含目标图中实体的精简索引。target_keys 为 {"type:name", ...} 集合。"""
+    index = _build_reference_index(diagrams)
+
+    if not target_keys:
+        return index  # 空 = 全部
+
+    # 收集目标图中出现的 class_id / lifeline_id / component_id
+    relevant_classes: set[str] = set()
+    relevant_lifelines: set[str] = set()
+    relevant_components: set[str] = set()
+
+    for d in diagrams:
+        dtype = d.get("diagram_type") or d.get("type") or "class"
+        dname = d.get("name", "Untitled")
+        key = f"{dtype}:{dname}"
+        if key not in target_keys:
+            continue
+        data = d.get("data") or d
+        for cls in (data.get("classes") or d.get("classes", [])):
+            relevant_classes.add(cls.get("id", ""))
+        for ll in (data.get("lifelines") or d.get("lifelines", [])):
+            relevant_lifelines.add(ll.get("id", ""))
+        for comp in (data.get("components") or d.get("components", [])):
+            relevant_components.add(comp.get("id", ""))
+
+    # 过滤索引
+    return {
+        **index,
+        "classes": {k: v for k, v in index["classes"].items() if k in relevant_classes},
+        "lifelines": {k: v for k, v in index["lifelines"].items() if k in relevant_lifelines},
+        "components": {k: v for k, v in index["components"].items() if k in relevant_components},
+    }
+
+
 def _build_global_prompt(
     diagrams: list[dict] | None = None,
     instructions: str = "",
     index: dict | None = None,
+    scope: dict | None = None,
 ) -> tuple[str, str, bool]:
     """Build the shared prompt + system_prompt for global optimization.
 
     Accepts a list of existing diagrams as optional reference context and an
     optional pre-built cross-diagram reference index.
+
+    If ``scope`` is provided (from _analyze_scope), the prompt is tailored:
+    only relevant design guides + diagrams + index + rules are included.
+
     Returns (prompt, full_system, is_empty).
     Used by both optimize_project and optimize_project_stream.
     """
     _logger = logging.getLogger(__name__)
 
-    # Load design guides (including cross-diagram guide)
+    # ── Parse scope ──
+    target_keys: set[str] = set()
+    guides_needed: set[str] = {"class", "sequence", "component", "cross"}
+    include_index = True
+    include_all_rules = True
+    output_scope = "all"
+
+    if scope:
+        # Phase 1 告诉我们的精确范围
+        target_keys = set(scope.get("target_keys") or [])
+        guides_needed = set(scope.get("guides_needed", ["class", "sequence", "component", "cross"]))
+        include_index = scope.get("include_index", True)
+        include_all_rules = scope.get("include_all_rules", True)
+        output_scope = scope.get("output_scope", "all")
+        _logger.info(
+            "[prompt] Scope: targets=%s, guides=%s, index=%s, all_rules=%s, output=%s",
+            target_keys or "(all)",
+            guides_needed,
+            include_index,
+            include_all_rules,
+            output_scope,
+        )
+
+    # ── Load design guides (only those needed) ──
+    guide_map = {
+        "class": "class_diagram",
+        "sequence": "sequence_diagram",
+        "component": "component_diagram",
+        "cross": "cross_diagram",
+    }
     guide_parts = []
-    try:
-        from pathlib import Path as _P
-        _gd = _P(__file__).resolve().parent.parent.parent.parent / "uml_guide"
-        for _t in ["class_diagram", "sequence_diagram", "component_diagram", "cross_diagram"]:
-            _gf = _gd / f"{_t}_guide.md"
-            if _gf.exists():
-                guide_parts.append(_gf.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+    for gkey, gfile in guide_map.items():
+        if gkey in guides_needed:
+            content = _load_guide(gfile)
+            if content:
+                guide_parts.append(content)
     global_guide = "\n\n".join(guide_parts) if guide_parts else ""
 
-    # Collect existing diagram data from list.
-    # Only include FULL JSON for diagrams the user explicitly asked to modify;
-    # other diagrams are summarized via the index block to keep prompt size manageable.
+    # ── Select diagram data ──
+    _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
+                    "component": "Component Diagram"}
     parts = []
     if diagrams:
-        # Determine which diagrams the user is targeting (fuzzy match on instructions)
-        target_diagrams: set[str] = set()  # set of (type, name) keys
-        if instructions:
-            il = instructions.lower()
-            for d in diagrams:
-                dtype = d.get("diagram_type") or d.get("type") or "class"
-                dname = d.get("name", "Untitled")
-                if dname.lower() in il or (dtype in ("sequence",) and "时序" in instructions):
-                    target_diagrams.add(f"{dtype}:{dname}")
-
         for d in diagrams:
             dtype = d.get("diagram_type") or d.get("type") or "class"
             dname = d.get("name", "Untitled")
@@ -893,46 +1227,26 @@ def _build_global_prompt(
             else:
                 has_content = bool(d.get("classes") or d.get("lifelines") or d.get("components")
                                    or _inner.get("classes") or _inner.get("lifelines") or _inner.get("components"))
-            if has_content:
-                key = f"{dtype}:{dname}"
-                is_target = key in target_diagrams
-                _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
-                                "component": "Component Diagram"}
-                label = _type_labels.get(dtype, f"{dtype} Diagram")
-                if is_target:
-                    parts.append(f"""## {label} "{dname}" (FULL — optimize this diagram):
+            if not has_content:
+                continue
+
+            key = f"{dtype}:{dname}"
+            is_target = (not target_keys) or (key in target_keys)
+            label = _type_labels.get(dtype, f"{dtype} Diagram")
+
+            if is_target:
+                # 完整 JSON
+                parts.append(f"""## {label} \"{dname}\":
 ```json
 {json.dumps(d, indent=2, ensure_ascii=False)}
 ```""")
-                else:
-                    # Summary only — the index block already covers key info
-                    parts.append(f"""- {label} "{dname}" ({dtype}) — see index above for structure""")
-        # If no specific targets were identified, fall back to including all full diagrams
-        # so the LLM can determine which ones need changes.
-        if not target_diagrams:
-            parts.clear()
-            for d in diagrams:
-                dtype = d.get("diagram_type") or d.get("type") or "class"
-                dname = d.get("name", "Untitled")
-                _inner = d.get("data") or {}
-                has_content = bool(
-                    d.get("classes") or d.get("relations") or d.get("lifelines")
-                    or d.get("messages") or d.get("fragments") or d.get("components")
-                    or d.get("comp_relations")
-                    or _inner.get("classes") or _inner.get("lifelines") or _inner.get("components")
-                )
-                if has_content:
-                    _type_labels = {"class": "Class Diagram", "sequence": "Sequence Diagram",
-                                    "component": "Component Diagram"}
-                    label = _type_labels.get(dtype, f"{dtype} Diagram")
-                    parts.append(f"""## {label} "{dname}":
-```json
-{json.dumps(d, indent=2, ensure_ascii=False)}
-```""")
+            else:
+                # 摘要行
+                parts.append(f"- {label} \"{dname}\" ({dtype}) — see index for structure")
 
     is_empty = len(parts) == 0
 
-    # ── New-format JSON example: diagrams array instead of fixed 3-type object ──
+    # ── New-format JSON example ──
     _json_example = """```json
 {{
   "diagrams": [
@@ -980,43 +1294,29 @@ def _build_global_prompt(
 }}
 ```"""
 
-    _cross_validation_rules = """## Core Validation Rules
-1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
-2. Sequence diagram method calls MUST match method signatures in class diagrams
-3. Component diagram interfaces MUST be consistent with class diagram provided/required interfaces
-4. Flag any inconsistencies found between diagrams in the consistency_report
-5. If any diagram type is missing from the existing set, generate it based on the others
-6. Optimize each diagram while maintaining consistency across all types
-7. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
-8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions
+    # ── Index block (focused or full) ──
+    if include_index and index:
+        if target_keys:
+            focused_index = _build_focused_index(diagrams or [], target_keys)
+            index_block = _format_index_for_prompt(focused_index)
+        else:
+            index_block = _format_index_for_prompt(index)
+    else:
+        index_block = ""
 
-## Component-Diagram Association Rules
-9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a
-   component diagram node (CompNode.id). Set component_id to the matching component's id when a diagram
-   describes the internals or interactions of a specific component.
-10. COMPONENT MANIFEST USAGE: The Component Manifest above shows every component and its diagram
-    coverage status (❌/⚠️/✅). When generating or optimizing:
-    - For each ❌ component (missing both types), generate at least one class + one sequence diagram
-    - For each ⚠️ component (partial), fill the missing diagram type
-    - Use the exact component "id" from the manifest as the diagram's "component_id"
-11. MULTIPLE DIAGRAMS PER COMPONENT: A single component may need MULTIPLE diagrams of the same type:
-    - Multiple class diagrams for different layers/concerns (domain / service / dto / repository)
-    - Multiple sequence diagrams for different scenarios (happy path / error handling / async flow)
-    ALL diagrams belonging to the SAME component share the SAME component_id.
-12. COMPONENT HIERARCHY: Parent-child relationships between components (parent_id field) imply
-    architectural nesting. When a parent component has sub-components, the parent's class diagram
-    typically describes coordination logic, while each sub-component gets its own class diagram.
-    Generate diagrams at the appropriate level — don't put all detail in one diagram.
-13. GENERATION ORDER: Always generate component diagrams FIRST (to establish IDs), then class
-    diagrams (structure), then sequence diagrams (behavior). Reference component IDs created in
-    earlier entries as component_id values in later entries.
+    # ── Validation rules ──
+    rules = _VALIDATION_RULES_FULL if include_all_rules else _CORE_RULES_SHORT
 
-## Reference Validation
-14. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their
-    relationships. Use it to validate your output: every lifeline.class_ref must resolve to a
-    class in the Class Directory, every message label should match a method in the target class,
-    every component_id must reference a component in the Component Manifest. Fix any
-    "Issues Detected" listed in the index — they are guidance for what to improve."""
+    # ── Output scope hint ──
+    output_hint = ""
+    if output_scope == "changed_only" and target_keys:
+        names = [k.split(":", 1)[1] for k in target_keys]
+        output_hint = (
+            f"\n\n## IMPORTANT: Only output diagrams that actually changed.\n"
+            f"The user only asked you to modify: {', '.join(names)}.\n"
+            f"Your \"diagrams\" array should contain ONLY those diagrams with changes.\n"
+            f"Do NOT re-output unchanged diagrams — this saves time and avoids truncation.\n"
+        )
 
     if is_empty:
         prompt = f"""You are designing a complete UML system from scratch based on requirements below.
@@ -1054,9 +1354,6 @@ Generate component diagrams FIRST, then class, then sequence.
 Only output the JSON object, no other text.
 """
     else:
-        # ── Inject cross-diagram reference index (if available) ──
-        index_block = _format_index_for_prompt(index) if index else ""
-
         prompt = f"""Cross-validate and optimize the following UML diagrams as a complete system design.
 
 {index_block}
@@ -1064,8 +1361,8 @@ Only output the JSON object, no other text.
 ## Existing Diagram Data:
 {chr(10).join(parts)}
 
-{_cross_validation_rules}
-
+{rules}
+{output_hint}
 ## User Instructions:
 {instructions or "Overall system optimization: improve consistency, reduce duplication, ensure cross-diagram coherence"}
 

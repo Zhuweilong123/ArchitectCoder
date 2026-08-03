@@ -27,6 +27,7 @@ import {
   disconnectAgentChat, isAgentConnected, onAgentMessage,
   type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
 } from '../../services/agentChat';
+import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './AgentChat.css';
 
 // ── 消息类型 ──────────────────────────────────────────
@@ -78,160 +79,8 @@ const AgentChat: React.FC = () => {
   // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
   const liveStepsRef = useRef<AgentProgressEvent[]>([]);
 
-  // ── 元素流式渲染 dispatch table（从 Toolbar 移入共享位置）──
-  const handleDesignElement = useCallback((event: { type: string; data: string }) => {
-    let obj: any;
-    try { obj = JSON.parse(event.data); } catch { return; }
-    const store = useDiagramStore.getState();
-    const proj = store.project;
-    const idMap = new Map<string, string>();
-
-    // helper: resolve mapped IDs (phase 3 refine may use new IDs)
-    const mapId = (id: string) => idMap.get(id) || id;
-
-    // helper: get last item in relevant collection
-    const lastOf = <T,>(arr: T[]): T | undefined => arr[arr.length - 1];
-
-    // helper: switch to correct diagram tab, auto-creating if needed
-    const switchTo = (type: string) => {
-      const idx = type === 'class'
-        ? proj.diagrams.findIndex(d => (d.diagram_type || 'class') === 'class')
-        : type === 'sequence'
-          ? proj.diagrams.findIndex(d => d.diagram_type === 'sequence')
-          : proj.diagrams.findIndex(d => d.diagram_type === 'component');
-      if (idx < 0) {
-        const autoName = type === 'class' ? '类图' : type === 'sequence' ? '时序图' : '组件图';
-        store.addDiagram(type, autoName);
-        store.setActiveDiagram(store.project.diagrams.length - 1);
-      } else {
-        store.setActiveDiagram(idx);
-      }
-    };
-
-    const handlers: Record<string, (o: any) => void> = {
-      diagram_create: (o) => {
-        const dtype = o.type || 'class';
-        const existing = proj.diagrams.findIndex(d => (d.diagram_type || 'class') === dtype);
-        if (existing < 0) {
-          store.addDiagram(dtype, o.name || dtype, o.component_id || '');
-        }
-      },
-      diagram_meta: (o) => {
-        // component_id set via addDiagram — no-op here
-      },
-      class: (o) => {
-        switchTo('class');
-        const x = o.x ?? o.position?.x ?? 100;
-        const y = o.y ?? o.position?.y ?? 100;
-        store.addClass({ x, y });
-        const diagram = store.project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-        const c = lastOf(diagram?.classes || []);
-        if (c) {
-          idMap.set(o.id, c.id);
-          store.updateClass(c.id, {
-            name: o.name || 'Class', stereotype: o.stereotype || 'class',
-            attributes: o.attributes || [], methods: o.methods || [],
-            note: o.note || '',
-            provided_interfaces: o.provided_interfaces || [],
-            required_interfaces: o.required_interfaces || [],
-          });
-        }
-      },
-      relation: (o) => {
-        switchTo('class');
-        store.addRelation(mapId(o.source), mapId(o.target));
-        const diagram = store.project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-        const r = lastOf(diagram?.relations || []);
-        if (r) {
-          idMap.set(o.id, r.id);
-          store.updateRelation(r.id, {
-            type: o.type || 'association',
-            multiplicity_source: o.multiplicity_source || '',
-            multiplicity_target: o.multiplicity_target || '',
-            role_name: o.role_name || '', note: o.note || '',
-          });
-        }
-      },
-      lifeline: (o) => {
-        switchTo('sequence');
-        store.addLifeline(o.x ?? 200);
-        const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-        const ll = lastOf(diagram?.lifelines || []);
-        if (ll) {
-          idMap.set(o.id, ll.id);
-          store.updateLifeline(ll.id, {
-            name: o.name || 'Participant', class_ref: o.class_ref || '',
-            activations: o.activations || [],
-          });
-        }
-      },
-      message: (o) => {
-        switchTo('sequence');
-        store.addMessage(mapId(o.from_lifeline), mapId(o.to_lifeline));
-        const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-        const m = lastOf(diagram?.messages || []);
-        if (m) {
-          idMap.set(o.id, m.id);
-          store.updateMessage(m.id, {
-            label: o.label || 'message()', type: o.type || 'sync',
-            order: o.order ?? 1, note: o.note || '',
-          });
-        }
-      },
-      fragment: (o) => {
-        switchTo('sequence');
-        store.addFragment(o.y_start ?? 200);
-        const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-        const f = lastOf(diagram?.fragments || []);
-        if (f) {
-          idMap.set(o.id, f.id);
-          store.updateFragment(f.id, {
-            type: o.type || 'loop', label: o.label || '',
-            x: o.x ?? 80, width: o.width ?? 280,
-            y_start: o.y_start ?? 200, y_end: o.y_end ?? 320,
-          } as any);
-        }
-      },
-      component: (o) => {
-        switchTo('component');
-        store.addComponent({ x: o.x ?? 150, y: o.y ?? 100 }, o.parent_id || '');
-        const diagram = store.project.diagrams.find(d => d.diagram_type === 'component');
-        const comp = lastOf(diagram?.components || []);
-        if (comp) {
-          idMap.set(o.id, comp.id);
-          store.updateComponent(comp.id, {
-            name: o.name || 'Component', width: o.width ?? 200, height: o.height ?? 160,
-            provided_interfaces: o.provided_interfaces || [],
-            required_interfaces: o.required_interfaces || [],
-          });
-        }
-      },
-      comp_rel: (o) => {
-        switchTo('component');
-        store.addCompRelation(mapId(o.source), mapId(o.target));
-        const diagram = store.project.diagrams.find(d => d.diagram_type === 'component');
-        const cr = lastOf(diagram?.comp_relations || []);
-        if (cr) {
-          idMap.set(o.id, cr.id);
-          store.updateCompRelation(cr.id, { type: o.type || 'dependency' } as any);
-        }
-      },
-      diagram_update: (o) => {
-        // phase 3 refine — full diagram replacement
-        const specs = [{ type: o.type, name: o.name, component_id: o.component_id, data: o.data }];
-        store.addDiagramsFromSpec(specs);
-      },
-    };
-
-    const h = handlers[event.type];
-    if (h) {
-      try {
-        store.beginBatch();
-        h(obj);
-      } finally {
-        store.endBatch();
-      }
-    }
+  const handleDesignElementWrapper = useCallback((event: { type: string; data: string }) => {
+    handleDesignElement(useDiagramStore.getState(), event);
   }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
@@ -364,38 +213,14 @@ const AgentChat: React.FC = () => {
         case 'design_updated': {
           const diagrams = event.diagrams;
           if (Array.isArray(diagrams) && diagrams.length > 0) {
-            // 始终推到 DiffViewer 审核 — 用户需要确认变更后再决定是否接受
-            const uiState = useUiStore.getState();
-            const store = useDiagramStore.getState();
-            const originals: Record<string, any> = {};
-            const optimizeds: Record<string, any> = {};
-            const diffs: Record<string, string> = {};
-            for (const spec of diagrams) {
-              const dtype = spec.type || 'class';
-              const existing = store.project.diagrams.find(
-                d => (d.diagram_type || 'class') === dtype
-              );
-              const orig = existing ? { ...existing } : {};
-              const opt = spec.data ? { ...spec.data } : {};
-              originals[dtype] = orig;
-              optimizeds[dtype] = opt;
-              diffs[dtype] = JSON.stringify({
-                before: orig,
-                after: opt,
-              }, null, 2);
-            }
-            uiState.setGlobalOptimizationResult(
-              originals, optimizeds, diffs, [], ''
-            );
-            uiState.setRightPanelTab('diff');
-            uiState.setRightPanelVisible(true);
+            processDesignUpdated(diagrams, [], useUiStore.getState(), useDiagramStore.getState());
           }
           break;
         }
 
         // ── 流式元素（optimize_uml 流式模式逐元素渲染）──
         case 'design_element': {
-          handleDesignElement(event);
+          handleDesignElementWrapper(event);
           break;
         }
 
