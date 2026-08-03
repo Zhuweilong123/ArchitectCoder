@@ -187,12 +187,30 @@ export function processDesignUpdated(
     const existing = diagramStore.project.diagrams.find(
       d => (d.diagram_type || 'class') === dtype
     );
-    const orig = existing ? { ...existing } : {};
     const opt = spec.data ? { ...spec.data } : {};
-    originals[dtype] = orig;
+    const orig = existing && Object.keys(existing).length > 1  // >1 排除仅含 name/type 的默认空图
+      ? { ...existing }
+      : null;
+
+    // 空工程时原始版也指向优化版，diff 文案标注为新建设计
+    originals[dtype] = orig || opt;
     optimizeds[dtype] = opt;
-    diffs[dtype] = JSON.stringify({ before: orig, after: opt }, null, 2);
+    if (orig) {
+      diffs[dtype] = JSON.stringify({ before: orig, after: opt }, null, 2);
+    } else {
+      diffs[dtype] = `// 从需求描述全新生成此设计 ("${spec.name || dtype}")\n`
+        + JSON.stringify(opt, null, 2);
+    }
   }
+
+  // 将优化结果写入画布（diagramStore），否则画布不会更新
+  const specs = diagrams.map(d => ({
+    type: d.type || 'class',
+    name: d.name || '',
+    component_id: d.component_id || '',
+    data: d.data || {},
+  }));
+  diagramStore.addDiagramsFromSpec(specs);
 
   uiStore.setGlobalOptimizationResult(
     originals, optimizeds, diffs, consistencyReport || [], ''

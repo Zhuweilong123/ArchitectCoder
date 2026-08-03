@@ -26,7 +26,7 @@ import logging
 from typing import Optional, Callable, AsyncIterator
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.services.code_generator import (
+from app.services.uml_common import (
     _build_reference_index,
     _build_global_prompt,
     _analyze_scope,
@@ -132,15 +132,9 @@ async def optimize_v2(
             "changes_summary": "无项目文件",
         }
 
-    # 1. 加载项目
+    # 1. 加载项目（支持空项目：few-shot 生成新设计）
     project = load_project(project_file)
     diagrams = [d.model_dump() for d in project.diagrams]
-    if not diagrams:
-        return {
-            "diagrams": [],
-            "consistency_report": [{"severity": "info", "msg": "项目中没有图"}],
-            "changes_summary": "空项目，无需优化",
-        }
 
     logger.info("[optimize_v2] 加载 %d 张图, 指令: %s", len(diagrams), instructions[:80])
 
@@ -151,26 +145,20 @@ async def optimize_v2(
     with trace_span("scope_analysis"):
         scope = await _analyze_scope(instructions, diagrams, index, _llm, project_file)
 
-    # 3. 构建 LLM prompt（按 scope 精简）
+    # 3. 构建 LLM prompt（按 scope 精简；空项目时生成 from-scratch prompt）
     user_prompt, system_prompt, is_empty = _build_global_prompt(
         diagrams=diagrams, instructions=instructions, index=index,
         scope=scope,
     )
 
-    if is_empty:
-        return {
-            "diagrams": [],
-            "consistency_report": [{"severity": "info", "msg": "没有可优化的图内容"}],
-            "changes_summary": "空内容",
-        }
-
-    # 4. 调用 LLM（通过 BaseAgentsLLM，自动记录 trace）
+    # 4. 调用 LLM
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     with trace_span("optimize_v2"):
-        raw = await _llm.ainvoke(messages, temperature=0.5, max_tokens=16384)
+        raw = await _llm.ainvoke(messages, temperature=0.5, max_tokens=32768,
+                                model="deepseek-v4-pro")
     logger.info("[optimize_v2] LLM 返回 %d 字符", len(raw))
 
     # 5. 处理结果
@@ -206,15 +194,9 @@ async def optimize_v2_stream(
         }
         return
 
-    # 1. 加载项目
+    # 1. 加载项目（支持空项目：few-shot 生成新设计）
     project = load_project(project_file)
     diagrams = [d.model_dump() for d in project.diagrams]
-    if not diagrams:
-        _stream_last_result = {
-            "diagrams": [],
-            "consistency_report": [{"severity": "info", "msg": "项目中没有图"}],
-        }
-        return
 
     logger.info("[optimize_v2_stream] 加载 %d 张图, 指令: %s", len(diagrams), instructions[:80])
 
@@ -230,14 +212,7 @@ async def optimize_v2_stream(
         scope=scope,
     )
 
-    if is_empty:
-        _stream_last_result = {
-            "diagrams": [],
-            "consistency_report": [{"severity": "info", "msg": "没有可优化的图内容"}],
-        }
-        return
-
-    # 3. 流式生成 + 实时元素提取
+    # 3. 流式生成 + 实时元素提取（空项目时 from-scratch prompt 有效）
     extractor = _JsonElementExtractor()
     full_response = ""
 
@@ -246,7 +221,8 @@ async def optimize_v2_stream(
         {"role": "user", "content": user_prompt},
     ]
     with trace_span("optimize_v2_stream"):
-        async for chunk in _llm.athink(messages, temperature=0.5, max_tokens=16384):
+        async for chunk in _llm.athink(messages, temperature=0.5, max_tokens=32768,
+                                       model="deepseek-v4-pro"):
             full_response += chunk
             for elem_type, elem_json in extractor.feed(chunk):
                 if progress:

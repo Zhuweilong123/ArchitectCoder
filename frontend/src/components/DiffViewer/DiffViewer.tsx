@@ -38,6 +38,12 @@ const DiffViewer: React.FC = () => {
     ? (Object.keys(optimizedDiagrams) as DiffDiagramType[])
     : (originalDiagram ? [(originalDiagram.diagram_type || 'class') as DiffDiagramType] : ['class']);
 
+  // 空工程/全新设计：原始版和优化版内容相同，不需要切换按钮
+  const activeOrig = hasMultiDiagrams ? originalDiagrams[activeDiffDiagramType] : originalDiagram;
+  const activeOpt = hasMultiDiagrams ? optimizedDiagrams[activeDiffDiagramType] : optimizedDiagram;
+  const isNewDesign = activeOrig && activeOpt
+    && JSON.stringify(activeOrig) === JSON.stringify(activeOpt);
+
   const TYPE_LABELS: Record<DiffDiagramType, { label: string; icon: React.ReactNode }> = {
     class: { label: '类图', icon: <ApartmentOutlined /> },
     sequence: { label: '时序图', icon: <ClockCircleOutlined /> },
@@ -292,14 +298,18 @@ const DiffViewer: React.FC = () => {
             ? '全局优化对比'
             : (originalDiagram?.diagram_type === 'sequence' ? '时序图优化对比' : 'UML 优化对比')}
         </h3>
-        <Button
-          icon={<SwapOutlined />}
-          size="small"
-          type={showingOptimized ? 'primary' : 'default'}
-          onClick={handleToggleCanvas}
-        >
-          {showingOptimized ? '画布: 优化版' : '画布: 原始版'}
-        </Button>
+        {isNewDesign ? (
+          <Tag color="purple" style={{ fontSize: 12 }}>从需求全新生成</Tag>
+        ) : (
+          <Button
+            icon={<SwapOutlined />}
+            size="small"
+            type={showingOptimized ? 'primary' : 'default'}
+            onClick={handleToggleCanvas}
+          >
+            {showingOptimized ? '画布: 优化版' : '画布: 原始版'}
+          </Button>
+        )}
       </div>
 
       {/* Diagram type tabs (shown when multi-diagram data is available) */}
