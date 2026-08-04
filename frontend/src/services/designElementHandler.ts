@@ -29,6 +29,7 @@ export function handleDesignElement(
   store: ReturnType<typeof useDiagramStore.getState>,
   event: { type: string; data: string },
   idMap?: Map<string, string>,
+  clearedDiagrams?: Set<string>,
 ): void {
   const obj = parseDesignElement(event.data);
   if (!obj) return;
@@ -58,6 +59,33 @@ export function handleDesignElement(
     return diagrams.find(
       d => (d.diagram_type || 'class') === type
     );
+  };
+
+  /** Build a diagram key for type+name matching. */
+  const dkey = (type: string, name?: string) =>
+    `${type}:${name || ''}`;
+
+  /** Clear a diagram's content arrays by type on first element of the stream. */
+  const clearDiagramOnFirstElement = (type: string, name?: string) => {
+    if (!clearedDiagrams) return;
+    const key = dkey(type, name);
+    if (clearedDiagrams.has(key)) return;
+    clearedDiagrams.add(key);
+    // 用 addDiagramsFromSpec 覆盖已有图：保留元信息，清空内容数组
+    store.addDiagramsFromSpec([{
+      type,
+      name: name || '',
+      component_id: '',
+      data: {
+        classes: [],
+        relations: [],
+        lifelines: [],
+        messages: [],
+        fragments: [],
+        components: [],
+        comp_relations: [],
+      },
+    }]);
   };
 
   /** Switch active diagram. Skips setActiveDiagram if type hasn't changed. */
@@ -92,6 +120,7 @@ export function handleDesignElement(
     diagram_meta: () => { /* no-op */ },
     class: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('class', diagramName);
       switchTo('class', diagramName);
       store.addClass({ x: o.x ?? o.position?.x ?? 100, y: o.y ?? o.position?.y ?? 100 });
       const c = lastOf(findDiagram('class', diagramName)?.classes || []);
@@ -108,6 +137,7 @@ export function handleDesignElement(
     },
     relation: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('class', diagramName);
       switchTo('class', diagramName);
       store.addRelation(mapId(o.source), mapId(o.target));
       const r = lastOf(findDiagram('class', diagramName)?.relations || []);
@@ -123,6 +153,7 @@ export function handleDesignElement(
     },
     lifeline: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('sequence', diagramName);
       switchTo('sequence', diagramName);
       store.addLifeline(o.x ?? 200);
       const ll = lastOf(findDiagram('sequence', diagramName)?.lifelines || []);
@@ -136,6 +167,7 @@ export function handleDesignElement(
     },
     message: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('sequence', diagramName);
       switchTo('sequence', diagramName);
       store.addMessage(mapId(o.from_lifeline), mapId(o.to_lifeline));
       const m = lastOf(findDiagram('sequence', diagramName)?.messages || []);
@@ -149,6 +181,7 @@ export function handleDesignElement(
     },
     fragment: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('sequence', diagramName);
       switchTo('sequence', diagramName);
       store.addFragment(o.y_start ?? 200);
       const f = lastOf(findDiagram('sequence', diagramName)?.fragments || []);
@@ -163,6 +196,7 @@ export function handleDesignElement(
     },
     component: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('component', diagramName);
       switchTo('component', diagramName);
       store.addComponent({ x: o.x ?? 150, y: o.y ?? 100 }, o.parent_id || '');
       const comp = lastOf(findDiagram('component', diagramName)?.components || []);
@@ -177,6 +211,7 @@ export function handleDesignElement(
     },
     comp_rel: (o) => {
       const diagramName = o.diagram_name;
+      clearDiagramOnFirstElement('component', diagramName);
       switchTo('component', diagramName);
       store.addCompRelation(mapId(o.source), mapId(o.target));
       const cr = lastOf(findDiagram('component', diagramName)?.comp_relations || []);
@@ -206,6 +241,7 @@ export function processDesignUpdated(
   consistencyReport: any[],
   uiStore: any,
   diagramStore: any,
+  originalsSnapshot?: Record<string, any>,
 ): void {
   const originals: Record<string, any> = {};
   const optimizeds: Record<string, any> = {};
@@ -213,11 +249,14 @@ export function processDesignUpdated(
 
   for (const spec of diagrams) {
     const dtype = spec.type || 'class';
-    const existing = diagramStore.project.diagrams.find(
-      d => (d.diagram_type || 'class') === dtype && d.name === spec.name
-    );
     const dkey = `${dtype}:${spec.name || ''}`;
     const opt = spec.data ? { ...spec.data } : {};
+    // diff 优先使用流式前的原始快照（流式阶段已清空旧图），
+    // 快照不存在时回退到 store 当前值（非流式路径或空项目）
+    const existing = originalsSnapshot?.[dkey]
+      || diagramStore.project.diagrams.find(
+        (d: any) => (d.diagram_type || 'class') === dtype && d.name === spec.name
+      );
     const orig = existing && Object.keys(existing).length > 1  // >1 排除仅含 name/type 的默认空图
       ? { ...existing }
       : null;

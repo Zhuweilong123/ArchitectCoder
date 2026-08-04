@@ -235,6 +235,15 @@ async def optimize_v2_stream(
         with trace_span("scope_analysis"):
             scope = await _analyze_scope(instructions, diagrams, index, _llm, project_file)
 
+        # Phase 1 完成后通知前端影响范围摘要
+        target_count = len(scope.get("target_keys", [])) if scope else 0
+        change_type = scope.get("change_type", "optimize") if scope else "optimize"
+        if target_count > 0:
+            status_msg = f"影响范围已确定，正在优化 {target_count} 张图..."
+        else:
+            status_msg = "正在全局优化全部图表..."
+        yield _sse_data(f"status:{json.dumps({'phase': 'scope_done', 'message': status_msg, 'target_count': target_count, 'change_type': change_type}, ensure_ascii=False)}")
+
         user_prompt, system_prompt, is_empty = _build_global_prompt(
             diagrams=diagrams, instructions=instructions, index=index,
             scope=scope,

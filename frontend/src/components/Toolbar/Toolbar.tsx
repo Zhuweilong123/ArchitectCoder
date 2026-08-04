@@ -119,7 +119,7 @@ const Toolbar: React.FC = () => {
 
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
-    const loadText = globalStreamMode ? '流式优化中，实时生成设计...' : '全局优化中...';
+    const loadText = globalStreamMode ? '正在分析影响范围...' : '全局优化中...';
     message.loading({ content: loadText, key: 'globalOpt', duration: 0 });
 
     const uiState = useUiStore.getState();
@@ -179,7 +179,17 @@ const Toolbar: React.FC = () => {
 
     // ── 流式: SSE fetch + ReadableStream ──
     const idMap = new Map<string, string>();
+    const clearedDiagrams = new Set<string>();   // 记录流式已清空旧数据的图
     const abortController = new AbortController();
+
+    // 保存原始图快照（供 diff 对比用，流式阶段 store 会被覆盖）
+    const originalsSnapshot: Record<string, any> = {};
+    for (const d of proj.diagrams) {
+      const dkey = `${d.diagram_type || 'class'}:${d.name}`;
+      if (Object.keys(d).length > 1) {  // >1 排除仅含 name/type 的默认空图
+        originalsSnapshot[dkey] = { ...d };
+      }
+    }
 
     try {
       const response = await fetch('/api/optimize_v2/stream', {
@@ -220,6 +230,12 @@ const Toolbar: React.FC = () => {
 
           if (payload === 'DONE') {
             // 流式元素结束，等待 design_updated
+          } else if (payload.startsWith('status:')) {
+            // Phase 1 完成：显示影响范围摘要
+            try {
+              const status = JSON.parse(payload.slice(7));
+              message.loading({ content: status.message, key: 'globalOpt', duration: 0 });
+            } catch { /* ignore */ }
           } else if (payload.startsWith('error:')) {
             try {
               const err = JSON.parse(payload.slice(6));
@@ -237,6 +253,7 @@ const Toolbar: React.FC = () => {
                   data.consistency_report || [],
                   useUiStore.getState(),
                   useDiagramStore.getState(),
+                  originalsSnapshot,
                 );
               }
               message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
@@ -251,6 +268,7 @@ const Toolbar: React.FC = () => {
                 useDiagramStore.getState(),
                 { type: elemType, data: elemData },
                 idMap,
+                clearedDiagrams,
               );
             }
           }
