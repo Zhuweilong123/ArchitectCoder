@@ -242,47 +242,29 @@ def _load_guide(name: str) -> str:
     return gf.read_text(encoding="utf-8") if gf.exists() else ""
 
 
-# ── 核心规则：精简版（单图/简单变更时用）vs 完整版（跨图场景用）──
+def _detect_existing_types(diagrams: list[dict]) -> set[str]:
+    """检测项目中已有的非空图表类型。
 
-_CORE_RULES_SHORT = """## Core Rules
-1. Lifeline class_ref MUST reference existing classes from class diagrams
-2. Message labels MUST match method signatures in the referenced class
-3. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
-4. If the user requests repositioning, adjust coordinates thoughtfully
-5. Validate your output against the Reference Index above — fix any broken cross-references"""
+    返回 {"class", "sequence", "component"} 中已有内容的类型集合。
+    只检查数据层实际有元素的图，空图不算已有。
+    """
+    existing: set[str] = set()
+    for d in (diagrams or []):
+        dtype = d.get("diagram_type") or d.get("type") or "class"
+        data = d.get("data") or {}
+        if dtype == "class" and (data.get("classes") or d.get("classes")):
+            existing.add("class")
+        elif dtype == "sequence" and (data.get("lifelines") or d.get("lifelines")):
+            existing.add("sequence")
+        elif dtype == "component" and (data.get("components") or d.get("components")):
+            existing.add("component")
+    return existing
 
-_VALIDATION_RULES_FULL = """## Core Validation Rules
-1. Sequence diagram lifelines MUST reference classes that exist in class diagrams (via class_ref)
-2. Sequence diagram method calls MUST match method signatures in class diagrams
-3. Component diagram interfaces MUST be consistent with class diagram provided/required interfaces
-4. Flag any inconsistencies found between diagrams in the consistency_report
-5. If any diagram type is missing from the existing set, generate it based on the others
-6. Optimize each diagram while maintaining consistency across all types
-7. PRESERVE all coordinate fields (position/size/x/y/width/height) — NEVER zero them out
-8. If the user requests repositioning, adjust coordinates thoughtfully. Otherwise, keep existing positions
 
-## Component-Diagram Association Rules
-9. COMPONENT LINKING: Class and sequence diagrams have a "component_id" field that links them to a
-   component diagram node (CompNode.id). Set component_id to the matching component's id when a diagram
-   describes the internals or interactions of a specific component.
-10. COMPONENT MANIFEST USAGE: The Component Manifest above shows every component and its diagram
-    coverage status. When generating or optimizing:
-    - For each missing component, generate at least one class + one sequence diagram
-    - For each partial component, fill the missing diagram type
-    - Use the exact component "id" from the manifest as the diagram's "component_id"
-11. MULTIPLE DIAGRAMS PER COMPONENT: A single component may need MULTIPLE diagrams of the same type:
-    ALL diagrams belonging to the SAME component share the SAME component_id.
-12. COMPONENT HIERARCHY: Parent-child relationships between components (parent_id field) imply
-    architectural nesting. Generate diagrams at the appropriate level.
-13. GENERATION ORDER: Always generate component diagrams FIRST (to establish IDs), then class
-    diagrams (structure), then sequence diagrams (behavior).
-
-## Reference Validation
-14. REFERENCE INDEX: The Cross-Diagram Reference Index above lists all entities and their
-    relationships. Use it to validate your output: every lifeline.class_ref must resolve to a
-    class in the Class Directory, every message label should match a method in the target class,
-    every component_id must reference a component in the Component Manifest. Fix any
-    "Issues Detected" listed in the index — they are guidance for what to improve."""
+def _load_example(name: str) -> str:
+    """加载单份示例文件的 Markdown 内容。name 为简名如 'class_diagram'。"""
+    ef = _GUIDE_DIR / f"{name}_example.md"
+    return ef.read_text(encoding="utf-8") if ef.exists() else ""
 
 
 # ── KG 辅助：同步 BM25 查询 ─────────────────────────────────
@@ -592,11 +574,21 @@ def _build_global_prompt(
         "component": "component_diagram",
         "cross": "cross_diagram",
     }
+    # Detect which diagram types the project already has
+    existing_types = _detect_existing_types(diagrams or [])
+    _logger.info("[prompt] Existing diagram types: %s", existing_types)
+
     guide_parts = []
     for gkey, gfile in guide_map.items():
         if gkey in guides_needed:
             content = _load_guide(gfile)
             if content:
+                # 按需加载示例：项目已有该类型图 → 跳过示例，省 token
+                if gkey in ("class", "sequence", "component") and gkey not in existing_types:
+                    example = _load_example(gfile)
+                    if example:
+                        content += "\n\n" + example
+                        _logger.info("[prompt] Appended %s example — project has no existing %s diagram", gkey, gkey)
                 guide_parts.append(content)
     global_guide = "\n\n".join(guide_parts) if guide_parts else ""
 
@@ -699,9 +691,6 @@ def _build_global_prompt(
     else:
         index_block = ""
 
-    # ── Validation rules ──
-    rules = _VALIDATION_RULES_FULL if include_all_rules else _CORE_RULES_SHORT
-
     # ── Output scope hint ──
     output_hint = ""
     if output_scope == "changed_only" and target_keys:
@@ -756,32 +745,14 @@ Only output the JSON object, no other text.
 ## Existing Diagram Data:
 {chr(10).join(parts)}
 
-{rules}
 {output_hint}
 ## User Instructions:
 {instructions or "Overall system optimization: improve consistency, reduce duplication, ensure cross-diagram coherence"}
 
-## Output Format:
 Return a JSON object with a "diagrams" array. Each entry has "type" (class/sequence/component),
 "name", optional "component_id", and "data" (the full diagram content).
-You may generate MULTIPLE diagrams of the same type for different aspects.
 Match existing diagrams by "type" + "name", updating them; create new entries for new diagrams.
-```json
-{{
-  "diagrams": [
-    {{"type": "class", "name": "...", "component_id": "...", "data": {{ ... }}}},
-    {{"type": "sequence", "name": "...", "component_id": "...", "data": {{ ... }}}}
-  ],
-  "consistency_report": [{{"severity": "error|warning", "msg": "..."}}],
-  "changes_summary": "summary",
-  "diff": "what changed",
-  "design_constraints": {{
-    "must_preserve": ["约束1: 关键关系和接口不可修改"],
-    "immutable_entities": ["不可变实体名称"],
-    "design_rationale": "核心设计理由简述"
-  }}
-}}
-```
+Include "consistency_report", "changes_summary", "diff", and "design_constraints" fields.
 Only output the JSON object, no other text.
 """
 
