@@ -1,9 +1,13 @@
 """对话工具 — 将子 Agent 封装为对话 Agent 可调用的工具
 
 每个工具包装一个子 Agent，使其被对话 Agent 像调用函数一样使用：
-- optimize_uml: OptimizeUmlTool → V2 直连优化引擎（uml_optimizer_v2）
-- validate_code: CodeValidator (ReActAgent FC) → 代码语法/导入/运行验证
-- fix_code: CodeFixer (ReflectionAgent) → pytest 驱动的源码修复
+- optimize_uml: OptimizeUmlTool → V2 直连优化引擎（scope 分析 + 单次 LLM + 程序化验证）
+- generate_code: GenerateCodeTool → 代码生成
+- validate_code: ValidateCodeTool → 代码语法/导入/运行验证
+- generate_tests: GenerateTestsTool → 测试生成
+- fix_code: FixCodeTool → pytest 驱动的源码修复
+- run_tests: RunTestsTool → 运行测试
+- write_files: WriteFilesTool → 写文件落盘
 
 Usage::
 
@@ -345,19 +349,15 @@ class OptimizeUmlTool(AsyncTool):
                     "properties": {
                         "project_file": {
                             "type": "string",
-                            "description": "Path to the .umlproj project file (from project_info). Preferred — the tool loads the existing diagrams from it. Optional if diagrams_json is provided.",
-                        },
-                        "diagrams_json": {
-                            "type": "string",
-                            "description": "JSON string of the existing diagram list, format [{\"type\":\"class\",\"data\":{...}}, ...]. Only needed when project_file is unavailable; empty array means generate from scratch.",
+                            "description": "Path to the .umlproj project file. The tool loads existing diagrams from it.",
                         },
                         "instructions": {
                             "type": "string",
-                            "description": "User instructions for optimizing or modifying the UML design, e.g. 'add a payment module', 'remove the association fragment from the sequence diagram', 'rename class X to Y'. Any element can be added, removed, or updated; the tool rewrites the full diagram set accordingly.",
+                            "description": "User instructions for optimizing the UML design, e.g. 'add a payment module', 'remove the association from the sequence diagram', 'rename class X to Y'.",
                         },
                         "save_to_project": {
                             "type": "boolean",
-                            "description": "Whether to write the optimized diagrams back to the .umlproj file on disk. Default false — set true when the user asked to modify the design (add/remove/update elements), so the change is persisted. When true, requires a valid project_file.",
+                            "description": "Whether to write optimized diagrams back to the .umlproj file. Default false.",
                         },
                     },
                     "required": ["instructions"],
