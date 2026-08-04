@@ -104,13 +104,15 @@ export function connectAgentChat(
 function _noopEvent(_event: AgentEvent) { /* placeholder */ }
 
 // ── 待发送队列（WebSocket 未 OPEN 时暂存）───────
-let _pendingMessages: Array<{ message: string; opts: Record<string, unknown> }> = [];
+let _pendingMessages: Array<{ message: string; opts: Record<string, unknown>; skipNotify?: boolean }> = [];
 
 export function sendAgentMessage(message: string, opts?: {
   source_dir?: string;
   test_dir?: string;
   project_file?: string;
   stream_mode?: boolean;
+  /** 跳过监听器通知 — 调用方已自行添加用户消息到 UI 时设为 true */
+  skipNotify?: boolean;
 }) {
   const payload = {
     type: 'chat',
@@ -123,13 +125,15 @@ export function sendAgentMessage(message: string, opts?: {
 
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify(payload));
-    _notifyListeners({ event: 'user_message' as any, message });
+    if (!opts?.skipNotify) {
+      _notifyListeners({ event: 'user_message' as any, message });
+    }
     return true;
   }
 
   // 等待 onopen 后发送
   if (_ws && _ws.readyState === WebSocket.CONNECTING) {
-    _pendingMessages.push({ message, opts: payload });
+    _pendingMessages.push({ message, opts: payload, skipNotify: opts?.skipNotify });
     return false; // 消息会在 onopen 中发送
   }
 
@@ -206,7 +210,9 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     for (const pm of pending) {
       if (_ws && _ws.readyState === WebSocket.OPEN) {
         _ws.send(JSON.stringify(pm.opts));
-        _notifyListeners({ event: 'user_message' as any, message: pm.message });
+        if (!pm.skipNotify) {
+          _notifyListeners({ event: 'user_message' as any, message: pm.message });
+        }
       }
     }
   };
