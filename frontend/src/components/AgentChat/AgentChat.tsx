@@ -79,8 +79,11 @@ const AgentChat: React.FC = () => {
   // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
   const liveStepsRef = useRef<AgentProgressEvent[]>([]);
 
+  // 流式元素的 LLM ID → 真实 ID 映射表，跨事件共享
+  const idMapRef = useRef<Map<string, string>>(new Map());
+
   const handleDesignElementWrapper = useCallback((event: { type: string; data: string }) => {
-    handleDesignElement(useDiagramStore.getState(), event);
+    handleDesignElement(useDiagramStore.getState(), event, idMapRef.current);
   }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);

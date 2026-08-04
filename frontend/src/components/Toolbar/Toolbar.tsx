@@ -123,6 +123,24 @@ const Toolbar: React.FC = () => {
 
     const uiState = useUiStore.getState();
 
+    // ── 空 project 时自动另存为获取文件路径 ──
+    let projectFile = currentFilepath;
+    if (!projectFile) {
+      try {
+        const projName = useDiagramStore.getState().project?.name || 'Untitled';
+        const result = await saveProject(
+          { ...useDiagramStore.getState().project, name: projName },
+          `${projName}.umlproj`,
+        );
+        projectFile = result.filepath;
+        setCurrentFilepath(result.filepath);
+      } catch {
+        message.error({ content: '优化前需要先保存项目文件', key: 'globalOpt' });
+        setGlobalOptimizing(false);
+        return;
+      }
+    }
+
     // ── v2: 连接专用 optimize_v2 WebSocket ──
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
@@ -131,9 +149,12 @@ const Toolbar: React.FC = () => {
 
     const ws = new WebSocket(wsUrl);
 
+    // 流式模式的 LLM ID → 真实 ID 映射表，在整个连接生命周期内共享
+    const idMap = new Map<string, string>();
+
     ws.onopen = () => {
       ws.send(JSON.stringify({
-        project_file: currentFilepath || '',
+        project_file: projectFile || '',
         instructions: globalInstructions.trim(),
         stream_mode: globalStreamMode,
       }));
@@ -147,8 +168,8 @@ const Toolbar: React.FC = () => {
       try {
         const data = JSON.parse(ev.data);
         if (data.event === 'design_element') {
-          // 流式模式: 实时渲染元素到画布
-          handleDesignElement(useDiagramStore.getState(), { type: data.type, data: data.data });
+          // 流式模式: 实时渲染元素到画布（idMap 跨事件共享）
+          handleDesignElement(useDiagramStore.getState(), { type: data.type, data: data.data }, idMap);
         } else if (data.event === 'design_updated') {
           const diagrams = data.diagrams;
           if (Array.isArray(diagrams) && diagrams.length > 0) {

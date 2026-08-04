@@ -18,15 +18,23 @@ export function parseDesignElement(data: string): any | null {
 /**
  * 处理单个 design_element 事件，将元素渲染到画布。
  * 需要在调用前已获取 diagramStore 引用。
+ *
+ * @param store — diagramStore 的 getState() 快照
+ * @param event — { type: string, data: string }
+ * @param idMap — 跨事件共享的 LLM ID → 真实 ID 映射（流式模式必须持久化）
  */
-export function handleDesignElement(store: ReturnType<typeof useDiagramStore.getState>, event: { type: string; data: string }): void {
+export function handleDesignElement(
+  store: ReturnType<typeof useDiagramStore.getState>,
+  event: { type: string; data: string },
+  idMap?: Map<string, string>,
+): void {
   const obj = parseDesignElement(event.data);
   if (!obj) return;
 
   const proj = store.project;
-  const idMap = new Map<string, string>();
+  if (!idMap) idMap = new Map<string, string>();
 
-  const mapId = (id: string) => idMap.get(id) || id;
+  const mapId = (id: string) => idMap!.get(id) || id;
 
   const lastOf = <T,>(arr: T[]): T | undefined => arr[arr.length - 1];
 
