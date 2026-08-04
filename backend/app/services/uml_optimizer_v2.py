@@ -13,8 +13,8 @@ Usage::
     # 非流式
     result = await optimize_v2(project_file="project.umlproj", instructions="增加支付模块")
 
-    # 流式
-    async for elem_type, elem_json in optimize_v2_stream(
+    # 流式 (SSE)
+    async for line in optimize_v2_stream(
         project_file="project.umlproj",
         instructions="增加支付模块",
     ):
@@ -23,7 +23,7 @@ Usage::
 
 import json
 import logging
-from typing import Optional, Callable, AsyncIterator
+from typing import Optional, AsyncIterator
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.services.uml_common import (
@@ -43,12 +43,10 @@ from app.services.chat_trace import trace_span
 
 logger = logging.getLogger(__name__)
 
-# 流式模式下存储最终结果（供 API 层发送 design_updated 使用）
-_stream_last_result: dict | None = None
 
-
-def _get_stream_last_result() -> dict | None:
-    return _stream_last_result
+def _sse_data(payload: str) -> str:
+    """Format a single SSE ``data:`` line."""
+    return f"data: {payload}\n\n"
 
 
 def _try_parse_json(content: str) -> dict | None:
@@ -169,29 +167,24 @@ async def optimize_v2_stream(
     project_file: str = "",
     instructions: str = "",
     llm: BaseAgentsLLM | None = None,
-    progress: Callable[[dict], None] | None = None,
-) -> AsyncIterator[tuple[str, str]]:
-    """流式全局 UML 优化。
+) -> AsyncIterator[str]:
+    """流式全局 UML 优化（SSE lines）。
 
-    逐元素实时推送设计元素到前端画布。
+    返回符合 SSE 格式的字符串行，可直接用 StreamingResponse 流式输出。
+
+    元素行格式:
+        data: <type>:<json_string>\\n\\n
+
+    最终结果行:
+        event: design_updated\\ndata: <json>\\n\\n
 
     Yields:
-        (element_type, json_string) 元组，其中 element_type 为
-        "diagram_create", "class", "relation", "lifeline", "message",
-        "fragment", "component", "comp_rel", "diagram_update"
-
-    完成后可通过 ``_get_stream_last_result()`` 获取最终处理结果。
+        SSE-formatted strings.
     """
-    global _stream_last_result
-    _stream_last_result = None
-
     _llm = await _get_llm(llm)
 
     if not project_file:
-        _stream_last_result = {
-            "diagrams": [],
-            "consistency_report": [{"severity": "error", "msg": "未提供 project_file"}],
-        }
+        yield _sse_data(f"error:{json.dumps({'message': '未提供 project_file'})}")
         return
 
     # 1. 加载项目（支持空项目：few-shot 生成新设计）
@@ -212,7 +205,7 @@ async def optimize_v2_stream(
         scope=scope,
     )
 
-    # 3. 流式生成 + 实时元素提取（空项目时 from-scratch prompt 有效）
+    # 3. 流式生成 + 实时元素提取
     extractor = _JsonElementExtractor()
     full_response = ""
 
@@ -225,34 +218,20 @@ async def optimize_v2_stream(
                                        model="deepseek-v4-pro"):
             full_response += chunk
             for elem_type, elem_json in extractor.feed(chunk):
-                if progress:
-                    progress({
-                        "event": "design_element",
-                        "type": elem_type,
-                        "data": elem_json,
-                    })
-                yield (elem_type, elem_json)
+                yield _sse_data(f"{elem_type}:{elem_json}")
 
     logger.info("[optimize_v2_stream] 流生成完成: %d 字符", len(full_response))
 
-    # 4. 处理结果
-    result = _process_result(full_response, index)
-    _stream_last_result = result
+    # 4. 流结束标记
+    yield _sse_data("DONE")
 
-    # 5. 发送变更后的完整图数据（布局后位置可能已调整）
-    for d in result.get("diagrams", []):
-        data = d.get("data", {})
-        dtype = d.get("type", "class")
-        update_json = json.dumps({
-            "type": dtype,
-            "name": d.get("name", ""),
-            "component_id": d.get("component_id", ""),
-            "data": data,
-        }, ensure_ascii=False)
-        if progress:
-            progress({
-                "event": "design_element",
-                "type": "diagram_update",
-                "data": update_json,
-            })
-        yield ("diagram_update", update_json)
+    # 5. 结果后处理 (验证+布局)
+    result = _process_result(full_response, index)
+
+    # 6. 发送最终 validated+layout 结果
+    design_updated = json.dumps({
+        "diagrams": result.get("diagrams", []),
+        "consistency_report": result.get("consistency_report", []),
+        "review": True,
+    }, ensure_ascii=False)
+    yield _sse_data(f"design_updated:{design_updated}")

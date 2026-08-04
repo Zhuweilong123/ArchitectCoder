@@ -943,6 +943,31 @@ def _validate_cross_references(result: dict, original_index: dict) -> list[dict]
                         "auto_fixed": False,
                     })
 
+    # ── Check 0.5: component comp_rel source/target validity ──
+    for di, diag in enumerate(opt_diagrams):
+        if diag.get("type") != "component":
+            continue
+        data = diag.get("data", {})
+        diag_comps = {c["id"] for c in data.get("components", [])}
+        # Also collect from merged index
+        all_comp_ids = diag_comps | set(merged.get("components", {}).keys())
+        for rel in data.get("comp_relations", []):
+            rel_id = rel.get("id", "?")
+            src = rel.get("source", "")
+            tgt = rel.get("target", "")
+            if src and src not in all_comp_ids:
+                issues.append({
+                    "severity": "error", "type": "bad_comp_rel_source",
+                    "msg": f"CompRelation '{rel_id}' source='{src}' references non-existent component (diagram #{di})",
+                    "auto_fixed": False,
+                })
+            if tgt and tgt not in all_comp_ids:
+                issues.append({
+                    "severity": "error", "type": "bad_comp_rel_target",
+                    "msg": f"CompRelation '{rel_id}' target='{tgt}' references non-existent component (diagram #{di})",
+                    "auto_fixed": False,
+                })
+
     # ── Check 1: class_ref validity ──
     for di, diag in enumerate(opt_diagrams):
         if diag.get("type") != "sequence":

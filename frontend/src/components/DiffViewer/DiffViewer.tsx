@@ -38,16 +38,33 @@ const DiffViewer: React.FC = () => {
     ? (Object.keys(optimizedDiagrams) as DiffDiagramType[])
     : (originalDiagram ? [(originalDiagram.diagram_type || 'class') as DiffDiagramType] : ['class']);
 
+  // Format "type:name" compound key for display
+  const formatTypeLabel = (key: DiffDiagramType): string => {
+    const { dtype, dname } = parseDiagramKey(key);
+    const info = TYPE_LABELS[dtype];
+    const baseLabel = info?.label || dtype;
+    return dname ? `${baseLabel} · ${dname}` : baseLabel;
+  };
+
   // 空工程/全新设计：原始版和优化版内容相同，不需要切换按钮
   const activeOrig = hasMultiDiagrams ? originalDiagrams[activeDiffDiagramType] : originalDiagram;
   const activeOpt = hasMultiDiagrams ? optimizedDiagrams[activeDiffDiagramType] : optimizedDiagram;
   const isNewDesign = activeOrig && activeOpt
     && JSON.stringify(activeOrig) === JSON.stringify(activeOpt);
 
-  const TYPE_LABELS: Record<DiffDiagramType, { label: string; icon: React.ReactNode }> = {
+  const TYPE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
     class: { label: '类图', icon: <ApartmentOutlined /> },
     sequence: { label: '时序图', icon: <ClockCircleOutlined /> },
     component: { label: '组件图', icon: <BlockOutlined /> },
+  };
+
+  // Parse compound key "type:name" into {type, name}; falls back to type-only for legacy keys
+  const parseDiagramKey = (key: string): { dtype: string; dname: string } => {
+    const colonIdx = key.indexOf(':');
+    if (colonIdx > 0) {
+      return { dtype: key.substring(0, colonIdx), dname: key.substring(colonIdx + 1) };
+    }
+    return { dtype: key, dname: '' };
   };
 
   const [reviewComment, setReviewComment] = useState('');
@@ -70,9 +87,14 @@ const DiffViewer: React.FC = () => {
   const handleToggleCanvas = () => {
     // Ensure the active diagram matches the diff tab (in case user switched via toolbar)
     const targetType = hasMultiDiagrams ? activeDiffDiagramType : (originalDiagram?.diagram_type || 'class');
-    const targetIdx = project.diagrams.findIndex(
-      d => (d.diagram_type || 'class') === targetType
-    );
+    const { dtype, dname } = parseDiagramKey(targetType);
+    const targetIdx = dname
+      ? project.diagrams.findIndex(
+          d => (d.diagram_type || 'class') === dtype && d.name === dname
+        )
+      : project.diagrams.findIndex(
+          d => (d.diagram_type || 'class') === targetType
+        );
     const currentActiveIdx = project.active_diagram_index;
     if (targetIdx >= 0 && targetIdx !== currentActiveIdx) {
       setActiveDiagram(targetIdx);
@@ -90,10 +112,15 @@ const DiffViewer: React.FC = () => {
   // Handle diagram-type tab switch → also switch main canvas and restore original
   const handleTypeSwitch = (type: DiffDiagramType) => {
     setActiveDiffDiagramType(type);
-    // Switch canvas to the correct diagram
-    const targetIdx = project.diagrams.findIndex(
-      d => (d.diagram_type || 'class') === type
-    );
+    // Switch canvas to the correct diagram (type:name compound key)
+    const { dtype, dname } = parseDiagramKey(type);
+    const targetIdx = dname
+      ? project.diagrams.findIndex(
+          d => (d.diagram_type || 'class') === dtype && d.name === dname
+        )
+      : project.diagrams.findIndex(
+          d => (d.diagram_type || 'class') === dtype
+        );
     if (targetIdx >= 0) {
       setActiveDiagram(targetIdx);
       // Always restore the original version on tab switch,
@@ -125,9 +152,14 @@ const DiffViewer: React.FC = () => {
         for (const type of Object.keys(optimizedDiagrams) as DiffDiagramType[]) {
           const opt = optimizedDiagrams[type];
           if (!opt) continue;
-          let idx = project.diagrams.findIndex(
-            d => (d.diagram_type || 'class') === type
-          );
+          const { dtype, dname } = parseDiagramKey(type);
+          let idx = dname
+            ? project.diagrams.findIndex(
+                d => (d.diagram_type || 'class') === dtype && d.name === dname
+              )
+            : project.diagrams.findIndex(
+                d => (d.diagram_type || 'class') === type
+              );
           if (idx >= 0) {
             const updatedDiagrams = [...project.diagrams];
             updatedDiagrams[idx] = { ...updatedDiagrams[idx], ...opt };
@@ -137,9 +169,9 @@ const DiffViewer: React.FC = () => {
               isModified: true,
             });
           } else {
-            // Auto-create missing diagram type
+            // Auto-create missing diagram
             const store = useDiagramStore.getState();
-            store.addDiagram(type, opt.name || type, opt.component_id || '');
+            store.addDiagram(dtype, opt.name || dname || dtype, opt.component_id || '');
             const newIdx = store.project.diagrams.length - 1;
             const updatedDiagrams = [...store.project.diagrams];
             updatedDiagrams[newIdx] = { ...updatedDiagrams[newIdx], ...opt };
@@ -316,7 +348,7 @@ const DiffViewer: React.FC = () => {
       {hasMultiDiagrams && availableTypes.length > 1 && (
         <div className="diff-type-tabs" style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
           {availableTypes.map(type => {
-            const info = TYPE_LABELS[type];
+            const info = TYPE_LABELS[parseDiagramKey(type).dtype];
             const hasData = !!optimizedDiagrams[type];
             return (
               <Button
@@ -327,7 +359,7 @@ const DiffViewer: React.FC = () => {
                 disabled={!hasData}
                 onClick={() => handleTypeSwitch(type)}
               >
-                {info?.label || type}
+                {formatTypeLabel(type)}
               </Button>
             );
           })}

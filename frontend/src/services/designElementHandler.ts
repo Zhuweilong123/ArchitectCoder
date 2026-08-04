@@ -17,9 +17,11 @@ export function parseDesignElement(data: string): any | null {
 
 /**
  * 处理单个 design_element 事件，将元素渲染到画布。
- * 需要在调用前已获取 diagramStore 引用。
  *
- * @param store — diagramStore 的 getState() 快照
+ * 重要: ``store`` 快照不能用于读取 add* 之后的新数据 —
+ * 所有"先写后读"路径统一用 ``useDiagramStore.getState()`` 实时获取最新状态。
+ *
+ * @param store — diagramStore 的 getState() 快照（用于调用方法）
  * @param event — { type: string, data: string }
  * @param idMap — 跨事件共享的 LLM ID → 真实 ID 映射（流式模式必须持久化）
  */
@@ -31,44 +33,68 @@ export function handleDesignElement(
   const obj = parseDesignElement(event.data);
   if (!obj) return;
 
-  const proj = store.project;
   if (!idMap) idMap = new Map<string, string>();
 
   const mapId = (id: string) => idMap!.get(id) || id;
 
   const lastOf = <T,>(arr: T[]): T | undefined => arr[arr.length - 1];
 
-  const switchTo = (type: string) => {
-    const idx = type === 'class'
-      ? proj.diagrams.findIndex(d => (d.diagram_type || 'class') === 'class')
-      : type === 'sequence'
-        ? proj.diagrams.findIndex(d => d.diagram_type === 'sequence')
-        : proj.diagrams.findIndex(d => d.diagram_type === 'component');
+  /** Live state accessor — use after any write that needs re-reading. */
+  const live = (): ReturnType<typeof useDiagramStore.getState> =>
+    useDiagramStore.getState();
+
+  // ── currentType 优化: 跳过重复的 setActiveDiagram ──
+  let currentType = '';
+
+  /** Find a diagram by type and optional name via live state. */
+  const findDiagram = (type: string, name?: string) => {
+    const diagrams = live().project.diagrams;
+    if (name) {
+      const d = diagrams.find(
+        d => (d.diagram_type || 'class') === type && d.name === name
+      );
+      if (d) return d;
+    }
+    return diagrams.find(
+      d => (d.diagram_type || 'class') === type
+    );
+  };
+
+  /** Switch active diagram. Skips setActiveDiagram if type hasn't changed. */
+  const switchTo = (type: string, name?: string) => {
+    if (currentType === type) return;
+    const diagrams = live().project.diagrams;
+    const idx = name
+      ? diagrams.findIndex(d =>
+          (d.diagram_type || 'class') === type && d.name === name)
+      : diagrams.findIndex(d =>
+          (d.diagram_type || 'class') === type);
     if (idx < 0) {
-      const autoName = type === 'class' ? '类图' : type === 'sequence' ? '时序图' : '组件图';
+      const autoName = name || (type === 'class' ? '类图' : type === 'sequence' ? '时序图' : '组件图');
       store.addDiagram(type, autoName);
-      store.setActiveDiagram(store.project.diagrams.length - 1);
+      store.setActiveDiagram(live().project.diagrams.length - 1);
     } else {
       store.setActiveDiagram(idx);
     }
+    currentType = type;
   };
 
   const handlers: Record<string, (o: any) => void> = {
     diagram_create: (o) => {
       const dtype = o.type || 'class';
-      const existing = proj.diagrams.findIndex(d => (d.diagram_type || 'class') === dtype);
+      const dname = o.name || '';
+      const existing = live().project.diagrams.findIndex(d =>
+        (d.diagram_type || 'class') === dtype && d.name === dname);
       if (existing < 0) {
-        store.addDiagram(dtype, o.name || dtype, o.component_id || '');
+        store.addDiagram(dtype, dname, o.component_id || '');
       }
     },
     diagram_meta: () => { /* no-op */ },
     class: (o) => {
-      switchTo('class');
-      const x = o.x ?? o.position?.x ?? 100;
-      const y = o.y ?? o.position?.y ?? 100;
-      store.addClass({ x, y });
-      const diagram = store.project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-      const c = lastOf(diagram?.classes || []);
+      const diagramName = o.diagram_name;
+      switchTo('class', diagramName);
+      store.addClass({ x: o.x ?? o.position?.x ?? 100, y: o.y ?? o.position?.y ?? 100 });
+      const c = lastOf(findDiagram('class', diagramName)?.classes || []);
       if (c) {
         idMap.set(o.id, c.id);
         store.updateClass(c.id, {
@@ -81,10 +107,10 @@ export function handleDesignElement(
       }
     },
     relation: (o) => {
-      switchTo('class');
+      const diagramName = o.diagram_name;
+      switchTo('class', diagramName);
       store.addRelation(mapId(o.source), mapId(o.target));
-      const diagram = store.project.diagrams.find(d => (d.diagram_type || 'class') === 'class');
-      const r = lastOf(diagram?.relations || []);
+      const r = lastOf(findDiagram('class', diagramName)?.relations || []);
       if (r) {
         idMap.set(o.id, r.id);
         store.updateRelation(r.id, {
@@ -96,10 +122,10 @@ export function handleDesignElement(
       }
     },
     lifeline: (o) => {
-      switchTo('sequence');
+      const diagramName = o.diagram_name;
+      switchTo('sequence', diagramName);
       store.addLifeline(o.x ?? 200);
-      const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-      const ll = lastOf(diagram?.lifelines || []);
+      const ll = lastOf(findDiagram('sequence', diagramName)?.lifelines || []);
       if (ll) {
         idMap.set(o.id, ll.id);
         store.updateLifeline(ll.id, {
@@ -109,10 +135,10 @@ export function handleDesignElement(
       }
     },
     message: (o) => {
-      switchTo('sequence');
+      const diagramName = o.diagram_name;
+      switchTo('sequence', diagramName);
       store.addMessage(mapId(o.from_lifeline), mapId(o.to_lifeline));
-      const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-      const m = lastOf(diagram?.messages || []);
+      const m = lastOf(findDiagram('sequence', diagramName)?.messages || []);
       if (m) {
         idMap.set(o.id, m.id);
         store.updateMessage(m.id, {
@@ -122,10 +148,10 @@ export function handleDesignElement(
       }
     },
     fragment: (o) => {
-      switchTo('sequence');
+      const diagramName = o.diagram_name;
+      switchTo('sequence', diagramName);
       store.addFragment(o.y_start ?? 200);
-      const diagram = store.project.diagrams.find(d => d.diagram_type === 'sequence');
-      const f = lastOf(diagram?.fragments || []);
+      const f = lastOf(findDiagram('sequence', diagramName)?.fragments || []);
       if (f) {
         idMap.set(o.id, f.id);
         store.updateFragment(f.id, {
@@ -136,10 +162,10 @@ export function handleDesignElement(
       }
     },
     component: (o) => {
-      switchTo('component');
+      const diagramName = o.diagram_name;
+      switchTo('component', diagramName);
       store.addComponent({ x: o.x ?? 150, y: o.y ?? 100 }, o.parent_id || '');
-      const diagram = store.project.diagrams.find(d => d.diagram_type === 'component');
-      const comp = lastOf(diagram?.components || []);
+      const comp = lastOf(findDiagram('component', diagramName)?.components || []);
       if (comp) {
         idMap.set(o.id, comp.id);
         store.updateComponent(comp.id, {
@@ -150,10 +176,10 @@ export function handleDesignElement(
       }
     },
     comp_rel: (o) => {
-      switchTo('component');
+      const diagramName = o.diagram_name;
+      switchTo('component', diagramName);
       store.addCompRelation(mapId(o.source), mapId(o.target));
-      const diagram = store.project.diagrams.find(d => d.diagram_type === 'component');
-      const cr = lastOf(diagram?.comp_relations || []);
+      const cr = lastOf(findDiagram('component', diagramName)?.comp_relations || []);
       if (cr) {
         idMap.set(o.id, cr.id);
         store.updateCompRelation(cr.id, { type: o.type || 'dependency' } as any);
@@ -167,12 +193,7 @@ export function handleDesignElement(
 
   const h = handlers[event.type];
   if (h) {
-    try {
-      store.beginBatch();
-      h(obj);
-    } finally {
-      store.endBatch();
-    }
+    h(obj);
   }
 }
 
@@ -193,20 +214,21 @@ export function processDesignUpdated(
   for (const spec of diagrams) {
     const dtype = spec.type || 'class';
     const existing = diagramStore.project.diagrams.find(
-      d => (d.diagram_type || 'class') === dtype
+      d => (d.diagram_type || 'class') === dtype && d.name === spec.name
     );
+    const dkey = `${dtype}:${spec.name || ''}`;
     const opt = spec.data ? { ...spec.data } : {};
     const orig = existing && Object.keys(existing).length > 1  // >1 排除仅含 name/type 的默认空图
       ? { ...existing }
       : null;
 
     // 空工程时原始版也指向优化版，diff 文案标注为新建设计
-    originals[dtype] = orig || opt;
-    optimizeds[dtype] = opt;
+    originals[dkey] = orig || opt;
+    optimizeds[dkey] = opt;
     if (orig) {
-      diffs[dtype] = JSON.stringify({ before: orig, after: opt }, null, 2);
+      diffs[dkey] = JSON.stringify({ before: orig, after: opt }, null, 2);
     } else {
-      diffs[dtype] = `// 从需求描述全新生成此设计 ("${spec.name || dtype}")\n`
+      diffs[dkey] = `// 从需求描述全新生成此设计 ("${spec.name || dtype}")\n`
         + JSON.stringify(opt, null, 2);
     }
   }

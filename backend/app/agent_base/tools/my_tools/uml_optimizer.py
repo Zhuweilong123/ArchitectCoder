@@ -25,7 +25,7 @@ from typing import Optional, Callable, AsyncIterator
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.config import Config
 from app.agent_base.agents.reflection_agent import ReflectionAgent
-from app.services.code_generator import (
+from app.services.uml_common import (
     _build_reference_index,
     _build_global_prompt,
     _normalize_optimize_result,
@@ -425,6 +425,7 @@ class _JsonElementExtractor:
         self._esc = False
         self._elem_start = -1   # buffer offset where current depth-4 element begins
         self._section = None    # 'class', 'sequence', or 'component'
+        self._current_diagram_name = None  # current diagram name for element routing
         self._scan_pos = 0      # last position scanned for component_id
         self._seen_cids = set() # avoid duplicate diagram_meta emission
         self._seen_diagrams = set()  # avoid duplicate diagram_create emission
@@ -461,6 +462,7 @@ class _JsonElementExtractor:
                             if _nvend >= 0 and _nvend < _search_end:
                                 _dname = _new_for_dc[_nvstart + 1:_nvend]
                                 _dkey = f"{_dtype}:{_dname}"
+                                self._current_diagram_name = _dname
                                 if _dkey not in self._seen_diagrams:
                                     self._seen_diagrams.add(_dkey)
                                     _cid = ""
@@ -531,7 +533,10 @@ class _JsonElementExtractor:
                             obj = json.loads(txt)
                             tp = self._classify(obj)
                             if tp:
-                                elements.append((tp, txt))
+                                # Inject diagram_name for frontend routing
+                                if self._current_diagram_name:
+                                    obj["diagram_name"] = self._current_diagram_name
+                                elements.append((tp, json.dumps(obj, ensure_ascii=False)))
                         except json.JSONDecodeError:
                             pass  # incomplete object — wait for more data
                         self._elem_start = -1

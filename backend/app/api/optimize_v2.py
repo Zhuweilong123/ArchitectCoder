@@ -3,10 +3,14 @@
 与 v1 (agent_chat_ws.py) 不同，此端点绕过了 ReActAgent 和工具调用链，
 直接处理 UML 优化请求。
 
-WebSocket:
-    ws://host/api/optimize_v2/ws
-    接受: {"project_file": "...", "instructions": "...", "stream_mode": bool}
-    发送: "design_element" 事件（流式模式）, "design_updated" 事件（结果）
+SSE (stream):
+    POST /api/optimize_v2/stream
+    Body: {"project_file": "...", "instructions": "..."}
+    Response: text/event-stream
+        data: class:{"id":"c1","diagram_name":"Domain Model",...}
+        data: relation:{"source":"c1","target":"c2",...}
+        data: DONE
+        data: design_updated:{"diagrams":[],"consistency_report":[]}
 
 REST:
     POST /api/optimize_v2/optimize
@@ -19,13 +23,13 @@ import json
 import logging
 import os
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services.uml_optimizer_v2 import (
     optimize_v2,
     optimize_v2_stream,
-    _get_stream_last_result,
 )
 from app.services.chat_trace import ChatTraceLogger, set_trace_hook
 from app.services.agent_chat_ws import _TRACE_BRIDGE
@@ -84,149 +88,84 @@ class OptimizeV2Response(BaseModel):
     consistency_report: list = []
 
 
-# ── WebSocket 端点 ──────────────────────────────────────
+# ── SSE 流式端点 ──────────────────────────────────────
 
-@router.websocket("/ws")
-async def optimize_v2_ws(websocket: WebSocket):
-    """全局优化 WebSocket — 流式 + 非流式统一入口
+@router.post("/stream")
+async def optimize_v2_stream_endpoint(body: OptimizeV2Request, request: Request):
+    """全局优化 SSE 流
 
-    接收 JSON: {"project_file": "...", "instructions": "...", "stream_mode": true/false}
+    返回 text/event-stream:
+        data: <type>:<json>      — 设计元素（class, relation, lifeline, ...）
+        data: DONE               — 流式元素结束
+        data: design_updated:... — 最终验证+布局后的完整结果
 
-    非流式 (stream_mode=false):
-        完成后发送 design_updated，然后关闭连接。
-
-    流式 (stream_mode=true):
-        逐元素发送 design_element，最后发送设计完成后的 layout
-        diagram_update 元素，完成后发送 design_updated。
+    客户端通过 ReadableStream 读取，支持 abort 中断。
     """
-    await websocket.accept()
-    logger.info("[optimize_v2 WS] Connected")
+    project_file = body.project_file
+    instructions = body.instructions
 
+    if not project_file:
+        return StreamingResponse(
+            _sse_error("Missing project_file"),
+            media_type="text/event-stream",
+        )
+
+    # ── Trace ──
     trace_log: ChatTraceLogger | None = None
+    pid = os.path.splitext(os.path.basename(project_file))[0] if project_file else "no_project"
+    from datetime import datetime
+    sid = f"{pid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    trace_log = ChatTraceLogger(session_id=sid)
+    trace_log.start(
+        user_message=instructions,
+        project_file=project_file,
+        source_dir="",
+        test_dir="",
+        env_snapshot={"stream_mode": True, "version": "v2"},
+    )
+    set_trace_hook(_trace_bridge)
+    _TRACE_BRIDGE["tracer"] = trace_log
 
-    def _open_trace(pf: str, instr: str, sm: bool):
-        """创建会话 trace，注册全局 hook"""
+    logger.info(
+        "[optimize_v2 SSE] project=%s, instructions=%s",
+        project_file, instructions[:80],
+    )
+
+    async def _event_stream():
         nonlocal trace_log
-        pid = os.path.splitext(os.path.basename(pf))[0] if pf else "no_project"
-        from datetime import datetime
-        sid = f"{pid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        trace_log = ChatTraceLogger(session_id=sid)
-        trace_log.start(
-            user_message=instr,
-            project_file=pf,
-            source_dir="",
-            test_dir="",
-            env_snapshot={"stream_mode": sm, "version": "v2"},
-        )
-        set_trace_hook(_trace_bridge)
-        _TRACE_BRIDGE["tracer"] = trace_log
-        logger.info("[optimize_v2 WS] Trace started: %s", sid)
-
-    def _close_trace():
-        """关闭 trace，注销 hook"""
-        nonlocal trace_log
-        if trace_log:
-            trace_log.close()
-            trace_log = None
-        set_trace_hook(None)
-        _TRACE_BRIDGE["tracer"] = None
-
-    try:
-        raw = await websocket.receive_text()
         try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            await _ws_send(websocket, {"event": "error", "message": "Invalid JSON"})
-            await websocket.close()
-            return
-
-        project_file = msg.get("project_file", "")
-        instructions = msg.get("instructions", "")
-        stream_mode = msg.get("stream_mode", False)
-
-        if not project_file:
-            await _ws_send(websocket, {
-                "event": "error",
-                "message": "Missing project_file",
-            })
-            await websocket.close()
-            return
-
-        # ── 启动 trace ──
-        _open_trace(project_file, instructions, stream_mode)
-
-        logger.info(
-            "[optimize_v2 WS] project=%s, stream=%s, instructions=%s",
-            project_file, stream_mode, instructions[:80],
-        )
-
-        if stream_mode:
-            # ── 流式模式 ──
-            async for _elem_type, _elem_json in optimize_v2_stream(
+            async for line in optimize_v2_stream(
                 project_file=project_file,
                 instructions=instructions,
-                progress=lambda ev: asyncio.create_task(
-                    _ws_send(websocket, ev)
-                ),
             ):
-                pass  # 事件由 progress 回调发送
+                # 检查客户端是否已断开
+                if await request.is_disconnected():
+                    logger.info("[optimize_v2 SSE] Client disconnected")
+                    break
+                yield line
 
-            # 发送最终结果
-            result = _get_stream_last_result()
-            if result and result.get("diagrams"):
-                await _ws_send(websocket, {
-                    "event": "design_updated",
-                    "diagrams": result["diagrams"],
-                    "consistency_report": result.get("consistency_report", []),
-                    "review": True,
-                })
             if trace_log:
-                trace_log.done(
-                    answer=json.dumps(result or {}, ensure_ascii=False)[:2000],
-                )
-        else:
-            # ── 非流式模式 ──
-            result = await optimize_v2(
-                project_file=project_file,
-                instructions=instructions,
-            )
-
-            if result.get("diagrams"):
-                await _ws_send(websocket, {
-                    "event": "design_updated",
-                    "diagrams": result["diagrams"],
-                    "consistency_report": result.get("consistency_report", []),
-                    "review": True,
-                })
-            else:
-                await _ws_send(websocket, {
-                    "event": "error",
-                    "message": result.get("changes_summary", "Optimization produced no results"),
-                    "details": result.get("consistency_report", []),
-                })
+                trace_log.done(answer="SSE stream completed")
+        except asyncio.CancelledError:
+            logger.info("[optimize_v2 SSE] Cancelled")
+        except Exception as e:
+            logger.exception("[optimize_v2 SSE] Error")
+            yield _sse_data(json.dumps({"event": "error", "message": str(e)}))
+        finally:
+            set_trace_hook(None)
+            _TRACE_BRIDGE["tracer"] = None
             if trace_log:
-                trace_log.done(
-                    answer=json.dumps(result, ensure_ascii=False)[:2000],
-                )
+                trace_log.close()
+                trace_log = None
 
-    except WebSocketDisconnect:
-        logger.info("[optimize_v2 WS] Client disconnected")
-        if trace_log:
-            trace_log.error(event_type="websocket", message="Client disconnected")
-    except Exception as e:
-        logger.exception("[optimize_v2 WS] Error")
-        if trace_log:
-            trace_log.error(event_type="server", message=f"Server error: {e}")
-        try:
-            await _ws_send(websocket, {"event": "error", "message": str(e)})
-        except Exception:
-            pass
-    finally:
-        _close_trace()
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        },
+    )
 
 
 # ── REST 端点 ──────────────────────────────────────────
@@ -249,10 +188,10 @@ async def optimize_v2_endpoint(body: OptimizeV2Request):
 
 # ── Helpers ────────────────────────────────────────────
 
-async def _ws_send(websocket: WebSocket, data: dict) -> bool:
-    """发送 JSON 到 WebSocket，忽略断开连接的异常。"""
-    try:
-        await websocket.send_json(data)
-        return True
-    except Exception:
-        return False
+def _sse_data(payload: str) -> str:
+    """Format a data: line for SSE."""
+    return f"data: {payload}\n\n"
+
+def _sse_error(message: str) -> str:
+    """Format an SSE error data line."""
+    return f"data: error:{{\"message\": \"{message}\"}}\n\n"
