@@ -440,7 +440,7 @@ class OptimizeUmlTool(AsyncTool):
         try:
             from app.services.file_service import load_project, save_project
             from app.models.uml import UmlDiagram
-            from app.services.code_generator import _normalize_llm_output
+            from app.services.uml_common import _normalize_llm_output
 
             project = load_project(project_file)
             converted: list[UmlDiagram] = []

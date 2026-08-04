@@ -362,6 +362,14 @@ const CompEditor: React.FC = () => {
       rels.forEach((r) => {
         try {
           if (!existingEdges.has(r.id)) {
+            if (!graph.getCellById(r.source)) {
+              console.warn('[CompEditor] Sync edge skipped — source node missing:', r.id, r.source);
+              return;
+            }
+            if (!graph.getCellById(r.target)) {
+              console.warn('[CompEditor] Sync edge skipped — target node missing:', r.id, r.target);
+              return;
+            }
             graph.addEdge({
               id: r.id,
               source: { cell: r.source },

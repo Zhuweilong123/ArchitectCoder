@@ -28,12 +28,11 @@ import {
   browseDirectory, type BrowseResult,
   saveGeneratedCode,
 } from '../../services/api';
-import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
+import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './Toolbar.css';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
-// AgentChat 打开后通过 connectAgentChat 把自己的回调注入进去。
-function _noopAgentEvent(_event: any) {}
+// (reserved for future use)
 
 const { TextArea } = Input;
 
@@ -112,40 +111,158 @@ const Toolbar: React.FC = () => {
   const [globalOptimizeVisible, setGlobalOptimizeVisible] = useState(false);
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [globalOptimizing, setGlobalOptimizing] = useState(false);
-  const [globalStreamMode, setGlobalStreamMode] = useState(false);
+  const [globalStreamMode, setGlobalStreamMode] = useState(true);
 
-  // ── Global optimize handler (unified: via Agent WebSocket) ─────────
+  // ── Global optimize handler (SSE 流式 / REST 非流式) ─────────
   const handleGlobalOptimize = async () => {
     const proj = useDiagramStore.getState().project;
 
-    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
-    // 占位连接：确保 WebSocket 在 AgentChat 打开前就已连接
-    // _noopEvent 回调在 connectAgentChat 中不会被覆盖
-    connectAgentChat(_noopAgentEvent, token);
-
-    const messageText = globalInstructions.trim()
-      ? `请对当前项目进行全局UML优化: ${globalInstructions}`
-      : '请对当前项目进行全局UML交叉验证和综合优化';
-
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
-    message.loading({ content: globalStreamMode ? '流式优化中，实时生成设计...' : '全局优化中...', key: 'globalOpt', duration: 0 });
+    const loadText = globalStreamMode ? '流式优化中，实时生成设计...' : '全局优化中...';
+    message.loading({ content: loadText, key: 'globalOpt', duration: 0 });
 
-    // Auto-open AgentChat panel so user can see progress
     const uiState = useUiStore.getState();
-    if (!uiState.agentChatVisible) {
-      uiState.setAgentChatVisible(true);
+
+    // ── 空 project 时自动另存为获取文件路径 ──
+    let projectFile = currentFilepath;
+    if (!projectFile) {
+      try {
+        const projName = useDiagramStore.getState().project?.name || 'Untitled';
+        const result = await saveProject(
+          { ...useDiagramStore.getState().project, name: projName },
+          `${projName}.umlproj`,
+        );
+        projectFile = result.filepath;
+        setCurrentFilepath(result.filepath);
+      } catch {
+        message.error({ content: '优化前需要先保存项目文件', key: 'globalOpt' });
+        setGlobalOptimizing(false);
+        return;
+      }
     }
 
-    sendAgentMessage(messageText, {
-      source_dir: uiState.pipelineSourceDir,
-      test_dir: uiState.pipelineTestDir,
-      project_file: currentFilepath || '',
-      stream_mode: globalStreamMode,
-    });
+    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    message.success({ content: '已发送优化请求到 AI 助手', key: 'globalOpt' });
-    setGlobalOptimizing(false);
+    if (!globalStreamMode) {
+      // ── 非流式: REST API ──
+      try {
+        const response = await fetch('/api/optimize_v2/optimize', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            project_file: projectFile || '',
+            instructions: globalInstructions.trim(),
+          }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        const diagrams = result.diagrams;
+        if (Array.isArray(diagrams) && diagrams.length > 0) {
+          processDesignUpdated(
+            diagrams,
+            result.consistency_report || [],
+            useUiStore.getState(),
+            useDiagramStore.getState(),
+          );
+        }
+        message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
+      } catch {
+        message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
+      } finally {
+        setGlobalOptimizing(false);
+      }
+      return;
+    }
+
+    // ── 流式: SSE fetch + ReadableStream ──
+    const idMap = new Map<string, string>();
+    const abortController = new AbortController();
+
+    try {
+      const response = await fetch('/api/optimize_v2/stream', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          project_file: projectFile || '',
+          instructions: globalInstructions.trim(),
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      // 显示优化画布
+      if (!uiState.rightPanelVisible) {
+        uiState.setRightPanelVisible(true);
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (!payload) continue;
+
+          if (payload === 'DONE') {
+            // 流式元素结束，等待 design_updated
+          } else if (payload.startsWith('error:')) {
+            try {
+              const err = JSON.parse(payload.slice(6));
+              message.error({ content: `优化失败: ${err.message}`, key: 'globalOpt' });
+            } catch {
+              message.error({ content: '优化失败', key: 'globalOpt' });
+            }
+          } else if (payload.startsWith('design_updated:')) {
+            try {
+              const data = JSON.parse(payload.slice(15)); // "design_updated:".length === 15
+              const diagrams = data.diagrams;
+              if (Array.isArray(diagrams) && diagrams.length > 0) {
+                processDesignUpdated(
+                  diagrams,
+                  data.consistency_report || [],
+                  useUiStore.getState(),
+                  useDiagramStore.getState(),
+                );
+              }
+              message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
+            } catch { /* ignore parse errors */ }
+          } else {
+            // 设计元素: <type>:<json>
+            const colonIdx = payload.indexOf(':');
+            if (colonIdx > 0) {
+              const elemType = payload.slice(0, colonIdx);
+              const elemData = payload.slice(colonIdx + 1);
+              handleDesignElement(
+                useDiagramStore.getState(),
+                { type: elemType, data: elemData },
+                idMap,
+              );
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
+      }
+    } finally {
+      setGlobalOptimizing(false);
+    }
   };
 
   // ── Ctrl+S global save ──────────────────────────────

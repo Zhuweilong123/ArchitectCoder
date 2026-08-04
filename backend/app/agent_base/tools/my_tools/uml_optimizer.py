@@ -25,7 +25,7 @@ from typing import Optional, Callable, AsyncIterator
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.config import Config
 from app.agent_base.agents.reflection_agent import ReflectionAgent
-from app.services.code_generator import (
+from app.services.uml_common import (
     _build_reference_index,
     _build_global_prompt,
     _normalize_optimize_result,
@@ -56,7 +56,7 @@ def _make_reflection_llm(llm: BaseAgentsLLM) -> BaseAgentsLLM:
     _llm.api_key = llm.api_key
     _llm.base_url = llm.base_url
     _llm.temperature = llm.temperature
-    _llm.max_tokens = 8192
+    _llm.max_tokens = 16384
     _llm.timeout = llm.timeout
     _llm.model = llm.model.replace("flash", "pro") if "flash" in llm.model else "deepseek-v4-pro"
     from openai import OpenAI
@@ -132,7 +132,7 @@ class UmlOptimizer:
             instructions[:80],
         )
 
-        # ── Step 1: 构建上下文（与原 optimize_project 完全一致）──
+        # ── Step 1: 构建 prompt（包含完整原始设计 → 永远在 messages[0] 中）──
         original_index = _build_reference_index(diagrams) if diagrams else {}
         prompt, full_system, is_empty = _build_global_prompt(
             diagrams=diagrams,
@@ -140,96 +140,33 @@ class UmlOptimizer:
             index=original_index,
         )
 
-        # ── 修复 prompt 中的裸 {} 以避免 ReflectionAgent .format() 解析错误 ──
-        # _build_global_prompt 的 JSON 示例包含 {{}} （Python 字符串字面量转义后的 {}），
-        # 当 ReflectionAgent 再次调用 .format() 时会误解析它们。
-        # 方案：预填充 instructions 占位符 + 对 prompt 中所有非标准 {} 做二次转义。
-        import re
-        prompt = prompt.replace("{instructions}", instructions or "Design a complete UML system")
-        # 对任何不在已知 format key 列表中的 {} 做转义
-        _valid_keys = {'task', 'context', 'content', 'auto_feedback',
-                       'last_attempt', 'feedback'}
-        prompt = re.sub(r'(?<!\{)\{(?![\{])', '{{', prompt)
-        prompt = re.sub(r'(?<!\})(\})(?!\})', '}}', prompt)
-
-        # ── Step 2: 准备 UML 专用提示词 ──
-        uml_prompts = {
-            "initial": prompt,  # 复用原有的完整 prompt（已预填充 instructions）
-            "reflect": """You are a UML review expert. Combine the automated validation result and semantic review to analyze the quality of the following UML design.
-
-## Design context:
-{context}
-
-## Original requirements:
-{task}
-
-## Current design:
-{content}
-
-## Automated validation result:
-{auto_feedback}
-
-Add semantic review from the following dimensions (automated validation already covers structural issues):
-1. Does the design fully cover the user's requirements?
-2. Are the class responsibilities reasonably divided?
-3. Is the interaction flow complete?
-4. Are there any missing entities or relationships?
-5. Is the design pattern choice appropriate?
-
-If there is room for improvement, give specific modification suggestions.
-If the design satisfies the requirements and automated validation passed, reply "no improvement needed".
-""",
-            "refine": """You are a UML design expert. Fix the UML design based on the review feedback.
-
-## Design context:
-{context}
-
-## Original requirements:
-{task}
-
-## Previous design:
-{last_attempt}
-
-## Review feedback:
-{feedback}
-
-Output the corrected complete JSON (keep the original format, including the diagrams array).
-Output only the JSON object, no other text.
-""",
-        }
-
-        # ── Step 3: 创建 ReflectionAgent ──
+        # ── Step 2: 创建 ReflectionAgent — 不需要 custom_prompts 和 context ──
         agent = ReflectionAgent(
             name="UML设计助手",
             llm=_make_reflection_llm(self.llm),
             system_prompt=full_system,
             config=Config(temperature=self.temperature, max_tokens=self.max_tokens),
             max_iterations=self.max_iterations,
-            custom_prompts=uml_prompts,
-            context=json.dumps({
-                "has_existing": not is_empty,
-                "diagram_count": len(diagrams) if diagrams else 0,
-                "class_count": len(original_index.get("classes", {})),
-                "component_count": len(original_index.get("components", {})),
-            }, ensure_ascii=False),
         )
 
-        # ── Step 4: 运行反射循环 ──
+        # ── Step 3: 运行反射循环 ──
         raw_answer = agent.run(
-            input_text=instructions or "Design a complete UML diagram system",
-            reflect_hook=self._validate_hook,
-            post_process=self._post_process_hook,
+            input_text=prompt,
+            validate=self._validate_hook,
         )
 
-        # ── Step 5: 返回结果（与原有格式兼容）──
+        # ── Step 4: 返回结果（normalize 只在出站前做一次）──
         return self._finalize_result(raw_answer, original_index)
 
     # ══════════════════════════════════════════════════════
     #  Hook 实现
     # ══════════════════════════════════════════════════════
 
-    def _validate_hook(self, task: str, content: str, context: str) -> str:
-        """反射阶段的验证 Hook — 调用 _validate_cross_references 做程序化检查"""
+    def _validate_hook(self, content: str) -> str:
+        """验证 Hook — 解析 JSON + 调用 _validate_cross_references 做程序化检查。
+
+        签名改为 (content) -> str，适配 ReflectionAgent v2 的 validate 参数。
+        """
         result = self._try_parse_json(content)
         if result is None:
             return (
@@ -259,20 +196,6 @@ Output only the JSON object, no other text.
             lines.append(f"  {emoji} [{item.get('type', '')}] {item['msg']}{auto}")
 
         return "\n".join(lines)
-
-    def _post_process_hook(self, content: str) -> str:
-        """精炼后的后处理 — JSON 解析 + 规范化"""
-        result = self._try_parse_json(content)
-        if result is None:
-            return content  # 保持原始字符串，让下一轮 reflect hook 报告解析失败
-
-        # 规范化格式
-        result = _normalize_optimize_result(result)
-        for dspec in result.get("diagrams", []):
-            if isinstance(dspec.get("data"), dict):
-                dspec["data"] = _normalize_llm_output(dspec["data"])
-
-        return json.dumps(result, indent=2, ensure_ascii=False)
 
     # ══════════════════════════════════════════════════════
     #  结果最终化
@@ -502,6 +425,7 @@ class _JsonElementExtractor:
         self._esc = False
         self._elem_start = -1   # buffer offset where current depth-4 element begins
         self._section = None    # 'class', 'sequence', or 'component'
+        self._current_diagram_name = None  # current diagram name for element routing
         self._scan_pos = 0      # last position scanned for component_id
         self._seen_cids = set() # avoid duplicate diagram_meta emission
         self._seen_diagrams = set()  # avoid duplicate diagram_create emission
@@ -538,6 +462,7 @@ class _JsonElementExtractor:
                             if _nvend >= 0 and _nvend < _search_end:
                                 _dname = _new_for_dc[_nvstart + 1:_nvend]
                                 _dkey = f"{_dtype}:{_dname}"
+                                self._current_diagram_name = _dname
                                 if _dkey not in self._seen_diagrams:
                                     self._seen_diagrams.add(_dkey)
                                     _cid = ""
@@ -608,7 +533,10 @@ class _JsonElementExtractor:
                             obj = json.loads(txt)
                             tp = self._classify(obj)
                             if tp:
-                                elements.append((tp, txt))
+                                # Inject diagram_name for frontend routing
+                                if self._current_diagram_name:
+                                    obj["diagram_name"] = self._current_diagram_name
+                                elements.append((tp, json.dumps(obj, ensure_ascii=False)))
                         except json.JSONDecodeError:
                             pass  # incomplete object — wait for more data
                         self._elem_start = -1

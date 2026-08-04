@@ -334,12 +334,15 @@ class BaseAgentsLLM:
         return content
 
     async def athink(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
-        """异步流式调用，逐块产出文本"""
+        """异步流式调用，逐块产出文本
+
+        支持 ``model=`` 参数覆盖实例默认模型。
+        """
         if self._async_client is None:
             raise RuntimeError("BaseAgentsLLM async client未初始化，请配置有效的 api_key。")
 
         call_kwargs = dict(
-            model=self.model,
+            model=kwargs.pop("model", self.model),
             messages=messages,
             temperature=kwargs.get("temperature", self.temperature),
             stream=True,

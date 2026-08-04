@@ -352,25 +352,49 @@ def current_trace_spans() -> list[str]:
 
 # ── 全局 LLM trace 钩子 ──────────────────────────────
 # BaseAgentsLLM 不直接依赖本模块，通过注册的回调转发原始往返。
-# agent_chat_ws 创建 session 时注册，会话结束取消注册，避免跨会话串扰。
+#
+# 钩子栈（stack）语义 —— 嵌套场景（如 pipeline 调用 optimize_v2）下，
+# 内层 TraceSession push 自己的 bridge，外层不受影响。
+# LLM 调用总是路由到栈顶 handler。
 
-_TRACE_HOOK: dict = {"handler": None}
+_TRACE_HOOK_STACK: list = []
 _TRACE_HOOK_LOCK = threading.Lock()
 
 
-def set_trace_hook(handler=None):
-    """注册/注销全局 LLM trace 处理器（callable，见 ChatTraceHook 约定）。"""
+def push_trace_hook(handler) -> None:
+    """注册 LLM trace 处理器到栈顶。"""
     with _TRACE_HOOK_LOCK:
-        _TRACE_HOOK["handler"] = handler
+        _TRACE_HOOK_STACK.append(handler)
+
+
+def pop_trace_hook(handler) -> None:
+    """注销栈顶 LLM trace 处理器（调用者应传入与 push 相同的 handler 对象）。"""
+    with _TRACE_HOOK_LOCK:
+        if _TRACE_HOOK_STACK and _TRACE_HOOK_STACK[-1] is handler:
+            _TRACE_HOOK_STACK.pop()
+
+
+# 保留旧 API 兼容性（agent_chat_ws 等旧调用方仍在用，逐步迁移）
+def set_trace_hook(handler=None):
+    """已废弃 — 请使用 push_trace_hook / pop_trace_hook 或 TraceSession。
+
+    为避免旧代码 push(None) 注入空 handler，传入 None 时清空整个栈（过渡期）。
+    """
+    if handler is None:
+        with _TRACE_HOOK_LOCK:
+            _TRACE_HOOK_STACK.clear()
+    else:
+        push_trace_hook(handler)
 
 
 def get_trace_hook():
+    """返回栈顶 handler（栈空则 None）。"""
     with _TRACE_HOOK_LOCK:
-        return _TRACE_HOOK["handler"]
+        return _TRACE_HOOK_STACK[-1] if _TRACE_HOOK_STACK else None
 
 
 def _safe_hook(kind: str, *args, **kwargs):
-    """安全调用全局 hook，异常不影响主流程。"""
+    """安全调用栈顶 hook，异常不影响主流程。"""
     handler = get_trace_hook()
     if handler is None:
         return None
@@ -379,3 +403,112 @@ def _safe_hook(kind: str, *args, **kwargs):
     except Exception:
         logger.exception("[Trace] hook(%s) failed", kind)
         return None
+
+
+# ── TraceSession — 任务函数内部自动管理 trace 生命周期 ────
+
+class TraceSession:
+    """trace 生命周期上下文管理器 — 在任务函数内部使用。
+
+    自动完成: 创建 ChatTraceLogger → start → push hook → run → pop hook → close
+
+    用法::
+
+        with TraceSession(session_id="my_proj_20240804_120000",
+                          user_message="优化类图",
+                          project_file="proj.umlproj") as tracer:
+            # LLM 调用自动记录 trace
+            result = await llm.ainvoke(...)
+            tracer.done(answer="优化完成")
+
+    嵌套安全：内层 TraceSession push 到栈顶，LLM 调用路由到最内层；
+    退出后自动恢复外层 handler。
+    """
+
+    def __init__(self, *, session_id: str, user_message: str = "",
+                 project_file: str = "", source_dir: str = "",
+                 test_dir: str = "", env_snapshot: dict | None = None):
+        self._sid = session_id
+        self._user_message = user_message
+        self._project_file = project_file
+        self._source_dir = source_dir
+        self._test_dir = test_dir
+        self._env_snapshot = env_snapshot
+        self._tracer: ChatTraceLogger | None = None
+        self._bridge = None
+
+    @property
+    def tracer(self) -> ChatTraceLogger:
+        if self._tracer is None:
+            raise RuntimeError("TraceSession not entered")
+        return self._tracer
+
+    # ── 内部 bridge ─────────────────────────────────
+
+    def _make_bridge(self):
+        """构造 bridge 闭包 — 捕获 self._tracer，直接桥接 LLM 事件。"""
+        tracer = self._tracer
+
+        def bridge(kind: str, *args, **kwargs):
+            spans = current_trace_spans()
+            span_path = "/".join(spans) if spans else ""
+            if kind == "llm_request":
+                return tracer.llm_request(
+                    provider=kwargs.get("provider", "unknown"),
+                    model=kwargs.get("model", ""),
+                    messages=kwargs.get("messages", []),
+                    temperature=kwargs.get("temperature"),
+                    max_tokens=kwargs.get("max_tokens"),
+                    tools=kwargs.get("tools"),
+                    tool_choice=kwargs.get("tool_choice"),
+                    span_path=span_path,
+                )
+            elif kind == "llm_response":
+                tracer.llm_response(
+                    span_id=kwargs.get("span_id", ""),
+                    content=kwargs.get("content", ""),
+                    tool_calls=kwargs.get("tool_calls"),
+                    usage=kwargs.get("usage"),
+                    error=kwargs.get("error", ""),
+                    duration_ms=kwargs.get("duration_ms", 0.0),
+                    span_path=span_path,
+                )
+                return None
+            return None
+
+        return bridge
+
+    # ── 上下文管理 ─────────────────────────────────
+
+    def __enter__(self):
+        self._tracer = ChatTraceLogger(session_id=self._sid)
+        self._tracer.start(
+            user_message=self._user_message,
+            project_file=self._project_file,
+            source_dir=self._source_dir,
+            test_dir=self._test_dir,
+            env_snapshot=self._env_snapshot,
+        )
+        self._bridge = self._make_bridge()
+        push_trace_hook(self._bridge)
+        return self._tracer
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self._bridge is not None:
+                pop_trace_hook(self._bridge)
+        finally:
+            if self._tracer is not None and not self._tracer._closed:
+                if exc_type is not None:
+                    self._tracer.error(
+                        event_type="exception",
+                        message=f"{exc_type.__name__}: {exc_val}",
+                    )
+                self._tracer.close()
+        return False  # 不吞异常
+
+    async def __aenter__(self):
+        return self.__enter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return self.__exit__(exc_type, exc_val, exc_tb)

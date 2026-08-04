@@ -241,151 +241,9 @@
 
 ---
 
-## 6. 完整示例
+## 6. LLM 输出规范
 
-### 6.1 简单类图（任务调度系统）
-
-```json
-{
-  "version": "1.0",
-  "name": "TaskScheduler",
-  "diagram_type": "class",
-  "classes": [
-    {
-      "id": "class_base_task",
-      "name": "BaseTask",
-      "stereotype": "abstract",
-      "attributes": [
-        { "name": "taskId", "type": "string", "visibility": "#", "default_value": null, "is_static": false },
-        { "name": "status", "type": "TaskStatus", "visibility": "#", "default_value": null, "is_static": false }
-      ],
-      "methods": [
-        { "name": "execute", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": true },
-        { "name": "cancel", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": false }
-      ],
-      "position": { "x": 350.0, "y": 50.0 },
-      "size": { "width": 200.0, "height": 150.0 },
-      "note": "任务基类：定义通用任务接口和生命周期状态",
-      "provided_interfaces": ["ITask"],
-      "required_interfaces": []
-    },
-    {
-      "id": "class_ota_task",
-      "name": "OtaTask",
-      "stereotype": "class",
-      "attributes": [
-        { "name": "isRandom", "type": "bool", "visibility": "+", "default_value": null, "is_static": false },
-        { "name": "clearCrowAccumulation", "type": "bool", "visibility": "+", "default_value": null, "is_static": false }
-      ],
-      "methods": [
-        { "name": "execute", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": false }
-      ],
-      "position": { "x": 50.0, "y": 250.0 },
-      "size": { "width": 200.0, "height": 150.0 },
-      "note": "OTA升级任务\n1. 升级任务随机触发\n2. 升级可以清除鸡叫时间累计和预约的鸡叫请求",
-      "provided_interfaces": [],
-      "required_interfaces": ["ILogger"]
-    },
-    {
-      "id": "class_crow_task",
-      "name": "CrowTask",
-      "stereotype": "class",
-      "attributes": [
-        { "name": "intervalDays", "type": "int", "visibility": "+", "default_value": null, "is_static": false },
-        { "name": "scheduledTime", "type": "DateTime", "visibility": "#", "default_value": null, "is_static": false }
-      ],
-      "methods": [
-        { "name": "scheduleNextCrow", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": false },
-        { "name": "clearCrowFlag", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": false }
-      ],
-      "position": { "x": 650.0, "y": 250.0 },
-      "size": { "width": 200.0, "height": 150.0 },
-      "note": "鸡叫任务\n1. 每七天鸡叫一次，到达鸡叫时间随机预约 2:00-4:00 之间\n2. 鸡叫不可打断，鸡叫标志可清除",
-      "provided_interfaces": [],
-      "required_interfaces": []
-    },
-    {
-      "id": "class_scheduler",
-      "name": "TaskScheduler",
-      "stereotype": "class",
-      "attributes": [
-        { "name": "taskList", "type": "List<BaseTask>", "visibility": "-", "default_value": null, "is_static": false }
-      ],
-      "methods": [
-        { "name": "addTask", "return_type": "void", "params": "task: BaseTask", "visibility": "+", "is_static": false, "is_abstract": false },
-        { "name": "removeTask", "return_type": "void", "params": "taskId: string", "visibility": "+", "is_static": false, "is_abstract": false },
-        { "name": "executeTasks", "return_type": "void", "params": "", "visibility": "+", "is_static": false, "is_abstract": false }
-      ],
-      "position": { "x": 350.0, "y": 400.0 },
-      "size": { "width": 200.0, "height": 150.0 },
-      "note": "",
-      "provided_interfaces": [],
-      "required_interfaces": []
-    }
-  ],
-  "relations": [
-    {
-      "id": "rel_inherit_ota",
-      "source": "class_ota_task",
-      "target": "class_base_task",
-      "type": "inheritance",
-      "multiplicity_source": "",
-      "multiplicity_target": "",
-      "role_name": "",
-      "note": ""
-    },
-    {
-      "id": "rel_inherit_crow",
-      "source": "class_crow_task",
-      "target": "class_base_task",
-      "type": "inheritance",
-      "multiplicity_source": "",
-      "multiplicity_target": "",
-      "role_name": "",
-      "note": ""
-    },
-    {
-      "id": "rel_aggregate_ota",
-      "source": "class_scheduler",
-      "target": "class_ota_task",
-      "type": "aggregation",
-      "multiplicity_source": "1",
-      "multiplicity_target": "*",
-      "role_name": "tasks",
-      "note": "调度器聚合管理所有任务"
-    },
-    {
-      "id": "rel_aggregate_crow",
-      "source": "class_scheduler",
-      "target": "class_crow_task",
-      "type": "aggregation",
-      "multiplicity_source": "1",
-      "multiplicity_target": "*",
-      "role_name": "tasks",
-      "note": ""
-    }
-  ],
-  "lifelines": [],
-  "messages": [],
-  "fragments": [],
-  "components": [],
-  "comp_relations": [],
-  "grid_visible": true,
-  "grid_size": 20,
-  "grid_color": "#e0e0e0",
-  "grid_thickness": 1,
-  "snap_to_grid": true,
-  "zoom": 1.0,
-  "pan_x": 0.0,
-  "pan_y": 0.0
-}
-```
-
----
-
-## 7. LLM 输出规范
-
-### 7.1 JSON 字段名严格对照
+### 6.1 JSON 字段名严格对照
 
 生成类图时，务必使用以下字段名（区分大小写）：
 
@@ -398,7 +256,7 @@
 | 位置 | `x`, `y` | 浮点数 |
 | 尺寸 | `width`, `height` | 浮点数 |
 
-### 7.2 常见陷阱
+### 6.2 常见陷阱
 
 1. **visibility 用 `+`/`-`/`#` 而不是 `"public"`/`"private"`**
 2. **source/target 是类 ID，不是类名**
@@ -408,8 +266,10 @@
 6. **空字段不要省略**：`note: ""` 而不是不写
 7. **空数组不要省略**：`attributes: []` 而不是不写
 8. **relations 中的 source/target 必须对应 classes 中存在的 id**
+9. ⚠️ **坐标不能清零**：PRESERVE 所有 position/size 字段（x/y/width/height），NEVER zero them out。如用户要求调整位置则深思熟虑后修改
+10. ⚠️ **跨图引用验证**：class_ref、component_id 等跨图引用字段必须指向实际存在的实体 ID
 
-### 7.3 LLM 优化建议
+### 6.3 LLM 优化建议
 
 当被要求优化或改进类图设计时，从以下维度考虑：
 1. **职责单一**：每个类职责明确，避免 God Class

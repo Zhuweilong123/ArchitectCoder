@@ -497,7 +497,15 @@ const UMLEditor: React.FC = () => {
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
             }
           } else {
-            // Add new edge
+            // Add new edge — skip if source or target class doesn't exist on canvas
+            if (!graph.getCellById(rel.source)) {
+              console.warn('[UML Editor] Sync edge skipped — source node missing:', rel.id, rel.source);
+              return;
+            }
+            if (!graph.getCellById(rel.target)) {
+              console.warn('[UML Editor] Sync edge skipped — target node missing:', rel.id, rel.target);
+              return;
+            }
             graph.addEdge({
               id: rel.id,
               source: { cell: rel.source },

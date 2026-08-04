@@ -187,6 +187,9 @@ export const useUiStore = create<UiState>((set, get) => ({
     const firstOrig = originals[firstType];
     const firstOpt = optimizeds[firstType];
     const firstDiff = diffs[firstType] || '';
+    // 空工程/new design：原始版和优化版相同 → 默认显示优化版
+    const sameContents = firstOrig && firstOpt
+      && JSON.stringify(firstOrig) === JSON.stringify(firstOpt);
     set({
       originalDiagrams: originals,
       optimizedDiagrams: optimizeds,
@@ -200,7 +203,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       optimizedCode: firstOpt ? { [`optimized_${firstType}.json`]: JSON.stringify(firstOpt, null, 2) } : null,
       diffContent: firstDiff,
       optimizeInstructions: instructions || '',
-      showingOptimized: false,
+      showingOptimized: sameContents,
     });
   },
 
