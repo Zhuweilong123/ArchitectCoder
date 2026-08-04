@@ -637,20 +637,22 @@ async def generate_tests(
 async def optimize_project(
     diagrams: list[dict] | None = None,
     instructions: str = "",
+    project_file: str = "",
 ) -> dict:
     """Cross-validate and optimize all project diagrams together.
 
-    统一委托到 UmlOptimizer.optimize()（ReflectionAgent 生成→验证→修复循环）。
+    统一委托到 V2 optimize_v2（scope 分析 + 单次 LLM + 程序化验证），
+    替代 V1 的 ReflectionAgent 多轮迭代。
 
     Accepts a list of existing diagram dicts as optional reference.
     Returns a dict with ``diagrams`` array (new format).
     """
-    from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
-    from app.agent_base.core.llm import BaseAgentsLLM
+    from app.services.uml_optimizer_v2 import run_optimize_v2
 
-    llm = BaseAgentsLLM.from_settings()
-    optimizer = UmlOptimizer(llm, max_iterations=3)
-    return await optimizer.optimize(diagrams=diagrams, instructions=instructions)
+    return await run_optimize_v2(
+        project_file=project_file,
+        instructions=instructions,
+    )
 
 
 async def optimize_project_stream(
@@ -660,19 +662,18 @@ async def optimize_project_stream(
     """Streaming version: extracts complete JSON elements from the LLM stream
     and yields them for real-time rendering.
 
-    统一委托到 UmlOptimizer.optimize_stream()（流式生成 + 后验证修复）。
+    统一委托到 V2 optimize_v2_stream（流式生成 + 程序化验证）。
+    当前无调用方，保留接口兼容性。
 
     Accepts a list of existing diagram dicts as optional reference.
     """
-    from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
-    from app.agent_base.core.llm import BaseAgentsLLM
+    from app.services.uml_optimizer_v2 import optimize_v2_stream
 
-    llm = BaseAgentsLLM.from_settings()
-    optimizer = UmlOptimizer(llm, max_iterations=3)
-    async for elem_type, elem_json in optimizer.optimize_stream(
-        diagrams=diagrams, instructions=instructions,
+    async for line in optimize_v2_stream(
+        project_file="",
+        instructions=instructions,
     ):
-        yield f"{elem_type}:{elem_json}"
+        yield line
     yield "DONE"
 
 

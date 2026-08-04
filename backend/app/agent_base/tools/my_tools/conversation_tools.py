@@ -1,7 +1,7 @@
 """对话工具 — 将子 Agent 封装为对话 Agent 可调用的工具
 
 每个工具包装一个子 Agent，使其被对话 Agent 像调用函数一样使用：
-- optimize_uml: UmlOptimizer (ReflectionAgent) → UML 设计优化
+- optimize_uml: OptimizeUmlTool → V2 直连优化引擎（uml_optimizer_v2）
 - validate_code: CodeValidator (ReActAgent FC) → 代码语法/导入/运行验证
 - fix_code: CodeFixer (ReflectionAgent) → pytest 驱动的源码修复
 
@@ -191,13 +191,14 @@ class ProgressRelay:
 # ═══════════════════════════════════════════════════════════
 
 class OptimizeUmlTool(AsyncTool):
-    """UML 设计优化工具 — 包装 UmlOptimizer (ReflectionAgent)。
+    """UML 设计优化工具 — 使用 V2 直连优化引擎。
 
     对话 Agent 调用此工具来优化/修改 UML 设计，返回优化后的图 JSON
-    和设计约束。内部自动完成验证-修复循环。
+    和设计约束。内部使用 V2 直连优化引擎（optimize_v2），含 scope 分析 +
+    单次 LLM 生成 + 程序化跨图验证。
 
     优先从 project_file 加载现有图（无需 Agent 手拼 JSON）；若未提供
-    project_file，则回退使用 diagrams_json 参数传入的图列表。
+    project_file，则返回错误。
     """
 
     def __init__(self, llm: BaseAgentsLLM, project_file: str = "",
@@ -223,7 +224,7 @@ class OptimizeUmlTool(AsyncTool):
         self.progress = progress
 
     async def _execute(self, params: dict) -> str:
-        from app.agent_base.tools.my_tools.uml_optimizer import UmlOptimizer
+        from app.services.uml_optimizer_v2 import run_optimize_v2
 
         instructions = params.get("instructions", "")
 
@@ -233,45 +234,12 @@ class OptimizeUmlTool(AsyncTool):
         # 所以只用 LLM 的 project_file 当 self.project_file 未设置时作为回退。
         llm_project_file = params.get("project_file", "")
         project_file = self.project_file or llm_project_file
-        diagrams: list[dict] = []
-        loaded_from = ""
-        if project_file and os.path.isfile(project_file):
-            try:
-                from app.services.file_service import load_project
-                project = load_project(project_file)
-                diagrams = [d.model_dump() for d in project.diagrams]
-                loaded_from = project_file
-            except Exception as e:
-                logger.warning("[OptimizeUmlTool] load_project failed: %s", e)
-        elif llm_project_file and not os.path.isfile(llm_project_file):
-            # LLM 传了错的路径 — 给明确错误信息让 Agent 纠正
-            logger.warning(
-                "[OptimizeUmlTool] project_file not found: '%s' (self.project_file='%s')",
-                llm_project_file, self.project_file,
-            )
 
-        # ── 2) 回退：用 diagrams_json 传入的图列表 ──
-        if not diagrams:
-            diagrams_json = params.get("diagrams_json", "[]")
-            try:
-                if isinstance(diagrams_json, str):
-                    diagrams = json.loads(diagrams_json)
-                elif isinstance(diagrams_json, list):
-                    diagrams = diagrams_json
-                else:
-                    diagrams = []
-            except json.JSONDecodeError:
-                diagrams = []
-
-        logger.info("[OptimizeUmlTool] %d diagrams (from %s), instructions=%s",
-                    len(diagrams), loaded_from or "diagrams_json", instructions[:80])
-
-        # ── 安全阀：无图可改且无 project_file → 不触发"从零生成" ──
-        if not diagrams and not loaded_from:
+        # ── 安全阀：无 project_file → 不触发优化 ──
+        if not project_file or not os.path.isfile(project_file):
             msg = (
-                "No diagrams found to modify. The project_file was not provided or "
-                "is invalid. Provide the correct .umlproj path as project_file, "
-                "or pass the existing diagrams via diagrams_json."
+                "No valid project_file found. Provide the correct .umlproj path "
+                "as project_file."
             )
             if llm_project_file and not os.path.isfile(llm_project_file):
                 msg = (
@@ -283,35 +251,29 @@ class OptimizeUmlTool(AsyncTool):
                 "error": msg,
                 "diagrams": [],
                 "design_constraints": {},
-                "changes_summary": "No design data available to modify",
+                "changes_summary": "No project file available",
                 "consistency_report": [{"severity": "error", "msg": msg}],
             }, ensure_ascii=False)
 
+        logger.info("[OptimizeUmlTool] project_file=%s, instructions=%s",
+                    project_file, instructions[:80])
+
         try:
-            optimizer = UmlOptimizer(self.llm, max_iterations=3)
             self.progress and self.progress.emit({
                 "event": "sub_agent",
-                "agent": "UmlOptimizer",
+                "agent": "UmlOptimizerV2",
                 "status": "started",
-                "message": f"Optimizing {len(diagrams)} diagrams...",
+                "message": f"Optimizing project: {project_file}",
             })
 
-            # ── 流式 vs 完整模式 ──
-            stream_mode = params.get("stream_mode", False)
-            if stream_mode and isinstance(stream_mode, str):
-                stream_mode = stream_mode.lower() != "false"
-
-            if stream_mode:
-                result = await self._optimize_stream(optimizer, diagrams, instructions)
-            else:
-                result = await optimizer.optimize(
-                    diagrams=diagrams if diagrams else None,
-                    instructions=instructions,
-                )
+            result = await run_optimize_v2(
+                project_file=project_file,
+                instructions=instructions,
+            )
 
             self.progress and self.progress.emit({
                 "event": "sub_agent",
-                "agent": "UmlOptimizer",
+                "agent": "UmlOptimizerV2",
                 "status": "done",
             })
 
@@ -320,8 +282,8 @@ class OptimizeUmlTool(AsyncTool):
             saved_path = ""
             changes_summary = result.get("changes_summary", "")
             optimization_failed = changes_summary.startswith("Optimization failed:")
-            if save_to_project and loaded_from and result.get("diagrams") and not optimization_failed:
-                saved_path = self._save_to_project(loaded_from, result["diagrams"])
+            if save_to_project and result.get("diagrams") and not optimization_failed:
+                saved_path = self._save_to_project(project_file, result["diagrams"])
 
             out = {
                 "diagrams": result.get("diagrams", []),
@@ -338,102 +300,8 @@ class OptimizeUmlTool(AsyncTool):
             logger.exception("[OptimizeUmlTool] Failed")
             return json.dumps({
                 "error": f"UML optimization failed: {e}",
-                "diagrams": diagrams,
+                "diagrams": [],
             }, ensure_ascii=False)
-
-    async def _optimize_stream(
-        self, optimizer, diagrams: list[dict], instructions: str,
-    ) -> dict:
-        """流式执行优化：通过 ProgressRelay 逐元素推送到前端，最后返回完整结果。
-
-        Returns 与 optimizer.optimize() 相同格式的 dict。
-        """
-        collected_elements: list[dict] = []
-
-        async for _elem_type, _elem_json in optimizer.optimize_stream(
-            diagrams=diagrams if diagrams else None,
-            instructions=instructions,
-            progress=self.progress,
-        ):
-            try:
-                obj = json.loads(_elem_json)
-            except json.JSONDecodeError:
-                continue
-            collected_elements.append({"type": _elem_type, "obj": obj})
-
-        diagrams_out = self._elements_to_diagrams(collected_elements)
-
-        self.progress and self.progress.emit({
-            "event": "sub_agent",
-            "agent": "UmlOptimizer",
-            "status": "done",
-        })
-
-        return {
-            "diagrams": diagrams_out,
-            "consistency_report": [],
-            "changes_summary": "流式优化完成",
-            "design_constraints": {},
-            "diff": "",
-        }
-
-    @staticmethod
-    def _elements_to_diagrams(elements: list[dict]) -> list[dict]:
-        """将流式元素列表汇总为 diagrams dict 列表。"""
-        diagram_map: dict[str, dict] = {}
-        for el in elements:
-            obj = el.get("obj", {})
-            etype = el.get("type", "")
-            if etype == "diagram_create":
-                dtype = obj.get("type", "class")
-                dname = obj.get("name", dtype)
-                key = f"{dtype}:{dname}"
-                if key not in diagram_map:
-                    diagram_map[key] = {
-                        "type": dtype, "name": dname,
-                        "component_id": obj.get("component_id", ""),
-                        "data": {"name": dname},
-                    }
-            elif etype == "diagram_meta":
-                pass
-            elif etype == "class":
-                for k, d in diagram_map.items():
-                    if d["type"] == "class":
-                        d["data"].setdefault("classes", []).append(obj)
-                        break
-            elif etype == "relation":
-                for k, d in diagram_map.items():
-                    if d["type"] == "class":
-                        d["data"].setdefault("relations", []).append(obj)
-                        break
-            elif etype in ("lifeline", "message", "fragment"):
-                for k, d in diagram_map.items():
-                    if d["type"] == "sequence":
-                        if etype == "lifeline":
-                            d["data"].setdefault("lifelines", []).append(obj)
-                        elif etype == "message":
-                            d["data"].setdefault("messages", []).append(obj)
-                        elif etype == "fragment":
-                            d["data"].setdefault("fragments", []).append(obj)
-                        break
-            elif etype in ("component", "comp_rel"):
-                for k, d in diagram_map.items():
-                    if d["type"] == "component":
-                        if etype == "component":
-                            d["data"].setdefault("components", []).append(obj)
-                        elif etype == "comp_rel":
-                            d["data"].setdefault("comp_relations", []).append(obj)
-                        break
-            elif etype == "diagram_update":
-                dtype = obj.get("type", "class")
-                dname = obj.get("name", dtype)
-                key = f"{dtype}:{dname}"
-                diagram_map[key] = {
-                    "type": dtype, "name": dname,
-                    "component_id": obj.get("component_id", ""),
-                    "data": obj.get("data", obj),
-                }
-        return list(diagram_map.values())
 
     def _save_to_project(self, project_file: str, diagrams: list[dict]) -> str:
         """Normalize LLM output and write diagrams back to .umlproj. Returns path on success, '' on failure."""

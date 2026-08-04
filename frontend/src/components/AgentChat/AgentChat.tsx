@@ -199,16 +199,33 @@ const AgentChat: React.FC = () => {
           const steps = liveStepsRef.current;
           liveStepsRef.current = [];
           setCurrentSteps([]);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `agent_${Date.now()}`,
-              role: 'agent',
-              content: event.result || '(空回复)',
-              timestamp: Date.now(),
-              steps: steps.length ? steps : undefined,
-            },
-          ]);
+          setMessages((prev) => {
+            const hasStream = prev.some((m) => m.id.startsWith('stream_'));
+            if (hasStream) {
+              // finalize 流式消息，不追加重复内容
+              return prev.map((m) =>
+                m.id.startsWith('stream_')
+                  ? {
+                      ...m,
+                      id: m.id.replace('stream_', 'agent_'),
+                      content: event.result || m.content,
+                      steps: steps.length ? steps : undefined,
+                    }
+                  : m,
+              );
+            }
+            // 无流式消息（如 SSE 直出结果），追加新消息
+            return [
+              ...prev,
+              {
+                id: `agent_${Date.now()}`,
+                role: 'agent' as const,
+                content: event.result || '(空回复)',
+                timestamp: Date.now(),
+                steps: steps.length ? steps : undefined,
+              },
+            ];
+          });
           break;
         }
 
@@ -292,6 +309,7 @@ const AgentChat: React.FC = () => {
       source_dir: pipelineSourceDir,
       test_dir: pipelineTestDir,
       project_file: currentFilepath || '',
+      skipNotify: true,
     });
 
     setMessages((prev) => [

@@ -36,11 +36,11 @@ from app.services.uml_common import (
     _normalize_llm_output,
     _validate_cross_references,
     _apply_auto_fixes,
+    JsonElementExtractor,
 )
 from app.services.layout_engine import auto_layout
 from app.services.tools import clean_llm_json_response
 from app.services.file_service import load_project
-from app.agent_base.tools.my_tools.uml_optimizer import _JsonElementExtractor
 from app.services.chat_trace import trace_span, TraceSession
 
 logger = logging.getLogger(__name__)
@@ -235,13 +235,22 @@ async def optimize_v2_stream(
         with trace_span("scope_analysis"):
             scope = await _analyze_scope(instructions, diagrams, index, _llm, project_file)
 
+        # Phase 1 完成后通知前端影响范围摘要
+        target_count = len(scope.get("target_keys", [])) if scope else 0
+        change_type = scope.get("change_type", "optimize") if scope else "optimize"
+        if target_count > 0:
+            status_msg = f"影响范围已确定，正在优化 {target_count} 张图..."
+        else:
+            status_msg = "正在全局优化全部图表..."
+        yield _sse_data(f"status:{json.dumps({'phase': 'scope_done', 'message': status_msg, 'target_count': target_count, 'change_type': change_type}, ensure_ascii=False)}")
+
         user_prompt, system_prompt, is_empty = _build_global_prompt(
             diagrams=diagrams, instructions=instructions, index=index,
             scope=scope,
         )
 
         # 3. 流式生成 + 实时元素提取
-        extractor = _JsonElementExtractor()
+        extractor = JsonElementExtractor()
         full_response = ""
 
         messages = [
@@ -272,3 +281,30 @@ async def optimize_v2_stream(
         yield _sse_data(f"design_updated:{design_updated}")
 
         trace.done(answer="SSE stream completed")
+
+
+# ── 统一入口：供 Agent Tool / Pipeline 等调用的 V2 非流式接口 ──
+
+async def run_optimize_v2(
+    project_file: str = "",
+    instructions: str = "",
+    llm: BaseAgentsLLM | None = None,
+) -> dict:
+    """V2 全局 UML 优化的统一入口（非流式）。
+
+    替代 V1 的 ``UmlOptimizer.optimize()``，作为 Agent 工具和 Pipeline
+    等处调用的唯一优化入口。
+
+    Args:
+        project_file: .umlproj 文件路径
+        instructions: 用户优化指令（自然语言）
+        llm: 可选 LLM 实例，不传则自动创建
+
+    Returns:
+        {"diagrams": [...], "consistency_report": [...], "changes_summary": "..."}
+    """
+    return await optimize_v2(
+        project_file=project_file,
+        instructions=instructions,
+        llm=llm,
+    )
