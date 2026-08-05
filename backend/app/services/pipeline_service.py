@@ -18,8 +18,62 @@ from app.services.code_generator import (
 )
 from app.core.config import get_settings
 from app.core.security import safe_path, resolve_path
+from app.agent_base.core.llm import BaseAgentsLLM
 
 logger = logging.getLogger(__name__)
+
+# ── Lazy LLM singleton for CodeValidator ────────────────────
+_llm: BaseAgentsLLM | None = None
+
+
+def _get_llm() -> BaseAgentsLLM:
+    global _llm
+    if _llm is None:
+        _llm = BaseAgentsLLM.from_settings()
+    return _llm
+
+
+async def _run_code_validation(
+    language: str,
+    code_files: dict[str, str],
+    task_description: str,
+    max_rounds: int = 5,
+    change_ratio: int = 0,
+    design_constraints: dict | None = None,
+    generated_dir: str = "",
+    original_code: dict[str, str] | None = None,
+):
+    """Run code validation via CodeValidator (ReActAgent-based).
+
+    Yields progress dicts compatible with the old ReActEngine format:
+    ``{"react_steps": [...], "round": N}`` per round,
+    ``{"result": {success, final_code, summary, steps, remaining_issues}}`` on completion.
+
+    Replaces ``ReActEngine.run_code_validate_and_fix_stream()``.
+    """
+    from app.agent_base.tools.my_tools.code_validator import CodeValidator
+
+    validator = CodeValidator(
+        _get_llm(),
+        language=language,
+        max_rounds=max_rounds,
+        change_ratio=change_ratio,
+        design_constraints=design_constraints,
+        generated_dir=generated_dir,
+    )
+    result = None
+    async for progress in validator.validate_stream(
+        code_files=code_files,
+        task_description=task_description,
+        original_code=original_code,
+    ):
+        if "result" in progress:
+            result = progress["result"]
+        else:
+            yield progress  # intermediate progress: {react_steps, round}
+    if result is None:
+        raise RuntimeError("CodeValidator stream ended without result")
+    yield {"result": result}
 
 
 def _save_uml_review_record(diagram_name: str, action: str, comment: str = ""):
@@ -745,27 +799,22 @@ async def run_pipeline(
         yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.RUNNING,
                                    "ReAct validating generated code...")
         try:
-            from app.services.react_engine import ReActEngine, _serialize_steps
-            # Only enforce change ratio for existing projects (source_dir non-empty)
             _ratio = max_change_ratio if source_dir else 0
-            # Compute the actual source directory (files already written here)
             _gen_dir = source_dir or os.path.abspath(
                 os.path.join(get_settings().uml_dir, "..", "..", "generated", "src"))
-            react = ReActEngine(
-                max_rounds=5, max_change_ratio=_ratio,
-                design_constraints=pipeline.design_constraints,
-                generated_dir=_gen_dir,
-            )
             react_result = None
-            async for progress in react.run_code_validate_and_fix_stream(
+            async for progress in _run_code_validation(
                 language=language,
                 code_files=current_code,
                 task_description="Validate generated code — fix syntax, import, and runtime errors",
+                max_rounds=5,
+                change_ratio=_ratio,
+                design_constraints=pipeline.design_constraints,
+                generated_dir=_gen_dir,
             ):
                 if "result" in progress:
                     react_result = progress["result"]
                 else:
-                    # Intermediate round progress — push to frontend immediately
                     pipeline.stages[2].result = {
                         **(pipeline.stages[2].result or {}),
                         "files": list(current_code.keys()),
@@ -777,10 +826,11 @@ async def run_pipeline(
             if react_result is None:
                 raise RuntimeError("ReAct stream ended without result")
 
-            if react_result.success:
-                if react_result.final_code and react_result.final_code != current_code:
+            if react_result["success"]:
+                final_code = react_result.get("final_code", {})
+                if final_code and final_code != current_code:
                     logger.info("[Stage 3] ReAct fixed code, updating current_code")
-                    current_code = react_result.final_code
+                    current_code = final_code
                     for fname, content in current_code.items():
                         for a in pipeline.code_artifacts:
                             if a.filename == fname and a.version == 1:
@@ -790,8 +840,8 @@ async def run_pipeline(
                 pipeline.stages[2].result = {
                     **(pipeline.stages[2].result or {}),
                     "files": list(current_code.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
                 }
                 pipeline.stages[2].logs = f"Validated: {len(current_code)} files OK"
                 yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.SUCCESS)
@@ -799,13 +849,14 @@ async def run_pipeline(
                 pipeline.stages[2].result = {
                     **(pipeline.stages[2].result or {}),
                     "files": list(current_code.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
-                    "remaining_issues": react_result.remaining_issues,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
+                    "remaining_issues": react_result.get("remaining_issues", ""),
                 }
-                pipeline.stages[2].logs = f"Validation incomplete after {react_result.rounds_used} rounds"
+                _rounds = len(react_result.get("steps", []))
+                pipeline.stages[2].logs = f"Validation incomplete after {_rounds} rounds"
                 yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.FAILED,
-                                           react_result.summary)
+                                           react_result.get("summary", ""))
                 return
         except Exception as e:
             logger.exception(f"[Stage 3] ReAct validation crashed: {e}")
@@ -1667,22 +1718,18 @@ async def resume_pipeline(
         yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.RUNNING,
                                    "ReAct validating generated code...")
         try:
-            from app.services.react_engine import ReActEngine, _serialize_steps
-            # Only enforce change ratio for existing projects (source_dir non-empty)
             _ratio = max_change_ratio if source_dir else 0
-            # Compute the actual source directory (files already written here)
             _gen_dir = source_dir or os.path.abspath(
                 os.path.join(get_settings().uml_dir, "..", "..", "generated", "src"))
-            react = ReActEngine(
-                max_rounds=5, max_change_ratio=_ratio,
-                design_constraints=pipeline.design_constraints,
-                generated_dir=_gen_dir,
-            )
             react_result = None
-            async for progress in react.run_code_validate_and_fix_stream(
+            async for progress in _run_code_validation(
                 language=language,
                 code_files=current_code,
                 task_description="Validate generated code — fix syntax, import, and runtime errors",
+                max_rounds=5,
+                change_ratio=_ratio,
+                design_constraints=pipeline.design_constraints,
+                generated_dir=_gen_dir,
             ):
                 if "result" in progress:
                     react_result = progress["result"]
@@ -1698,10 +1745,11 @@ async def resume_pipeline(
             if react_result is None:
                 raise RuntimeError("ReAct stream ended without result")
 
-            if react_result.success:
-                if react_result.final_code and react_result.final_code != current_code:
+            if react_result["success"]:
+                final_code = react_result.get("final_code", {})
+                if final_code and final_code != current_code:
                     logger.info("[Stage 3] ReAct fixed code, updating current_code")
-                    current_code = react_result.final_code
+                    current_code = final_code
                     for fname, content in current_code.items():
                         for a in pipeline.code_artifacts:
                             if a.filename == fname and a.version == 1:
@@ -1711,8 +1759,8 @@ async def resume_pipeline(
                 pipeline.stages[2].result = {
                     **(pipeline.stages[2].result or {}),
                     "files": list(current_code.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
                 }
                 pipeline.stages[2].logs = f"Validated: {len(current_code)} files OK"
                 yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.SUCCESS)
@@ -1720,13 +1768,14 @@ async def resume_pipeline(
                 pipeline.stages[2].result = {
                     **(pipeline.stages[2].result or {}),
                     "files": list(current_code.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
-                    "remaining_issues": react_result.remaining_issues,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
+                    "remaining_issues": react_result.get("remaining_issues", ""),
                 }
-                pipeline.stages[2].logs = f"Validation incomplete after {react_result.rounds_used} rounds"
+                _rounds = len(react_result.get("steps", []))
+                pipeline.stages[2].logs = f"Validation incomplete after {_rounds} rounds"
                 yield await _update_stage(pipeline, StageName.CODE_GEN, StageStatus.FAILED,
-                                           react_result.summary)
+                                           react_result.get("summary", ""))
                 return
         except Exception as e:
             logger.exception(f"[Stage 3] ReAct validation crashed: {e}")
@@ -1827,22 +1876,19 @@ async def resume_pipeline(
         yield await _update_stage(pipeline, StageName.TEST_GEN, StageStatus.RUNNING,
                                    "ReAct validating generated test code...")
         try:
-            from app.services.react_engine import ReActEngine, _serialize_steps
             # Merge source + test files so ReAct's check_imports can resolve
             # cross-module imports (test code imports source modules).
             combined_files = {**current_code, **test_files}
-            react = ReActEngine(
-                max_rounds=3,
-                design_constraints=pipeline.design_constraints,
-            )
             react_result = None
-            async for progress in react.run_code_validate_and_fix_stream(
+            async for progress in _run_code_validation(
                 language=language,
                 code_files=combined_files,
                 task_description="Validate generated test code — fix syntax errors, import errors, "
                                  "and ensure all imports match the actual source API. "
                                  "Do NOT modify test logic or assertions. "
                                  "Source files are provided for import resolution ONLY — do NOT modify them.",
+                max_rounds=3,
+                design_constraints=pipeline.design_constraints,
             ):
                 if "result" in progress:
                     react_result = progress["result"]
@@ -1862,9 +1908,9 @@ async def resume_pipeline(
             def _is_test_file(fname: str) -> bool:
                 return fname.startswith("test_") or fname.startswith("test")
 
-            if react_result.success:
-                if react_result.final_code:
-                    new_tests = {k: v for k, v in react_result.final_code.items() if _is_test_file(k)}
+            if react_result["success"]:
+                if react_result.get("final_code"):
+                    new_tests = {k: v for k, v in react_result["final_code"].items() if _is_test_file(k)}
                     if new_tests and new_tests != test_files:
                         logger.info(f"[Stage 5b] ReAct fixed test files, updating: {list(new_tests.keys())}")
                         test_files = new_tests
@@ -1877,27 +1923,27 @@ async def resume_pipeline(
                 pipeline.stages[4].result = {
                     **(pipeline.stages[4].result or {}),
                     "test_files": list(test_files.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
                 }
                 pipeline.stages[4].logs = f"Test validation OK: {len(test_files)} files"
                 yield await _update_stage(pipeline, StageName.TEST_GEN, StageStatus.SUCCESS)
             else:
                 # ReAct didn't fully succeed — use best-effort result, don't block
-                if react_result.final_code:
-                    new_tests = {k: v for k, v in react_result.final_code.items() if _is_test_file(k)}
+                if react_result.get("final_code"):
+                    new_tests = {k: v for k, v in react_result["final_code"].items() if _is_test_file(k)}
                     if new_tests:
                         test_files = new_tests
                 pipeline.stages[4].result = {
                     **(pipeline.stages[4].result or {}),
                     "test_files": list(test_files.keys()),
-                    "react_steps": _serialize_steps(react_result.steps),
-                    "react_summary": react_result.summary,
-                    "react_issues": react_result.remaining_issues,
+                    "react_steps": react_result.get("steps", []),
+                    "react_summary": react_result.get("summary", ""),
+                    "react_issues": react_result.get("remaining_issues", ""),
                 }
                 pipeline.stages[4].logs = (
-                    f"Test validation: {react_result.summary[:120]}"
-                    if react_result.summary else "Test validation completed with some issues"
+                    f"Test validation: {react_result.get('summary', '')[:120]}"
+                    if react_result.get("summary") else "Test validation completed with some issues"
                 )
                 yield await _update_stage(pipeline, StageName.TEST_GEN, StageStatus.SUCCESS)
         except Exception as e:
