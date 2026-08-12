@@ -20,7 +20,7 @@ import './DiffViewer.css';
 const { TextArea } = Input;
 
 const DiffViewer: React.FC = () => {
-  const { setDiagram, diagram, setActiveDiagram, project, currentFilepath } = useDiagramStore();
+  const { setDiagram, diagram, setActiveDiagram, project, currentFilepath, triggerRecenter } = useDiagramStore();
   const {
     originalCode, optimizedCode, diffContent,
     originalDiagram, optimizedDiagram,
@@ -196,6 +196,8 @@ const DiffViewer: React.FC = () => {
       message.success('已接受优化结果，评审已保存到 dev_review.txt');
       setResolved(true);
       setRightPanelTab('properties');
+      // 触发画布居中，确保用户可以看到更新后的图
+      triggerRecenter();
     } catch (e) {
       message.error('保存评审失败: ' + String(e));
     }
