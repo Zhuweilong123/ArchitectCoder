@@ -330,11 +330,11 @@ const Toolbar: React.FC = () => {
   const handleBrowseDirFor = useCallback(async (target: 'source' | 'test', path?: string) => {
     setProjDirBrowseTarget(target);
     try {
-      // 默认从当前设置的值或默认路径开始浏览
+      // 默认从当前设置的值开始浏览，无设置则用当前工作目录
       const initialPath = path || (
         target === 'source'
-          ? (pipelineSourceDir || 'D:/AI_tools/uml_designer/generated/source')
-          : (pipelineTestDir || 'D:/AI_tools/uml_designer/generated/test')
+          ? (pipelineSourceDir || '.')
+          : (pipelineTestDir || '.')
       );
       const result = await browseDirectory(initialPath, false);
       setProjDirBrowseResult(result);
