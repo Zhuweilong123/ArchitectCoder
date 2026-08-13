@@ -34,6 +34,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
 from app.services.chat_trace import ChatTraceLogger, set_trace_hook
+from app.services.agent_session import get_or_create
 
 logger = logging.getLogger(__name__)
 
@@ -665,14 +666,7 @@ async def _handle_dev(
                     break
 
             if d["is_final"]:
-                # 跨轮记忆：本轮 user + assistant 一起写入 agent 历史
-                try:
-                    from app.agent_base.core.message import Message
-                    agent.add_message(Message(content=user_message, role="user"))
-                    if d["final_answer"]:
-                        agent.add_message(Message(content=d["final_answer"], role="assistant"))
-                except Exception:
-                    logger.exception("[AgentChat] Failed to append messages to agent history")
+                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
                 if chat_log:
                     chat_log.add_done(d["final_answer"])
                 if trace_log:
@@ -716,16 +710,23 @@ async def agent_chat_ws(websocket: WebSocket):
     await websocket.accept()
     logger.info("[AgentChat] WebSocket connected")
 
+    # 会话 id 来自前端（localStorage 持久化），跨连接复用 agent 历史与日志文件；
+    # 旧前端未传时退化为按时间戳生成（等价于每次连接一个新会话）。
+    session_id = websocket.query_params.get("session_id") or \
+        datetime.now().strftime("%Y%m%d_%H%M%S")
+    session = get_or_create(session_id)
+    chat_log = session.chat_log or ChatSessionLogger(session_id=session_id)
+    trace_log = session.trace_log or ChatTraceLogger(session_id=session_id)
+    session.chat_log, session.trace_log = chat_log, trace_log
+
     llm: BaseAgentsLLM | None = None
-    dev_agent: ReActAgent | None = None
-    review_mgr = None
-    progress: ProgressRelay | None = None
+    dev_agent: ReActAgent | None = session.agent
+    review_mgr = session.review_mgr
+    progress: ProgressRelay | None = session.progress
     stop_requested = False
     source_dir = ""
     test_dir = ""
     project_file = ""
-    chat_log = ChatSessionLogger()
-    trace_log = ChatTraceLogger(session_id=chat_log.session_id)
     _set_trace_bridge(trace_log)
     set_trace_hook(_trace_hook_bridge)
 
@@ -770,6 +771,10 @@ async def agent_chat_ws(websocket: WebSocket):
                         llm, source_dir, test_dir, project_file, user_message,
                         progress=progress,
                     )
+                    session.agent, session.review_mgr, session.progress = \
+                        dev_agent, review_mgr, progress
+
+                session.touch()
 
                 await _handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
@@ -821,7 +826,8 @@ async def agent_chat_ws(websocket: WebSocket):
         except Exception:
             pass
     finally:
-        chat_log.close()
-        trace_log.close()
+        # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
+        # 从而同一会话跨连接持续追加到同一 chat_*.md / trace_*.jsonl。
+        session.touch()
         set_trace_hook(None)
         _set_trace_bridge(None)

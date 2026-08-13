@@ -103,6 +103,24 @@ export function connectAgentChat(
 
 function _noopEvent(_event: AgentEvent) { /* placeholder */ }
 
+// ── 会话 id（localStorage 持久化，跨刷新/重开面板保持稳定）───────
+// 后端据此跨 WebSocket 连接复用 agent 历史与日志文件，
+// 避免刷新后丢失对话历史、或同一会话被拆成多个 trace 文件。
+
+const SESSION_KEY = 'agentSessionId';
+
+function _getSessionId(): string {
+  let id = localStorage.getItem(SESSION_KEY);
+  if (!id) {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    id = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+      `_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    localStorage.setItem(SESSION_KEY, id);
+  }
+  return id;
+}
+
 // ── 待发送队列（WebSocket 未 OPEN 时暂存）───────
 let _pendingMessages: Array<{ message: string; opts: Record<string, unknown>; skipNotify?: boolean }> = [];
 
@@ -190,8 +208,9 @@ export function isAgentConnected(): boolean {
 
 function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
-  const wsUrl = `${protocol}//${window.location.host}/api/agent/ws/chat${tokenParam}`;
+  const params = new URLSearchParams({ session_id: _getSessionId() });
+  if (token) params.set('token', token);
+  const wsUrl = `${protocol}//${window.location.host}/api/agent/ws/chat?${params.toString()}`;
   const ws = new WebSocket(wsUrl);
 
   ws.onmessage = (e) => {
