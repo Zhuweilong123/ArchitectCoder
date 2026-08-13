@@ -290,12 +290,14 @@ class ReActAgent(Agent):
         tool_specs = self.tool_registry.get_openai_specs()
         messages: list[dict] = [
             {"role": "system", "content": self._build_fc_system_prompt()},
-            {"role": "user", "content": input_text},
         ]
 
         # 注入已有的对话历史（多轮场景）
         for msg in self._history:
             messages.append({"role": msg.role, "content": msg.content})
+
+        # 最新用户输入必须放在历史末尾（多轮对话中 LLM 视最后一条 user 为当前问题）
+        messages.append({"role": "user", "content": input_text})
 
         self.current_history = []
         no_tool_call_streak = 0
