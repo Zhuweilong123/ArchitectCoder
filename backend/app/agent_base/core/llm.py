@@ -14,12 +14,81 @@ Usage::
 """
 
 import os
+import asyncio
 import logging
 import time
 from typing import Optional, Iterator, AsyncIterator
 from openai import OpenAI, AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+# ── 重试参数 ────────────────────────────────────────────
+# 仅对「可重试」的连接类错误退避重试（网络抖动 / 超时 / 5xx / 429），
+# 参数错误、鉴权失败等非瞬态错误立即抛出，不重试。
+_RETRY_BASE_DELAY = 1.0  # 首次重试前等待 1s，之后指数退避
+
+
+def _retry_delay(attempt: int) -> float:
+    """第 attempt 次重试前的等待秒数（1s, 2s, 4s ...）。"""
+    return _RETRY_BASE_DELAY * (2 ** attempt)
+
+
+def _retryable_exc_types() -> tuple:
+    """构造可重试异常类型元组（防御性：openai/httpx 未安装或版本差异时降级）。"""
+    import httpx
+    import openai as oa
+    types: list = [ConnectionError, TimeoutError]
+    for name in ("APIConnectionError", "APITimeoutError", "InternalServerError", "RateLimitError"):
+        t = getattr(oa, name, None)
+        if t:
+            types.append(t)
+    for name in ("ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout",
+                 "PoolTimeout", "RemoteProtocolError", "ReadError", "TransportError"):
+        t = getattr(httpx, name, None)
+        if t:
+            types.append(t)
+    return tuple(types)
+
+
+_RETRYABLE_EXC = _retryable_exc_types()
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """判断异常是否可重试（类型匹配，或错误信息含连接/超时关键词）。"""
+    if isinstance(exc, _RETRYABLE_EXC):
+        return True
+    msg = str(exc).lower()
+    return any(k in msg for k in (
+        "connection", "timeout", "timed out", "read error",
+        "remote protocol", "reset", "broken pipe",
+    ))
+
+
+async def _await_with_retry(fn, *, max_retries: int = 2, on_error=None):
+    """执行 ``fn()``（返回 awaitable），对可重试错误退避重试。
+
+    Args:
+        fn: 无参异步 callable，返回 awaitable 结果。
+        max_retries: 最大重试次数（总尝试次数 = 1 + max_retries）。
+        on_error: 可选回调 (exc, attempt) → None，用于记录每次失败。
+    """
+    attempt = 0
+    while True:
+        try:
+            return await fn()
+        except Exception as exc:
+            if attempt < max_retries and _is_retryable(exc):
+                attempt += 1
+                delay = _retry_delay(attempt - 1)
+                if on_error:
+                    on_error(exc, attempt)
+                logger.warning(
+                    "[LLM] Retryable error (%s), retry %d/%d after %.1fs",
+                    exc, attempt, max_retries, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 # ── LLM trace 钩子 ─────────────────────────────────────
 # 在 chat_trace.py 注册/注销，捕获每次 LLM 调用的原始 prompt/completion。
@@ -322,7 +391,9 @@ class BaseAgentsLLM:
                               max_tokens=call_kwargs.get("max_tokens")) or ""
         _t0 = time.monotonic()
         try:
-            response = await self._async_client.chat.completions.create(**call_kwargs)
+            response = await _await_with_retry(
+                lambda: self._async_client.chat.completions.create(**call_kwargs),
+            )
             content = response.choices[0].message.content or ""
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
@@ -403,7 +474,9 @@ class BaseAgentsLLM:
                               tools=tools, tool_choice=tool_choice) or ""
         _t0 = time.monotonic()
         try:
-            response = await self._async_client.chat.completions.create(**call_kwargs)
+            response = await _await_with_retry(
+                lambda: self._async_client.chat.completions.create(**call_kwargs),
+            )
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
