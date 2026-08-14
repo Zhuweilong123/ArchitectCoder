@@ -301,6 +301,7 @@ class ReActAgent(Agent):
 
         self.current_history = []
         no_tool_call_streak = 0
+        _turn_recorded = False
 
         for step in range(1, self.max_steps + 1):
             logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
@@ -333,6 +334,13 @@ class ReActAgent(Agent):
                 # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
                 if content.strip():
                     logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
+                    # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
+                    # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
+                    # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
+                    if not _turn_recorded:
+                        self.add_message(Message(input_text, "user"))
+                        self.add_message(Message(content, "assistant"))
+                        _turn_recorded = True
                     yield ReActProgress(
                         step=step, thought=content,
                         is_final=True, final_answer=content,
@@ -449,8 +457,11 @@ class ReActAgent(Agent):
         if not final_answer:
             final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
 
-        self.add_message(Message(input_text, "user"))
-        self.add_message(Message(final_answer, "assistant"))
+        # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
+        # _turn_recorded 防止与「模型直接回复」分支重复写入。
+        if not _turn_recorded:
+            self.add_message(Message(input_text, "user"))
+            self.add_message(Message(final_answer, "assistant"))
         logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
 
         # 除了已 yield 的 progress 外，不再额外 yield
