@@ -24,6 +24,7 @@ Usage::
 import json
 import logging
 import os
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Optional, AsyncIterator
 
@@ -41,9 +42,30 @@ from app.services.uml_common import (
 from app.services.layout_engine import auto_layout
 from app.services.tools import clean_llm_json_response
 from app.services.file_service import load_project
-from app.services.chat_trace import trace_span, TraceSession
+from app.services.chat_trace import trace_span, TraceSession, get_trace_hook
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_context(project_file: str, instructions: str, stream_mode: bool):
+    """返回 V2 优化的 trace 上下文管理器。
+
+    分两种场景（方案 B）：
+    - **AI 助手调用**：外层 WebSocket 已 push 了父会话的 LLM trace hook，
+      此时 `get_trace_hook()` 非空。不复用 TraceSession（否则会再开一个
+      独立 trace 文件），只返回空上下文，让 LLM 调用直接落到父会话的
+      trace 里，通过 ``trace_span("optimize_v2")`` 的 span_path 区分来源。
+    - **全局优化按钮 / Pipeline / REST**：没有父会话 hook，则按原逻辑
+      新建独立 TraceSession（单独一个 trace 文件），保留可回放能力。
+    """
+    if get_trace_hook() is not None:
+        return nullcontext()
+    return TraceSession(
+        session_id=_make_session_id(project_file),
+        user_message=instructions,
+        project_file=project_file,
+        env_snapshot={"stream_mode": stream_mode, "version": "v2"},
+    )
 
 
 def _sse_data(payload: str) -> str:
@@ -149,12 +171,7 @@ async def optimize_v2(
             "changes_summary": "无项目文件",
         }
 
-    with TraceSession(
-        session_id=_make_session_id(project_file),
-        user_message=instructions,
-        project_file=project_file,
-        env_snapshot={"stream_mode": False, "version": "v2"},
-    ) as trace:
+    with _trace_context(project_file, instructions, stream_mode=False) as trace:
         # 1. 加载项目（支持空项目：few-shot 生成新设计）
         project = load_project(project_file)
         diagrams = [d.model_dump() for d in project.diagrams]
@@ -186,7 +203,8 @@ async def optimize_v2(
 
         # 5. 处理结果
         result = _process_result(raw, index)
-        trace.done(answer="optimize_v2 completed")
+        if trace is not None:
+            trace.done(answer="optimize_v2 completed")
         return result
 
 
@@ -216,12 +234,7 @@ async def optimize_v2_stream(
         yield _sse_data(f"error:{json.dumps({'message': '未提供 project_file'})}")
         return
 
-    with TraceSession(
-        session_id=_make_session_id(project_file),
-        user_message=instructions,
-        project_file=project_file,
-        env_snapshot={"stream_mode": True, "version": "v2"},
-    ) as trace:
+    with _trace_context(project_file, instructions, stream_mode=True) as trace:
         # 1. 加载项目（支持空项目：few-shot 生成新设计）
         project = load_project(project_file)
         diagrams = [d.model_dump() for d in project.diagrams]
@@ -280,7 +293,8 @@ async def optimize_v2_stream(
         }, ensure_ascii=False)
         yield _sse_data(f"design_updated:{design_updated}")
 
-        trace.done(answer="SSE stream completed")
+        if trace is not None:
+            trace.done(answer="SSE stream completed")
 
 
 # ── 统一入口：供 Agent Tool / Pipeline 等调用的 V2 非流式接口 ──
