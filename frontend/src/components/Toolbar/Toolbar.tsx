@@ -15,7 +15,7 @@ import {
   AppstoreOutlined, EyeInvisibleOutlined,
   PlusSquareOutlined, DownOutlined, TableOutlined,
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
-  BlockOutlined, MessageOutlined, CloseOutlined,
+  BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -69,7 +69,7 @@ const Toolbar: React.FC = () => {
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
     pipelineSourceDir, pipelineTestDir,
-    setPipelineSourceDir, setPipelineTestDir,
+    setPipelineSourceDir, setPipelineTestDir, setTraceVisible,
   } = useUiStore();
 
   const [fileList, setFileList] = useState<Array<{
@@ -792,6 +792,11 @@ const Toolbar: React.FC = () => {
             style={agentChatVisible ? { color: '#fff', borderColor: '#1677ff', background: '#1677ff' } : {}}
           >
             AI 助手
+          </Button>
+        </Tooltip>
+        <Tooltip title="Trace 回放（查看会话 LLM / 工具调用记录）">
+          <Button icon={<HistoryOutlined />} onClick={() => setTraceVisible(true)}>
+            Trace
           </Button>
         </Tooltip>
 

@@ -279,3 +279,58 @@ export async function listProjects(): Promise<Array<{
   const { data } = await api.get('/files/list-projects');
   return data.projects;
 }
+
+// ─── Trace ─────────────────────────────────────────────
+
+export interface TraceMeta {
+  session_id: string;
+  filename: string;
+  size: number;
+  modified: string;
+  events: number;
+  first_ts_ms: number | null;
+  last_ts_ms: number | null;
+}
+
+export interface TraceDetail {
+  session_id: string;
+  events: Array<Record<string, any>>;
+}
+
+export async function listTraces(): Promise<TraceMeta[]> {
+  const { data } = await api.get('/trace/list');
+  return data.traces;
+}
+
+export async function getTrace(sessionId: string): Promise<TraceDetail> {
+  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`);
+  return data;
+}
+
+export interface TraceReplayTurn {
+  user_message: string;
+  final_answer: string;
+  recorded_answer: string | null;
+  matches: boolean;
+  error?: string | null;
+}
+
+export interface TraceReplayResult {
+  session_id: string;
+  mode: string;
+  turns: TraceReplayTurn[];
+  llm_calls: number | null;
+  llm_total: number;
+  tool_calls: number;
+  tool_total: number;
+  all_matched: boolean;
+}
+
+export async function replayTrace(
+  sessionId: string, mode: 'mock' | 'rerun' = 'mock',
+): Promise<TraceReplayResult> {
+  const { data } = await api.post(
+    `/trace/${encodeURIComponent(sessionId)}/replay`, null, { params: { mode } },
+  );
+  return data;
+}

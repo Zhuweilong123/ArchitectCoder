@@ -60,6 +60,9 @@ interface UiState {
   agentChatExpanded: boolean;
   agentChatPosition: { x: number; y: number }; // 面板左上角 (left/top, px)
 
+  // Trace viewer
+  traceVisible: boolean;
+
   // Actions
   toggleRightPanel: () => void;
   setRightPanelVisible: (visible: boolean) => void;
@@ -103,6 +106,9 @@ interface UiState {
   setAgentChatVisible: (visible: boolean) => void;
   setAgentChatExpanded: (expanded: boolean) => void;
   setAgentChatPosition: (position: { x: number; y: number }) => void;
+
+  // Trace viewer
+  setTraceVisible: (visible: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -137,6 +143,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   currentBrowsePath: '',
   agentChatVisible: false,
   agentChatExpanded: false,
+  traceVisible: false,
   agentChatPosition: (() => {
     try {
       const saved = localStorage.getItem('agentChatPosition');
@@ -252,4 +259,6 @@ export const useUiStore = create<UiState>((set, get) => ({
     } catch { /* ignore */ }
     set({ agentChatPosition: position });
   },
+
+  setTraceVisible: (visible) => set({ traceVisible: visible }),
 }));

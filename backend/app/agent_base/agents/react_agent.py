@@ -37,6 +37,10 @@ from ..tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+# 工具返回喂回模型前的截断长度。trace 的 fed_truncated/fed_length 口径依赖此值，
+# 改动需同步 viewer 的截断提示。
+OBSERVATION_FEED_LIMIT = 2000
+
 # ── Function Calling 模式 system prompt ─────────────────
 FC_SYSTEM_PROMPT = """You are an AI assistant with reasoning and action capabilities.
 You can call tools to fetch information, perform operations, analyze problems step by step, and finally give an accurate answer.
@@ -405,7 +409,7 @@ class ReActAgent(Agent):
                         tool_name, tool_args,
                     )
                 observation_full = str(result)
-                observation_short = observation_full[:2000]
+                observation_short = observation_full[:OBSERVATION_FEED_LIMIT]
 
                 self.current_history.append(
                     f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
@@ -420,6 +424,8 @@ class ReActAgent(Agent):
                     "name": tool_name,
                     "arguments": tool_args,
                     "observation": observation_full,
+                    "fed_truncated": len(observation_full) > OBSERVATION_FEED_LIMIT,
+                    "fed_length": min(len(observation_full), OBSERVATION_FEED_LIMIT),
                 })
                 logger.info("  🔧 %s(%s) → %s",
                            tool_name,

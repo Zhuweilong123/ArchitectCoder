@@ -330,7 +330,8 @@ class BaseAgentsLLM:
 
         span_id = _trace_hook("llm_request", model=call_kwargs["model"],
                               messages=messages, temperature=call_kwargs.get("temperature"),
-                              max_tokens=call_kwargs.get("max_tokens")) or ""
+                              max_tokens=call_kwargs.get("max_tokens"),
+                              response_format=call_kwargs.get("response_format")) or ""
         _t0 = time.monotonic()
         try:
             response = self._client.chat.completions.create(**call_kwargs)
@@ -388,7 +389,9 @@ class BaseAgentsLLM:
 
         span_id = _trace_hook("llm_request", model=call_kwargs["model"],
                               messages=messages, temperature=call_kwargs.get("temperature"),
-                              max_tokens=call_kwargs.get("max_tokens")) or ""
+                              max_tokens=call_kwargs.get("max_tokens"),
+                              response_format=call_kwargs.get("response_format"),
+                              timeout=call_kwargs.get("timeout")) or ""
         _t0 = time.monotonic()
         try:
             response = await _await_with_retry(
