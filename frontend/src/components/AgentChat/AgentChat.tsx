@@ -55,6 +55,29 @@ const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] 
     })),
   }));
 
+// ── 会话标识 ──────────────────────────────────────────
+
+// 从 session_id（YYYYMMDD_HHMMSS[_suffix]）解析可读时间 "MM-DD HH:MM"
+function sessionTimeFromId(id: string): string {
+  const m = id.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+  if (!m) return '';
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+}
+
+// 时间戳 → "MM-DD HH:MM"
+function formatTs(ms: number | null | undefined): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 会话主题：截断到 ~16 字
+function truncateTitle(s: string): string {
+  const clean = s.replace(/\s+/g, ' ').trim();
+  return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
+}
+
 // ── 组件 ──────────────────────────────────────────────
 
 const AgentChat: React.FC = () => {
@@ -516,6 +539,12 @@ const AgentChat: React.FC = () => {
     );
   };
 
+  // ── 当前会话标识（底部状态栏）──
+  const currentSessionId = getCurrentSessionId();
+  const firstUserMsg = messages.find((m) => m.role === 'user');
+  const sessionTitle = firstUserMsg ? truncateTitle(firstUserMsg.content) : '';
+  const sessionTime = sessionTimeFromId(currentSessionId);
+
   // ── 主渲染 ──
   return (
     <>
@@ -565,10 +594,14 @@ const AgentChat: React.FC = () => {
                     ? [{ key: '__loading__', label: '加载中...', disabled: true }]
                     : sessions.slice(0, 20).map((s) => ({
                         key: s.session_id,
+                        icon: s.session_id === currentSessionId
+                          ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                          : undefined,
+                        disabled: s.session_id === currentSessionId,
                         label: (
                           <span style={{ fontSize: 12 }}>
-                            {s.session_id}
-                            {s.first_ts_ms ? ` · ${new Date(s.first_ts_ms).toLocaleString()}` : ''}
+                            {s.title ? `${truncateTitle(s.title)} · ` : ''}
+                            {formatTs(s.first_ts_ms) || s.session_id}
                           </span>
                         ),
                       })),
@@ -747,6 +780,34 @@ const AgentChat: React.FC = () => {
                 </Button>
               )}
             </div>
+          </div>
+
+          {/* 会话状态栏（左下角） */}
+          <div
+            className="agent-chat-statusbar"
+            style={{
+              padding: '4px 12px',
+              borderTop: '1px solid #f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              flexShrink: 0,
+              background: '#fafafa',
+            }}
+          >
+            <Tooltip title={`会话 ID: ${currentSessionId}`}>
+              <Tag
+                style={{
+                  margin: 0,
+                  fontSize: 12,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {sessionTitle ? `${sessionTitle} · ${sessionTime}` : sessionTime}
+              </Tag>
+            </Tooltip>
           </div>
         </div>
       )}

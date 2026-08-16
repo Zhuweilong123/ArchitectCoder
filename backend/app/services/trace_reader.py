@@ -35,24 +35,33 @@ def _ts_of(line: str):
 
 
 def _peek(path: str) -> dict:
-    """轻量读取文件元数据：事件数 + 首/尾事件时间戳。
-
-    只做字符串逐行扫描与首/尾行 JSON 解析，不做全量反序列化，
-    避免 /list 在大量大文件上过慢。
-    """
+    """轻量读取文件元数据：事件数 + 首/尾事件时间戳 + 会话主题（首条 user 消息）。"""
     events = 0
     first_ts = None
     last_ts = None
+    title = ""
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             events += 1
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            ts = obj.get("ts_ms")
             if first_ts is None:
-                first_ts = _ts_of(line)
-            last_ts = _ts_of(line)
-    return {"events": events, "first_ts_ms": first_ts, "last_ts_ms": last_ts}
+                first_ts = ts
+            last_ts = ts
+            if not title and obj.get("event_type") == "user_message":
+                title = (obj.get("message") or "")[:40]
+    return {
+        "events": events,
+        "first_ts_ms": first_ts,
+        "last_ts_ms": last_ts,
+        "title": title,
+    }
 
 
 def list_traces() -> list[dict]:

@@ -290,6 +290,7 @@ export interface TraceMeta {
   events: number;
   first_ts_ms: number | null;
   last_ts_ms: number | null;
+  title?: string;
 }
 
 export interface TraceDetail {
