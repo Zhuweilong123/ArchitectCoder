@@ -37,6 +37,10 @@ from ..tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+# 工具返回喂回模型前的截断长度。trace 的 fed_truncated/fed_length 口径依赖此值，
+# 改动需同步 viewer 的截断提示。
+OBSERVATION_FEED_LIMIT = 2000
+
 # ── Function Calling 模式 system prompt ─────────────────
 FC_SYSTEM_PROMPT = """You are an AI assistant with reasoning and action capabilities.
 You can call tools to fetch information, perform operations, analyze problems step by step, and finally give an accurate answer.
@@ -301,6 +305,7 @@ class ReActAgent(Agent):
 
         self.current_history = []
         no_tool_call_streak = 0
+        _turn_recorded = False
 
         for step in range(1, self.max_steps + 1):
             logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
@@ -333,6 +338,13 @@ class ReActAgent(Agent):
                 # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
                 if content.strip():
                     logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
+                    # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
+                    # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
+                    # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
+                    if not _turn_recorded:
+                        self.add_message(Message(input_text, "user"))
+                        self.add_message(Message(content, "assistant"))
+                        _turn_recorded = True
                     yield ReActProgress(
                         step=step, thought=content,
                         is_final=True, final_answer=content,
@@ -397,7 +409,7 @@ class ReActAgent(Agent):
                         tool_name, tool_args,
                     )
                 observation_full = str(result)
-                observation_short = observation_full[:2000]
+                observation_short = observation_full[:OBSERVATION_FEED_LIMIT]
 
                 self.current_history.append(
                     f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
@@ -412,6 +424,8 @@ class ReActAgent(Agent):
                     "name": tool_name,
                     "arguments": tool_args,
                     "observation": observation_full,
+                    "fed_truncated": len(observation_full) > OBSERVATION_FEED_LIMIT,
+                    "fed_length": min(len(observation_full), OBSERVATION_FEED_LIMIT),
                 })
                 logger.info("  🔧 %s(%s) → %s",
                            tool_name,
@@ -449,8 +463,11 @@ class ReActAgent(Agent):
         if not final_answer:
             final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
 
-        self.add_message(Message(input_text, "user"))
-        self.add_message(Message(final_answer, "assistant"))
+        # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
+        # _turn_recorded 防止与「模型直接回复」分支重复写入。
+        if not _turn_recorded:
+            self.add_message(Message(input_text, "user"))
+            self.add_message(Message(final_answer, "assistant"))
         logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
 
         # 除了已 yield 的 progress 外，不再额外 yield

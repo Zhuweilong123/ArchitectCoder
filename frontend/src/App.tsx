@@ -19,6 +19,7 @@ import DiffViewer from './components/DiffViewer/DiffViewer';
 import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
 import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
 import AgentChat from './components/AgentChat/AgentChat';
+import TraceViewer from './components/TraceViewer/TraceViewer';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { useDiagramStore } from './stores/diagramStore';
 import './App.css';
@@ -193,6 +194,9 @@ const App: React.FC = () => {
 
       {/* Agent Chat dialog */}
       <AgentChat />
+
+      {/* Trace viewer drawer */}
+      <TraceViewer />
     </Layout>
   );
 };

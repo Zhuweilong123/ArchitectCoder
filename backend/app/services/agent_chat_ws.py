@@ -64,6 +64,8 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 max_tokens=kwargs.get("max_tokens"),
                 tools=kwargs.get("tools"),
                 tool_choice=kwargs.get("tool_choice"),
+                response_format=kwargs.get("response_format"),
+                timeout=kwargs.get("timeout"),
                 span_path=span_path,
             )
         elif kind == "llm_response":
@@ -626,6 +628,8 @@ async def _handle_dev(
                         span_id=tool_span,
                         tool_name=td.get("name", ""),
                         observation=str(td.get("observation", "")),
+                        fed_truncated=bool(td.get("fed_truncated", False)),
+                        fed_length=int(td.get("fed_length") or 0),
                     )
 
             ok = await _ws_send(websocket, {
@@ -716,7 +720,11 @@ async def agent_chat_ws(websocket: WebSocket):
         datetime.now().strftime("%Y%m%d_%H%M%S")
     session = get_or_create(session_id)
     chat_log = session.chat_log or ChatSessionLogger(session_id=session_id)
-    trace_log = session.trace_log or ChatTraceLogger(session_id=session_id)
+    if session.trace_log is None:
+        trace_log = ChatTraceLogger(session_id=session_id)
+        trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
+    else:
+        trace_log = session.trace_log
     session.chat_log, session.trace_log = chat_log, trace_log
 
     llm: BaseAgentsLLM | None = None

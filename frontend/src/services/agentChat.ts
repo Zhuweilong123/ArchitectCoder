@@ -109,13 +109,18 @@ function _noopEvent(_event: AgentEvent) { /* placeholder */ }
 
 const SESSION_KEY = 'agentSessionId';
 
+function _genSessionId(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}` +
+    `_${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function _getSessionId(): string {
   let id = localStorage.getItem(SESSION_KEY);
   if (!id) {
-    const d = new Date();
-    const p = (n: number) => String(n).padStart(2, '0');
-    id = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
-      `_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    id = _genSessionId();
     localStorage.setItem(SESSION_KEY, id);
   }
   return id;
@@ -198,6 +203,13 @@ export function disconnectAgentChat() {
     _ws = null;
   }
   _onEvent = null;
+}
+
+export function startNewSession(): void {
+  // 生成新 session id 并持久化；丢弃待发消息、断开旧连接，下次 connect 带上新 id
+  localStorage.setItem(SESSION_KEY, _genSessionId());
+  _pendingMessages = [];
+  disconnectAgentChat();
 }
 
 export function isAgentConnected(): boolean {

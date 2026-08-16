@@ -192,6 +192,7 @@ class ChatTraceLogger:
     def llm_request(self, *, provider: str, model: str, messages: list,
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
+                    response_format: dict | None = None, timeout: int | None = None,
                     span_id: str = "", span_path: str = "") -> str:
         """记录 LLM 请求（原始 prompt）。返回 span_id 供 response 关联。
 
@@ -213,6 +214,8 @@ class ChatTraceLogger:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "tool_choice": tool_choice,
+            "response_format": response_format,
+            "timeout": timeout,
             "span_path": span_path,
             "messages": stripped,
             "tools": tools,
@@ -263,14 +266,21 @@ class ChatTraceLogger:
         return sid
 
     def tool_result(self, *, span_id: str, tool_name: str, observation: str,
-                    duration_ms: float = 0.0, error: str = "") -> None:
-        """记录工具返回（完整 observation，不截断）。"""
+                    duration_ms: float = 0.0, error: str = "",
+                    fed_truncated: bool = False, fed_length: int = 0) -> None:
+        """记录工具返回（完整 observation，不截断）。
+
+        fed_truncated / fed_length 标记该返回喂回模型前是否被截断，
+        用于区分「模型实际看到的口径」与「工具完整返回的口径」。
+        """
         self._write({
             **_event(self.session_id, EVT_TOOL_RESULT,
                      trace_id=self._trace_id, span_id=span_id,
                      parent_span_id=span_id),
             "tool_name": tool_name,
             "observation": observation,
+            "fed_truncated": fed_truncated,
+            "fed_length": fed_length,
             "duration_ms": round(duration_ms, 1),
             "error": error,
         })
@@ -461,6 +471,8 @@ class TraceSession:
                     max_tokens=kwargs.get("max_tokens"),
                     tools=kwargs.get("tools"),
                     tool_choice=kwargs.get("tool_choice"),
+                    response_format=kwargs.get("response_format"),
+                    timeout=kwargs.get("timeout"),
                     span_path=span_path,
                 )
             elif kind == "llm_response":

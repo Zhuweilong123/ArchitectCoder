@@ -1,0 +1,141 @@
+.trace-viewer-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 左侧会话列表 */
+.trace-session-list {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid #f0f0f0;
+  overflow-y: auto;
+}
+
+.trace-session-item {
+  cursor: pointer;
+  padding: 8px 12px !important;
+}
+
+.trace-session-item:hover {
+  background: #fafafa;
+}
+
+.trace-session-item.active {
+  background: #e6f4ff;
+}
+
+/* 右侧时间轴 */
+.trace-timeline {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 24px;
+  min-width: 0;
+}
+
+.trace-turn-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 8px 6px;
+  font-weight: 600;
+  color: #1677ff;
+  border-bottom: 1px solid #e6f4ff;
+  margin-top: 8px;
+  word-break: break-all;
+}
+
+.trace-item {
+  margin: 6px 0;
+  border-radius: 6px;
+  transition: box-shadow 0.15s;
+}
+
+.trace-item-active {
+  box-shadow: 0 0 0 2px #1677ff;
+}
+
+.trace-card {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.trace-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trace-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.trace-meta {
+  color: #999;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.trace-icon.llm { color: #1677ff; }
+.trace-icon.tool { color: #52c41a; }
+.trace-icon.done { color: #52c41a; }
+.trace-icon.err { color: #ff4d4f; }
+
+.trace-step-no {
+  font-weight: 600;
+  color: #595959;
+  font-size: 12px;
+}
+
+.trace-thought {
+  margin-top: 6px;
+  color: #595959;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.trace-card.trace-done { border-color: #b7eb8f; background: #f6ffed; }
+.trace-card.trace-error { border-color: #ffa39e; background: #fff1f0; }
+
+.trace-error-text { color: #cf1322; }
+
+.trace-msgs { display: flex; flex-direction: column; gap: 6px; }
+
+.trace-msg-role {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #8c8c8c;
+  margin-bottom: 2px;
+}
+
+.trace-pre {
+  margin: 0;
+  padding: 8px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.trace-diff {
+  padding: 8px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 280px;
+  overflow: auto;
+}
