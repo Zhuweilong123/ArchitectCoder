@@ -1,9 +1,9 @@
 """Agent 会话注册表 — 跨 WebSocket 连接复用会话状态（内存版）。
 
 背景
-    原先每次 WebSocket 连接都会 new 一个 ChatSessionLogger / ChatTraceLogger，
+    原先每次 WebSocket 连接都会 new 一个 ChatTraceLogger，
     并懒创建全新的 DevAgent（_history 为空）。这导致刷新页面或重开面板后，
-    agent 丢失完整对话历史，且同一会话被拆成多个 chat_*.md / trace_*.jsonl 文件。
+    agent 丢失完整对话历史，且同一会话被拆成多个 trace_*.jsonl 文件。
 
     本模块把「会话」从「连接」解耦：以稳定的 session_id 为键，在内存中
     跨连接复用 agent 实例（含 _history）、review_mgr、progress 与日志器。
@@ -32,7 +32,6 @@ class AgentSession:
     agent: Any = None              # ReActAgent（含 _history）
     review_mgr: Any = None
     progress: Any = None
-    chat_log: Any = None           # ChatSessionLogger，跨连接复用
     trace_log: Any = None          # ChatTraceLogger，跨连接复用
     last_active: float = field(default_factory=time.time)
 
@@ -45,13 +44,12 @@ _lock = threading.Lock()
 
 
 def _finalize(s: AgentSession) -> None:
-    """回收会话时统一关闭日志器（写入「会话结束」标记）。"""
-    for log in (s.chat_log, s.trace_log):
-        if log is not None:
-            try:
-                log.close()
-            except Exception:
-                pass
+    """回收会话时关闭 trace 日志器（写入「会话结束」标记）。"""
+    if s.trace_log is not None:
+        try:
+            s.trace_log.close()
+        except Exception:
+            pass
 
 
 def get(session_id: str) -> Optional[AgentSession]:

@@ -37,7 +37,7 @@ ReActAgent 循环
 
 ## 4. trace 记录格式
 
-- **文件**：`temp/chat_log/trace_{session_id}.jsonl`（与 `chat_{session_id}.md` 同目录）。
+- **文件**：`temp/chat_log/trace_{session_id}.jsonl`。
 - **写入**：`backend/app/services/chat_trace.py` 的 `ChatTraceLogger`；全局 hook 在 `backend/app/agent_base/core/llm.py` 的 `_trace_hook` 注册/路由。
 - **事件类型**：
 
