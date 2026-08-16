@@ -126,6 +126,10 @@ function _getSessionId(): string {
   return id;
 }
 
+export function getCurrentSessionId(): string {
+  return _getSessionId();
+}
+
 // ── 待发送队列（WebSocket 未 OPEN 时暂存）───────
 let _pendingMessages: Array<{ message: string; opts: Record<string, unknown>; skipNotify?: boolean }> = [];
 
@@ -205,11 +209,16 @@ export function disconnectAgentChat() {
   _onEvent = null;
 }
 
-export function startNewSession(): void {
-  // 生成新 session id 并持久化；丢弃待发消息、断开旧连接，下次 connect 带上新 id
-  localStorage.setItem(SESSION_KEY, _genSessionId());
+export function switchSession(sessionId: string): void {
+  // 切到指定会话：持久化 id、丢弃待发消息、断开旧连接，下次 connect 带上新 id
+  localStorage.setItem(SESSION_KEY, sessionId);
   _pendingMessages = [];
   disconnectAgentChat();
+}
+
+export function startNewSession(): void {
+  // 生成新 session id 并切换
+  switchSession(_genSessionId());
 }
 
 export function isAgentConnected(): boolean {

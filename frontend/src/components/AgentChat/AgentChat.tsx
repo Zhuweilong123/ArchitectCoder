@@ -12,22 +12,24 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse,
+  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse, Dropdown,
 } from 'antd';
 import {
   SendOutlined, StopOutlined, RobotOutlined,
   CheckCircleOutlined, CloseCircleOutlined,
   ToolOutlined, UserOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
-  PlusOutlined,
+  PlusOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
 import {
   connectAgentChat, sendAgentMessage, sendStopMessage, sendReviewResponse,
   disconnectAgentChat, isAgentConnected, onAgentMessage, startNewSession,
+  getCurrentSessionId, switchSession,
   type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
 } from '../../services/agentChat';
+import { listTraces, getTraceHistory, type TraceMeta } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './AgentChat.css';
 
@@ -67,7 +69,7 @@ const AgentChat: React.FC = () => {
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem('agentChatMessages');
+      const saved = localStorage.getItem(`agentChatMessages:${getCurrentSessionId()}`);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -130,7 +132,7 @@ const AgentChat: React.FC = () => {
         const toSave = messages.slice(-100).map((m) =>
           m.steps ? { ...m, steps: clampStepForStorage(m.steps) } : m,
         );
-        localStorage.setItem('agentChatMessages', JSON.stringify(toSave));
+        localStorage.setItem(`agentChatMessages:${getCurrentSessionId()}`, JSON.stringify(toSave));
       }
     } catch { /* ignore */ }
   }, [messages]);
@@ -367,15 +369,54 @@ const AgentChat: React.FC = () => {
 
   // ── 新对话（新 session）──
   const handleNewSession = useCallback(() => {
+    startNewSession();  // 生成新 id + 断开
     setMessages([]);
-    localStorage.removeItem('agentChatMessages');
     liveStepsRef.current = [];
     setCurrentSteps([]);
     setPendingReview(null);
     setInputValue('');
     setBusy(false);
-    startNewSession();
     connect();
+  }, [connect]);
+
+  // ── 历史会话（恢复继续聊，结论级）──
+  const [sessions, setSessions] = useState<TraceMeta[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      setSessions(await listTraces());
+    } catch {
+      // 后端未启动等，忽略
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  const handleResumeSession = useCallback(async (targetId: string) => {
+    if (targetId === getCurrentSessionId()) return;
+    setSessionsLoading(true);
+    try {
+      const history = await getTraceHistory(targetId);
+      switchSession(targetId);
+      setMessages(history.map((h, i) => ({
+        id: `resume_${Date.now()}_${i}`,
+        role: (h.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
+        content: h.content,
+        timestamp: Date.now(),
+      })));
+      liveStepsRef.current = [];
+      setCurrentSteps([]);
+      setPendingReview(null);
+      setInputValue('');
+      setBusy(false);
+      connect();
+    } catch {
+      message.error('恢复会话失败');
+    } finally {
+      setSessionsLoading(false);
+    }
   }, [connect]);
 
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
@@ -518,6 +559,33 @@ const AgentChat: React.FC = () => {
               {busy && <LoadingOutlined style={{ marginLeft: 8 }} spin />}
             </div>
             <div className="agent-chat-header-right">
+              <Dropdown
+                menu={{
+                  items: sessionsLoading && sessions.length === 0
+                    ? [{ key: '__loading__', label: '加载中...', disabled: true }]
+                    : sessions.slice(0, 20).map((s) => ({
+                        key: s.session_id,
+                        label: (
+                          <span style={{ fontSize: 12 }}>
+                            {s.session_id}
+                            {s.first_ts_ms ? ` · ${new Date(s.first_ts_ms).toLocaleString()}` : ''}
+                          </span>
+                        ),
+                      })),
+                  onClick: ({ key }) => handleResumeSession(key),
+                }}
+                onOpenChange={(open) => { if (open) loadSessions(); }}
+                trigger={['click']}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<HistoryOutlined />}
+                  disabled={busy || sessionsLoading}
+                >
+                  历史会话
+                </Button>
+              </Dropdown>
               <Tooltip title="新对话（新 session）">
                 <Button
                   type="text"

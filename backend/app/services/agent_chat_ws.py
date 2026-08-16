@@ -33,6 +33,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
 from app.services.chat_trace import ChatTraceLogger, set_trace_hook
+from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,7 @@ async def _create_dev_agent(
     project_file: str = "",
     user_message: str = "",
     progress: ProgressRelay | None = None,
+    restore_history: list[dict] | None = None,
 ):
     """创建对话 Agent 实例，注册全部 12 个工具 (8 核心 + 4 知识图谱)。
 
@@ -289,6 +291,8 @@ async def _create_dev_agent(
         max_steps=12,
         use_native_fc=True,
     )
+    if restore_history:
+        agent.restore_history(restore_history)
     return agent, review_mgr
 
 
@@ -562,6 +566,10 @@ async def agent_chat_ws(websocket: WebSocket):
     session_id = websocket.query_params.get("session_id") or \
         datetime.now().strftime("%Y%m%d_%H%M%S")
     session = get_or_create(session_id)
+    # 恢复历史会话：全新会话但磁盘上已有 trace → 重建对话历史，等 agent 创建时注入
+    restore_history = None
+    if session.agent is None:
+        restore_history = reconstruct_history(session_id)
     if session.trace_log is None:
         trace_log = ChatTraceLogger(session_id=session_id)
         trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
@@ -618,7 +626,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     progress = ProgressRelay()
                     dev_agent, review_mgr = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
-                        progress=progress,
+                        progress=progress, restore_history=restore_history,
                     )
                     session.agent, session.review_mgr, session.progress = \
                         dev_agent, review_mgr, progress

@@ -104,3 +104,34 @@ def read_trace(session_id: str) -> dict | None:
                 continue
 
     return {"session_id": safe_id, "events": events}
+
+
+def reconstruct_history(session_id: str) -> list[dict] | None:
+    """从 trace 重建会话历史（结论级：user_message + done 交错）。
+
+    返回 ``[{role: 'user'|'assistant', content: str}, ...]``，按对话顺序排列；
+    该 session 无 trace 时返回 None。
+
+    说明：agent 的 ``_history`` 只存 user/assistant 摘要（不含逐步工具步骤），
+    故此处仅重建这两类。无 done 的轮次（错误/超步）不会补 assistant 兜底回复。
+    """
+    data = read_trace(session_id)
+    if data is None:
+        return None
+
+    history: list[dict] = []
+    pending_user: str | None = None
+    for e in data["events"]:
+        et = e.get("event_type")
+        if et == "user_message":
+            if pending_user is not None:
+                history.append({"role": "user", "content": pending_user})
+            pending_user = e.get("message", "")
+        elif et == "done":
+            if pending_user is not None:
+                history.append({"role": "user", "content": pending_user})
+                pending_user = None
+            history.append({"role": "assistant", "content": e.get("answer", "")})
+    if pending_user is not None:
+        history.append({"role": "user", "content": pending_user})
+    return history

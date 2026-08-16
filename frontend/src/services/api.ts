@@ -307,6 +307,16 @@ export async function getTrace(sessionId: string): Promise<TraceDetail> {
   return data;
 }
 
+export interface TraceHistoryEntry {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEntry[]> {
+  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}/history`);
+  return data.history;
+}
+
 export interface TraceReplayTurn {
   user_message: string;
   final_answer: string;
