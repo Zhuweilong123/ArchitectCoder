@@ -130,6 +130,7 @@ class LifecycleManager:
         """
         affected = self.db.apply_decay(
             project_id,
+            self.config.insight_decay_factor,
             self.config.decay_factor,
             self.config.importance_min,
         )

@@ -22,7 +22,6 @@ import asyncio
 import json
 import logging
 import os
-import threading
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -34,6 +33,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
 from app.services.chat_trace import ChatTraceLogger, set_trace_hook
+from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 
 logger = logging.getLogger(__name__)
@@ -90,148 +90,6 @@ _TRACE_BRIDGE: dict = {"tracer": None}
 def _set_trace_bridge(tracer: ChatTraceLogger | None):
     _TRACE_BRIDGE["tracer"] = tracer
 
-
-# ── 会话级交互日志 ───────────────────────────────────
-# 每次 WebSocket 连接一个 markdown 文件，落盘到 temp/chat_log/，
-# 记录用户消息、AI 回复、以及 dev 模式下每一步工具调用与返回结果。
-
-def _chat_log_dir() -> str:
-    """计算 chat_log 目录（与 pipeline_log 同级）。"""
-    from app.core.config import get_settings as _get_settings
-    _settings = _get_settings()
-    return os.path.normpath(os.path.abspath(
-        os.path.join(os.path.dirname(_settings.uml_dir), "chat_log"),
-    ))
-
-
-class ChatSessionLogger:
-    """会话级交互日志器 — 每连接一个文件，事件即时追加写入。
-
-    Usage:
-        cl = ChatSessionLogger()
-        cl.add_user("你好")
-        cl.add_ai_chat("...", kg_context="...")
-        cl.add_dev_step(progress)
-        cl.add_done(answer)
-        cl.close()
-    """
-
-    def __init__(self, session_id: str = ""):
-        self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._started = datetime.now()
-        self._lock = threading.Lock()
-        self._path: str | None = None
-        self._closed = False
-
-    @property
-    def path(self) -> str:
-        if self._path is None:
-            log_dir = _chat_log_dir()
-            os.makedirs(log_dir, exist_ok=True)
-            fname = f"chat_{self.session_id}.md"
-            self._path = os.path.join(log_dir, fname)
-        return self._path
-
-    def _ensure_header(self) -> None:
-        """文件头仅写入一次。"""
-        if os.path.exists(self.path):
-            return
-        header = (
-            f"# AI 助手会话日志 — {self.session_id}\n\n"
-            f"> 开始时间: {self._started.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"> 文件: {self.path}\n\n"
-            "---\n\n"
-        )
-        with open(self.path, "w", encoding="utf-8") as f:
-            f.write(header)
-
-    def _append(self, text: str) -> None:
-        if self._closed:
-            return
-        try:
-            self._ensure_header()
-            with self._lock:
-                with open(self.path, "a", encoding="utf-8") as f:
-                    f.write(text)
-        except Exception:
-            logger.exception("[ChatLog] Failed to append to %s", self.path)
-
-    # ── 记录方法 ─────────────────────────────────────
-
-    def add_system(self, text: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"### [{ts}] {text}\n\n")
-
-    def add_user(self, message: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## 👤 用户 [{ts}]\n\n{message}\n\n")
-
-    def add_chat_ctx(self, label: str, content: str) -> None:
-        if not content:
-            return
-        self._append(f"> {label}:\n\n```text\n{content}\n```\n\n")
-
-    def add_ai_chat(self, reply: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## 🤖 AI (chat) [{ts}]\n\n{reply}\n\n---\n\n")
-
-    def add_dev_step(self, progress) -> None:
-        """记录 dev 模式单步：thought / actions / 工具调用与完整返回。"""
-        ts = datetime.now().strftime("%H:%M:%S")
-        d = progress.to_dict()
-        block = [f"## 🛠️ Step {d['step']} [{ts}]\n"]
-        if d["actions"]:
-            block.append(f"- 工具: {', '.join(d['actions'])}\n")
-        if progress.thought:
-            block.append(f"- 思考: {progress.thought}\n")
-        block.append("")
-        for td in d["tool_calls_detail"]:
-            block.append(f"**调用 {td.get('name', '?')}**\n")
-            args = td.get("arguments", {})
-            block.append(f"- 参数:\n```json\n{json.dumps(args, ensure_ascii=False, indent=2)}\n```\n")
-            obs = td.get("observation", "")
-            block.append(f"- 返回:\n```text\n{obs}\n```\n")
-        block.append("---\n\n")
-        self._append("\n".join(block))
-
-    def add_review(self, review_type: str, title: str, question: str, content: str = "") -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        block = [
-            f"## 🔔 审核请求 [{ts}]\n",
-            f"- 类型: {review_type}\n",
-            f"- 标题: {title}\n",
-            f"- 问题: {question}\n",
-        ]
-        if content:
-            block.append(f"- 内容:\n```text\n{content}\n```\n")
-        block.append("\n---\n\n")
-        self._append("\n".join(block))
-
-    def add_review_response(self, response: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## ✅ 审核回复 [{ts}]\n\n{response}\n\n---\n\n")
-
-    def add_done(self, answer: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## 🏁 完成 [{ts}]\n\n{answer}\n\n---\n\n")
-
-    def add_error(self, message: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._append(f"## ❌ 错误 [{ts}]\n\n{message}\n\n---\n\n")
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            self._ensure_header()
-            with self._lock:
-                with open(self.path, "a", encoding="utf-8") as f:
-                    f.write(f"\n> 会话结束: {end}\n")
-            logger.info("[ChatLog] Session logged → %s", self.path)
-        except Exception:
-            logger.exception("[ChatLog] Failed to finalize %s", self.path)
 
 # ── 对话 Agent — ReActAgent + 工具 ──────────────────────
 
@@ -372,6 +230,7 @@ async def _create_dev_agent(
     project_file: str = "",
     user_message: str = "",
     progress: ProgressRelay | None = None,
+    restore_history: list[dict] | None = None,
 ):
     """创建对话 Agent 实例，注册全部 12 个工具 (8 核心 + 4 知识图谱)。
 
@@ -432,6 +291,8 @@ async def _create_dev_agent(
         max_steps=12,
         use_native_fc=True,
     )
+    if restore_history:
+        agent.restore_history(restore_history)
     return agent, review_mgr
 
 
@@ -541,7 +402,6 @@ async def _handle_dev(
     user_message: str,
     websocket: WebSocket,
     stop_check,
-    chat_log: ChatSessionLogger | None = None,
     trace_log: ChatTraceLogger | None = None,
     project_file: str = "",
     progress: ProgressRelay | None = None,
@@ -582,13 +442,6 @@ async def _handle_dev(
             if d["tool_calls_detail"] and review_mgr and review_mgr.has_pending():
                 pending = review_mgr.get_pending()
                 for i, pr in enumerate(pending):
-                    if chat_log:
-                        chat_log.add_review(
-                            pr.get("review_type", "code"),
-                            pr.get("title", ""),
-                            pr.get("question", ""),
-                            pr.get("content", ""),
-                        )
                     if trace_log:
                         trace_log.review_request(
                             review_id=i,
@@ -611,8 +464,6 @@ async def _handle_dev(
                 continue
 
             # 记录完整工具调用与返回（在截断发给前端之前）
-            if chat_log:
-                chat_log.add_dev_step(step_progress)
             if trace_log:
                 trace_log.agent_step(
                     step=d["step"], thought=step_progress.thought or "",
@@ -671,8 +522,6 @@ async def _handle_dev(
 
             if d["is_final"]:
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
-                if chat_log:
-                    chat_log.add_done(d["final_answer"])
                 if trace_log:
                     trace_log.done(answer=d["final_answer"])
 
@@ -697,8 +546,6 @@ async def _handle_dev(
 
     except Exception as e:
         logger.exception("[AgentChat] Dev agent execution error")
-        if chat_log:
-            chat_log.add_error(f"Agent error: {e}")
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {e}")
         await _ws_send(websocket, {
@@ -719,13 +566,16 @@ async def agent_chat_ws(websocket: WebSocket):
     session_id = websocket.query_params.get("session_id") or \
         datetime.now().strftime("%Y%m%d_%H%M%S")
     session = get_or_create(session_id)
-    chat_log = session.chat_log or ChatSessionLogger(session_id=session_id)
+    # 恢复历史会话：全新会话但磁盘上已有 trace → 重建对话历史，等 agent 创建时注入
+    restore_history = None
+    if session.agent is None:
+        restore_history = reconstruct_history(session_id)
     if session.trace_log is None:
         trace_log = ChatTraceLogger(session_id=session_id)
         trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
     else:
         trace_log = session.trace_log
-    session.chat_log, session.trace_log = chat_log, trace_log
+    session.trace_log = trace_log
 
     llm: BaseAgentsLLM | None = None
     dev_agent: ReActAgent | None = session.agent
@@ -768,8 +618,7 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 stop_requested = False
 
-                # 记录用户消息（markdown + trace）
-                chat_log.add_user(user_message)
+                # 记录用户消息（trace）
                 trace_log.user_message(user_message, project_file=project_file)
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
@@ -777,7 +626,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     progress = ProgressRelay()
                     dev_agent, review_mgr = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
-                        progress=progress,
+                        progress=progress, restore_history=restore_history,
                     )
                     session.agent, session.review_mgr, session.progress = \
                         dev_agent, review_mgr, progress
@@ -786,14 +635,13 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 await _handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
-                    chat_log=chat_log, trace_log=trace_log, project_file=project_file,
+                    trace_log=trace_log, project_file=project_file,
                     progress=progress,
                 )
 
             # ── 停止对话 ──
             elif msg_type == "stop":
                 stop_requested = True
-                chat_log.add_system("用户请求停止")
                 trace_log.error(event_type="user_stop", message="用户请求停止")
                 await websocket.send_json({"event": "stopped", "reason": "User requested stop"})
 
@@ -803,7 +651,6 @@ async def agent_chat_ws(websocket: WebSocket):
                 response = msg.get("response", "")
                 if review_mgr:
                     review_mgr.resolve(review_id, response)
-                    chat_log.add_review_response(response)
                     trace_log.review_response(review_id=review_id, response=response)
                     logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
 
@@ -823,11 +670,9 @@ async def agent_chat_ws(websocket: WebSocket):
             logger.info("[AgentChat] WebSocket closed (client disconnected)")
         else:
             logger.exception("[AgentChat] Unexpected error")
-            chat_log.add_error(f"Server error: {e}")
             trace_log.error(event_type="server", message=f"Server error: {e}")
     except Exception as e:
         logger.exception("[AgentChat] Unexpected error")
-        chat_log.add_error(f"Server error: {e}")
         trace_log.error(event_type="server", message=f"Server error: {e}")
         try:
             await websocket.send_json({"event": "error", "message": f"Server error: {e}"})
@@ -835,7 +680,7 @@ async def agent_chat_ws(websocket: WebSocket):
             pass
     finally:
         # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
-        # 从而同一会话跨连接持续追加到同一 chat_*.md / trace_*.jsonl。
+        # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
         session.touch()
         set_trace_hook(None)
         _set_trace_bridge(None)

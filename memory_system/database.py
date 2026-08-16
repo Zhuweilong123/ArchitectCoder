@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS memories (
     memory_type      TEXT NOT NULL,
     summary          TEXT NOT NULL,
     original_text    TEXT NOT NULL DEFAULT '',
+    subject          TEXT NOT NULL DEFAULT '',
     metadata         TEXT NOT NULL DEFAULT '{}',
     embedding        BLOB,
     embedding_model  TEXT NOT NULL DEFAULT '',
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS memories (
     access_count     INTEGER NOT NULL DEFAULT 0,
     last_accessed_at TEXT,
     created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL DEFAULT '',
     tags             TEXT NOT NULL DEFAULT '[]',
     source           TEXT NOT NULL DEFAULT '',
     user_feedback    TEXT,
@@ -61,6 +63,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);",
     "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(project_id, memory_type);",
+    "CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(project_id, memory_type, subject);",
     "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(project_id, importance_score DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(project_id, last_accessed_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(project_id, is_pinned);",
@@ -117,9 +120,10 @@ class MemoryDatabase:
         return self._conn
 
     def _init_schema(self) -> None:
-        """建表 + 索引."""
+        """建表 + 迁移列 + 索引."""
         conn = self._conn
         conn.execute(CREATE_MEMORIES_TABLE)
+        self._migrate_columns(conn)
         # FTS5 表可能已存在, 忽略错误
         try:
             conn.execute(CREATE_FTS_TABLE)
@@ -128,6 +132,21 @@ class MemoryDatabase:
         for idx_sql in CREATE_INDEXES:
             conn.execute(idx_sql)
         conn.commit()
+
+    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
+        """幂等加列: 旧库缺 subject / updated_at 时补上."""
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if "subject" not in existing:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN subject TEXT NOT NULL DEFAULT ''"
+            )
+        if "updated_at" not in existing:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+            )
 
     def close(self) -> None:
         """关闭数据库连接."""
@@ -152,15 +171,15 @@ class MemoryDatabase:
 
         sql = """
             INSERT INTO memories (
-                id, project_id, memory_type, summary, original_text,
+                id, project_id, memory_type, summary, original_text, subject,
                 metadata, embedding, embedding_model,
                 importance_score, access_count, last_accessed_at,
-                created_at, tags, source, user_feedback, is_pinned
+                created_at, updated_at, tags, source, user_feedback, is_pinned
             ) VALUES (
-                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?,
-                ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?
             )
         """
         params = (
@@ -169,6 +188,7 @@ class MemoryDatabase:
             entry.memory_type.value,
             entry.summary,
             entry.original_text,
+            entry.subject,
             metadata_json,
             entry.embedding,
             entry.embedding_model,
@@ -176,6 +196,7 @@ class MemoryDatabase:
             entry.access_count,
             entry.last_accessed_at,
             entry.created_at,
+            entry.updated_at or entry.created_at,
             tags_json,
             entry.source,
             entry.user_feedback,
@@ -211,6 +232,25 @@ class MemoryDatabase:
             return None
         return self._row_to_entry(row)
 
+    def get_by_subject(
+        self, project_id: str, memory_type: MemoryType, subject: str,
+    ) -> Optional[MemoryEntry]:
+        """按 (project_id, memory_type, subject) 获取一条记忆。
+
+        用于 insight 类记忆的"后写覆盖"：同主题最新观察顶替旧观察。
+        """
+        if not subject:
+            return None
+        conn = self.conn
+        row = conn.execute(
+            "SELECT * FROM memories WHERE project_id = ? AND memory_type = ? "
+            "AND subject = ? LIMIT 1",
+            (project_id, memory_type.value, subject),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_entry(row)
+
     def update(self, entry: MemoryEntry) -> bool:
         """
         更新一条记忆 (按 id 匹配), 同步更新 FTS5.
@@ -234,9 +274,10 @@ class MemoryDatabase:
 
         sql = """
             UPDATE memories SET
-                memory_type = ?, summary = ?, original_text = ?,
+                memory_type = ?, summary = ?, original_text = ?, subject = ?,
                 metadata = ?, embedding = ?, embedding_model = ?,
                 importance_score = ?, access_count = ?, last_accessed_at = ?,
+                updated_at = ?,
                 tags = ?, source = ?, user_feedback = ?, is_pinned = ?
             WHERE id = ? AND project_id = ?
         """
@@ -244,12 +285,14 @@ class MemoryDatabase:
             entry.memory_type.value,
             entry.summary,
             entry.original_text,
+            entry.subject,
             metadata_json,
             entry.embedding,
             entry.embedding_model,
             entry.importance_score,
             entry.access_count,
             entry.last_accessed_at,
+            entry.updated_at or entry.created_at,
             tags_json,
             entry.source,
             entry.user_feedback,
@@ -515,23 +558,37 @@ class MemoryDatabase:
         return cursor.rowcount > 0
 
     def apply_decay(
-        self, project_id: str, decay_factor: float, importance_min: float
+        self,
+        project_id: str,
+        insight_factor: float,
+        durable_factor: float,
+        importance_min: float,
     ) -> int:
-        """
-        对一个项目的所有非 pinned 记忆施加衰减.
+        """对项目所有非 pinned 记忆施加衰减 (insight 类衰减更快).
 
         Returns:
             受影响的记忆数量.
         """
         conn = self.conn
-        cursor = conn.execute(
+        affected = 0
+        # insight 类: 状态观察, 随时间更快淡出
+        cur = conn.execute(
             """UPDATE memories
                SET importance_score = MAX(?, importance_score * ?)
-               WHERE project_id = ? AND is_pinned = 0""",
-            (importance_min, decay_factor, project_id),
+               WHERE project_id = ? AND is_pinned = 0 AND memory_type = 'insight'""",
+            (importance_min, insight_factor, project_id),
         )
+        affected += cur.rowcount
+        # 耐久类: preference/decision/rejection/convention
+        cur = conn.execute(
+            """UPDATE memories
+               SET importance_score = MAX(?, importance_score * ?)
+               WHERE project_id = ? AND is_pinned = 0 AND memory_type != 'insight'""",
+            (importance_min, durable_factor, project_id),
+        )
+        affected += cur.rowcount
         conn.commit()
-        return cursor.rowcount
+        return affected
 
     def get_prune_candidates(
         self,
@@ -676,6 +733,7 @@ class MemoryDatabase:
             memory_type=MemoryType(row["memory_type"]),
             summary=row["summary"],
             original_text=row["original_text"] or "",
+            subject=row["subject"] or "",
             metadata=metadata,
             embedding=row["embedding"],
             embedding_model=row["embedding_model"] or "",
@@ -683,6 +741,7 @@ class MemoryDatabase:
             access_count=row["access_count"] or 0,
             last_accessed_at=row["last_accessed_at"],
             created_at=row["created_at"],
+            updated_at=row["updated_at"] or "",
             tags=tags,
             source=row["source"] or "",
             user_feedback=row["user_feedback"],

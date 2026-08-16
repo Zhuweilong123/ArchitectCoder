@@ -399,11 +399,10 @@ class MyAsyncTool(AsyncTool):
 
 ### 会话日志
 
-每次 WebSocket 连接生成双份日志，落盘到 `temp/chat_log/`：
+每次 WebSocket 连接生成一份结构化 trace 日志，落盘到 `temp/chat_log/`：
 
 | 日志 | 格式 | 内容 |
 |------|------|------|
-| `chat_*.md` | Markdown | 人类可读，记录用户消息、AI 回复、工具调用详情、审核请求/响应 |
 | `trace_*.jsonl` | JSONL | 机器可回放，含 LLM 原始往返（prompt/completion）、工具调用参数/返回、审核记录 |
 
 ## 创建对话 Agent 工具
@@ -502,4 +501,4 @@ reflection 阶段的 Hook 自动执行 5 项跨图一致性校验：
 - **人工介入**：RequestReviewTool + ReviewManager → asyncio.Future 阻塞 → 人工 WebSocket 响应 → 继续执行
 - **可中断**：InterruptibleAgent 包装器 + should_stop 回调 → 优雅终止循环
 - **记忆系统**：跨任务知识归档与检索（SQLite + FTS5 + jieba 分词 + BM25 检索 + LLM 事实提取）
-- **双日志**：人读 Markdown（chat_*.md）+ 机读 JSONL trace（trace_*.jsonl）
+- **结构化 trace**：机读 JSONL trace（trace_*.jsonl），支持 TraceViewer 可视化与确定性回放

@@ -87,4 +87,4 @@ if __name__ == "__main__":
     log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
     log_config["formatters"]["access"]["fmt"] = '%(asctime)s | %(client_addr)s - "%(request_line)s" %(status_code)s'
     log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=settings.debug, log_config=log_config)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=settings.debug, log_config=log_config)

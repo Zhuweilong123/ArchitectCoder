@@ -1,7 +1,7 @@
 """
 ChatTrace — 会话级结构化 trace 层 (JSONL).
 
-与 markdown 日志（ChatSessionLogger）并行，专为智能体 trace 追踪与问题复现设计。
+专为智能体 trace 追踪与问题复现设计。
 
 核心特性:
   - JSONL 每行一个事件，程序化可解析、可重放
@@ -10,7 +10,7 @@ ChatTrace — 会话级结构化 trace 层 (JSONL).
   - 记录 LLM 原始往返（prompt/completion/model/tokens）、工具调用参数与完整返回
   - 记录环境快照（agent/prompt 版本、KG 状态），便于复现现场
 
-文件命名: trace_{session_id}.jsonl，与 chat_{session_id}.md 同目录（temp/chat_log/）。
+文件命名: trace_{session_id}.jsonl，位于 temp/chat_log/ 目录。
 """
 
 from __future__ import annotations
@@ -105,9 +105,7 @@ def _event(
 class ChatTraceLogger:
     """JSONL trace 写入器 — 每连接一个文件，事件即时追加，线程安全。
 
-    与 ChatSessionLogger 共享 temp/chat_log/ 目录：
-      chat_{session_id}.md    — 人读 markdown
-      trace_{session_id}.jsonl — 机器回放 JSONL
+    写入 temp/chat_log/trace_{session_id}.jsonl（机器回放 JSONL）。
     """
 
     def __init__(self, session_id: str = ""):

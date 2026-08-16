@@ -12,22 +12,24 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse,
+  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse, Dropdown,
 } from 'antd';
 import {
   SendOutlined, StopOutlined, RobotOutlined,
   CheckCircleOutlined, CloseCircleOutlined,
   ToolOutlined, UserOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
-  PlusOutlined,
+  PlusOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
 import {
   connectAgentChat, sendAgentMessage, sendStopMessage, sendReviewResponse,
   disconnectAgentChat, isAgentConnected, onAgentMessage, startNewSession,
+  getCurrentSessionId, switchSession,
   type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
 } from '../../services/agentChat';
+import { listTraces, getTraceHistory, type TraceMeta } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './AgentChat.css';
 
@@ -53,6 +55,29 @@ const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] 
     })),
   }));
 
+// ── 会话标识 ──────────────────────────────────────────
+
+// 从 session_id（YYYYMMDD_HHMMSS[_suffix]）解析可读时间 "MM-DD HH:MM"
+function sessionTimeFromId(id: string): string {
+  const m = id.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+  if (!m) return '';
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+}
+
+// 时间戳 → "MM-DD HH:MM"
+function formatTs(ms: number | null | undefined): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 会话主题：截断到 ~16 字
+function truncateTitle(s: string): string {
+  const clean = s.replace(/\s+/g, ' ').trim();
+  return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
+}
+
 // ── 组件 ──────────────────────────────────────────────
 
 const AgentChat: React.FC = () => {
@@ -67,7 +92,7 @@ const AgentChat: React.FC = () => {
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem('agentChatMessages');
+      const saved = localStorage.getItem(`agentChatMessages:${getCurrentSessionId()}`);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -130,7 +155,7 @@ const AgentChat: React.FC = () => {
         const toSave = messages.slice(-100).map((m) =>
           m.steps ? { ...m, steps: clampStepForStorage(m.steps) } : m,
         );
-        localStorage.setItem('agentChatMessages', JSON.stringify(toSave));
+        localStorage.setItem(`agentChatMessages:${getCurrentSessionId()}`, JSON.stringify(toSave));
       }
     } catch { /* ignore */ }
   }, [messages]);
@@ -367,15 +392,54 @@ const AgentChat: React.FC = () => {
 
   // ── 新对话（新 session）──
   const handleNewSession = useCallback(() => {
+    startNewSession();  // 生成新 id + 断开
     setMessages([]);
-    localStorage.removeItem('agentChatMessages');
     liveStepsRef.current = [];
     setCurrentSteps([]);
     setPendingReview(null);
     setInputValue('');
     setBusy(false);
-    startNewSession();
     connect();
+  }, [connect]);
+
+  // ── 历史会话（恢复继续聊，结论级）──
+  const [sessions, setSessions] = useState<TraceMeta[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      setSessions(await listTraces());
+    } catch {
+      // 后端未启动等，忽略
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  const handleResumeSession = useCallback(async (targetId: string) => {
+    if (targetId === getCurrentSessionId()) return;
+    setSessionsLoading(true);
+    try {
+      const history = await getTraceHistory(targetId);
+      switchSession(targetId);
+      setMessages(history.map((h, i) => ({
+        id: `resume_${Date.now()}_${i}`,
+        role: (h.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
+        content: h.content,
+        timestamp: Date.now(),
+      })));
+      liveStepsRef.current = [];
+      setCurrentSteps([]);
+      setPendingReview(null);
+      setInputValue('');
+      setBusy(false);
+      connect();
+    } catch {
+      message.error('恢复会话失败');
+    } finally {
+      setSessionsLoading(false);
+    }
   }, [connect]);
 
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
@@ -475,6 +539,12 @@ const AgentChat: React.FC = () => {
     );
   };
 
+  // ── 当前会话标识（底部状态栏）──
+  const currentSessionId = getCurrentSessionId();
+  const firstUserMsg = messages.find((m) => m.role === 'user');
+  const sessionTitle = firstUserMsg ? truncateTitle(firstUserMsg.content) : '';
+  const sessionTime = sessionTimeFromId(currentSessionId);
+
   // ── 主渲染 ──
   return (
     <>
@@ -518,6 +588,37 @@ const AgentChat: React.FC = () => {
               {busy && <LoadingOutlined style={{ marginLeft: 8 }} spin />}
             </div>
             <div className="agent-chat-header-right">
+              <Dropdown
+                menu={{
+                  items: sessionsLoading && sessions.length === 0
+                    ? [{ key: '__loading__', label: '加载中...', disabled: true }]
+                    : sessions.slice(0, 20).map((s) => ({
+                        key: s.session_id,
+                        icon: s.session_id === currentSessionId
+                          ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                          : undefined,
+                        disabled: s.session_id === currentSessionId,
+                        label: (
+                          <span style={{ fontSize: 12 }}>
+                            {s.title ? `${truncateTitle(s.title)} · ` : ''}
+                            {formatTs(s.first_ts_ms) || s.session_id}
+                          </span>
+                        ),
+                      })),
+                  onClick: ({ key }) => handleResumeSession(key),
+                }}
+                onOpenChange={(open) => { if (open) loadSessions(); }}
+                trigger={['click']}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<HistoryOutlined />}
+                  disabled={busy || sessionsLoading}
+                >
+                  历史会话
+                </Button>
+              </Dropdown>
               <Tooltip title="新对话（新 session）">
                 <Button
                   type="text"
@@ -679,6 +780,34 @@ const AgentChat: React.FC = () => {
                 </Button>
               )}
             </div>
+          </div>
+
+          {/* 会话状态栏（左下角） */}
+          <div
+            className="agent-chat-statusbar"
+            style={{
+              padding: '4px 12px',
+              borderTop: '1px solid #f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              flexShrink: 0,
+              background: '#fafafa',
+            }}
+          >
+            <Tooltip title={`会话 ID: ${currentSessionId}`}>
+              <Tag
+                style={{
+                  margin: 0,
+                  fontSize: 12,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {sessionTitle ? `${sessionTitle} · ${sessionTime}` : sessionTime}
+              </Tag>
+            </Tooltip>
           </div>
         </div>
       )}

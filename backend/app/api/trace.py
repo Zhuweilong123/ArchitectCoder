@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.services.trace_reader import list_traces, read_trace
+from app.services.trace_reader import list_traces, read_trace, reconstruct_history
 from app.services.replay import replay_agent_session, ReplayExhausted
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,15 @@ async def read_trace_endpoint(session_id: str):
     if result is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return result
+
+
+@router.get("/{session_id}/history")
+async def trace_history_endpoint(session_id: str):
+    """返回该 session 的对话历史（结论级：user + assistant），供会话恢复。"""
+    history = reconstruct_history(session_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return {"session_id": session_id, "history": history}
 
 
 @router.post("/{session_id}/replay")

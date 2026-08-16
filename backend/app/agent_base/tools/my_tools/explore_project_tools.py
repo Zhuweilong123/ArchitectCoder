@@ -133,8 +133,50 @@ async def _locate_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, ta
     return json.dumps({"target": target, "matches": located[:10]}, ensure_ascii=False)
 
 
+def _project_file_signature(project_file: str) -> dict | None:
+    """读取 .umlproj 的图签名，用于交叉校验 KG 结构是否陈旧。
+
+    Returns:
+        {
+          "signature": {(name, diagram_type), ...},
+          "diagram_count": int,
+          "class_diagram_count": int,
+          "class_count": int,
+        }
+        读取失败返回 None。
+    """
+    try:
+        from app.services.file_service import load_project
+        project = load_project(project_file)
+        diagrams = project.diagrams
+        class_diagrams = [d for d in diagrams if d.diagram_type == "class"]
+        return {
+            "signature": {(d.name, d.diagram_type) for d in diagrams},
+            "diagram_count": len(diagrams),
+            "class_diagram_count": len(class_diagrams),
+            "class_count": sum(len(d.classes) for d in class_diagrams),
+        }
+    except Exception:
+        logger.warning("[Explore] Failed to load project file signature", exc_info=True)
+        return None
+
+
+def _force_rebuild_uml(project_file: str, project_id: str) -> None:
+    """全量重建某项目的 design 层 KG 索引（explore 交叉校验兜底）。"""
+    try:
+        from knowledge_graph.builder import GraphBuilder
+        from app.services.file_service import load_project
+        project = load_project(project_file)
+        builder = GraphBuilder(db_path=_kg_db_path())
+        stats = builder.build_from_project(project, project_id)
+        builder.close()
+        logger.info("[Explore] Forced rebuild for '%s': %s", project_id, stats)
+    except Exception:
+        logger.exception("[Explore] Forced rebuild failed for '%s'", project_id)
+
+
 async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, question: str) -> str:
-    """uml 探索：kg_project_structure 拿完整结构 → 一次 LLM 总结。"""
+    """uml 探索：kg_project_structure 拿完整结构 → 交叉校验 → 一次 LLM 总结。"""
     from app.agent_base.tools.my_tools.knowledge_graph_tools import KgProjectStructureTool
     struct_tool = KgProjectStructureTool(db_path=_kg_db_path(), project_file=project_file)
     try:
@@ -145,6 +187,32 @@ async def _explore_uml(llm: BaseAgentsLLM, project_id: str, project_file: str, q
         structure = json.loads(raw)
     except json.JSONDecodeError:
         return f"（UML 结构解析失败）"
+
+    # 交叉校验：KG 结构若与文件不一致（缺图 / 类图无类），强制重建后重取。
+    # 兜底 _ensure_project_indexed 的图签名比对——签名一致但内容陈旧时也能救回。
+    file_sig = _project_file_signature(project_file)
+    if file_sig is not None and structure.get("diagrams"):
+        kg_sig = {
+            (d.get("name"), d.get("diagram_type"))
+            for d in structure.get("diagrams", [])
+        }
+        stats = structure.get("stats", {})
+        stale = kg_sig != file_sig["signature"]
+        if not stale and file_sig["class_count"] > 0 and stats.get("classes", 0) == 0:
+            stale = True  # 文件有类图且有类，但 KG 一个类都没索引到
+        if stale:
+            logger.info(
+                "[Explore] KG structure out of sync with file for '%s' "
+                "(file_diagrams=%d, kg_diagrams=%d, file_classes=%d, kg_classes=%d), rebuilding",
+                project_id, file_sig["diagram_count"], len(kg_sig),
+                file_sig["class_count"], stats.get("classes", 0),
+            )
+            _force_rebuild_uml(project_file, project_id)
+            try:
+                raw = await struct_tool._execute({"project_id": project_id, "depth": 3})
+                structure = json.loads(raw)
+            except Exception as e:
+                logger.warning("[Explore] Refetch after rebuild failed: %s", e)
 
     if not structure.get("diagrams"):
         return "（项目中无 UML 设计图）"

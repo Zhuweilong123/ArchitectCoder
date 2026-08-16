@@ -92,7 +92,7 @@ asyncio.run(main())
 HTTP 接口：
 
 ```bash
-curl -X POST 'http://localhost:8000/api/trace/20260813_232810/replay?mode=mock'
+curl -X POST 'http://localhost:8001/api/trace/20260813_232810/replay?mode=mock'
 ```
 
 ## 7. 常见问题
@@ -101,7 +101,7 @@ curl -X POST 'http://localhost:8000/api/trace/20260813_232810/replay?mode=mock'
 后端未启动，或 `temp/chat_log/` 下暂无 `trace_*.jsonl`。先跑一次「AI 助手」对话或「全局优化」生成 trace，再点「刷新」。
 
 **Q：trace 文件在哪？**
-`temp/chat_log/trace_{session_id}.jsonl`（与 `chat_{session_id}.md` 同目录）。会话跨连接复用，同一 session 会持续追加到同一文件。
+`temp/chat_log/trace_{session_id}.jsonl`。会话跨连接复用，同一 session 会持续追加到同一文件。
 
 **Q：为什么 Rerun 总是「不一致」？**
 正常。Rerun 就是真调 LLM 重跑，答案几乎不会逐字相同。需要确定性校验请用 **Mock** 模式。

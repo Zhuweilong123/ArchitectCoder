@@ -7,7 +7,7 @@ timeout /t 3 /nobreak >nul
 start "UML-Frontend" cmd /k "cd /d "%ROOT%frontend" && npm run dev"
 
 echo.
-echo Backend:  http://localhost:8000
+echo Backend:  http://localhost:8001
 echo Frontend: http://localhost:3000
 echo.
 pause

@@ -35,24 +35,33 @@ def _ts_of(line: str):
 
 
 def _peek(path: str) -> dict:
-    """轻量读取文件元数据：事件数 + 首/尾事件时间戳。
-
-    只做字符串逐行扫描与首/尾行 JSON 解析，不做全量反序列化，
-    避免 /list 在大量大文件上过慢。
-    """
+    """轻量读取文件元数据：事件数 + 首/尾事件时间戳 + 会话主题（首条 user 消息）。"""
     events = 0
     first_ts = None
     last_ts = None
+    title = ""
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             events += 1
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            ts = obj.get("ts_ms")
             if first_ts is None:
-                first_ts = _ts_of(line)
-            last_ts = _ts_of(line)
-    return {"events": events, "first_ts_ms": first_ts, "last_ts_ms": last_ts}
+                first_ts = ts
+            last_ts = ts
+            if not title and obj.get("event_type") == "user_message":
+                title = (obj.get("message") or "")[:40]
+    return {
+        "events": events,
+        "first_ts_ms": first_ts,
+        "last_ts_ms": last_ts,
+        "title": title,
+    }
 
 
 def list_traces() -> list[dict]:
@@ -104,3 +113,34 @@ def read_trace(session_id: str) -> dict | None:
                 continue
 
     return {"session_id": safe_id, "events": events}
+
+
+def reconstruct_history(session_id: str) -> list[dict] | None:
+    """从 trace 重建会话历史（结论级：user_message + done 交错）。
+
+    返回 ``[{role: 'user'|'assistant', content: str}, ...]``，按对话顺序排列；
+    该 session 无 trace 时返回 None。
+
+    说明：agent 的 ``_history`` 只存 user/assistant 摘要（不含逐步工具步骤），
+    故此处仅重建这两类。无 done 的轮次（错误/超步）不会补 assistant 兜底回复。
+    """
+    data = read_trace(session_id)
+    if data is None:
+        return None
+
+    history: list[dict] = []
+    pending_user: str | None = None
+    for e in data["events"]:
+        et = e.get("event_type")
+        if et == "user_message":
+            if pending_user is not None:
+                history.append({"role": "user", "content": pending_user})
+            pending_user = e.get("message", "")
+        elif et == "done":
+            if pending_user is not None:
+                history.append({"role": "user", "content": pending_user})
+                pending_user = None
+            history.append({"role": "assistant", "content": e.get("answer", "")})
+    if pending_user is not None:
+        history.append({"role": "user", "content": pending_user})
+    return history

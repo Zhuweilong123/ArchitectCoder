@@ -690,10 +690,15 @@ class GraphBuilder:
         edges_to_add: list[GraphEdge] = []
 
         # 收集所有类 ID (在本图中)
-        class_nodes: dict[str, GraphNode] = {}
+        # 类节点 id 用 project 作用域的确定性 hash（而非文件的 class.id），
+        # 避免项目文件被复制时跨项目 id 冲突（文件 id 全局不唯一）。
+        class_id_map: dict[str, str] = {}  # 文件 class.id → KG 节点 id
 
         for cls in getattr(diagram, "classes", []):
-            cls_id = getattr(cls, "id", self._make_id("class", project_id, cls.name, "design"))
+            cls_orig_id = getattr(cls, "id", "")
+            cls_id = self._make_id("class", project_id, getattr(cls, "name", ""), "design")
+            if cls_orig_id:
+                class_id_map[cls_orig_id] = cls_id
             stereo = getattr(cls, "stereotype", None)
             stereo_val = stereo.value if hasattr(stereo, "value") else str(stereo or "class")
 
@@ -742,13 +747,13 @@ class GraphBuilder:
                     "note": getattr(cls, "note", ""),
                     "methods": method_names,
                     "attributes": attr_names,
+                    "orig_id": cls_orig_id,
                 },
             )
             cls_node.content_text = _build_content_text(
                 NodeType.CLASS, cls_node.name, cls_node.properties,
             )
             nodes_to_add.append(cls_node)
-            class_nodes[cls_node.id] = cls_node
 
             # DIAGRAM → CLASS (contains)
             edges_to_add.append(GraphEdge(
@@ -819,15 +824,18 @@ class GraphBuilder:
 
         # ── 类间关系 ──
         for rel in getattr(diagram, "relations", []):
-            src_id = getattr(rel, "source", "")
-            tgt_id = getattr(rel, "target", "")
+            rel_src = getattr(rel, "source", "")
+            rel_tgt = getattr(rel, "target", "")
+            # 关系端点引用文件的 class.id，映射回 KG 节点 id
+            src_id = class_id_map.get(rel_src, rel_src)
+            tgt_id = class_id_map.get(rel_tgt, rel_tgt)
             rel_type = getattr(rel, "type", None)
             rel_type_str = rel_type.value if hasattr(rel_type, "value") else str(rel_type or "association")
 
             edge_type = UML_RELATION_TO_EDGE.get(rel_type_str, EdgeType.ASSOCIATION)
 
             edges_to_add.append(GraphEdge(
-                id=getattr(rel, "id", self._make_id("edge", src_id, tgt_id, rel_type_str)),
+                id=self._make_id("edge", src_id, tgt_id, rel_type_str),
                 source_id=src_id,
                 target_id=tgt_id,
                 edge_type=edge_type,
@@ -894,15 +902,17 @@ class GraphBuilder:
             from_id = lifeline_id_map.get(getattr(msg, "from_lifeline", ""), "")
             to_id = lifeline_id_map.get(getattr(msg, "to_lifeline", ""), "")
             if from_id and to_id:
+                msg_order = getattr(msg, "order", 0)
+                msg_label = getattr(msg, "label", "")
                 edges_to_add.append(GraphEdge(
-                    id=getattr(msg, "id", self._make_id("edge", from_id, to_id, "messages")),
+                    id=self._make_id("edge", from_id, to_id, f"messages:{msg_order}:{msg_label}"),
                     source_id=from_id,
                     target_id=to_id,
                     edge_type=EdgeType.MESSAGES,
                     properties={
-                        "label": getattr(msg, "label", ""),
+                        "label": msg_label,
                         "type": getattr(msg, "type", "sync"),
-                        "order": getattr(msg, "order", 0),
+                        "order": msg_order,
                         "note": getattr(msg, "note", ""),
                     },
                 ))
@@ -1068,7 +1078,7 @@ class GraphBuilder:
                 rel_type = getattr(rel, "type", "dependency")
                 edge_type = EdgeType.DEPENDENCY if rel_type == "dependency" else EdgeType.ASSOCIATION
                 edges_to_add.append(GraphEdge(
-                    id=getattr(rel, "id", self._make_id("edge", src, tgt, rel_type)),
+                    id=self._make_id("edge", src, tgt, rel_type),
                     source_id=src,
                     target_id=tgt,
                     edge_type=edge_type,
@@ -1105,10 +1115,11 @@ class GraphBuilder:
                         class_nodes = self.db.find_nodes(
                             project_id, node_type="class", name="", source="design",
                         )
-                        # 用 class_ref 当 class name 或 class id 查
+                        # 用 class_ref 匹配 class 的原始文件 id / name / KG id
                         design_classes = [
                             n for n in class_nodes
-                            if n.name == class_ref or n.id == class_ref
+                            if (n.properties or {}).get("orig_id") == class_ref
+                            or n.name == class_ref or n.id == class_ref
                         ]
                         # 如果有 lifeline.name 匹配也行
                         if not design_classes:

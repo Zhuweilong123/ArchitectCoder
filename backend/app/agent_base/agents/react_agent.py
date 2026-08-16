@@ -164,6 +164,17 @@ class ReActAgent(Agent):
             name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
         )
 
+    def restore_history(self, messages: list[dict]) -> None:
+        """从 [{role, content}] 恢复对话历史（结论级：仅 user/assistant）。
+
+        用于「恢复历史会话」——agent 据此在继续对话时记住之前的结论。
+        """
+        self._history = [
+            Message(m.get("content", ""), m.get("role", "user"))
+            for m in messages
+            if m.get("role") in ("user", "assistant")
+        ]
+
     # ═══════════════════════════════════════════════════════
     # Public API
     # ═══════════════════════════════════════════════════════

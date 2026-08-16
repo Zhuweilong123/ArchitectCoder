@@ -290,6 +290,7 @@ export interface TraceMeta {
   events: number;
   first_ts_ms: number | null;
   last_ts_ms: number | null;
+  title?: string;
 }
 
 export interface TraceDetail {
@@ -305,6 +306,16 @@ export async function listTraces(): Promise<TraceMeta[]> {
 export async function getTrace(sessionId: string): Promise<TraceDetail> {
   const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`);
   return data;
+}
+
+export interface TraceHistoryEntry {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEntry[]> {
+  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}/history`);
+  return data.history;
 }
 
 export interface TraceReplayTurn {
