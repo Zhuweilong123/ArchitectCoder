@@ -19,12 +19,13 @@ import {
   CheckCircleOutlined, CloseCircleOutlined,
   ToolOutlined, UserOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
 import {
   connectAgentChat, sendAgentMessage, sendStopMessage, sendReviewResponse,
-  disconnectAgentChat, isAgentConnected, onAgentMessage,
+  disconnectAgentChat, isAgentConnected, onAgentMessage, startNewSession,
   type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
 } from '../../services/agentChat';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
@@ -364,6 +365,19 @@ const AgentChat: React.FC = () => {
     setAgentChatVisible(false);
   }, [busy, handleStop, setAgentChatVisible]);
 
+  // ── 新对话（新 session）──
+  const handleNewSession = useCallback(() => {
+    setMessages([]);
+    localStorage.removeItem('agentChatMessages');
+    liveStepsRef.current = [];
+    setCurrentSteps([]);
+    setPendingReview(null);
+    setInputValue('');
+    setBusy(false);
+    startNewSession();
+    connect();
+  }, [connect]);
+
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
   useEffect(() => {
     return onAgentMessage((ev) => {
@@ -504,6 +518,17 @@ const AgentChat: React.FC = () => {
               {busy && <LoadingOutlined style={{ marginLeft: 8 }} spin />}
             </div>
             <div className="agent-chat-header-right">
+              <Tooltip title="新对话（新 session）">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  onClick={handleNewSession}
+                  disabled={busy}
+                >
+                  新对话
+                </Button>
+              </Tooltip>
               <Tooltip title={agentChatExpanded ? '缩小' : '放大'}>
                 <Button
                   type="text"
@@ -653,16 +678,6 @@ const AgentChat: React.FC = () => {
                   发送
                 </Button>
               )}
-              <Button
-                size="small"
-                onClick={() => {
-                  setMessages([]);
-                  localStorage.removeItem('agentChatMessages');
-                }}
-                disabled={busy}
-              >
-                清空
-              </Button>
             </div>
           </div>
         </div>
