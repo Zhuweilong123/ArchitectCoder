@@ -92,7 +92,7 @@ asyncio.run(main())
 HTTP 接口：
 
 ```bash
-curl -X POST 'http://localhost:8000/api/trace/20260813_232810/replay?mode=mock'
+curl -X POST 'http://localhost:8001/api/trace/20260813_232810/replay?mode=mock'
 ```
 
 ## 7. 常见问题

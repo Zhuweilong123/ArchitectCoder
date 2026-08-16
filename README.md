@@ -131,7 +131,7 @@ uml_designer/
 # 后端
 cd backend && pip install -r requirements.txt
 # 编辑 .env：设置 DEEPSEEK_API_KEY
-python -m app.main          # http://localhost:8000
+python -m app.main          # http://localhost:8001
 
 # 前端
 cd frontend && npm install && npm run dev   # http://localhost:3000
