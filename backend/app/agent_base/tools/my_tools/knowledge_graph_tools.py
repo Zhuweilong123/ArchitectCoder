@@ -170,30 +170,27 @@ class KgQueryTool(AsyncTool):
         self.db_path = db_path
         self.project_file = project_file
 
-    def _ensure_project_indexed(self, project_id: str) -> bool:
-        """确保 project_id 已索引；缺失时尝试从 project_file 按需构建.
-
-        Returns:
-            True 表示项目数据可查（原本就有或构建成功），否则 False。
-        """
+    def _indexed_diagram_signature(self, project_id: str) -> set[tuple[str, str]]:
+        """KG 中已索引的图签名：{(name, diagram_type)}."""
+        from knowledge_graph.database import KnowledgeGraphDB
+        db = KnowledgeGraphDB(self.db_path)
         try:
-            from knowledge_graph.database import KnowledgeGraphDB
-            db = KnowledgeGraphDB(self.db_path)
-            existing = db.find_nodes(project_id, limit=1)
+            diagrams = db.find_nodes(
+                project_id, node_type="diagram", source="design", limit=200,
+            )
+            return {
+                (d.name, (d.properties or {}).get("diagram_type", ""))
+                for d in diagrams
+            }
+        finally:
             db.close()
-            if existing:
-                return True
-        except Exception:
-            logger.warning("[KG] Failed to check project index", exc_info=True)
-            return False
 
-        if not self.project_file:
+    def _build_project_index(self, project_id: str) -> bool:
+        """从 project_file 全量重建 design 层索引（兜底）。"""
+        if not self.project_file or not os.path.isfile(self.project_file):
+            logger.warning("[KG] project_file missing: %s", self.project_file)
             return False
         try:
-            import os as _os
-            if not _os.path.isfile(self.project_file):
-                logger.warning("[KG] project_file missing: %s", self.project_file)
-                return False
             from knowledge_graph.builder import GraphBuilder
             from app.services.file_service import load_project
             project = load_project(self.project_file)
@@ -205,6 +202,48 @@ class KgQueryTool(AsyncTool):
         except Exception:
             logger.exception("[KG] On-demand build failed for '%s'", project_id)
             return False
+
+    def _ensure_project_indexed(self, project_id: str) -> bool:
+        """确保 project_id 已索引且与文件一致；缺失或陈旧时按需重建.
+
+        之前只用「项目有没有任意节点」判断，导致文件里后来新增的图（例如类图）
+        在 KG 已有一张图后永远不会被索引。现在比对文件与 KG 的图签名集合，
+        不一致（新增/删除/改类型）即重建。
+
+        Returns:
+            True 表示项目数据可查（原本就有且未过期，或构建成功），否则 False。
+        """
+        try:
+            indexed = self._indexed_diagram_signature(project_id)
+        except Exception:
+            logger.warning("[KG] Failed to check project index", exc_info=True)
+            indexed = None
+
+        # 1) 无索引 → 直接构建
+        if not indexed:
+            return self._build_project_index(project_id)
+
+        # 2) 有索引但拿得到文件 → 比对图签名，检测新增/删除的图
+        if self.project_file and os.path.isfile(self.project_file):
+            try:
+                from app.services.file_service import load_project
+                project = load_project(self.project_file)
+                file_sig = {(d.name, d.diagram_type) for d in project.diagrams}
+            except Exception:
+                logger.warning(
+                    "[KG] Failed to load project file for staleness check",
+                    exc_info=True,
+                )
+                file_sig = None
+
+            if file_sig is not None and file_sig != indexed:
+                logger.info(
+                    "[KG] Stale index for '%s': file=%s indexed=%s — rebuilding",
+                    project_id, sorted(file_sig), sorted(indexed),
+                )
+                return self._build_project_index(project_id)
+
+        return True
 
     async def _execute(self, params: dict) -> str:
         retriever = _open_retriever(self.db_path)
