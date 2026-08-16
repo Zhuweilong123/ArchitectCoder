@@ -101,6 +101,8 @@ LLM 调用类型: {call_type}
   模块耦合方式 → arch:module_coupling。
 - original_text: 原始上下文详情 (2-3 句话, 保留完整细节)
 - tags: 2-4 个关键词标签
+- aliases: 检索别名/同义词列表 (2-4 个, 中英对照、近义说法、常见简称/缩写), 用于拓宽检索召回。
+  例: 类图 → ["class diagram", "class", "类图"]; 组合模式 → ["composition", "composite"]。
 - importance: 0.0~1.0 重要性 (重要设计决策=0.9, 一般偏好=0.5, 临时备注=0.2)
 
 只返回有效 JSON 数组, 不要额外解释.
@@ -113,6 +115,7 @@ LLM 调用类型: {call_type}
     "summary": "用户偏好使用组合模式而非继承来复用代码",
     "original_text": "在优化 Blog 系统类图时, 用户明确表示偏好组合模式, 认为继承链过深难以维护",
     "tags": ["设计模式", "组合优于继承", "类图"],
+    "aliases": ["composition", "composite", "组合模式"],
     "importance": 0.8
   }},
   {{
@@ -121,6 +124,7 @@ LLM 调用类型: {call_type}
     "subject": "uml:class_diagram:existence",
     "original_text": "探索项目时发现 UML 设计包含类图、时序图和组件图三张图",
     "tags": ["UML", "类图"],
+    "aliases": ["class diagram", "class", "类图"],
     "importance": 0.6
   }}
 ]
@@ -256,6 +260,17 @@ class MemoryManager:
                 if "metadata" in item and isinstance(item["metadata"], dict):
                     metadata.update(item["metadata"])
 
+                # 检索别名并入 tags：中英对照/近义说法参与 BM25 召回
+                raw_tags = item.get("tags", []) or []
+                raw_aliases = item.get("aliases", []) or []
+                if isinstance(raw_aliases, str):
+                    raw_aliases = [raw_aliases]
+                merged_tags: List[str] = []
+                for t in list(raw_tags) + list(raw_aliases):
+                    s = str(t).strip()
+                    if s and s not in merged_tags:
+                        merged_tags.append(s)
+
                 entry = MemoryEntry(
                     project_id=project_id,
                     memory_type=MemoryType(item.get("memory_type", "insight")),
@@ -263,7 +278,7 @@ class MemoryManager:
                     original_text=item.get("original_text", item.get("context", context)),
                     subject=_normalize_subject(item.get("subject", "")),
                     metadata=metadata,
-                    tags=item.get("tags", []),
+                    tags=merged_tags,
                     importance_score=float(item.get("importance", 0.5)),
                     updated_at=_utc_now(),
                     user_feedback=user_feedback,

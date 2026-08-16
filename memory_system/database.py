@@ -77,6 +77,13 @@ PRAGMA_INIT = [
     "PRAGMA cache_size=-8000;",  # 8MB cache
 ]
 
+
+def _search_text(summary: str, tags: List[str]) -> str:
+    """构造 FTS 索引文本: summary + tags(含检索别名), 让标签/别名参与 BM25 召回."""
+    parts = [summary or ""]
+    parts.extend(str(t).strip() for t in (tags or []) if str(t).strip())
+    return " ".join(parts)
+
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
@@ -207,7 +214,7 @@ class MemoryDatabase:
 
         # FTS5: 预分词后插入独立 FTS 表 (rowid 与 memories 表一致)
         rowid = cursor.lastrowid
-        fts_tokens = tokenize_for_fts(entry.summary)
+        fts_tokens = tokenize_for_fts(_search_text(entry.summary, entry.tags))
         if fts_tokens.strip():
             conn.execute(
                 "INSERT INTO memories_fts(rowid, summary) VALUES (?, ?)",
@@ -303,7 +310,7 @@ class MemoryDatabase:
 
         # 更新 FTS5
         conn.execute("DELETE FROM memories_fts WHERE rowid = ?", (rowid,))
-        fts_tokens = tokenize_for_fts(entry.summary)
+        fts_tokens = tokenize_for_fts(_search_text(entry.summary, entry.tags))
         if fts_tokens.strip():
             conn.execute(
                 "INSERT INTO memories_fts(rowid, summary) VALUES (?, ?)",
