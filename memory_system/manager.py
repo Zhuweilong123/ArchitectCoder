@@ -20,18 +20,24 @@ MemoryManager — 记忆系统顶层接口
 import asyncio
 import json
 import logging
+import math
 import re
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .database import MemoryDatabase
 from .lifecycle import LifecycleManager
 from .models import (
     MemoryEntry, MemoryType, MemoryConfig,
-    RetrieveMode, RecallResult, _utc_now,
+    RetrieveMode, RecallResult, _utc_now, _utc_now_dt,
 )
 from .tokenizer import tokenize_for_fts, tokenize
 
 logger = logging.getLogger(__name__)
+
+# 机会式 maintenance 节流: project_id → 上次 maintenance 时间 (UTC datetime)
+# 用模块级状态而非 DB, 仅作粗粒度节流 (防止每次 remember 都全量衰减)。
+_LAST_MAINTENANCE: Dict[str, datetime] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +57,14 @@ def _jaccard_similarity(text_a: str, text_b: str) -> float:
     intersection = tokens_a & tokens_b
     union = tokens_a | tokens_b
     return len(intersection) / len(union)
+
+
+def _normalize_subject(subject: str) -> str:
+    """规范化主题键: strip + lowercase + 折叠空白.
+
+    保证 LLM 输出的 subject 在存储侧稳定, 减少同主题漂移导致的碎片化。
+    """
+    return re.sub(r"\s+", " ", (subject or "").strip().lower())
 
 # ---------------------------------------------------------------------------
 # type alias
@@ -81,6 +95,10 @@ LLM 调用类型: {call_type}
 返回 JSON 数组, 每条记忆包含:
 - memory_type: "preference" | "decision" | "rejection" | "convention" | "insight"
 - summary: 核心 insight 摘要 (1 句话, 简洁明确, 用于检索匹配)
+- subject: 主题键 (仅 memory_type=insight 必填, 其它类型可省略或留空)。
+  格式 "实体:方面", 短且稳定可复现——同一事实的每次更新必须用同一个键。
+  例如: 类图是否存在 → uml:class_diagram:existence; 某类的方法集 → class:ModeController:methods;
+  模块耦合方式 → arch:module_coupling。
 - original_text: 原始上下文详情 (2-3 句话, 保留完整细节)
 - tags: 2-4 个关键词标签
 - importance: 0.0~1.0 重要性 (重要设计决策=0.9, 一般偏好=0.5, 临时备注=0.2)
@@ -96,6 +114,14 @@ LLM 调用类型: {call_type}
     "original_text": "在优化 Blog 系统类图时, 用户明确表示偏好组合模式, 认为继承链过深难以维护",
     "tags": ["设计模式", "组合优于继承", "类图"],
     "importance": 0.8
+  }},
+  {{
+    "memory_type": "insight",
+    "summary": "当前 UML 项目包含类图、时序图和组件图",
+    "subject": "uml:class_diagram:existence",
+    "original_text": "探索项目时发现 UML 设计包含类图、时序图和组件图三张图",
+    "tags": ["UML", "类图"],
+    "importance": 0.6
   }}
 ]
 ```"""
@@ -189,6 +215,9 @@ class MemoryManager:
             logger.info(f"[MemoryManager] extract_fn is None, skipping auto-extract for {project_id}")
             return []
 
+        # 机会式维护: 距上次超过间隔则衰减 + 淘汰 (兜底遗忘)
+        self._maybe_maintenance(project_id)
+
         # 1. 构建提取 prompt
         prompt = EXTRACT_PROMPT.format(
             context=context,
@@ -232,14 +261,37 @@ class MemoryManager:
                     memory_type=MemoryType(item.get("memory_type", "insight")),
                     summary=item.get("summary", item.get("content", "")),
                     original_text=item.get("original_text", item.get("context", context)),
+                    subject=_normalize_subject(item.get("subject", "")),
                     metadata=metadata,
                     tags=item.get("tags", []),
                     importance_score=float(item.get("importance", 0.5)),
+                    updated_at=_utc_now(),
                     user_feedback=user_feedback,
                     source=llm_call_type,
                 )
 
-                # ── 去重: FTS5 检索已有记忆, 计算 Jaccard 相似度 ──
+                # ── insight 类: 主题键后写覆盖 (last-write-wins) ──
+                # 同 subject 的最新观察顶替旧观察, 不继承旧重要度/访问次数,
+                # 避免"旧错误结论"被累积强化。
+                if entry.memory_type == MemoryType.INSIGHT and entry.subject:
+                    existing = self.db.get_by_subject(
+                        project_id, MemoryType.INSIGHT, entry.subject,
+                    )
+                    if existing:
+                        entry.id = existing.id
+                        entry.created_at = existing.created_at
+                        self.db.update(entry)
+                        dup_count += 1
+                        logger.debug(
+                            f"[MemoryManager] Superseded insight subject='{entry.subject}' "
+                            f"({existing.id[:8]}... -> {entry.summary[:30]}...)"
+                        )
+                    else:
+                        self.db.add(entry)
+                        new_entries.append(entry)
+                    continue
+
+                # ── 耐久类去重: FTS5 检索已有记忆, 计算 Jaccard 相似度 ──
                 candidates = self.db.find_similar(project_id, entry.summary, top_k=3)
                 best_sim = 0.0
                 best_match: Optional[MemoryEntry] = None
@@ -251,9 +303,11 @@ class MemoryManager:
                         best_match = rr.entry
 
                 if best_match and best_sim >= self.config.dedup_threshold:
-                    # 更新已有记忆: 提升重要性, 更新原文, 合并 tags
+                    # 更新已有记忆: 提升重要性, 更新原文与摘要, 合并 tags
                     best_match.importance_score = min(1.0, best_match.importance_score + 0.05)
                     best_match.original_text = entry.original_text
+                    best_match.summary = entry.summary
+                    best_match.updated_at = _utc_now()
                     best_match.access_count += 1
                     best_match.last_accessed_at = _utc_now()
                     best_match.tags = list(set(best_match.tags + entry.tags))
@@ -309,29 +363,31 @@ class MemoryManager:
             logger.warning("[MemoryManager] Hybrid retrieval not yet implemented, falling back to BM25")
             mode = RetrieveMode.BM25
 
-        # BM25 检索
+        # BM25 检索 (多取候选, recency 重排后截断)
         results: List[RecallResult] = []
         char_budget = max_tokens * 2  # 1 token ≈ 2 chars
+        fetch_k = max(top_k * 3, 10)
 
         if memory_types and len(memory_types) == 1:
             # 单类型过滤
             results = self.db.search_bm25(
-                project_id, query, top_k=top_k,
+                project_id, query, top_k=fetch_k,
                 memory_type=memory_types[0],
             )
         elif memory_types:
-            # 多类型过滤: 分别检索后合并排序
-            all_results: List[RecallResult] = []
+            # 多类型过滤: 分别检索后合并
             for mt in memory_types:
-                partial = self.db.search_bm25(
-                    project_id, query, top_k=top_k,
+                results.extend(self.db.search_bm25(
+                    project_id, query, top_k=fetch_k,
                     memory_type=mt,
-                )
-                all_results.extend(partial)
-            all_results.sort(key=lambda r: r.score, reverse=True)
-            results = all_results[:top_k]
+                ))
         else:
-            results = self.db.search_bm25(project_id, query, top_k=top_k)
+            results = self.db.search_bm25(project_id, query, top_k=fetch_k)
+
+        # recency 重排: insight 类越久没更新, 检索得分越低
+        self._apply_recency(results)
+        results.sort(key=lambda r: r.score, reverse=True)
+        results = results[:top_k]
 
         # Token 预算保护
         filtered: List[RecallResult] = []
@@ -347,6 +403,19 @@ class MemoryManager:
             f"(query: {query[:50]}..., mode={mode.value})"
         )
         return filtered
+
+    def _apply_recency(self, results: List[RecallResult]) -> None:
+        """对 insight 类记忆按新鲜度施加指数衰减 (就地改 score)。
+
+        只作用于 insight (状态类观察会过时); preference/decision 等耐久类不受影响。
+        """
+        half_life = max(self.config.recency_half_life_hours, 0.1)
+        for rr in results:
+            if rr.entry.memory_type != MemoryType.INSIGHT:
+                continue
+            age_hours = rr.entry.age_hours
+            if age_hours > 0:
+                rr.score = rr.score * math.exp(-age_hours / half_life)
 
     # ── inject ────────────────────────────────────────────────────────
 
@@ -482,6 +551,25 @@ class MemoryManager:
         return self.db.stats(project_id)
 
     # ── maintenance ───────────────────────────────────────────────────
+
+    def _maybe_maintenance(self, project_id: str) -> None:
+        """机会式维护: 距上次超过 maintenance_interval_hours 才衰减 + 淘汰。
+
+        用模块级时间戳节流, 避免每次 remember 都全量衰减。
+        """
+        now = _utc_now_dt()
+        last = _LAST_MAINTENANCE.get(project_id)
+        if last is not None:
+            elapsed_hours = (now - last).total_seconds() / 3600.0
+            if elapsed_hours < self.config.maintenance_interval_hours:
+                return
+        _LAST_MAINTENANCE[project_id] = now
+        try:
+            self.lifecycle.maintenance(project_id)
+        except Exception:
+            logger.warning(
+                "[MemoryManager] Opportunistic maintenance failed", exc_info=True,
+            )
 
     def maintenance(self, project_id: str) -> Dict[str, int]:
         """

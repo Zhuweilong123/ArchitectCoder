@@ -78,6 +78,7 @@ class MemoryEntry:
     memory_type: MemoryType
     summary: str
     original_text: str = ""
+    subject: str = ""            # 主题键 (insight 后写覆盖的主键; LLM 输出)
     id: str = field(default_factory=lambda: uuid4().hex)
     metadata: Dict[str, Any] = field(default_factory=dict)
     embedding: Optional[bytes] = None
@@ -86,6 +87,7 @@ class MemoryEntry:
     access_count: int = 0
     last_accessed_at: Optional[str] = None
     created_at: str = field(default_factory=_utc_now)
+    updated_at: str = ""         # 最近写入时间 (recency 衰减用)
     tags: List[str] = field(default_factory=list)
     source: str = ""
     user_feedback: Optional[str] = None
@@ -102,6 +104,20 @@ class MemoryEntry:
             return max(delta.total_seconds() / 86400.0, 0.0)
         except (ValueError, TypeError):
             return 365.0
+
+    @property
+    def age_hours(self) -> float:
+        """记忆"新鲜度"年龄 (小时), 基于最近写入时间 updated_at。
+
+        用于 insight 类记忆的 recency 衰减: 越久没被更新, 检索得分越低。
+        """
+        ts = self.updated_at or self.created_at
+        try:
+            dt = datetime.fromisoformat(ts)
+            delta = _utc_now_dt() - dt
+            return max(delta.total_seconds() / 3600.0, 0.0)
+        except (ValueError, TypeError):
+            return 365.0 * 24
 
     @property
     def days_since_access(self) -> float:
@@ -132,6 +148,7 @@ class MemoryEntry:
             memory_type=MemoryType(data.get("memory_type", "insight")),
             summary=data.get("summary", data.get("content", "")),
             original_text=data.get("original_text", data.get("context", "")),
+            subject=data.get("subject", ""),
             metadata=data.get("metadata", {}),
             embedding=data.get("embedding"),
             embedding_model=data.get("embedding_model", ""),
@@ -139,6 +156,7 @@ class MemoryEntry:
             access_count=int(data.get("access_count", 0)),
             last_accessed_at=data.get("last_accessed_at"),
             created_at=data.get("created_at", _utc_now()),
+            updated_at=data.get("updated_at", ""),
             tags=data.get("tags", []),
             source=data.get("source", ""),
             user_feedback=data.get("user_feedback"),
@@ -202,8 +220,13 @@ class MemoryConfig:
 
     # ── 生命周期 ──
     reinforce_delta: float = 0.1
-    decay_factor: float = 0.98      # 每次衰减 multiplier
+    decay_factor: float = 0.98      # 每次衰减 multiplier (耐久类: preference/decision/...)
+    insight_decay_factor: float = 0.93  # insight 类衰减更快 (状态类观察, 应随时间淡出)
     decay_interval_hours: int = 24
+    maintenance_interval_hours: int = 24   # 机会式 maintenance 节流间隔
     importance_min: float = 0.1     # 低于此值可被淘汰
     prune_batch_ratio: float = 0.1  # 每次最多淘汰的比例
     pin_access_threshold: int = 5   # access_count 达到此值自动 pin
+
+    # ── 检索 ──
+    recency_half_life_hours: float = 24.0  # insight 记忆的 recency 半衰期 (小时)
