@@ -547,9 +547,9 @@ async def _handle_dev(
     except Exception as e:
         logger.exception("[AgentChat] Dev agent execution error")
         if trace_log:
-            trace_log.error(event_type="agent", message=f"Agent error: {e}")
+            trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
         await _ws_send(websocket, {
-            "event": "error", "message": f"Agent error: {e}",
+            "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
         })
 
 

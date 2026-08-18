@@ -64,6 +64,20 @@ def _is_retryable(exc: Exception) -> bool:
     ))
 
 
+def _err_repr(exc: Exception) -> str:
+    """异常可读表示：类型 + 消息 + 根因链，便于 trace 定位连接错误的具体形态。
+
+    例如 ``APIConnectionError: Connection error. | caused by ConnectTimeout: ...``
+    而非笼统的 ``Connection error.``。只展开一层 ``__cause__``（openai 包裹层 →
+    httpx 具体异常），避免过度深入 socket 层。
+    """
+    s = f"{type(exc).__name__}: {exc}"
+    cause = exc.__cause__
+    if cause is not None:
+        s += f" | caused by {type(cause).__name__}: {cause}"
+    return s
+
+
 async def _await_with_retry(fn, *, max_retries: int = 2, on_error=None):
     """执行 ``fn()``（返回 awaitable），对可重试错误退避重试。
 
@@ -337,7 +351,7 @@ class BaseAgentsLLM:
             response = self._client.chat.completions.create(**call_kwargs)
             content = response.choices[0].message.content or ""
         except Exception as exc:
-            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+            _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
@@ -399,7 +413,7 @@ class BaseAgentsLLM:
             )
             content = response.choices[0].message.content or ""
         except Exception as exc:
-            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+            _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
@@ -440,7 +454,7 @@ class BaseAgentsLLM:
                         usage=_usage_dict(getattr(stream, "usage", None)),
                         duration_ms=(time.monotonic() - _t0) * 1000)
         except Exception as exc:
-            _trace_hook("llm_response", span_id=span_id, content=_full, error=str(exc),
+            _trace_hook("llm_response", span_id=span_id, content=_full, error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
 
@@ -481,7 +495,7 @@ class BaseAgentsLLM:
                 lambda: self._async_client.chat.completions.create(**call_kwargs),
             )
         except Exception as exc:
-            _trace_hook("llm_response", span_id=span_id, content="", error=str(exc),
+            _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         msg = response.choices[0].message
