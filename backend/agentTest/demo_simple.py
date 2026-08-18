@@ -13,7 +13,7 @@ import asyncio
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.agent_base import BaseAgentsLLM, SimpleAgent, ReActAgent, Config, ToolRegistry
 from app.agent_base.tools.base import Tool, ToolParameter
