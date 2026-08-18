@@ -242,7 +242,61 @@ insight 覆盖若继承旧重要度，等于把「错误的高重要度」转嫁
 | `prune_batch_ratio` | 0.1 | 每次最多淘汰比例 |
 | `pin_access_threshold` | 5 | access_count 达到则自动 pin |
 
-## 13. 文件索引
+## 13. 快速开始
+
+```python
+from memory_system import MemoryManager, MemoryConfig
+
+manager = MemoryManager(db_path="./memories.db")
+
+# 1. LLM 调用后：提取并存储记忆
+await manager.remember(
+    project_id="blog_system",
+    context="用户请求优化类图",
+    llm_call_type="optimize",
+    user_input="请优化 Blog 系统的类图设计",
+    llm_output="...",
+    extract_fn=my_llm_chat,   # 你的 LLM 调用函数
+)
+
+# 2. LLM 调用前：检索相关记忆
+results = await manager.recall(project_id="blog_system", query="如何优化时序图认证流程")
+
+# 3. 注入 system prompt
+enriched = manager.inject_memories(system_prompt="你是 UML 设计专家...", recall_results=results)
+
+# 4. 强化被使用的记忆
+manager.reinforce(results)
+
+# 5. 定期维护（衰减 + 淘汰）
+manager.maintenance("blog_system")
+```
+
+## 14. API 参考（MemoryManager）
+
+| 方法 | 说明 |
+|---|---|
+| `remember(project_id, ...)` | LLM 调用后提取并存储记忆（insight 后写覆盖 / 耐久类合并） |
+| `recall(project_id, query, top_k, mode)` | 检索相关记忆（BM25 + recency 重排） |
+| `inject_memories(prompt, results)` | 将记忆注入 system prompt |
+| `reinforce(results_or_id)` | 强化记忆（被使用后调用） |
+| `forget(project_id, memory_id)` | 删除指定记忆 |
+| `list_memories(project_id, type)` | 列出项目记忆 |
+| `stats(project_id)` | 获取统计信息 |
+| `maintenance(project_id)` | 执行衰减 + 淘汰 |
+| `pin / unpin(memory_id, project_id)` | 固定 / 取消固定（保护） |
+| `clear_project(project_id)` | 清除项目所有记忆 |
+| `close()` | 关闭数据库连接 |
+
+## 15. 设计决策
+
+1. **为什么 SQLite + FTS5？** 零运维全文检索，FTS5 内置 BM25 评分，WAL 支持并发读写。
+2. **为什么 jieba？** 中文语义分词，「组合模式」被切为一个 term，而非字符级 bigram。
+3. **为什么 summary + original_text 分离？** summary 供检索/注入（简洁），original_text 保留完整上下文（回溯）。
+4. **为什么 insight 后写覆盖？** 状态类观察会过时/被纠正，同 subject 新顶旧，避免矛盾累积。
+5. **为什么 Embedding 只预留接口？** 当前 BM25 + jieba 已覆盖核心需求，向量检索引入外部依赖，接口化后可无缝接入。
+
+## 16. 文件索引
 
 | 文件 | 职责 |
 |---|---|
