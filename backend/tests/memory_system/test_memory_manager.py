@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from memory_system.manager import MemoryManager, _normalize_subject
-from memory_system.models import MemoryEntry, MemoryType, RecallResult
+from memory_system.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
 
 
 def _extract(items):
@@ -137,3 +137,89 @@ def test_migration_adds_columns_idempotently(tmp_path):
     assert "updated_at" in cols
     assert db.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
     db.close()
+
+
+def test_recall_hits_chinese_and_alias(tmp_path):
+    """recall 端到端：中文命中 + 英文别名命中；别名并入 tags。"""
+    async def _run():
+        mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
+        await mgr.remember("p", "ctx", "explore", "u", "o", extract_fn=_extract([
+            {"memory_type": "insight", "summary": "当前项目包含类图时序图组件图",
+             "subject": "uml:diagrams", "importance": 0.7,
+             "tags": ["UML", "类图"], "aliases": ["class diagram", "class"]},
+        ]))
+
+        stored = mgr.db.list_by_project("p", memory_type=MemoryType.INSIGHT)[0]
+        assert "class diagram" in stored.tags  # 别名并入 tags
+
+        r1 = await mgr.recall("p", "类图 有哪些", top_k=5)
+        assert len(r1) >= 1
+        r2 = await mgr.recall("p", "class diagram", top_k=5)
+        assert len(r2) >= 1
+        assert r2[0].entry.summary == "当前项目包含类图时序图组件图"
+        mgr.close()
+
+    asyncio.run(_run())
+
+
+def test_inject_memories_format():
+    results = [RecallResult(entry=MemoryEntry(
+        project_id="p", memory_type=MemoryType.INSIGHT,
+        summary="记忆摘要", tags=["tag1"]), score=0.9)]
+    prompt = MemoryManager.inject_memories("你是助手", results)
+    assert "项目历史记忆" in prompt
+    assert "记忆摘要" in prompt
+    assert "tag1" in prompt
+    assert "相关性" in prompt
+
+
+def test_prune_removes_lowest_importance(tmp_path):
+    """超阈值时淘汰最低重要度；pin 与高重要度保留。"""
+    config = MemoryConfig(max_entries_per_project=2)
+    mgr = MemoryManager(db_path=str(tmp_path / "m.db"), config=config)
+    mgr.db.add(MemoryEntry(project_id="p", memory_type=MemoryType.INSIGHT,
+                           summary="low1", importance_score=0.15))
+    mgr.db.add(MemoryEntry(project_id="p", memory_type=MemoryType.INSIGHT,
+                           summary="low2", importance_score=0.16))
+    mgr.db.add(MemoryEntry(project_id="p", memory_type=MemoryType.INSIGHT,
+                           summary="high", importance_score=0.9))
+    mgr.db.add(MemoryEntry(project_id="p", memory_type=MemoryType.INSIGHT,
+                           summary="pinned", importance_score=0.14, is_pinned=True))
+
+    mgr.maintenance("p")
+
+    names = {e.summary for e in mgr.db.list_by_project("p")}
+    assert "high" in names
+    assert "pinned" in names
+    assert "low2" in names
+    assert "low1" not in names  # 最低重要度被淘汰
+    mgr.close()
+
+
+def test_reinforce_boosts_importance(tmp_path):
+    mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
+    entry = MemoryEntry(project_id="p", memory_type=MemoryType.PREFERENCE,
+                        summary="pref", importance_score=0.5)
+    mgr.db.add(entry)
+    mgr.reinforce(entry.id, project_id="p")
+    got = mgr.db.get("p", entry.id)
+    assert abs(got.importance_score - 0.6) < 1e-6  # 0.5 + 0.1
+    assert got.access_count == 1
+    mgr.close()
+
+
+def test_dedup_below_threshold_creates_new(tmp_path):
+    """不同主题的耐久类记忆低于相似度阈值 → 新建而非合并。"""
+    async def _run():
+        mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
+        await mgr.remember("p", "ctx", "opt", "u", "o", extract_fn=_extract([
+            {"memory_type": "preference", "summary": "用户偏好组合模式", "importance": 0.7, "tags": []},
+        ]))
+        await mgr.remember("p", "ctx", "opt", "u", "o", extract_fn=_extract([
+            {"memory_type": "preference", "summary": "项目使用微服务架构", "importance": 0.7, "tags": []},
+        ]))
+        rows = mgr.db.list_by_project("p", memory_type=MemoryType.PREFERENCE)
+        assert len(rows) == 2
+        mgr.close()
+
+    asyncio.run(_run())
