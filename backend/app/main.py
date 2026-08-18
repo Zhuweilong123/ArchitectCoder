@@ -6,14 +6,6 @@ import logging
 os.environ.setdefault("PYTHONUTF8", "1")
 sys.dont_write_bytecode = True  # Never generate __pycache__
 
-# ── 项目根目录加入 sys.path ─────────────────────────
-# 后端从 backend/ 启动，但 knowledge_graph / memory_system 位于项目根，
-# 必须显式加入 sys.path 才能 `from knowledge_graph.* import ...`。
-_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
 # ── Logging config ──────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,

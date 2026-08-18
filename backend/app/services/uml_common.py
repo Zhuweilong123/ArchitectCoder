@@ -283,11 +283,6 @@ def _fetch_kg_hits(project_file: str, instructions: str,
         ))
         if not os.path.isfile(kg_db):
             return
-        # knowledge_graph 在项目根，不在 backend 下，需要确保 path 可达
-        _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))))
-        if _proj_root not in sys.path:
-            sys.path.insert(0, _proj_root)
         from knowledge_graph.retriever import GraphRetriever
         _retriever = GraphRetriever(db_path=kg_db)
         try:
