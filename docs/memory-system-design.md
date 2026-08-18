@@ -1,6 +1,6 @@
 # 记忆系统设计
 
-> 本文完整归档 UML Designer 的 Agent 记忆系统（`memory_system/`）设计，
+> 本文完整归档 UML Designer 的 Agent 记忆系统（`backend/memory_system/`）设计，
 > 反映最新实现（含 subject 后写覆盖、recency 检索、类型化衰退）。
 > 作为后续接入向量/混合检索、调参、生命周期策略迭代的参考基线。
 
@@ -37,7 +37,7 @@ MemoryManager ── 顶层 API / 编排
 - **检索**：`recall` → FTS5 BM25 → recency 重排 → 截断 top_k → 注入。
 - **维护**：机会式触发 `decay + prune`。
 
-## 3. 数据模型（`memory_system/models.py`）
+## 3. 数据模型（`backend/memory_system/models.py`）
 
 ### 3.1 MemoryEntry
 
@@ -72,7 +72,7 @@ MemoryManager ── 顶层 API / 编排
 
 见 §9 配置项。
 
-## 4. 存储层（`memory_system/database.py`）
+## 4. 存储层（`backend/memory_system/database.py`）
 
 - **SQLite**：WAL + `synchronous=NORMAL` + `check_same_thread=False`，`memories` 主表。
 - **FTS5**：独立虚拟表 `memories_fts(summary)`，非 content-synced——写入时把
@@ -246,12 +246,12 @@ insight 覆盖若继承旧重要度，等于把「错误的高重要度」转嫁
 
 | 文件 | 职责 |
 |---|---|
-| `memory_system/manager.py` | `MemoryManager`：remember/recall/inject/forget/reinforce/maintenance + 提取 prompt + subject 分叉 |
-| `memory_system/database.py` | `MemoryDatabase`：SQLite + FTS5 存储、幂等迁移、BM25、`get_by_subject`、类型化 decay |
-| `memory_system/models.py` | `MemoryEntry` / `MemoryType` / `MemoryConfig` / `RecallResult` / `RetrieveMode` |
-| `memory_system/lifecycle.py` | `LifecycleManager`：reinforce / decay / prune / maintenance / pin |
-| `memory_system/tokenizer.py` | jieba / bigram 分词（`tokenize` / `tokenize_for_fts`） |
-| `memory_system/embedding.py` | `EmbeddingService` 协议 + 向量工具（预留） |
-| `memory_system/migrate.py` | 旧 JSON → SQLite 迁移脚本（一次性） |
+| `backend/memory_system/manager.py` | `MemoryManager`：remember/recall/inject/forget/reinforce/maintenance + 提取 prompt + subject 分叉 |
+| `backend/memory_system/database.py` | `MemoryDatabase`：SQLite + FTS5 存储、幂等迁移、BM25、`get_by_subject`、类型化 decay |
+| `backend/memory_system/models.py` | `MemoryEntry` / `MemoryType` / `MemoryConfig` / `RecallResult` / `RetrieveMode` |
+| `backend/memory_system/lifecycle.py` | `LifecycleManager`：reinforce / decay / prune / maintenance / pin |
+| `backend/memory_system/tokenizer.py` | jieba / bigram 分词（`tokenize` / `tokenize_for_fts`） |
+| `backend/memory_system/embedding.py` | `EmbeddingService` 协议 + 向量工具（预留） |
+| `backend/memory_system/migrate.py` | 旧 JSON → SQLite 迁移脚本（一次性） |
 | `backend/app/services/agent_chat_ws.py` | 归档 + 注入集成 |
 | `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | explore 归档集成 |
