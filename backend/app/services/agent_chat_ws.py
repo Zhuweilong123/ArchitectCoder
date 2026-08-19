@@ -29,6 +29,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.agents.react_agent import ReActAgent
+from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
@@ -242,19 +244,9 @@ async def _create_dev_agent(
         include_review=True, progress=progress,
     )
 
-    # 主 Agent 只保留执行类工具 + 探索入口 explore_project。
-    # 只读探索（kg_* / read_file / grep / project_info）收敛进 explore_project。
-
     registry = ToolRegistry()
     for t in tools:
         registry.register_tool(t)
-
-    # ── 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）──
-    from app.agent_base.tools.my_tools.explore_project_tools import create_explore_project_tool
-    registry.register_tool(create_explore_project_tool(
-        llm=llm, project_file=project_file,
-        source_dir=source_dir, test_dir=test_dir,
-    ))
 
     base_prompt_parts = [
         "You are an AI development assistant. Follow these principles:",
@@ -426,15 +418,10 @@ async def _handle_dev(
 
     if progress:
         progress.on_progress(_on_design_element)
+    _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
     try:
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         async for step_progress in agent.arun_stream(user_message):
-            if stop_check():
-                await _ws_send(websocket, {
-                    "event": "stopped", "reason": "User requested stop",
-                })
-                return
-
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
 
@@ -544,6 +531,10 @@ async def _handle_dev(
                     return
                 return
 
+    except AgentInterrupted:
+        await _ws_send(websocket, {
+            "event": "stopped", "reason": "User requested stop",
+        })
     except Exception as e:
         logger.exception("[AgentChat] Dev agent execution error")
         if trace_log:
@@ -551,6 +542,8 @@ async def _handle_dev(
         await _ws_send(websocket, {
             "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
         })
+    finally:
+        reset_runtime(_runtime_token)
 
 
 # ── WebSocket 端点 ──────────────────────────────────────

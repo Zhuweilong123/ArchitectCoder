@@ -868,14 +868,25 @@ def create_conversation_tools(
         (tools, review_manager) — tool 列表 + 审核管理器（若启用）
     """
     tools: list[Tool] = [
-        OptimizeUmlTool(llm, project_file=project_file, progress=progress),
-        GenerateCodeTool(llm, progress=progress),
-        ValidateCodeTool(llm, source_dir=source_dir, progress=progress),
-        GenerateTestsTool(llm, progress=progress),
-        FixCodeTool(llm, source_dir=source_dir, test_dir=test_dir, progress=progress),
-        RunTestsTool(source_dir=source_dir, test_dir=test_dir, progress=progress),
-        WriteFilesTool(source_dir=source_dir, test_dir=test_dir, progress=progress),
+        # OptimizeUmlTool(llm, project_file=project_file, progress=progress),
+        # GenerateCodeTool(llm, progress=progress),
+        # ValidateCodeTool(llm, source_dir=source_dir, progress=progress),
+        # GenerateTestsTool(llm, progress=progress),
+        # FixCodeTool(llm, source_dir=source_dir, test_dir=test_dir, progress=progress),
+        # RunTestsTool(source_dir=source_dir, test_dir=test_dir, progress=progress),
+        # WriteFilesTool(source_dir=source_dir, test_dir=test_dir, progress=progress),
     ]
+
+    # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
+    from .file_system_tools import create_file_system_tools
+    tools.extend(create_file_system_tools(source_dir, test_dir))
+
+    # # 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）
+    # from .explore_project_tools import create_explore_project_tool
+    # tools.append(create_explore_project_tool(
+    #     llm=llm, project_file=project_file,
+    #     source_dir=source_dir, test_dir=test_dir,
+    # ))
 
     review_mgr: ReviewManager | None = None
     if include_review:

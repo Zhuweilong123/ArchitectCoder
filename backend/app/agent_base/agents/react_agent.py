@@ -33,13 +33,11 @@ from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
 from ..core.config import Config
+from ..core.hooks import get_hooks, HookEvent, HookContext
+from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-# 工具返回喂回模型前的截断长度。trace 的 fed_truncated/fed_length 口径依赖此值，
-# 改动需同步 viewer 的截断提示。
-OBSERVATION_FEED_LIMIT = 2000
 
 # ── Function Calling 模式 system prompt ─────────────────
 FC_SYSTEM_PROMPT = """You are an AI assistant with reasoning and action capabilities.
@@ -318,168 +316,215 @@ class ReActAgent(Agent):
         no_tool_call_streak = 0
         _turn_recorded = False
 
-        for step in range(1, self.max_steps + 1):
-            logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
+        get_hooks().trigger(
+            HookEvent.RUN_START,
+            HookContext(event=HookEvent.RUN_START, agent_name=self.name),
+        )
+        try:
+            for step in range(1, self.max_steps + 1):
+                logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
 
-            # 1. 调用 LLM（带工具 schemas）
-            with trace_span(f"{self.name}"):
-                response = await self.llm.ainvoke_with_tools(
-                    messages=messages,
-                    tools=tool_specs,
-                    tool_choice="auto",
-                    temperature=kwargs.get("temperature", 0.3),
+                # 1. 调用 LLM（带工具 schemas）
+                get_hooks().trigger(
+                    HookEvent.LLM_BEFORE,
+                    HookContext(event=HookEvent.LLM_BEFORE, agent_name=self.name,
+                                messages=messages),
+                )
+                with trace_span(f"{self.name}"):
+                    response = await self.llm.ainvoke_with_tools(
+                        messages=messages,
+                        tools=tool_specs,
+                        tool_choice="auto",
+                        temperature=kwargs.get("temperature", 0.3),
+                    )
+                get_hooks().trigger(
+                    HookEvent.LLM_AFTER,
+                    HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
+                                messages=messages, llm_response=response),
                 )
 
-            tool_calls = response.get("tool_calls")
-            content = response.get("content") or ""
+                tool_calls = response.get("tool_calls")
+                content = response.get("content") or ""
 
-            # 2. 无 tool_calls → 纯文本回复
-            if not tool_calls:
-                no_tool_call_streak += 1
-                self.current_history.append(
-                    f"Step {step}: 模型返回纯文本 ({len(content)} 字符)"
-                )
-                logger.info("  → 无工具调用，streak=%d，内容预览: %s",
-                           no_tool_call_streak, content[:120])
-
-                messages.append({"role": "assistant", "content": content})
-
-                # 模型本轮直接给出实质回复（未调用工具）→ 这就是最终答案。
-                # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
-                # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
-                if content.strip():
-                    logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
-                    # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
-                    # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
-                    # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
-                    if not _turn_recorded:
-                        self.add_message(Message(input_text, "user"))
-                        self.add_message(Message(content, "assistant"))
-                        _turn_recorded = True
-                    yield ReActProgress(
-                        step=step, thought=content,
-                        is_final=True, final_answer=content,
-                    )
-                    break
-
-                # 空内容：提示模型使用工具
-                if step == 1:
-                    messages.append({
-                        "role": "user",
-                        "content": "Please call appropriate tools to answer the question. "
-                                   "If you need more information, you may call tools multiple times.",
-                    })
-                    yield ReActProgress(
-                        step=step, thought="(empty)", actions=[],
-                        is_final=False,
-                    )
-                else:
-                    yield ReActProgress(
-                        step=step, thought=content, actions=[],
-                        is_final=False,
-                    )
-                continue
-
-            # 3. 有 tool_calls → 全部执行
-            no_tool_call_streak = 0
-            tool_results: list[dict] = []
-            actions: list[str] = []
-            details: list[dict] = []
-
-            for tc in tool_calls:
-                fn = tc["function"]
-                tool_name = fn["name"]
-
-                # 解析参数
-                try:
-                    tool_args = json.loads(fn["arguments"])
-                except json.JSONDecodeError:
-                    err_obs = (
-                        f"Invalid JSON arguments for '{tool_name}'. "
-                        f"Raw: {fn.get('arguments', '')[:200]}. "
-                        f"Please re-send with valid JSON."
-                    )
+                # 2. 无 tool_calls → 纯文本回复
+                if not tool_calls:
+                    no_tool_call_streak += 1
                     self.current_history.append(
-                        f"Step {step}: {tool_name} → JSON解析失败"
+                        f"Step {step}: 模型返回纯文本 ({len(content)} 字符)"
+                    )
+                    logger.info("  → 无工具调用，streak=%d，内容预览: %s",
+                               no_tool_call_streak, content[:120])
+
+                    messages.append({"role": "assistant", "content": content})
+
+                    # 模型本轮直接给出实质回复（未调用工具）→ 这就是最终答案。
+                    # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
+                    # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
+                    if content.strip():
+                        logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
+                        # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
+                        # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
+                        # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
+                        if not _turn_recorded:
+                            self.add_message(Message(input_text, "user"))
+                            self.add_message(Message(content, "assistant"))
+                            _turn_recorded = True
+                        yield ReActProgress(
+                            step=step, thought=content,
+                            is_final=True, final_answer=content,
+                        )
+                        break
+
+                    # 空内容：提示模型使用工具
+                    if step == 1:
+                        messages.append({
+                            "role": "user",
+                            "content": "Please call appropriate tools to answer the question. "
+                                       "If you need more information, you may call tools multiple times.",
+                        })
+                        yield ReActProgress(
+                            step=step, thought="(empty)", actions=[],
+                            is_final=False,
+                        )
+                    else:
+                        yield ReActProgress(
+                            step=step, thought=content, actions=[],
+                            is_final=False,
+                        )
+                    continue
+
+                # 3. 有 tool_calls → 全部执行
+                no_tool_call_streak = 0
+                tool_results: list[dict] = []
+                actions: list[str] = []
+                details: list[dict] = []
+
+                for tc in tool_calls:
+                    fn = tc["function"]
+                    tool_name = fn["name"]
+
+                    # 解析参数
+                    try:
+                        tool_args = json.loads(fn["arguments"])
+                    except json.JSONDecodeError:
+                        err_obs = (
+                            f"Invalid JSON arguments for '{tool_name}'. "
+                            f"Raw: {fn.get('arguments', '')[:200]}. "
+                            f"Please re-send with valid JSON."
+                        )
+                        self.current_history.append(
+                            f"Step {step}: {tool_name} → JSON解析失败"
+                        )
+                        tool_results.append({
+                            "tool_call_id": tc["id"],
+                            "content": err_obs,
+                        })
+                        actions.append(tool_name)
+                        details.append({
+                            "name": tool_name,
+                            "arguments": fn.get("arguments", ""),
+                            "observation": err_obs,
+                        })
+                        continue
+
+                    # TOOL_BEFORE hook：返回 str 即 veto，跳过工具执行。
+                    veto = get_hooks().trigger(
+                        HookEvent.TOOL_BEFORE,
+                        HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
+                                    tool_name=tool_name, tool_input=tool_args),
+                    )
+                    if veto is not None:
+                        # 被 veto：veto 消息既是完整观察，也是喂给模型的口径。
+                        observation_full = veto
+                        observation_fed = veto
+                    else:
+                        # 执行工具
+                        with trace_span(f"{self.name}/{tool_name}"):
+                            result = await self.tool_registry.aexecute_tool_with_params(
+                                tool_name, tool_args,
+                            )
+                        observation_full = str(result)
+                        # TOOL_AFTER hook：返回 str 即 replace，只改喂给模型的口径。
+                        fed = get_hooks().trigger(
+                            HookEvent.TOOL_AFTER,
+                            HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
+                                        tool_name=tool_name, tool_input=tool_args,
+                                        tool_output=observation_full),
+                        )
+                        observation_fed = fed if fed is not None else observation_full
+
+                    # 框架统一记录完整 observation 与喂给模型的口径（fed_*）。
+                    fed_truncated = observation_full != observation_fed
+                    fed_length = len(observation_fed)
+
+                    self.current_history.append(
+                        f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
+                        f" → {observation_fed[:150]}"
                     )
                     tool_results.append({
                         "tool_call_id": tc["id"],
-                        "content": err_obs,
+                        "content": observation_fed,
                     })
                     actions.append(tool_name)
                     details.append({
                         "name": tool_name,
-                        "arguments": fn.get("arguments", ""),
-                        "observation": err_obs,
+                        "arguments": tool_args,
+                        "observation": observation_full,
+                        "fed_truncated": fed_truncated,
+                        "fed_length": fed_length,
                     })
-                    continue
+                    logger.info("  🔧 %s(%s) → %s",
+                               tool_name,
+                               json.dumps(tool_args, ensure_ascii=False)[:80],
+                               observation_fed[:80])
 
-                # 执行工具
-                with trace_span(f"{self.name}/{tool_name}"):
-                    result = await self.tool_registry.aexecute_tool_with_params(
-                        tool_name, tool_args,
-                    )
-                observation_full = str(result)
-                observation_short = observation_full[:OBSERVATION_FEED_LIMIT]
-
-                self.current_history.append(
-                    f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
-                    f" → {observation_short[:150]}"
-                )
-                tool_results.append({
-                    "tool_call_id": tc["id"],
-                    "content": observation_short,
-                })
-                actions.append(tool_name)
-                details.append({
-                    "name": tool_name,
-                    "arguments": tool_args,
-                    "observation": observation_full,
-                    "fed_truncated": len(observation_full) > OBSERVATION_FEED_LIMIT,
-                    "fed_length": min(len(observation_full), OBSERVATION_FEED_LIMIT),
-                })
-                logger.info("  🔧 %s(%s) → %s",
-                           tool_name,
-                           json.dumps(tool_args, ensure_ascii=False)[:80],
-                           observation_short[:80])
-
-            # 4. 追加 assistant + tool 消息到对话
-            messages.append({
-                "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls,
-            })
-            for tr in tool_results:
+                # 4. 追加 assistant + tool 消息到对话
                 messages.append({
-                    "role": "tool",
-                    "tool_call_id": tr["tool_call_id"],
-                    "content": tr["content"],
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
                 })
+                for tr in tool_results:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tr["tool_call_id"],
+                        "content": tr["content"],
+                    })
 
-            yield ReActProgress(
-                step=step,
-                actions=actions,
-                tool_calls_detail=details,
-                thought=content,
-                is_final=False,
-            )
+                yield ReActProgress(
+                    step=step,
+                    actions=actions,
+                    tool_calls_detail=details,
+                    thought=content,
+                    is_final=False,
+                )
 
-        # ── 最终处理 — 从 messages 中提取最后一条 assistant 内容 ──
-        final_answer = ""
-        for msg in reversed(messages):
-            if msg["role"] == "assistant" and msg.get("content"):
-                final_answer = msg["content"]
-                break
+            # ── 最终处理 — 从 messages 中提取最后一条 assistant 内容 ──
+            final_answer = ""
+            for msg in reversed(messages):
+                if msg["role"] == "assistant" and msg.get("content"):
+                    final_answer = msg["content"]
+                    break
 
-        if not final_answer:
-            final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
+            if not final_answer:
+                final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
 
-        # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
-        # _turn_recorded 防止与「模型直接回复」分支重复写入。
-        if not _turn_recorded:
-            self.add_message(Message(input_text, "user"))
-            self.add_message(Message(final_answer, "assistant"))
-        logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
+            # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
+            # _turn_recorded 防止与「模型直接回复」分支重复写入。
+            if not _turn_recorded:
+                self.add_message(Message(input_text, "user"))
+                self.add_message(Message(final_answer, "assistant"))
+            logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
+        finally:
+            try:
+                get_hooks().trigger(
+                    HookEvent.RUN_END,
+                    HookContext(event=HookEvent.RUN_END, agent_name=self.name),
+                )
+            except AgentInterrupted:
+                pass  # 结束阶段不再响应中断
+            except Exception:
+                logger.warning("[Hooks] RUN_END trigger failed", exc_info=True)
 
         # 除了已 yield 的 progress 外，不再额外 yield
         # — 调用方已经拿到了最终答案
