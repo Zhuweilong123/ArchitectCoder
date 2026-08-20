@@ -453,15 +453,25 @@ async def _handle_dev(
                             question=pr.get("question", ""),
                             content=pr.get("content", ""),
                         )
-                    ok = await _ws_send(websocket, {
-                        "event": "request_review",
-                        "review_id": i,
-                        "review_type": pr.get("review_type", "code"),
-                        "title": pr.get("title", ""),
-                        "content": pr.get("content", ""),
-                        "question": pr.get("question", ""),
-                        "step": d["step"],
-                    })
+                    if pr.get("review_type") == "uml_diff":
+                        metadata = pr.get("metadata", {}) or {}
+                        ok = await _ws_send(websocket, {
+                            "event": "uml_review",
+                            "review_id": i,
+                            "title": pr.get("title", ""),
+                            "diagrams": metadata.get("diagrams", []),
+                            "original_diagrams": metadata.get("original_diagrams"),
+                        })
+                    else:
+                        ok = await _ws_send(websocket, {
+                            "event": "request_review",
+                            "review_id": i,
+                            "review_type": pr.get("review_type", "code"),
+                            "title": pr.get("title", ""),
+                            "content": pr.get("content", ""),
+                            "question": pr.get("question", ""),
+                            "step": d["step"],
+                        })
                     if not ok:
                         return
                 continue
@@ -504,24 +514,6 @@ async def _handle_dev(
             })
             if not ok:
                 return
-
-            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端 DiffViewer 审核
-            for td in d.get("tool_calls_detail", []):
-                if td.get("name") == "optimize_uml":
-                    obs_str = str(td.get("observation", ""))
-                    try:
-                        obs = json.loads(obs_str)
-                    except (TypeError, json.JSONDecodeError):
-                        obs = None
-                    if isinstance(obs, dict) and obs.get("diagrams"):
-                        saved_to = obs.get("saved_to", "")
-                        await _ws_send(websocket, {
-                            "event": "design_updated",
-                            "diagrams": obs.get("diagrams", []),
-                            "saved_to": saved_to,
-                            "review": True,  # 始终需要用户审核确认
-                        })
-                    break
 
             if d["is_final"]:
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
@@ -657,7 +649,15 @@ async def agent_chat_ws(websocket: WebSocket):
             # ── 人工审核回复 ──
             elif msg_type == "review_response":
                 review_id = msg.get("review_id", 0)
-                response = msg.get("response", "")
+                # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
+                decision = msg.get("decision", "")
+                if decision:
+                    response = json.dumps({
+                        "decision": decision,
+                        "feedback": msg.get("feedback", ""),
+                    }, ensure_ascii=False)
+                else:
+                    response = msg.get("response", "")
                 if review_mgr:
                     review_mgr.resolve(review_id, response)
                     trace_log.review_response(review_id=review_id, response=response)

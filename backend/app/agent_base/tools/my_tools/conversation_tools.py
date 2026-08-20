@@ -894,8 +894,11 @@ def create_conversation_tools(
 
     review_mgr: ReviewManager | None = None
     if include_review:
-        from app.agent_base.tools.review import RequestReviewTool, ReviewManager
+        from app.agent_base.tools.review import (
+            RequestReviewTool, SubmitUmlReviewTool, ReviewManager,
+        )
         review_mgr = ReviewManager()
         tools.append(RequestReviewTool(manager=review_mgr))
+        tools.append(SubmitUmlReviewTool(manager=review_mgr))
 
     return tools, review_mgr

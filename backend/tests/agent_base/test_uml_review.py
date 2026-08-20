@@ -1,0 +1,84 @@
+"""SubmitUmlReviewTool / RequestReviewTool 单元测试（async future 等待闭环）。"""
+import asyncio
+import json
+
+from app.agent_base.tools.review import (
+    ReviewManager, RequestReviewTool, SubmitUmlReviewTool,
+)
+
+
+async def _run_with_resolve(mgr, tool, params, resolve_value, delay=0.05):
+    """在一个 task 里跑工具（会 await future），主协程稍后 resolve。"""
+    task = asyncio.create_task(tool._execute(params))
+    await asyncio.sleep(delay)  # 让 submit 完成、future 创建
+    mgr.resolve(0, resolve_value)
+    return await task
+
+
+def test_submit_uml_review_accept():
+    mgr = ReviewManager()
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=5)
+
+    async def _scenario():
+        return await _run_with_resolve(
+            mgr, tool,
+            {"diagrams_json": json.dumps([{"name": "A"}]), "summary": "add class"},
+            json.dumps({"decision": "accept", "feedback": ""}),
+        )
+
+    result = asyncio.run(_scenario())
+    assert "accept" in result
+
+
+def test_submit_uml_review_reject_with_feedback():
+    mgr = ReviewManager()
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=5)
+
+    async def _scenario():
+        return await _run_with_resolve(
+            mgr, tool,
+            {"diagrams_json": json.dumps([{"name": "A"}])},
+            json.dumps({"decision": "reject", "feedback": "关联关系改错了"}, ensure_ascii=False),
+        )
+
+    result = asyncio.run(_scenario())
+    assert "reject" in result
+    assert "关联关系改错了" in result
+
+
+def test_request_review_accept():
+    mgr = ReviewManager()
+    tool = RequestReviewTool(manager=mgr, timeout=5)
+
+    async def _scenario():
+        return await _run_with_resolve(
+            mgr, tool,
+            {"review_type": "code", "title": "t", "content": "c", "question": "ok?"},
+            "批准",
+        )
+
+    result = asyncio.run(_scenario())
+    assert "批准" in result
+
+
+def test_submit_uml_review_metadata():
+    """submit 后 metadata 承载 diagrams / original_diagrams，供前端 diff 使用。"""
+    mgr = ReviewManager()
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=5)
+
+    async def _scenario():
+        task = asyncio.create_task(tool._execute({
+            "diagrams_json": json.dumps([{"name": "new"}]),
+            "original_diagrams_json": json.dumps([{"name": "old"}]),
+        }))
+        await asyncio.sleep(0.05)
+        pending = mgr.get_pending()
+        mgr.resolve(0, json.dumps({"decision": "accept", "feedback": ""}))
+        await task
+        return pending
+
+    pending = asyncio.run(_scenario())
+    assert len(pending) == 1
+    assert pending[0]["review_type"] == "uml_diff"
+    assert pending[0]["metadata"]["diagrams"] == [{"name": "new"}]
+    assert pending[0]["metadata"]["original_diagrams"] == [{"name": "old"}]
