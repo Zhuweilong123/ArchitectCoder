@@ -270,6 +270,20 @@ async def _create_dev_agent(
             f"  (use this exact path as project_file parameter for optimize_uml; "
             f"do NOT guess or shorten the filename)"
         )
+    # ── 注入 workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
+    from app.core.config import get_settings
+    design_dir = os.path.abspath(get_settings().uml_dir)
+    workspace_entries = [
+        ("Source directory", source_dir),
+        ("Test directory", test_dir),
+        ("Design directory", design_dir),
+    ]
+    provided = [(label, d) for label, d in workspace_entries if d]
+    if provided:
+        lines = ["\n## Workspace (Windows environment, absolute paths)"]
+        for label, d in provided:
+            lines.append(f"- {label}: {d}")
+        base_prompt_parts.append("\n".join(lines))
     base_prompt = "\n".join(base_prompt_parts)
     # 注入项目历史记忆（跨任务 recall）
     project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""

@@ -47,11 +47,13 @@ def _decode_output(data: bytes) -> str:
         return data.decode("gbk", errors="replace")
 
 
-def safe_path(path: str, roots: list[str]) -> Path:
+def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
     """解析路径并保证落在任一 workspace root 内，否则抛 ValueError。
 
     - 绝对路径：``resolve()`` 后必须 ``is_relative_to`` 任一 root
-    - 相对路径：解析到 ``roots[0]``（source_dir 优先），``is_relative_to`` 防 ``..`` 逃逸
+    - 相对路径：默认解析到 ``roots[0]``（source_dir 优先）；
+      ``require_exist=True`` 时按顺序尝试所有 root，返回第一个存在的文件
+      （读/编辑用，避免「相对路径固定 roots[0]」找不到其他 root 里的文件）
     """
     if not roots:
         raise ValueError("No workspace root configured")
@@ -62,13 +64,23 @@ def safe_path(path: str, roots: list[str]) -> Path:
     p = Path(path)
     if p.is_absolute():
         resolved = p.resolve()
-    else:
-        resolved = (resolved_roots[0] / p).resolve()
+        for root in resolved_roots:
+            if resolved.is_relative_to(root):
+                return resolved
+        raise ValueError(f"Path escapes workspace: {path}")
 
-    for root in resolved_roots:
-        if resolved.is_relative_to(root):
-            return resolved
-    raise ValueError(f"Path escapes workspace: {path}")
+    # 相对路径：require_exist 时按顺序尝试所有 root，返回第一个存在的
+    if require_exist:
+        for root in resolved_roots:
+            candidate = (root / p).resolve()
+            if candidate.is_relative_to(root) and candidate.exists():
+                return candidate
+
+    # 默认 / fallback：固定第一个 root，检查逃逸
+    resolved = (resolved_roots[0] / p).resolve()
+    if not resolved.is_relative_to(resolved_roots[0]):
+        raise ValueError(f"Path escapes workspace: {path}")
+    return resolved
 
 
 def _resolve_roots(source_dir: str, test_dir: str, design_dir: str = "") -> list[str]:
@@ -91,7 +103,7 @@ class ReadFileTool(AsyncTool):
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
         try:
-            fp = safe_path(path, self._roots)
+            fp = safe_path(path, self._roots, require_exist=True)
         except ValueError as e:
             return f"Error: {e}"
         try:
@@ -191,7 +203,7 @@ class EditFileTool(AsyncTool):
         old_text = params.get("old_text", "")
         new_text = params.get("new_text", "")
         try:
-            fp = safe_path(path, self._roots)
+            fp = safe_path(path, self._roots, require_exist=True)
         except ValueError as e:
             return f"Error: {e}"
         try:
