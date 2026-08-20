@@ -177,18 +177,21 @@ class ReActAgent(Agent):
     # Public API
     # ═══════════════════════════════════════════════════════
 
-    async def arun(self, input_text: str, **kwargs) -> str:
+    async def arun(self, input_text: str, context: str = "", **kwargs) -> str:
         """异步运行 ReAct 循环（推荐入口）。
 
         当 ``use_native_fc=True`` 且有工具注册时使用原生 Function Calling；
         否则降级到同步文本解析 ``run()``。
+
+        ``context`` 为可选易变上下文尾块，追加在最后一条 user 消息末尾
+        （history 之后），不影响 system+history 前缀的 KV 缓存命中。
         """
         if self.use_native_fc and self.tool_registry:
-            return await self._arun_with_fc(input_text, **kwargs)
+            return await self._arun_with_fc(input_text, context=context, **kwargs)
         logger.info("⚡ %s 降级到文本解析模式", self.name)
         return self.run(input_text, **kwargs)
 
-    async def arun_stream(self, input_text: str, **kwargs) -> AsyncIterator[ReActProgress]:
+    async def arun_stream(self, input_text: str, context: str = "", **kwargs) -> AsyncIterator[ReActProgress]:
         """流式运行 ReAct 循环 — 每轮 yield :class:`ReActProgress`。
 
         用于前端实时展示、编排层监控等需要逐轮获取进度的场景。
@@ -196,7 +199,7 @@ class ReActAgent(Agent):
         当 ``use_native_fc=False`` 时，自动降级为仅 yield 最终结果。
         """
         if self.use_native_fc and self.tool_registry:
-            async for progress in self._arun_with_fc_stream(input_text, **kwargs):
+            async for progress in self._arun_with_fc_stream(input_text, context=context, **kwargs):
                 yield progress
         else:
             # 降级：同步 run() 只产出一个最终结果
@@ -273,10 +276,10 @@ class ReActAgent(Agent):
         base = self.system_prompt or FC_SYSTEM_PROMPT
         return base
 
-    async def _arun_with_fc(self, input_text: str, **kwargs) -> str:
+    async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs) -> str:
         """一次性 FC 循环 — 收集流式输出，返回最终答案。"""
         final_answer = ""
-        async for progress in self._arun_with_fc_stream(input_text, **kwargs):
+        async for progress in self._arun_with_fc_stream(input_text, context=context, **kwargs):
             if progress.is_final:
                 final_answer = progress.final_answer
         if not final_answer:
@@ -284,7 +287,7 @@ class ReActAgent(Agent):
         return final_answer
 
     async def _arun_with_fc_stream(
-        self, input_text: str, **kwargs
+        self, input_text: str, context: str = "", **kwargs
     ) -> AsyncIterator[ReActProgress]:
         """原生 Function Calling 驱动的流式主循环。
 
@@ -309,8 +312,12 @@ class ReActAgent(Agent):
         for msg in self._history:
             messages.append({"role": msg.role, "content": msg.content})
 
-        # 最新用户输入必须放在历史末尾（多轮对话中 LLM 视最后一条 user 为当前问题）
-        messages.append({"role": "user", "content": input_text})
+        # 最新用户输入必须放在历史末尾（多轮对话中 LLM 视最后一条 user 为当前问题）。
+        # context 是易变上下文尾块（workspace/项目/记忆/日期），追加在最后一条
+        # user 消息末尾——位于 history 之后，故其变化不会破坏 system+history 前缀
+        # 的 KV 缓存命中（最大化缓存复用的关键）。
+        user_content = f"{context}\n\n{input_text}" if context else input_text
+        messages.append({"role": "user", "content": user_content})
 
         self.current_history = []
         no_tool_call_streak = 0

@@ -32,6 +32,7 @@ class AgentSession:
     agent: Any = None              # ReActAgent（含 _history）
     review_mgr: Any = None
     progress: Any = None
+    prompt_builder: Any = None     # DevPromptBuilder（静态 system prompt + 易变上下文 memo）
     trace_log: Any = None          # ChatTraceLogger，跨连接复用
     last_active: float = field(default_factory=time.time)
 
