@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
-import locale
 import logging
 import subprocess
 from pathlib import Path
@@ -36,15 +35,16 @@ BASH_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂�
 
 
 def _decode_output(data: bytes) -> str:
-    """解码子进程输出：优先 UTF-8，失败回退 locale 编码。
+    """解码子进程输出：优先 UTF-8，失败回退 GBK。
 
     中文 Windows 上 cmd.exe 的错误信息是 GBK（cp936），而 Python 子进程
-    （PYTHONUTF8=1）输出 UTF-8，单一编码无法同时覆盖，故按 UTF-8 → locale 回退。
+    （PYTHONUTF8=1）输出 UTF-8。不能用 locale.getpreferredencoding()——它在
+    PYTHONUTF8=1 下会返回 utf-8，导致 GBK fallback 失效。
     """
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        return data.decode(locale.getpreferredencoding(False), errors="replace")
+        return data.decode("gbk", errors="replace")
 
 
 def safe_path(path: str, roots: list[str]) -> Path:
@@ -71,14 +71,14 @@ def safe_path(path: str, roots: list[str]) -> Path:
     raise ValueError(f"Path escapes workspace: {path}")
 
 
-def _resolve_roots(source_dir: str, test_dir: str) -> list[str]:
-    return [d for d in (source_dir, test_dir) if d]
+def _resolve_roots(source_dir: str, test_dir: str, design_dir: str = "") -> list[str]:
+    return [d for d in (source_dir, test_dir, design_dir) if d]
 
 
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
         super().__init__(
             name="read_file",
             description=(
@@ -86,7 +86,7 @@ class ReadFileTool(AsyncTool):
                 "Use offset (start line) and limit (max lines) to read a specific range."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir)
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -131,7 +131,7 @@ class ReadFileTool(AsyncTool):
 class WriteFileTool(AsyncTool):
     """写文件到 workspace（覆盖或新建，自动建父目录）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
         super().__init__(
             name="write_file",
             description=(
@@ -139,7 +139,7 @@ class WriteFileTool(AsyncTool):
                 "directories as needed. Overwrites existing files."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir)
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -176,7 +176,7 @@ class WriteFileTool(AsyncTool):
 class EditFileTool(AsyncTool):
     """精确文本替换（只替换首次出现）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
         super().__init__(
             name="edit_file",
             description=(
@@ -184,7 +184,7 @@ class EditFileTool(AsyncTool):
                 "Use for precise, small edits without rewriting the whole file."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir)
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -228,7 +228,7 @@ class EditFileTool(AsyncTool):
 class GlobTool(AsyncTool):
     """按 glob 模式在 workspace 内查找文件。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
         super().__init__(
             name="glob",
             description=(
@@ -236,7 +236,7 @@ class GlobTool(AsyncTool):
                 "(e.g. '**/*.py', 'src/*.ts'). Returns relative paths."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir)
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
 
     async def _execute(self, params: dict) -> str:
         pattern = params.get("pattern", "")
@@ -276,7 +276,7 @@ class GlobTool(AsyncTool):
 class BashTool(AsyncTool):
     """在 workspace 内跑 shell 命令（deny list + 超时守卫）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
         super().__init__(
             name="bash",
             description=(
@@ -284,7 +284,7 @@ class BashTool(AsyncTool):
                 "Returns combined stdout/stderr. Denied for dangerous commands."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir)
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
         self._cwd = self._roots[0] if self._roots else ""
 
     async def _execute(self, params: dict) -> str:
@@ -336,12 +336,12 @@ class BashTool(AsyncTool):
         }
 
 
-def create_file_system_tools(source_dir: str = "", test_dir: str = "") -> list[Tool]:
+def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "") -> list[Tool]:
     """创建 A 层文件系统原语工具列表。"""
     return [
-        ReadFileTool(source_dir, test_dir),
-        WriteFileTool(source_dir, test_dir),
-        EditFileTool(source_dir, test_dir),
-        GlobTool(source_dir, test_dir),
-        BashTool(source_dir, test_dir),
+        ReadFileTool(source_dir, test_dir, design_dir),
+        WriteFileTool(source_dir, test_dir, design_dir),
+        EditFileTool(source_dir, test_dir, design_dir),
+        GlobTool(source_dir, test_dir, design_dir),
+        BashTool(source_dir, test_dir, design_dir),
     ]

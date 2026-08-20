@@ -129,3 +129,17 @@ def test_decode_output_gbk_fallback():
     assert _decode_output("你好".encode("utf-8")) == "你好"
     # 纯 ASCII 两种编码一致
     assert _decode_output(b"hello") == "hello"
+
+
+def test_read_file_allows_design_dir(tmp_path):
+    src = tmp_path / "src"
+    design = tmp_path / "uml"
+    src.mkdir()
+    design.mkdir()
+    (design / "proj.umlproj").write_text("diagram", encoding="utf-8")
+
+    tools = create_file_system_tools(str(src), "", str(design))
+    read = next(t for t in tools if t.name == "read_file")
+
+    # design_dir 内的绝对路径文件可读（不再被 workspace 守卫拒绝）
+    assert "diagram" in _run(read, {"path": str(design / "proj.umlproj")})

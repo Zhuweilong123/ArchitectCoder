@@ -879,7 +879,9 @@ def create_conversation_tools(
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
-    tools.extend(create_file_system_tools(source_dir, test_dir))
+    from app.core.config import get_settings
+    design_dir = os.path.abspath(get_settings().uml_dir)
+    tools.extend(create_file_system_tools(source_dir, test_dir, design_dir))
 
     # # 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）
     # from .explore_project_tools import create_explore_project_tool
