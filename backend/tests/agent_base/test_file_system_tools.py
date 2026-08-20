@@ -143,3 +143,18 @@ def test_read_file_allows_design_dir(tmp_path):
 
     # design_dir 内的绝对路径文件可读（不再被 workspace 守卫拒绝）
     assert "diagram" in _run(read, {"path": str(design / "proj.umlproj")})
+
+
+def test_read_file_relative_tries_all_roots(tmp_path):
+    src = tmp_path / "src"
+    test = tmp_path / "tests"
+    src.mkdir()
+    test.mkdir()
+    # 文件在 test 目录（第二个 root），不在 source（第一个 root）
+    (test / "test_a.py").write_text("in test", encoding="utf-8")
+
+    tools = create_file_system_tools(str(src), str(test))
+    read = next(t for t in tools if t.name == "read_file")
+
+    # 相对路径按顺序尝试所有 root，能在 test_dir 找到
+    assert "in test" in _run(read, {"path": "test_a.py"})

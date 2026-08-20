@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Sub-agent model — used by tool-calling sub-agents (ReAct, pipeline stages, etc.)
     sub_agent_model: str = "deepseek-v4-flash"
 
+    # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
+    # consistency checks) need more than the old 12-round cap
+    agent_max_steps: int = 50
+
     @field_validator("deepseek_api_key")
     @classmethod
     def check_key_not_default(cls, v: str) -> str:

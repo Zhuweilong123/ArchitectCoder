@@ -270,6 +270,22 @@ async def _create_dev_agent(
             f"  (use this exact path as project_file parameter for optimize_uml; "
             f"do NOT guess or shorten the filename)"
         )
+    # ── 注入 workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
+    from app.core.config import get_settings
+    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
+    design_dir = (os.path.dirname(os.path.abspath(project_file))
+                  if project_file else os.path.abspath(get_settings().uml_dir))
+    workspace_entries = [
+        ("Source directory", source_dir),
+        ("Test directory", test_dir),
+        ("Design directory", design_dir),
+    ]
+    provided = [(label, d) for label, d in workspace_entries if d]
+    if provided:
+        lines = ["\n## Workspace (Windows environment, absolute paths)"]
+        for label, d in provided:
+            lines.append(f"- {label}: {d}")
+        base_prompt_parts.append("\n".join(lines))
     base_prompt = "\n".join(base_prompt_parts)
     # 注入项目历史记忆（跨任务 recall）
     project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
@@ -280,7 +296,7 @@ async def _create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=system_prompt,
-        max_steps=12,
+        max_steps=get_settings().agent_max_steps,
         use_native_fc=True,
     )
     if restore_history:
@@ -437,15 +453,25 @@ async def _handle_dev(
                             question=pr.get("question", ""),
                             content=pr.get("content", ""),
                         )
-                    ok = await _ws_send(websocket, {
-                        "event": "request_review",
-                        "review_id": i,
-                        "review_type": pr.get("review_type", "code"),
-                        "title": pr.get("title", ""),
-                        "content": pr.get("content", ""),
-                        "question": pr.get("question", ""),
-                        "step": d["step"],
-                    })
+                    if pr.get("review_type") == "uml_diff":
+                        metadata = pr.get("metadata", {}) or {}
+                        ok = await _ws_send(websocket, {
+                            "event": "uml_review",
+                            "review_id": i,
+                            "title": pr.get("title", ""),
+                            "diagrams": metadata.get("diagrams", []),
+                            "original_diagrams": metadata.get("original_diagrams"),
+                        })
+                    else:
+                        ok = await _ws_send(websocket, {
+                            "event": "request_review",
+                            "review_id": i,
+                            "review_type": pr.get("review_type", "code"),
+                            "title": pr.get("title", ""),
+                            "content": pr.get("content", ""),
+                            "question": pr.get("question", ""),
+                            "step": d["step"],
+                        })
                     if not ok:
                         return
                 continue
@@ -488,24 +514,6 @@ async def _handle_dev(
             })
             if not ok:
                 return
-
-            # 若本轮 optimize_uml 返回了更新后的设计，推送 design_updated 供前端 DiffViewer 审核
-            for td in d.get("tool_calls_detail", []):
-                if td.get("name") == "optimize_uml":
-                    obs_str = str(td.get("observation", ""))
-                    try:
-                        obs = json.loads(obs_str)
-                    except (TypeError, json.JSONDecodeError):
-                        obs = None
-                    if isinstance(obs, dict) and obs.get("diagrams"):
-                        saved_to = obs.get("saved_to", "")
-                        await _ws_send(websocket, {
-                            "event": "design_updated",
-                            "diagrams": obs.get("diagrams", []),
-                            "saved_to": saved_to,
-                            "review": True,  # 始终需要用户审核确认
-                        })
-                    break
 
             if d["is_final"]:
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
@@ -641,7 +649,15 @@ async def agent_chat_ws(websocket: WebSocket):
             # ── 人工审核回复 ──
             elif msg_type == "review_response":
                 review_id = msg.get("review_id", 0)
-                response = msg.get("response", "")
+                # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
+                decision = msg.get("decision", "")
+                if decision:
+                    response = json.dumps({
+                        "decision": decision,
+                        "feedback": msg.get("feedback", ""),
+                    }, ensure_ascii=False)
+                else:
+                    response = msg.get("response", "")
                 if review_mgr:
                     review_mgr.resolve(review_id, response)
                     trace_log.review_response(review_id=review_id, response=response)

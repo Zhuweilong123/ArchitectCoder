@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest:
     """一次审核请求的上下文数据"""
 
-    __slots__ = ("review_type", "title", "content", "question", "_future")
+    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future")
 
     def __init__(
         self,
@@ -47,11 +47,13 @@ class ReviewRequest:
         title: str = "",
         content: str = "",
         question: str = "",
+        metadata: Optional[dict] = None,
     ):
-        self.review_type = review_type  # "code" | "test" | "design"
+        self.review_type = review_type  # "code" | "test" | "design" | "uml_diff"
         self.title = title
         self.content = content  # 需要审核的具体内容
         self.question = question  # 需要人工回答的问题
+        self.metadata = metadata or {}  # 结构化数据（如 UML diagrams）
         self._future: asyncio.Future | None = None
 
     def to_dict(self) -> dict:
@@ -60,6 +62,7 @@ class ReviewRequest:
             "title": self.title,
             "content": self.content,
             "question": self.question,
+            "metadata": self.metadata,
         }
 
     @property
@@ -83,13 +86,15 @@ class ReviewManager:
         self._pending: list[ReviewRequest] = []
 
     def submit(self, review_type: str, title: str = "",
-               content: str = "", question: str = "") -> ReviewRequest:
+               content: str = "", question: str = "",
+               metadata: Optional[dict] = None) -> ReviewRequest:
         """Agent 提交一个审核请求。返回带 future 的 ReviewRequest。"""
         req = ReviewRequest(
             review_type=review_type,
             title=title,
             content=content,
             question=question,
+            metadata=metadata,
         )
         self._pending.append(req)
         logger.info("📋 审核请求已提交: type=%s title=%s", review_type, title)
@@ -196,13 +201,10 @@ class RequestReviewTool(Tool):
         ]
 
     def run(self, parameters: Dict[str, Any]) -> str:
-        """执行审核请求 — 提交到管理器并阻塞等待人类响应。
+        """返回 coroutine，由 aexecute_tool_with_params await（让出 loop 等待 resolve）。"""
+        return self._execute(parameters)  # type: ignore[return-value]
 
-        注意: 这个方法在 Agent 的 ReAct 循环中被调用。
-        由于 use_native_fc 模式下工具执行是同步的（在 asyncio 事件循环中），
-        这里使用同步等待。编排层应在 Agent 所在事件循环中通过
-        resolve() 来触发 future。
-        """
+    async def _execute(self, parameters: Dict[str, Any]) -> str:
         review_type = parameters.get("review_type", "code")
         title = parameters.get("title", "")
         content = parameters.get("content", "")
@@ -220,34 +222,96 @@ class RequestReviewTool(Tool):
             review_type, title, question[:100],
         )
 
-        # 在有 running loop 时用 ThreadPoolExecutor 等待 future，
-        # 避免 run_until_complete 在已有 loop 中死锁
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-
-        if loop.is_running():
-            # 在后台线程中等待 — 当前 FC 循环在同一个 loop 中
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                future = ex.submit(lambda: asyncio.run(
-                    asyncio.wait_for(req.future, timeout=self.timeout)
-                ))
-                try:
-                    result = future.result(timeout=self.timeout + 10)
-                except concurrent.futures.TimeoutError:
-                    result = "⏰ 审核超时: 人类在 %d 秒内未响应" % self.timeout
-                except Exception as e:
-                    result = f"⚠️ 审核异常: {e}"
-        else:
-            try:
-                result = asyncio.run(
-                    asyncio.wait_for(req.future, timeout=self.timeout)
-                )
-            except asyncio.TimeoutError:
-                result = "⏰ 审核超时: 人类在 %d 秒内未响应" % self.timeout
-            except Exception as e:
-                result = f"⚠️ 审核异常: {e}"
+            result = await asyncio.wait_for(req.future, timeout=self.timeout)
+        except asyncio.TimeoutError:
+            result = f"⏰ 审核超时: 人类在 {self.timeout} 秒内未响应"
 
         return f"人工审核结果 [{review_type}]: {result}"
+
+
+class SubmitUmlReviewTool(Tool):
+    """Agent 主动提交 UML diff 审核的工具。
+
+    修改 UML 后调用此工具：把修改后的 diagrams 提交给前端 DiffViewer 做
+    对比审核，阻塞等待用户 accept/reject + 文字反馈，把结论作为工具返回值
+    喂回 agent，形成「修改 → 审核 → 根据反馈继续」的闭环。
+    """
+
+    def __init__(self, manager: ReviewManager, timeout: float = 300.0):
+        super().__init__(
+            name="submit_uml_review",
+            description=(
+                "Submit the updated UML diagrams for human diff review. Call this "
+                "after modifying the UML design; it pushes the diagrams to the "
+                "frontend DiffViewer and pauses until the user accepts or rejects. "
+                "Returns the decision and feedback so you can revise if rejected."
+            ),
+        )
+        self.manager = manager
+        self.timeout = timeout
+
+    def get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="diagrams_json",
+                type="string",
+                description="JSON string of the updated diagrams (list of diagram objects).",
+                required=True,
+            ),
+            ToolParameter(
+                name="original_diagrams_json",
+                type="string",
+                description="Optional JSON string of the diagrams before modification, for the diff view.",
+                required=False,
+            ),
+            ToolParameter(
+                name="summary",
+                type="string",
+                description="One-sentence summary of what changed, shown to the reviewer.",
+                required=False,
+            ),
+        ]
+
+    def run(self, parameters: Dict[str, Any]) -> str:
+        """返回 coroutine，由 aexecute_tool_with_params await（让出 loop 等待 resolve）。"""
+        return self._execute(parameters)  # type: ignore[return-value]
+
+    async def _execute(self, parameters: Dict[str, Any]) -> str:
+        import json as _json
+
+        diagrams_json = parameters.get("diagrams_json", "")
+        original_json = parameters.get("original_diagrams_json", "")
+        summary = parameters.get("summary", "")
+
+        # 解析 diagrams（失败则保留原始值，由前端兜底）
+        try:
+            diagrams = _json.loads(diagrams_json) if isinstance(diagrams_json, str) else diagrams_json
+        except _json.JSONDecodeError:
+            diagrams = diagrams_json
+
+        original = None
+        if original_json:
+            try:
+                original = _json.loads(original_json) if isinstance(original_json, str) else original_json
+            except _json.JSONDecodeError:
+                original = original_json
+
+        req = self.manager.submit(
+            review_type="uml_diff",
+            title=summary or "UML diff review",
+            content=diagrams_json if isinstance(diagrams_json, str) else _json.dumps(diagrams, ensure_ascii=False),
+            question="Please review the UML changes and accept or reject.",
+            metadata={"diagrams": diagrams, "original_diagrams": original},
+        )
+
+        logger.info("🔔 Agent 请求 UML diff 审核: %s", (summary or "")[:100])
+
+        try:
+            result = await asyncio.wait_for(req.future, timeout=self.timeout)
+        except asyncio.TimeoutError:
+            result = _json.dumps(
+                {"decision": "timeout", "feedback": "Human did not respond"},
+                ensure_ascii=False,
+            )
+        return result
