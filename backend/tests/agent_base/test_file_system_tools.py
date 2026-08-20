@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.tools.my_tools.file_system_tools import (
-    safe_path, create_file_system_tools,
+    safe_path, create_file_system_tools, _decode_output,
 )
 
 
@@ -120,3 +120,12 @@ def test_bash_deny_list(workspace):
 def test_bash_empty_command(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     assert "non-empty" in _run(bash, {"command": ""})
+
+
+def test_decode_output_gbk_fallback():
+    # GBK 编码的中文（cmd.exe 错误信息）→ UTF-8 解码失败后回退 locale 解码
+    assert _decode_output("不是内部或外部命令".encode("gbk")) == "不是内部或外部命令"
+    # UTF-8 正常解码
+    assert _decode_output("你好".encode("utf-8")) == "你好"
+    # 纯 ASCII 两种编码一致
+    assert _decode_output(b"hello") == "hello"

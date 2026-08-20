@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
+import locale
 import logging
 import subprocess
 from pathlib import Path
@@ -32,6 +33,18 @@ DENY_LIST = [
 
 BASH_TIMEOUT = 120  # 秒
 BASH_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
+
+
+def _decode_output(data: bytes) -> str:
+    """解码子进程输出：优先 UTF-8，失败回退 locale 编码。
+
+    中文 Windows 上 cmd.exe 的错误信息是 GBK（cp936），而 Python 子进程
+    （PYTHONUTF8=1）输出 UTF-8，单一编码无法同时覆盖，故按 UTF-8 → locale 回退。
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 
 def safe_path(path: str, roots: list[str]) -> Path:
@@ -302,8 +315,7 @@ class BashTool(AsyncTool):
         except OSError as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        out = (proc.stdout.decode("utf-8", errors="replace")
-               + proc.stderr.decode("utf-8", errors="replace")).strip()
+        out = (_decode_output(proc.stdout) + _decode_output(proc.stderr)).strip()
         out = out[:BASH_OUTPUT_CAP] if len(out) > BASH_OUTPUT_CAP else out
         return out or "(no output)"
 
