@@ -1,9 +1,15 @@
-"""ReActAgent / InterruptibleAgent 单元测试（Mock LLM，无需真实 API）。"""
+"""ReActAgent 单元测试（Mock LLM，无需真实 API）+ Hook 机制测试。"""
 import asyncio
 import json
 
+import pytest
+
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.agents.interruptible import InterruptibleAgent
+from app.agent_base.core.hooks import (
+    get_hooks, HookEvent, HookContext, AgentRuntime, set_runtime, reset_runtime,
+    TruncateHook,
+)
+from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 
@@ -48,6 +54,21 @@ def _registry():
     return reg
 
 
+async def _collect(agent):
+    events = []
+    async for p in agent.arun_stream("echo test"):
+        events.append(p)
+    return events
+
+
+def _first_tool_detail(events):
+    """取第一个含 tool_calls_detail 的进度快照里的首条工具详情。"""
+    for e in events:
+        if e.tool_calls_detail:
+            return e.tool_calls_detail[0]
+    return None
+
+
 def test_react_agent_fc_loop_executes_tools():
     llm = MockLLM(rounds=2)
     agent = ReActAgent("Test", llm, _registry(), max_steps=10)
@@ -59,30 +80,54 @@ def test_react_agent_fc_loop_executes_tools():
     assert events[-1].final_answer == "完成"
 
 
-def test_interruptible_agent_stops():
+def test_interrupt_hook_stops():
     llm = MockLLM(rounds=10)
     agent = ReActAgent("Test", llm, _registry(), max_steps=10)
 
-    interruptible = InterruptibleAgent(
-        agent=agent,
-        should_stop=lambda: llm.count >= 2,
-    )
+    async def _run():
+        token = set_runtime(AgentRuntime(stop_check=lambda: llm.count >= 2))
+        try:
+            with pytest.raises(AgentInterrupted):
+                async for _ in agent.arun_stream("echo several times"):
+                    pass
+        finally:
+            reset_runtime(token)
 
-    events = asyncio.run(_collect_interruptible(interruptible))
-
-    assert any(e.get("event") == "stopped" for e in events)
-    assert llm.count == 2  # 第 2 轮后被中断，不再继续
-
-
-async def _collect(agent):
-    events = []
-    async for p in agent.arun_stream("echo test"):
-        events.append(p)
-    return events
+    asyncio.run(_run())
+    assert llm.count == 2  # 第 2 轮 LLM 调用后的 tool_before 中断
 
 
-async def _collect_interruptible(interruptible):
-    events = []
-    async for e in interruptible.arun_stream("echo several times"):
-        events.append(e)
-    return events
+def test_truncate_hook_replaces_fed_observation():
+    llm = MockLLM(rounds=1)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+
+    truncator = TruncateHook(10)
+    get_hooks().register(HookEvent.TOOL_AFTER, truncator, priority=200)
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        get_hooks().unregister(HookEvent.TOOL_AFTER, truncator)
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert detail["fed_truncated"] is True
+    assert detail["fed_length"] <= 10
+
+
+def test_veto_hook_blocks_tool():
+    llm = MockLLM(rounds=1)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+
+    def veto(ctx: HookContext):
+        return "blocked by policy"
+
+    get_hooks().register(HookEvent.TOOL_BEFORE, veto, priority=200)
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        get_hooks().unregister(HookEvent.TOOL_BEFORE, veto)
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert detail["observation"] == "blocked by policy"
+    assert detail["fed_truncated"] is False

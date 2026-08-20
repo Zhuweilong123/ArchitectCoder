@@ -172,17 +172,22 @@ async for progress in agent.arun_stream("创建一个计算器系统"):
 
 ## 中断与审核
 
-### InterruptibleAgent (`base/agents/interruptible.py`)
+### 中断 (Hook 机制, `base/core/hooks.py`)
+
+框架内置 `InterruptHook`，通过运行时上下文注入 stop 标志；命中后抛 `AgentInterrupted`，编排层捕获即可。
 
 ```python
-agent = ReActAgent(...)
-interruptible = InterruptibleAgent(
-    agent=agent,
-    should_stop=lambda: check_user_stop_flag(),
-)
-async for event in interruptible.arun_stream(task):
-    if event.get("event") == "stopped":
-        break  # 用户中断
+from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+from app.agent_base.core.exceptions import AgentInterrupted
+
+token = set_runtime(AgentRuntime(stop_check=lambda: check_user_stop_flag()))
+try:
+    async for progress in agent.arun_stream(task):
+        ...
+except AgentInterrupted:
+    # 用户中断
+finally:
+    reset_runtime(token)
 ```
 
 ### RequestReviewTool (`base/tools/review.py`)
@@ -203,7 +208,7 @@ python app/agent_base/agentTest/demo_dev_system.py
 ```
 
 5 个演示：
-1. **中断控制** — InterruptibleAgent 在指定步数后停止
+1. **中断控制** — InterruptHook 在指定步数后停止
 2. **代码验证** — CodeValidator Mock 修复语法错误
 3. **工具检查** — 7 个工具注册 + 快速验证
 4. **完整开发** — 真实 LLM 驱动 UML→代码→验证→测试→保存 全流程

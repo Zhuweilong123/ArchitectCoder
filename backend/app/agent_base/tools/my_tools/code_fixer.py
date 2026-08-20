@@ -102,16 +102,14 @@ async def _run_pytest(
             sys.executable, "-m", "pytest", test_path,
             "-v", "--tb=short",
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=work_dir,
+        # 同步 subprocess 在线程池执行，避免 Windows SelectorEventLoop 下
+        # asyncio.create_subprocess_exec 抛 NotImplementedError。
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd, cwd=work_dir,
+            capture_output=True, timeout=timeout + 10,
         )
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout + 10,
-        )
-        output = stdout.decode("utf-8", errors="replace")[:10000]
+        output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[:10000]
 
         # ── 汇总 ──
         lines = output.split("\n")
@@ -121,7 +119,7 @@ async def _run_pytest(
         summary = "\n".join(summary_lines[-10:]) if summary_lines else output[-2000:]
 
         return f"exit_code={proc.returncode}\n{summary}"
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         return "TIMEOUT: pytest exceeded time limit"
     except Exception as e:
         return f"ERROR running pytest: {e}"

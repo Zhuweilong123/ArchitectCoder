@@ -23,7 +23,6 @@ from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.review import ReviewManager, RequestReviewTool
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.agents.interruptible import InterruptibleAgent
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
@@ -37,7 +36,7 @@ from app.agent_base.tools.my_tools.code_validator import CodeValidator
 def demo_interruptible():
     """演示中断控制 — 用户可随时停止 Agent"""
     print("=" * 55)
-    print("  Demo 1: InterruptibleAgent — 中断控制")
+    print("  Demo 1: 中断控制 (InterruptHook)")
     print("=" * 55)
 
     class EchoTool(Tool):
@@ -70,24 +69,24 @@ def demo_interruptible():
     agent = ReActAgent("Demo", MockLLM(), registry, max_steps=10)
 
     stop_after = 2
-    interruptible = InterruptibleAgent(
-        agent=agent,
-        should_stop=lambda: agent.current_history and
-            len([h for h in agent.current_history if "echo" in h]) >= stop_after,
-    )
+    from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+    from app.agent_base.core.exceptions import AgentInterrupted
 
     async def run():
-        events = []
-        async for event in interruptible.arun_stream("Echo several times"):
-            etype = event.get("event", "progress")
-            step = event.get("step", "?")
-            actions = event.get("actions", [])
-            print(f"  [{etype}] step={step} actions={actions}")
-            events.append(event)
-        return events
+        token = set_runtime(AgentRuntime(stop_check=lambda:
+            len([h for h in agent.current_history if "echo" in h]) >= stop_after))
+        stopped = False
+        try:
+            async for progress in agent.arun_stream("Echo several times"):
+                print(f"  [progress] step={progress.step} actions={progress.actions}")
+        except AgentInterrupted:
+            stopped = True
+            print("  [stopped] 用户请求停止")
+        finally:
+            reset_runtime(token)
+        return stopped
 
-    events = asyncio.run(run())
-    stopped = [e for e in events if e.get("event") == "stopped"]
+    stopped = asyncio.run(run())
     if stopped:
         print("  ✅ Agent 被成功中断!")
     else:
@@ -332,29 +331,33 @@ def demo_interruptible_dev():
     )
 
     # 在 validate_code 之后中断
-    validated = [False]
-
-    def should_stop():
-        if validated[0]:
-            return True
-        for h in agent.current_history:
-            if "validate_code" in h:
-                validated[0] = True
-                return True
-        return False
-
-    interruptible = InterruptibleAgent(agent=agent, should_stop=should_stop)
+    from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+    from app.agent_base.core.exceptions import AgentInterrupted
 
     async def run():
-        async for event in interruptible.arun_stream(
-            "创建一个简单的 Greeter 类，有 greet(name) 方法返回 'Hello {name}'"
-        ):
-            etype = event.get("event", "progress")
-            step = event.get("step", "?")
-            actions = event.get("actions", [])
-            print(f"  [{etype}] step={step} actions={actions}")
-            if event.get("is_final"):
-                print(f"    Answer: {event.get('final_answer', '')[:200]}")
+        validated = [False]
+
+        def should_stop():
+            if validated[0]:
+                return True
+            for h in agent.current_history:
+                if "validate_code" in h:
+                    validated[0] = True
+                    return True
+            return False
+
+        token = set_runtime(AgentRuntime(stop_check=should_stop))
+        try:
+            async for progress in agent.arun_stream(
+                "创建一个简单的 Greeter 类，有 greet(name) 方法返回 'Hello {name}'"
+            ):
+                print(f"  [progress] step={progress.step} actions={progress.actions}")
+                if progress.is_final:
+                    print(f"    Answer: {progress.final_answer[:200]}")
+        except AgentInterrupted:
+            print("  [stopped] 用户请求停止")
+        finally:
+            reset_runtime(token)
 
     asyncio.run(run())
     print()

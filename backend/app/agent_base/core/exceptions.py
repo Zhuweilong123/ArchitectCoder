@@ -21,6 +21,11 @@ class AgentError(BaseAgentsException):
     pass
 
 
+class AgentInterrupted(AgentError):
+    """Agent 循环被中断（hook 抛出的停止信号，传播到编排层）。"""
+    pass
+
+
 class ToolError(BaseAgentsException):
     """工具执行相关错误"""
     pass
