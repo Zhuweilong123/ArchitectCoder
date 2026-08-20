@@ -272,7 +272,9 @@ async def _create_dev_agent(
         )
     # ── 注入 workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
     from app.core.config import get_settings
-    design_dir = os.path.abspath(get_settings().uml_dir)
+    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
+    design_dir = (os.path.dirname(os.path.abspath(project_file))
+                  if project_file else os.path.abspath(get_settings().uml_dir))
     workspace_entries = [
         ("Source directory", source_dir),
         ("Test directory", test_dir),
@@ -294,7 +296,7 @@ async def _create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=system_prompt,
-        max_steps=12,
+        max_steps=get_settings().agent_max_steps,
         use_native_fc=True,
     )
     if restore_history:

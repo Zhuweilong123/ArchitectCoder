@@ -880,7 +880,9 @@ def create_conversation_tools(
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
     from app.core.config import get_settings
-    design_dir = os.path.abspath(get_settings().uml_dir)
+    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
+    design_dir = (os.path.dirname(os.path.abspath(project_file))
+                  if project_file else os.path.abspath(get_settings().uml_dir))
     tools.extend(create_file_system_tools(source_dir, test_dir, design_dir))
 
     # # 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）
