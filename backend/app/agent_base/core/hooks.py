@@ -66,6 +66,8 @@ class AgentRuntime:
     """
 
     stop_check: Callable[[], bool] = field(default_factory=lambda: (lambda: False))
+    todos: list = field(default_factory=list)
+    rounds_since_todo: int = 0
 
 
 _runtime_var: ContextVar[AgentRuntime] = ContextVar(
@@ -181,8 +183,33 @@ class TruncateHook:
         return None
 
 
+_TODO_REMINDER_INTERVAL = 3  # 连续 N 轮无 todo 更新且存在未完成项时提醒
+
+
+def _todo_reminder_hook(ctx: HookContext) -> Optional[str]:
+    """LLM_BEFORE 触发：todo 有未完成项且连续 N 轮未更新时注入提醒。
+
+    通过副作用往 ctx.messages append 提醒消息（LLM_BEFORE 的 messages 是
+    react_agent 循环里 messages 的引用），返回 None 表示不 veto。
+    """
+    runtime = get_runtime()
+    runtime.rounds_since_todo += 1
+    has_open = any(
+        t.get("status") in ("pending", "in_progress") for t in runtime.todos
+    )
+    if runtime.rounds_since_todo >= _TODO_REMINDER_INTERVAL and has_open:
+        if ctx.messages is not None:
+            ctx.messages.append({
+                "role": "user",
+                "content": "<reminder>Update your todos.</reminder>",
+            })
+        runtime.rounds_since_todo = 0
+    return None
+
+
 def _register_default_hooks() -> None:
     get_hooks().register(HookEvent.LLM_BEFORE, _interrupt_hook, priority=100)
+    get_hooks().register(HookEvent.LLM_BEFORE, _todo_reminder_hook, priority=50)
     get_hooks().register(HookEvent.TOOL_BEFORE, _interrupt_hook, priority=100)
     get_hooks().register(HookEvent.TOOL_AFTER, TruncateHook(), priority=0)
 
