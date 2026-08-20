@@ -476,7 +476,7 @@ class BaseAgentsLLM:
             raise RuntimeError("BaseAgentsLLM async client未初始化。")
 
         call_kwargs = dict(
-            model=self.model,
+            model=kwargs.pop("model", self.model),
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,

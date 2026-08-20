@@ -885,6 +885,22 @@ def create_conversation_tools(
                   if project_file else os.path.abspath(get_settings().uml_dir))
     tools.extend(create_file_system_tools(source_dir, test_dir, design_dir))
 
+    # todo_write：会话任务列表
+    from .todo_tools import TodoWriteTool
+    tools.append(TodoWriteTool())
+
+    # 通用子代理（受限文件系统工具集 + sub_agent_model）
+    from .subagent_tool import SpawnSubagentTool
+    tools.append(SpawnSubagentTool(
+        llm=llm,
+        sub_agent_model=get_settings().sub_agent_model,
+        source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
+    ))
+
+    # 持久化任务 DAG + claim/complete + git worktree
+    from app.agent_base.tools.task_system import create_task_system_tools
+    tools.extend(create_task_system_tools())
+
     # # 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）
     # from .explore_project_tools import create_explore_project_tool
     # tools.append(create_explore_project_tool(

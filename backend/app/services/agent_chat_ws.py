@@ -225,6 +225,152 @@ async def _build_kg_chat_context(project_file: str, user_message: str) -> str:
         return ""
 
 
+def _build_tool_policy(tool_names: list[str]) -> str:
+    """根据已注册工具生成「工具使用策略」，只提及真实存在的工具（防漂移）。
+
+    工具集合在 agent 创建时确定、session 内不变，故该段属于静态 system prompt，
+    一次生成后字节恒定，随 system 前缀一并命中缓存。
+    """
+    lines = [
+        "## Tool usage",
+        "Available tools: " + ", ".join(tool_names) + ".",
+    ]
+    if "read_file" in tool_names and "edit_file" in tool_names:
+        lines.append(
+            "- The UML design lives in the project file (.umlproj); read and edit "
+            "it with read_file/edit_file."
+        )
+    if "submit_uml_review" in tool_names:
+        lines.append(
+            "- After modifying the UML design, call submit_uml_review to let the "
+            "human review the diff before treating the change as final."
+        )
+    if "spawn_subagent" in tool_names:
+        lines.append(
+            "- For summarizing/overviewing the project's design, code, or tests, "
+            "delegate to spawn_subagent instead of reading many files yourself."
+        )
+    if "request_review" in tool_names:
+        lines.append(
+            "- Call request_review when you need human confirmation on code, "
+            "tests, or design decisions."
+        )
+    if "todo_write" in tool_names:
+        lines.append("- For multi-step tasks, track progress with todo_write.")
+    if "create_task" in tool_names:
+        lines.append(
+            "- For a large task that benefits from decomposition, use create_task "
+            "to create nodes first, then update_task to add dependencies with the "
+            "returned runtime IDs."
+        )
+    return "\n".join(lines)
+
+
+class DevPromptBuilder:
+    """组装 dev_agent 的 prompt，最大化 KV 缓存命中。
+
+    拆分原则（前缀缓存是「字节前缀一致才命中」）：
+    - 静态核心（身份 / 行为准则 / 工具策略）在创建时生成一次，session 内字节
+      恒定，作为 system prompt —— 永远占据前缀最前段。
+    - 易变上下文（workspace 目录 / 项目文件 / 记忆 / 日期）作为「尾块」，每轮
+      追加到最后一条 user 消息末尾（history 之后）。尾块变化不影响 system +
+      tools + history 的稳定前缀，仍然命中缓存。
+    - 尾块按 (project_file, source_dir, test_dir, design_dir, 日期) memo 化，
+      仅在项目/目录切换或跨天时重算（含记忆 recall），同项目内保持字节稳定。
+    """
+
+    def __init__(self, registry: ToolRegistry):
+        self.system_prompt = self._build_static_prompt(registry)
+        self._ctx_key: tuple | None = None
+        self._ctx_value: str = ""
+
+    @staticmethod
+    def _build_static_prompt(registry: ToolRegistry) -> str:
+        parts = [
+            "You are a UML design + code co-evolution agent. Evolve existing "
+            "code — don't redesign. Act, don't explain.",
+            "",
+            "## Workflow",
+            "For development tasks, work in this order: design first, then source, "
+            "then test cases. If the user explicitly asks to change code first, "
+            "after the code change re-check the UML design for consistency, update "
+            "it where it has drifted, then write test cases. Every code change "
+            "must have test coverage.",
+            "",
+            "## Rules",
+            "- Do only what was asked — the workflow above is part of the task, not extra.",
+            "- No comments or emojis in code.",
+            "- Pure chat/greeting: reply briefly without calling tools.",
+            "",
+            _build_tool_policy(registry.list_tools()),
+        ]
+        return "\n".join(parts)
+
+    async def build_context(
+        self, project_file: str, source_dir: str, test_dir: str, user_message: str
+    ) -> str:
+        """构建易变上下文尾块（memo 化），返回空串表示无易变内容。"""
+        from app.core.config import get_settings
+
+        design_dir = (os.path.dirname(os.path.abspath(project_file))
+                      if project_file else os.path.abspath(get_settings().uml_dir))
+        today = datetime.now().strftime("%Y-%m-%d")
+        key = (project_file, source_dir, test_dir, design_dir, today)
+        if key == self._ctx_key:
+            return self._ctx_value
+
+        parts: list[str] = []
+
+        # ── workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
+        workspace_entries = [
+            ("Source directory", source_dir),
+            ("Test directory", test_dir),
+            ("Design directory", design_dir),
+        ]
+        provided = [(label, d) for label, d in workspace_entries if d]
+        if provided:
+            lines = ["## Workspace (Windows environment, absolute paths)"]
+            for label, d in provided:
+                lines.append(f"- {label}: {d}")
+            parts.append("\n".join(lines))
+
+        # ── 项目上下文 ──
+        if project_file:
+            parts.append(
+                "## Project Context\n"
+                f"- Current project file: {project_file}\n"
+                "  (use this exact path as project_file parameter; "
+                "do NOT guess or shorten the filename)"
+            )
+
+        # ── 记忆 recall（按项目，只在 key 变化时重算）──
+        project_id = (os.path.splitext(os.path.basename(project_file))[0]
+                      if project_file else "")
+        memory_block = await self._recall_memory_block(project_id, user_message)
+        if memory_block:
+            parts.append(memory_block)
+
+        # ── 日期（量化到「日」，避免秒级时间戳破坏缓存稳定性）──
+        parts.append(f"Current date: {today}")
+
+        self._ctx_key = key
+        self._ctx_value = "\n\n".join(parts)
+        return self._ctx_value
+
+    async def _recall_memory_block(self, project_id: str, user_message: str) -> str:
+        """recall 项目相关记忆，返回注入用的 section 文本；失败返回空串。"""
+        if not project_id:
+            return ""
+        try:
+            from memory_system.manager import MemoryManager
+            mgr = MemoryManager(db_path=_memory_db_path())
+            results = await mgr.recall(project_id, user_message, top_k=5)
+            return mgr.inject_memories("", results).strip()
+        except Exception:
+            logger.warning("[Memory] Recall failed (non-fatal)", exc_info=True)
+            return ""
+
+
 async def _create_dev_agent(
     llm: BaseAgentsLLM,
     source_dir: str = "",
@@ -234,11 +380,13 @@ async def _create_dev_agent(
     progress: ProgressRelay | None = None,
     restore_history: list[dict] | None = None,
 ):
-    """创建对话 Agent 实例，注册全部 12 个工具 (8 核心 + 4 知识图谱)。
+    """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
-    注入项目上下文与知识图谱结构摘要，使 agent 在纯问答/总结场景
-    也能感知 UML 设计的真实内容（类、组件、接口、图）。
+    静态 system prompt 由 DevPromptBuilder 一次生成；workspace/项目/记忆等
+    易变上下文由 builder 每轮追加到最后一条 user 消息末尾（见 build_context）。
     """
+    from app.core.config import get_settings
+
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
         include_review=True, progress=progress,
@@ -248,60 +396,19 @@ async def _create_dev_agent(
     for t in tools:
         registry.register_tool(t)
 
-    base_prompt_parts = [
-        "You are an AI development assistant. Follow these principles:",
-        "- Give direct answers; do not restate the user's question.",
-        "- When code is involved, examine existing implementations before modifying; "
-        "do not design from scratch.",
-        "- Be concise: lead with conclusions or key steps, provide code when needed.",
-        "- Handle only what the user explicitly asked for; do not anticipate future "
-        "scenarios or do extra refactoring.",
-        "- Do not add comments or use emojis in code (unless explicitly requested).",
-        "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
-        "commenting, or chatting), reply briefly without calling any tools.",
-        "- For summarizing or overviewing the project's design/code/tests, call "
-        "explore_project instead of reading many files yourself.",
-    ]
-    # ── 注入项目上下文 ──
-    if project_file:
-        base_prompt_parts.append(
-            f"\n## Project Context\n"
-            f"- Current project file: {project_file}\n"
-            f"  (use this exact path as project_file parameter for optimize_uml; "
-            f"do NOT guess or shorten the filename)"
-        )
-    # ── 注入 workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
-    from app.core.config import get_settings
-    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
-    design_dir = (os.path.dirname(os.path.abspath(project_file))
-                  if project_file else os.path.abspath(get_settings().uml_dir))
-    workspace_entries = [
-        ("Source directory", source_dir),
-        ("Test directory", test_dir),
-        ("Design directory", design_dir),
-    ]
-    provided = [(label, d) for label, d in workspace_entries if d]
-    if provided:
-        lines = ["\n## Workspace (Windows environment, absolute paths)"]
-        for label, d in provided:
-            lines.append(f"- {label}: {d}")
-        base_prompt_parts.append("\n".join(lines))
-    base_prompt = "\n".join(base_prompt_parts)
-    # 注入项目历史记忆（跨任务 recall）
-    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
-    system_prompt = await _build_memory_system_prompt(base_prompt, project_id, user_message)
+    prompt_builder = DevPromptBuilder(registry)
 
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
         tool_registry=registry,
-        system_prompt=system_prompt,
+        system_prompt=prompt_builder.system_prompt,
         max_steps=get_settings().agent_max_steps,
         use_native_fc=True,
     )
     if restore_history:
         agent.restore_history(restore_history)
-    return agent, review_mgr
+    return agent, review_mgr, prompt_builder
 
 
 # ── 记忆系统（跨任务归档 + 注入） ───────────────────────────
@@ -372,20 +479,6 @@ async def _archive_task_to_memory(
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
 
 
-async def _build_memory_system_prompt(system_prompt: str, project_id: str, user_message: str) -> str:
-    """recall 项目相关记忆并注入 system prompt（失败则原样返回）。"""
-    if not project_id:
-        return system_prompt
-    try:
-        from memory_system.manager import MemoryManager
-        mgr = MemoryManager(db_path=_memory_db_path())
-        results = await mgr.recall(project_id, user_message, top_k=5)
-        return mgr.inject_memories(system_prompt, results)
-    except Exception:
-        logger.warning("[Memory] Inject memory failed (non-fatal)", exc_info=True)
-        return system_prompt
-
-
 async def _ws_send(websocket: WebSocket, payload: dict) -> bool:
     """发送 WebSocket 消息，连接已断开时返回 False 而非抛异常。
 
@@ -413,6 +506,7 @@ async def _handle_dev(
     trace_log: ChatTraceLogger | None = None,
     project_file: str = "",
     progress: ProgressRelay | None = None,
+    context: str = "",
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -437,7 +531,7 @@ async def _handle_dev(
     _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
     try:
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
-        async for step_progress in agent.arun_stream(user_message):
+        async for step_progress in agent.arun_stream(user_message, context=context):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
 
@@ -582,6 +676,7 @@ async def agent_chat_ws(websocket: WebSocket):
     dev_agent: ReActAgent | None = session.agent
     review_mgr = session.review_mgr
     progress: ProgressRelay | None = session.progress
+    prompt_builder = session.prompt_builder
     stop_requested = False
     source_dir = ""
     test_dir = ""
@@ -625,19 +720,28 @@ async def agent_chat_ws(websocket: WebSocket):
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:
                     progress = ProgressRelay()
-                    dev_agent, review_mgr = await _create_dev_agent(
+                    dev_agent, review_mgr, prompt_builder = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
                         progress=progress, restore_history=restore_history,
                     )
                     session.agent, session.review_mgr, session.progress = \
                         dev_agent, review_mgr, progress
+                    session.prompt_builder = prompt_builder
 
                 session.touch()
+
+                # 每轮按 live context 组装易变尾块（memo 化），追加到最后一条
+                # user 消息末尾，最大化 system+history 前缀的 KV 缓存命中。
+                context = ""
+                if prompt_builder is not None:
+                    context = await prompt_builder.build_context(
+                        project_file, source_dir, test_dir, user_message,
+                    )
 
                 await _handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
-                    progress=progress,
+                    progress=progress, context=context,
                 )
 
             # ── 停止对话 ──
