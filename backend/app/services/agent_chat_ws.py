@@ -235,15 +235,20 @@ def _build_tool_policy(tool_names: list[str]) -> str:
         "## Tool usage",
         "Available tools: " + ", ".join(tool_names) + ".",
     ]
-    if "spawn_subagent" in tool_names:
+    if "read_file" in tool_names and "edit_file" in tool_names:
         lines.append(
-            "- For summarizing/overviewing the project's design, code, or tests, "
-            "delegate to spawn_subagent instead of reading many files yourself."
+            "- The UML design lives in the project file (.umlproj); read and edit "
+            "it with read_file/edit_file."
         )
     if "submit_uml_review" in tool_names:
         lines.append(
             "- After modifying the UML design, call submit_uml_review to let the "
             "human review the diff before treating the change as final."
+        )
+    if "spawn_subagent" in tool_names:
+        lines.append(
+            "- For summarizing/overviewing the project's design, code, or tests, "
+            "delegate to spawn_subagent instead of reading many files yourself."
         )
     if "request_review" in tool_names:
         lines.append(
@@ -282,16 +287,20 @@ class DevPromptBuilder:
     @staticmethod
     def _build_static_prompt(registry: ToolRegistry) -> str:
         parts = [
-            "You are an AI development assistant. Follow these principles:",
-            "- Give direct answers; do not restate the user's question.",
-            "- When code is involved, examine existing implementations before modifying; "
-            "do not design from scratch.",
-            "- Be concise: lead with conclusions or key steps, provide code when needed.",
-            "- Handle only what the user explicitly asked for; do not anticipate future "
-            "scenarios or do extra refactoring.",
-            "- Do not add comments or use emojis in code (unless explicitly requested).",
-            "- If the user has not asked you to do anything (e.g. only greeting, thanking, "
-            "commenting, or chatting), reply briefly without calling any tools.",
+            "You are a UML design + code co-evolution agent. Evolve existing "
+            "code — don't redesign. Act, don't explain.",
+            "",
+            "## Workflow",
+            "For development tasks, work in this order: design first, then source, "
+            "then test cases. If the user explicitly asks to change code first, "
+            "after the code change re-check the UML design for consistency, update "
+            "it where it has drifted, then write test cases. Every code change "
+            "must have test coverage.",
+            "",
+            "## Rules",
+            "- Do only what was asked — the workflow above is part of the task, not extra.",
+            "- No comments or emojis in code.",
+            "- Pure chat/greeting: reply briefly without calling tools.",
             "",
             _build_tool_policy(registry.list_tools()),
         ]
