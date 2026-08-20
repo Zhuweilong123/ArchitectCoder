@@ -36,6 +36,14 @@ export interface AgentReviewEvent {
   step: number;
 }
 
+export interface AgentUmlReviewEvent {
+  event: 'uml_review';
+  review_id: number;
+  title: string;
+  diagrams: any[];                 // 更新后的图对象列表
+  original_diagrams: any[] | null; // 修改前的图对象列表（DiffViewer 对比用）
+}
+
 export interface AgentDoneEvent {
   event: 'done';
   result: string;
@@ -69,6 +77,7 @@ export type AgentEvent =
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
+  | AgentUmlReviewEvent
   | AgentDoneEvent
   | AgentStoppedEvent
   | AgentErrorEvent
@@ -187,12 +196,13 @@ export function sendStopMessage() {
   }
 }
 
-export function sendReviewResponse(reviewId: number, response: string) {
+export function sendReviewResponse(reviewId: number, response: string, decision?: string) {
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify({
       type: 'review_response',
       review_id: reviewId,
       response,
+      decision,
     }));
   }
 }

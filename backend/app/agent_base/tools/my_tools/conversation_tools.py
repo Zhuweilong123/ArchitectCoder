@@ -914,7 +914,9 @@ def create_conversation_tools(
             RequestReviewTool, SubmitUmlReviewTool, ReviewManager,
         )
         review_mgr = ReviewManager()
-        tools.append(RequestReviewTool(manager=review_mgr))
-        tools.append(SubmitUmlReviewTool(manager=review_mgr))
+        tools.append(RequestReviewTool(manager=review_mgr, progress=progress))
+        tools.append(SubmitUmlReviewTool(
+            manager=review_mgr, progress=progress, project_file=project_file,
+        ))
 
     return tools, review_mgr

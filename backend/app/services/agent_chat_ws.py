@@ -242,8 +242,8 @@ def _build_tool_policy(tool_names: list[str]) -> str:
         )
     if "submit_uml_review" in tool_names:
         lines.append(
-            "- After modifying the UML design, call submit_uml_review to let the "
-            "human review the diff before treating the change as final."
+            "- After modifying the UML design, call submit_uml_review(project_file, summary) "
+            "to let the human review the diff; the tool loads the before/after diagrams itself."
         )
     if "spawn_subagent" in tool_names:
         lines.append(
@@ -497,6 +497,12 @@ async def _ws_send(websocket: WebSocket, payload: dict) -> bool:
         return False
 
 
+def _consume_task_exception(task: asyncio.Task) -> None:
+    """读取后台任务的异常，避免 "Task exception was never retrieved" 警告。"""
+    if not task.cancelled():
+        task.exception()
+
+
 async def _handle_dev(
     agent: ReActAgent,
     review_mgr,
@@ -517,58 +523,61 @@ async def _handle_dev(
     到 WebSocket 供前端实时渲染（流式优化模式）。
     """
 
-    async def _on_design_element(ev: dict):
-        """将 ProgressRelay 的 design_element 事件转发为 WebSocket 消息"""
+    async def _on_progress(ev: dict):
+        """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
         if ev.get("event") == "design_element":
             await _ws_send(websocket, {
                 "event": "design_element",
                 "type": ev.get("type", ""),
                 "data": ev.get("data", ""),
             })
+        elif ev.get("event") == "review":
+            review_type = ev.get("review_type", "code")
+            if trace_log:
+                trace_log.review_request(
+                    review_id=ev.get("review_id", 0),
+                    review_type=review_type,
+                    title=ev.get("title", ""),
+                    question=ev.get("question", ""),
+                    content=ev.get("content", ""),
+                )
+            if review_type == "uml_diff":
+                metadata = ev.get("metadata", {}) or {}
+                await _ws_send(websocket, {
+                    "event": "uml_review",
+                    "review_id": ev.get("review_id", 0),
+                    "title": ev.get("title", ""),
+                    "diagrams": metadata.get("diagrams", []),
+                    "original_diagrams": metadata.get("original_diagrams"),
+                })
+            else:
+                await _ws_send(websocket, {
+                    "event": "request_review",
+                    "review_id": ev.get("review_id", 0),
+                    "review_type": review_type,
+                    "title": ev.get("title", ""),
+                    "content": ev.get("content", ""),
+                    "question": ev.get("question", ""),
+                })
 
     if progress:
-        progress.on_progress(_on_design_element)
+        progress.on_progress(_on_progress)
+
+    # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
+    # 存在 review_mgr 上（工具与 review_response 处理共享，可随 accept 刷新）。
+    if review_mgr is not None and project_file and os.path.isfile(project_file):
+        try:
+            from app.services.file_service import load_project
+            review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
+        except Exception:
+            review_mgr.baseline = None
+
     _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
     try:
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         async for step_progress in agent.arun_stream(user_message, context=context):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
-
-            # 检查是否有审核请求
-            if d["tool_calls_detail"] and review_mgr and review_mgr.has_pending():
-                pending = review_mgr.get_pending()
-                for i, pr in enumerate(pending):
-                    if trace_log:
-                        trace_log.review_request(
-                            review_id=i,
-                            review_type=pr.get("review_type", "code"),
-                            title=pr.get("title", ""),
-                            question=pr.get("question", ""),
-                            content=pr.get("content", ""),
-                        )
-                    if pr.get("review_type") == "uml_diff":
-                        metadata = pr.get("metadata", {}) or {}
-                        ok = await _ws_send(websocket, {
-                            "event": "uml_review",
-                            "review_id": i,
-                            "title": pr.get("title", ""),
-                            "diagrams": metadata.get("diagrams", []),
-                            "original_diagrams": metadata.get("original_diagrams"),
-                        })
-                    else:
-                        ok = await _ws_send(websocket, {
-                            "event": "request_review",
-                            "review_id": i,
-                            "review_type": pr.get("review_type", "code"),
-                            "title": pr.get("title", ""),
-                            "content": pr.get("content", ""),
-                            "question": pr.get("question", ""),
-                            "step": d["step"],
-                        })
-                    if not ok:
-                        return
-                continue
 
             # 记录完整工具调用与返回（在截断发给前端之前）
             if trace_log:
@@ -678,6 +687,7 @@ async def agent_chat_ws(websocket: WebSocket):
     progress: ProgressRelay | None = session.progress
     prompt_builder = session.prompt_builder
     stop_requested = False
+    run_task: asyncio.Task | None = None
     source_dir = ""
     test_dir = ""
     project_file = ""
@@ -738,11 +748,20 @@ async def agent_chat_ws(websocket: WebSocket):
                         project_file, source_dir, test_dir, user_message,
                     )
 
-                await _handle_dev(
+                # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，
+                # 收消息循环必须并发处理 review_response / stop 才能解阻塞。
+                if run_task is not None and not run_task.done():
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "Agent is still processing the previous request",
+                    })
+                    continue
+                run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
                     progress=progress, context=context,
-                )
+                ))
+                run_task.add_done_callback(_consume_task_exception)
 
             # ── 停止对话 ──
             elif msg_type == "stop":
@@ -764,6 +783,13 @@ async def agent_chat_ws(websocket: WebSocket):
                     response = msg.get("response", "")
                 if review_mgr:
                     review_mgr.resolve(review_id, response)
+                    # 接受时刷新 baseline：本轮后续设计修改的 before = 已接受态
+                    if decision == "accept" and project_file:
+                        try:
+                            from app.services.file_service import load_project
+                            review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
+                        except Exception:
+                            pass
                     trace_log.review_response(review_id=review_id, response=response)
                     logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
 
@@ -792,6 +818,9 @@ async def agent_chat_ws(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        # 取消未完成的 agent 后台任务，避免泄漏并确保 trace bridge 清理前任务已停。
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
         # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
         # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
         session.touch()

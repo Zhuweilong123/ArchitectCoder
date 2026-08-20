@@ -78,6 +78,23 @@ function truncateTitle(s: string): string {
   return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
 }
 
+// 将后端 uml_review 的 diagram 对象归一化为 {type, name, component_id, data}
+// 兼容两种形态：{type,name,data} 包裹式，或原始图对象（diagram_type/classes/... 平铺）。
+function normalizeReviewDiagrams(
+  raw: any[] | null | undefined,
+): Array<{ type: string; name: string; component_id: string; data: any }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((d) => {
+    const type = d.type || d.diagram_type || 'class';
+    const name = d.name || '';
+    const component_id = d.component_id || '';
+    const data = (d.data && typeof d.data === 'object' && !Array.isArray(d.data))
+      ? d.data
+      : d;
+    return { type, name, component_id, data };
+  });
+}
+
 // ── 组件 ──────────────────────────────────────────────
 
 const AgentChat: React.FC = () => {
@@ -214,6 +231,40 @@ const AgentChat: React.FC = () => {
               content: `🔔 Agent 请求审核 [${event.review_type}]: ${event.title}\n\n${event.content}\n\n❓ ${event.question}`,
               timestamp: Date.now(),
               review: event,
+            },
+          ]);
+          break;
+        }
+
+        // ── UML diff 审核（submit_uml_review）──
+        case 'uml_review': {
+          const diagrams = normalizeReviewDiagrams(event.diagrams);
+          // 用原始图列表构造快照，DiffViewer 据此生成 before/after 对比
+          const snapshot: Record<string, any> = {};
+          for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
+            snapshot[`${spec.type}:${spec.name || ''}`] = spec.data;
+          }
+          processDesignUpdated(
+            diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
+          );
+          const review: AgentReviewEvent = {
+            event: 'request_review',
+            review_id: event.review_id,
+            review_type: 'uml_diff',
+            title: event.title,
+            content: 'UML 设计变更已生成，请在右侧「差异对比」面板查看变更详情。',
+            question: '是否接受此变更？',
+            step: 0,
+          };
+          setPendingReview(review);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `review_${Date.now()}`,
+              role: 'system',
+              content: `🔔 Agent 请求 UML 设计审核: ${event.title}\n\n请在右侧「差异对比」面板查看变更，并确认是否接受。`,
+              timestamp: Date.now(),
+              review,
             },
           ]);
           break;
@@ -361,8 +412,8 @@ const AgentChat: React.FC = () => {
   }, []);
 
   // ── 审核回复 ──
-  const handleReviewResponse = useCallback((reviewId: number, response: string) => {
-    sendReviewResponse(reviewId, response);
+  const handleReviewResponse = useCallback((reviewId: number, response: string, decision?: string) => {
+    sendReviewResponse(reviewId, response, decision);
     setPendingReview(null);
     setMessages((prev) => [
       ...prev,
@@ -719,14 +770,14 @@ const AgentChat: React.FC = () => {
                           type="primary"
                           size="small"
                           icon={<CheckCircleOutlined />}
-                          onClick={() => handleReviewResponse(pendingReview.review_id, '批准，继续')}
+                          onClick={() => handleReviewResponse(pendingReview.review_id, '批准，继续', 'accept')}
                         >
                           批准
                         </Button>
                         <Button
                           size="small"
                           icon={<CloseCircleOutlined />}
-                          onClick={() => handleReviewResponse(pendingReview.review_id, '拒绝，请修改')}
+                          onClick={() => handleReviewResponse(pendingReview.review_id, '拒绝，请修改', 'reject')}
                         >
                           拒绝
                         </Button>

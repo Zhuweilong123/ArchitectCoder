@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest:
     """一次审核请求的上下文数据"""
 
-    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future")
+    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future", "id")
 
     def __init__(
         self,
@@ -55,6 +55,7 @@ class ReviewRequest:
         self.question = question  # 需要人工回答的问题
         self.metadata = metadata or {}  # 结构化数据（如 UML diagrams）
         self._future: asyncio.Future | None = None
+        self.id = -1  # 在 submit() 里分配（_pending 中的下标）
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +85,9 @@ class ReviewManager:
 
     def __init__(self):
         self._pending: list[ReviewRequest] = []
+        # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
+        # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
+        self.baseline: list | None = None
 
     def submit(self, review_type: str, title: str = "",
                content: str = "", question: str = "",
@@ -96,6 +100,7 @@ class ReviewManager:
             question=question,
             metadata=metadata,
         )
+        req.id = len(self._pending)
         self._pending.append(req)
         logger.info("📋 审核请求已提交: type=%s title=%s", review_type, title)
         return req
@@ -158,7 +163,7 @@ class RequestReviewTool(Tool):
     作为 tool observation 继续 Agent 循环。
     """
 
-    def __init__(self, manager: ReviewManager, timeout: float = 300.0):
+    def __init__(self, manager: ReviewManager, timeout: float = 300.0, progress=None):
         super().__init__(
             name="request_review",
             description=(
@@ -171,6 +176,7 @@ class RequestReviewTool(Tool):
         )
         self.manager = manager
         self.timeout = timeout
+        self.progress = progress
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
@@ -217,6 +223,19 @@ class RequestReviewTool(Tool):
             question=question,
         )
 
+        # 阻塞前先把审核事件推给编排层（ProgressRelay → WebSocket），
+        # 否则 arun_stream 要等工具返回才 yield，前端永远收不到推送。
+        if self.progress is not None:
+            self.progress.emit({
+                "event": "review",
+                "review_id": req.id,
+                "review_type": review_type,
+                "title": title,
+                "content": content,
+                "question": question,
+                "metadata": req.metadata,
+            })
+
         logger.info(
             "🔔 Agent 请求人工审核 [%s]: %s — %s",
             review_type, title, question[:100],
@@ -238,37 +257,48 @@ class SubmitUmlReviewTool(Tool):
     喂回 agent，形成「修改 → 审核 → 根据反馈继续」的闭环。
     """
 
-    def __init__(self, manager: ReviewManager, timeout: float = 300.0):
+    def __init__(self, manager: ReviewManager, timeout: float = 300.0,
+                 progress=None, project_file: str = ""):
         super().__init__(
             name="submit_uml_review",
             description=(
-                "Submit the updated UML diagrams for human diff review. Call this "
-                "after modifying the UML design; it pushes the diagrams to the "
-                "frontend DiffViewer and pauses until the user accepts or rejects. "
-                "Returns the decision and feedback so you can revise if rejected."
+                "Submit the updated UML design for human diff review. Call this "
+                "after modifying the design. Pass project_file (the .umlproj path) "
+                "and a one-sentence summary; the tool loads the before/after "
+                "diagrams itself and pushes them to the frontend DiffViewer. It "
+                "pauses until the user accepts or rejects, then returns the "
+                "decision so you can revise if rejected."
             ),
         )
         self.manager = manager
         self.timeout = timeout
+        self.progress = progress
+        self.project_file = project_file
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
-                name="diagrams_json",
+                name="project_file",
                 type="string",
-                description="JSON string of the updated diagrams (list of diagram objects).",
-                required=True,
-            ),
-            ToolParameter(
-                name="original_diagrams_json",
-                type="string",
-                description="Optional JSON string of the diagrams before modification, for the diff view.",
+                description="Path to the .umlproj project file. The tool loads the updated diagrams from it (before is captured by the framework).",
                 required=False,
             ),
             ToolParameter(
                 name="summary",
                 type="string",
                 description="One-sentence summary of what changed, shown to the reviewer.",
+                required=False,
+            ),
+            ToolParameter(
+                name="diagrams_json",
+                type="string",
+                description="Optional JSON string of the updated diagrams (list of diagram objects). Only used when project_file is not provided.",
+                required=False,
+            ),
+            ToolParameter(
+                name="original_diagrams_json",
+                type="string",
+                description="Optional JSON string of the diagrams before modification. Only used when project_file is not provided.",
                 required=False,
             ),
         ]
@@ -279,33 +309,61 @@ class SubmitUmlReviewTool(Tool):
 
     async def _execute(self, parameters: Dict[str, Any]) -> str:
         import json as _json
+        import os as _os
 
-        diagrams_json = parameters.get("diagrams_json", "")
-        original_json = parameters.get("original_diagrams_json", "")
         summary = parameters.get("summary", "")
+        project_file = parameters.get("project_file", "") or self.project_file
+        title = summary or "UML diff review"
 
-        # 解析 diagrams（失败则保留原始值，由前端兜底）
-        try:
-            diagrams = _json.loads(diagrams_json) if isinstance(diagrams_json, str) else diagrams_json
-        except _json.JSONDecodeError:
-            diagrams = diagrams_json
-
-        original = None
-        if original_json:
+        # ── 主路径：框架自己 load before/after（模型只负责改 + 报文件路径 + 摘要）──
+        if project_file and _os.path.isfile(project_file):
             try:
-                original = _json.loads(original_json) if isinstance(original_json, str) else original_json
+                from app.services.file_service import load_project
+                after = [d.model_dump() for d in load_project(project_file).diagrams]
+            except Exception:
+                logger.exception("[SubmitUmlReviewTool] load project failed")
+                after = []
+            before = self.manager.baseline
+            content = title
+            metadata = {"diagrams": after, "original_diagrams": before}
+        else:
+            # ── 兜底：无 project_file 时用显式传入的 diagrams ──
+            diagrams_json = parameters.get("diagrams_json", "")
+            original_json = parameters.get("original_diagrams_json", "")
+            try:
+                diagrams = _json.loads(diagrams_json) if isinstance(diagrams_json, str) else diagrams_json
             except _json.JSONDecodeError:
-                original = original_json
+                diagrams = diagrams_json
+            original = None
+            if original_json:
+                try:
+                    original = _json.loads(original_json) if isinstance(original_json, str) else original_json
+                except _json.JSONDecodeError:
+                    original = original_json
+            content = diagrams_json if isinstance(diagrams_json, str) else _json.dumps(diagrams, ensure_ascii=False)
+            metadata = {"diagrams": diagrams, "original_diagrams": original}
 
         req = self.manager.submit(
             review_type="uml_diff",
-            title=summary or "UML diff review",
-            content=diagrams_json if isinstance(diagrams_json, str) else _json.dumps(diagrams, ensure_ascii=False),
+            title=title,
+            content=content,
             question="Please review the UML changes and accept or reject.",
-            metadata={"diagrams": diagrams, "original_diagrams": original},
+            metadata=metadata,
         )
 
-        logger.info("🔔 Agent 请求 UML diff 审核: %s", (summary or "")[:100])
+        # 阻塞前先推审核事件（见 RequestReviewTool 同名注释）。
+        if self.progress is not None:
+            self.progress.emit({
+                "event": "review",
+                "review_id": req.id,
+                "review_type": "uml_diff",
+                "title": title,
+                "content": req.content,
+                "question": req.question,
+                "metadata": req.metadata,
+            })
+
+        logger.info("🔔 Agent 请求 UML diff 审核: %s", title[:100])
 
         try:
             result = await asyncio.wait_for(req.future, timeout=self.timeout)
