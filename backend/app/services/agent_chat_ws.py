@@ -12,7 +12,7 @@ WebSocket 协议:
 
     服务端 → 客户端: JSON (stream)
         {"event": "progress", "step": 1, "actions": [...], "tool_calls_detail": [...]}
-        {"event": "request_review", "review_id": 0, "review_type": "code", "title": "...", "question": "..."}
+        {"event": "request_review", "review_id": 0, "review_type": "bash_command", "title": "...", "question": "..."}
         {"event": "done", "result": "..."}
         {"event": "stopped", "reason": "..."}
         {"event": "error", "message": "..."}
@@ -250,10 +250,12 @@ def _build_tool_policy(tool_names: list[str]) -> str:
             "- For summarizing/overviewing the project's design, code, or tests, "
             "delegate to spawn_subagent instead of reading many files yourself."
         )
-    if "request_review" in tool_names:
+    if "bash" in tool_names:
         lines.append(
-            "- Call request_review when you need human confirmation on code, "
-            "tests, or design decisions."
+            "- Sensitive shell commands (force-delete, process kill, git reset "
+            "--hard, etc.) pause for human approval before running; high-risk "
+            "commands are denied outright. If the user rejects a command, "
+            "respect the decision and propose an alternative."
         )
     if "todo_write" in tool_names:
         lines.append("- For multi-step tasks, track progress with todo_write.")

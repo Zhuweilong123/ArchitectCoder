@@ -1,9 +1,9 @@
-"""SubmitUmlReviewTool / RequestReviewTool 单元测试（async future 等待闭环）。"""
+"""SubmitUmlReviewTool 单元测试（async future 等待闭环）。"""
 import asyncio
 import json
 
 from app.agent_base.tools.review import (
-    ReviewManager, RequestReviewTool, SubmitUmlReviewTool,
+    ReviewManager, SubmitUmlReviewTool,
 )
 
 
@@ -44,21 +44,6 @@ def test_submit_uml_review_reject_with_feedback():
     result = asyncio.run(_scenario())
     assert "reject" in result
     assert "关联关系改错了" in result
-
-
-def test_request_review_accept():
-    mgr = ReviewManager()
-    tool = RequestReviewTool(manager=mgr, timeout=5)
-
-    async def _scenario():
-        return await _run_with_resolve(
-            mgr, tool,
-            {"review_type": "code", "title": "t", "content": "c", "question": "ok?"},
-            "批准",
-        )
-
-    result = asyncio.run(_scenario())
-    assert "批准" in result
 
 
 def test_submit_uml_review_metadata():

@@ -1,8 +1,9 @@
 """文件系统原语工具 — read_file / write_file / edit_file / glob / bash
 
 借鉴 Claude Code 范式的 A 层工具，为「AI 开发助手」补齐底层动手能力：
-读现有代码、精确修改、跑命令。所有文件操作经 ``safe_path`` 守卫在 workspace 内，
-bash 带 deny list + 超时；输出截断由默认 ``TruncateHook``（core/hooks.py）负责。
+读现有代码、精确修改、跑命令。所有文件操作经 ``safe_path`` 守卫在 workspace 内；
+bash 两级防护：高危命令直接拒绝，敏感命令经 ReviewManager 请求人工批准，
+其余命令带超时直接放行；输出截断由默认 ``TruncateHook``（core/hooks.py）负责。
 
 Usage::
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
+import json as _json
 import logging
 import subprocess
 from pathlib import Path
@@ -24,62 +26,57 @@ from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 
 logger = logging.getLogger(__name__)
 
-# 危险命令黑名单。
+# 高危命令黑名单：磁盘/分区/引导/加密等不可逆系统破坏 —— 直接拒绝，无申诉。
 DENY_LIST = [
-    # 原有 Linux/Unix 危险指令
-    "rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=",
-    
-    # -------- Windows 扩展 --------
-    # 文件/目录强制删除（含递归）
-    "del /f /s", "del /f /q", "rd /s /q", "rmdir /s /q",
-    "erase /f /s",
-    
-    # 格式化/磁盘操作
+    "rm -rf /", "mkfs", "dd if=",
+    # 格式化/磁盘/分区操作
     "format", "diskpart", "clean all", "convert gpt", "convert mbr",
-    
-    # 系统设置破坏
-    "reg delete", "reg add", "reg import", "reg export",
+    # 引导记录破坏
     "bcdedit /delete", "bootrec /fixmbr", "bootrec /fixboot",
-    
-    # 用户/权限管理（提权或删除）
-    "net user", "net localgroup", "lusrmgr",
+    # 安全策略/加密破坏
+    "secedit /configure", "manage-bde -off", "manage-bde -lock",
+    # 物理磁盘直写（Windows 下的 dd 风格）
+    "dd if=/dev/zero of=\\\\?\\physicaldrive",
+]
+
+# 敏感命令灰名单：有破坏力但开发中可能合理 —— 请求人工审核（批准/拒绝）。
+REVIEW_LIST = [
+    # 文件/目录强制删除（含递归）
+    "del /f /s", "del /f /q", "rd /s /q", "rmdir /s /q", "erase /f /s",
+    "remove-item -recurse -force", "remove-item -path",
+    "clear-content", "set-content",
+    # 提权/账户/权限管理
+    "sudo", "net user", "net localgroup", "lusrmgr",
     "whoami /privileges", "takeown", "icacls",
-    
+    # 注册表修改
+    "reg delete", "reg add", "reg import", "reg export",
     # 进程/服务强制终止
-    "taskkill /f", "taskkill /pid", "kill -f", "Stop-Process -Force",
-    
-    # 系统关机/重启/睡眠（带强制参数）
-    "shutdown /r /f", "shutdown /s /f", "shutdown /l", "shutdown /a",
-    "rundll32 powrprof.dll,SetSuspendState",
-    
+    "taskkill /f", "taskkill /pid", "kill -f", "stop-process -force",
+    "stop-service", "disable-service", "set-service -startuptype disabled",
+    # 系统关机/重启/睡眠
+    "shutdown", "reboot", "rundll32 powrprof.dll,setsuspendstate",
     # 网络防火墙与路由
     "netsh advfirewall set allprofiles state off",
-    "netsh interface ip set address",
-    "route delete",
-    
-    # PowerShell 高危命令
-    "Remove-Item -Recurse -Force", "Remove-Item -Path",
-    "Clear-Content", "Set-Content",
-    "Stop-Service", "Disable-Service",
-    "Set-Service -StartupType Disabled",
-    "Grant-SmbShareAccess", "Revoke-SmbShareAccess",
-    
+    "netsh interface ip set address", "route delete",
+    # SMB 共享授权
+    "grant-smbshareaccess", "revoke-smbshareaccess",
     # WMI 操作（可能用于删除或修改）
     "wmic process call create", "wmic process delete",
     "wmic product uninstall", "wmic os where",
-    
     # 组策略/计划任务
-    "secedit /configure", "schtasks /delete", "schtasks /create",
-    
-    # BitLocker/加密破坏
-    "manage-bde -off", "manage-bde -lock",
-    
-    # 分区表破坏
-    "dd if=/dev/zero of=\\\\?\\PhysicalDrive",  # Windows 下的 dd 风格
+    "schtasks /delete", "schtasks /create",
+    # git 破坏性命令（丢未提交改动 / 覆盖远端历史）
+    "git reset --hard", "git push --force", "git push -f",
+    "git clean -fd", "git clean -f",
 ]
+
+# 匹配前统一转小写：命令会 lower()，名单预转小写避免混合大小写条目失效。
+_DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
+_REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
 BASH_TIMEOUT = 120  # 秒
 BASH_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
+BASH_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
 
 
 def _decode_output(data: bytes) -> str:
@@ -334,18 +331,24 @@ class GlobTool(AsyncTool):
 
 
 class BashTool(AsyncTool):
-    """在 workspace 内跑 shell 命令（deny list + 超时守卫）。"""
+    """在 workspace 内跑 shell 命令（高危直接拒绝 + 敏感人工审核 + 超时守卫）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 review_manager=None, progress=None,
+                 review_timeout: float = BASH_REVIEW_TIMEOUT):
         super().__init__(
             name="bash",
             description=(
                 "Run a shell command in the workspace (e.g. git status, pytest, lint). "
-                "Returns combined stdout/stderr. Denied for dangerous commands."
+                "Returns combined stdout/stderr. High-risk commands are denied outright; "
+                "sensitive commands pause for human approval before running."
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
         self._cwd = self._roots[0] if self._roots else ""
+        self._review_manager = review_manager
+        self._progress = progress
+        self._review_timeout = review_timeout
 
     async def _execute(self, params: dict) -> str:
         command = params.get("command", "")
@@ -353,10 +356,83 @@ class BashTool(AsyncTool):
             return "Error: command must be a non-empty string"
 
         lowered = command.lower()
-        for pattern in DENY_LIST:
-            if pattern in lowered:
-                return f"Error: command denied (matches deny list: {pattern})"
 
+        # ── 高危：直接拒绝，不执行、不审核 ──
+        for pattern in _DENY_LIST_LOWER:
+            if pattern in lowered:
+                logger.info("🚫 高危命令直接拒绝: %s (matches %s)", command[:100], pattern)
+                return f"Error: command denied (high-risk, matches deny list: {pattern})"
+
+        # ── 敏感：请求人工审核，批准才执行 ──
+        for pattern in _REVIEW_LIST_LOWER:
+            if pattern in lowered:
+                verdict = await self._request_approval(command, pattern)
+                if verdict is not None:
+                    return verdict  # 拒绝/超时/无通道 → 不执行
+                break  # 批准 → 继续执行
+
+        return await self._run_command(command)
+
+    async def _request_approval(self, command: str, pattern: str) -> Optional[str]:
+        """敏感命令走 ReviewManager 人工审核。返回 None 表示批准可执行，
+        否则返回拒绝原因文本（fail closed：拒绝/超时/无审核通道都不执行）。"""
+        if self._review_manager is None or self._progress is None:
+            logger.warning("🚫 敏感命令无审核通道，拒绝执行: %s", command[:100])
+            return (
+                f"Error: command requires human approval (matches sensitive list: "
+                f"{pattern}), but no review channel is available. Command NOT executed."
+            )
+
+        title = "敏感命令请求审核"
+        req = self._review_manager.submit(
+            review_type="bash_command",
+            title=title,
+            content=command,
+            question=f"命令命中敏感规则「{pattern}」，是否允许执行？",
+        )
+
+        # 阻塞前先把审核事件推给编排层（ProgressRelay → WebSocket），
+        # 否则工具不返回，前端永远收不到推送。
+        self._progress.emit({
+            "event": "review",
+            "review_id": req.id,
+            "review_type": "bash_command",
+            "title": title,
+            "content": command,
+            "question": req.question,
+            "metadata": req.metadata,
+        })
+        logger.info("🔔 敏感命令等待人工审核: %s", command[:100])
+
+        try:
+            result = await asyncio.wait_for(req.future, timeout=self._review_timeout)
+        except asyncio.TimeoutError:
+            self._progress.emit({
+                "event": "review_timeout",
+                "review_id": req.id,
+                "review_type": "bash_command",
+                "title": title,
+                "timeout": self._review_timeout,
+            })
+            logger.warning("⏰ 敏感命令审核超时，拒绝执行: %s", command[:100])
+            return f"Error: approval timed out after {self._review_timeout}s. Command NOT executed."
+
+        # 前端 reviewStore.accept/reject 发的是 {"decision", "feedback"} JSON；
+        # 非 JSON（连接断开清理/旧协议纯文本）一律视为拒绝 —— fail closed。
+        try:
+            parsed = _json.loads(result)
+            decision = parsed.get("decision", "")
+            feedback = parsed.get("feedback", "")
+        except (ValueError, AttributeError):
+            decision, feedback = "", str(result)
+
+        if decision == "accept":
+            logger.info("✅ 敏感命令已批准: %s", command[:100])
+            return None
+        logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
+        return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
+
+    async def _run_command(self, command: str) -> str:
         cwd = self._cwd or None
 
         def _run():
@@ -396,12 +472,18 @@ class BashTool(AsyncTool):
         }
 
 
-def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "") -> list[Tool]:
-    """创建 A 层文件系统原语工具列表。"""
+def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                             review_manager=None, progress=None) -> list[Tool]:
+    """创建 A 层文件系统原语工具列表。
+
+    review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
+    不传则敏感命令 fail closed（拒绝执行），高危命令仍直接拒绝。
+    """
     return [
         ReadFileTool(source_dir, test_dir, design_dir),
         WriteFileTool(source_dir, test_dir, design_dir),
         EditFileTool(source_dir, test_dir, design_dir),
         GlobTool(source_dir, test_dir, design_dir),
-        BashTool(source_dir, test_dir, design_dir),
+        BashTool(source_dir, test_dir, design_dir,
+                 review_manager=review_manager, progress=progress),
     ]

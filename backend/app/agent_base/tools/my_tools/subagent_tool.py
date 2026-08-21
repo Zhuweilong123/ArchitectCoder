@@ -22,8 +22,9 @@ class SpawnSubagentTool(AsyncTool):
     """通用子代理工具 — 委托一个子任务，返回 summary。
 
     子代理用受限工具集（文件系统原语）+ ``sub_agent_model`` 独立跑简化 FC
-    循环，避免主上下文膨胀。工具集不含 optimize_uml / submit_uml_review /
-    spawn_subagent，防止递归子代理和审核嵌套。
+    循环，避免主上下文膨胀。工具集不含 submit_uml_review / spawn_subagent，
+    防止递归子代理和 UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理
+    共用同一审核通道），防止委托绕过。
     """
 
     def __init__(
@@ -34,6 +35,8 @@ class SpawnSubagentTool(AsyncTool):
         test_dir: str = "",
         design_dir: str = "",
         max_steps: int = 20,
+        review_manager=None,
+        progress=None,
     ):
         super().__init__(
             name="spawn_subagent",
@@ -48,9 +51,13 @@ class SpawnSubagentTool(AsyncTool):
         self.sub_agent_model = sub_agent_model
         self.max_steps = max_steps
 
-        # 受限子 registry：只有文件系统原语
+        # 受限子 registry：只有文件系统原语。
+        # 审核通道透传给子代理的 bash —— 敏感命令委托子代理也不能绕过人工审核。
         self.sub_registry = ToolRegistry()
-        for t in create_file_system_tools(source_dir, test_dir, design_dir):
+        for t in create_file_system_tools(
+            source_dir, test_dir, design_dir,
+            review_manager=review_manager, progress=progress,
+        ):
             self.sub_registry.register_tool(t)
         self.sub_tools = self.sub_registry.get_openai_specs()
 

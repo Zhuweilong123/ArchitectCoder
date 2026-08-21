@@ -877,24 +877,36 @@ def create_conversation_tools(
         # WriteFilesTool(source_dir=source_dir, test_dir=test_dir, progress=progress),
     ]
 
+    # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
+    # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
+    review_mgr: ReviewManager | None = None
+    if include_review:
+        from app.agent_base.tools.review import ReviewManager
+        review_mgr = ReviewManager()
+
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
     from app.core.config import get_settings
     # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
     design_dir = (os.path.dirname(os.path.abspath(project_file))
                   if project_file else os.path.abspath(get_settings().uml_dir))
-    tools.extend(create_file_system_tools(source_dir, test_dir, design_dir))
+    tools.extend(create_file_system_tools(
+        source_dir, test_dir, design_dir,
+        review_manager=review_mgr, progress=progress,
+    ))
 
     # todo_write：会话任务列表
     from .todo_tools import TodoWriteTool
     tools.append(TodoWriteTool())
 
     # 通用子代理（受限文件系统工具集 + sub_agent_model）
+    # 审核通道一并透传，否则敏感命令委托子代理即可绕过人工审核。
     from .subagent_tool import SpawnSubagentTool
     tools.append(SpawnSubagentTool(
         llm=llm,
         sub_agent_model=get_settings().sub_agent_model,
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
+        review_manager=review_mgr, progress=progress,
     ))
 
     # 持久化任务 DAG + claim/complete + git worktree
@@ -908,13 +920,8 @@ def create_conversation_tools(
     #     source_dir=source_dir, test_dir=test_dir,
     # ))
 
-    review_mgr: ReviewManager | None = None
     if include_review:
-        from app.agent_base.tools.review import (
-            RequestReviewTool, SubmitUmlReviewTool, ReviewManager,
-        )
-        review_mgr = ReviewManager()
-        tools.append(RequestReviewTool(manager=review_mgr, progress=progress))
+        from app.agent_base.tools.review import SubmitUmlReviewTool
         tools.append(SubmitUmlReviewTool(
             manager=review_mgr, progress=progress, project_file=project_file,
         ))

@@ -222,8 +222,9 @@ const AgentChat: React.FC = () => {
           break;
         }
 
-        // ── 审核请求（通用：code/test/design）──
+        // ── 审核请求（敏感命令批准等，复用通用审核卡）──
         case 'request_review': {
+          const isBash = event.review_type === 'bash_command';
           useReviewStore.getState().showReview({
             reviewId: event.review_id,
             reviewType: event.review_type,
@@ -236,7 +237,9 @@ const AgentChat: React.FC = () => {
             {
               id: `review_${Date.now()}`,
               role: 'system',
-              content: `🔔 Agent 请求审核 [${event.review_type}]: ${event.title}\n\n${event.content}\n\n❓ ${event.question}`,
+              content: isBash
+                ? `🛡️ Agent 请求执行敏感命令:\n\n${event.content}\n\n❓ ${event.question}`
+                : `🔔 Agent 请求审核 [${event.review_type}]: ${event.title}\n\n${event.content}\n\n❓ ${event.question}`,
               timestamp: Date.now(),
               review: event,
             },
@@ -875,7 +878,11 @@ const AgentChat: React.FC = () => {
                 ) : (
                   <Alert
                     type="warning"
-                    message={`🔔 审核请求 — ${review.reviewType}`}
+                    message={
+                      review.reviewType === 'bash_command'
+                        ? '🛡️ 敏感命令请求审核'
+                        : `🔔 审核请求 — ${review.reviewType}`
+                    }
                     description={
                       <div>
                         <p><strong>{review.title}</strong></p>

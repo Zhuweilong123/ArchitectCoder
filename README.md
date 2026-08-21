@@ -43,7 +43,7 @@
 
 - **7 个执行工具**：`optimize_uml`（V2 直连引擎：scope 分析 + 单次 LLM + 程序化验证）→ `generate_code`（12 种语言）→ `validate_code` → `generate_tests` → `run_tests`（pytest 真跑）→ `fix_code` → `write_files`
 - **探索子代理** `explore_project`：收敛全部只读操作（知识图谱查询、文件读取、项目信息获取），避免主 Agent 逐文件读取导致上下文膨胀
-- **人工审核** `request_review`：关键节点（代码生成后、测试后）可弹出审批，把 AI 开发关进护栏
+- **人工审核**：UML 设计修改经 `submit_uml_review` 推送 diff 对比审批；`bash` 敏感命令（强制删除、进程终止、`git reset --hard` 等）执行前弹出批准/拒绝审核卡，高危命令（格式化、分区、写引导等）直接拒绝 —— 把 AI 开发关进护栏
 - **流式进度**：每步工具调用、参数与返回实时推送，开发过程全程可见
 - **中断控制**：随时停止 Agent 执行
 - **会话持久化**：对话历史刷新不丢失；会话日志落盘（Markdown + JSONL trace）
