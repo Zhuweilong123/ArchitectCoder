@@ -19,18 +19,19 @@ import {
   CheckCircleOutlined, CloseCircleOutlined,
   ToolOutlined, UserOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
-  PlusOutlined, HistoryOutlined,
+  PlusOutlined, HistoryOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
 import {
-  connectAgentChat, sendAgentMessage, sendStopMessage, sendReviewResponse,
-  disconnectAgentChat, isAgentConnected, onAgentMessage, startNewSession,
+  connectAgentChat, sendAgentMessage, sendStopMessage,
+  isAgentConnected, onAgentMessage, startNewSession,
   getCurrentSessionId, switchSession,
   type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
 } from '../../services/agentChat';
 import { listTraces, getTraceHistory, type TraceMeta } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
+import { useReviewStore } from '../../stores/reviewStore';
 import './AgentChat.css';
 
 // ── 消息类型 ──────────────────────────────────────────
@@ -78,6 +79,23 @@ function truncateTitle(s: string): string {
   return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
 }
 
+// 将后端 uml_review 的 diagram 对象归一化为 {type, name, component_id, data}
+// 兼容两种形态：{type,name,data} 包裹式，或原始图对象（diagram_type/classes/... 平铺）。
+function normalizeReviewDiagrams(
+  raw: any[] | null | undefined,
+): Array<{ type: string; name: string; component_id: string; data: any }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((d) => {
+    const type = d.type || d.diagram_type || 'class';
+    const name = d.name || '';
+    const component_id = d.component_id || '';
+    const data = (d.data && typeof d.data === 'object' && !Array.isArray(d.data))
+      ? d.data
+      : d;
+    return { type, name, component_id, data };
+  });
+}
+
 // ── 组件 ──────────────────────────────────────────────
 
 const AgentChat: React.FC = () => {
@@ -101,7 +119,8 @@ const AgentChat: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [currentSteps, setCurrentSteps] = useState<AgentProgressEvent[]>([]);
-  const [pendingReview, setPendingReview] = useState<AgentReviewEvent | null>(null);
+  // 审核状态来自共享 reviewStore（与 DiffViewer 联动，单一事实源）
+  const review = useReviewStore();
   // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
   const liveStepsRef = useRef<AgentProgressEvent[]>([]);
 
@@ -203,9 +222,15 @@ const AgentChat: React.FC = () => {
           break;
         }
 
-        // ── 审核请求 ──
+        // ── 审核请求（通用：code/test/design）──
         case 'request_review': {
-          setPendingReview(event);
+          useReviewStore.getState().showReview({
+            reviewId: event.review_id,
+            reviewType: event.review_type,
+            title: event.title,
+            content: event.content,
+            question: event.question,
+          });
           setMessages((prev) => [
             ...prev,
             {
@@ -214,6 +239,71 @@ const AgentChat: React.FC = () => {
               content: `🔔 Agent 请求审核 [${event.review_type}]: ${event.title}\n\n${event.content}\n\n❓ ${event.question}`,
               timestamp: Date.now(),
               review: event,
+            },
+          ]);
+          break;
+        }
+
+        // ── UML diff 审核（submit_uml_review / 框架兜底补推）──
+        case 'uml_review': {
+          const diagrams = normalizeReviewDiagrams(event.diagrams);
+          // 用原始图列表构造快照，DiffViewer 据此生成 before/after 对比
+          const snapshot: Record<string, any> = {};
+          for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
+            snapshot[`${spec.type}:${spec.name || ''}`] = spec.data;
+          }
+          processDesignUpdated(
+            diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
+          );
+          // 登记共享审核状态，DiffViewer 与聊天审核卡据此联动
+          useReviewStore.getState().showReview({
+            reviewId: event.review_id,
+            reviewType: 'uml_diff',
+            title: event.title,
+            question: '是否接受此变更？',
+          });
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `review_${Date.now()}`,
+              role: 'system',
+              content: event.auto
+                ? `🛡️ ${event.title}\n\nAgent 修改了设计文件但未主动提交审核，框架已自动补推。请在右侧「差异对比」面板查看变更，并确认是否接受。`
+                : `🔔 Agent 请求 UML 设计审核: ${event.title}\n\n请在右侧「差异对比」面板查看变更，并确认是否接受。`,
+              timestamp: Date.now(),
+            },
+          ]);
+          break;
+        }
+
+        // ── 审核超时（Agent 已继续自行推进）──
+        case 'review_timeout': {
+          useReviewStore.getState().expire(
+            `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`,
+          );
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `review_timeout_${Date.now()}`,
+              role: 'system',
+              content: `⏰ 审核「${event.title}」超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行。如需检查变更，请查看右侧「差异对比」面板。`,
+              timestamp: Date.now(),
+            },
+          ]);
+          break;
+        }
+
+        // ── 审核已失效（重连补发后后端找不到该待审核请求）──
+        case 'review_expired': {
+          useReviewStore.getState().expire('连接中断期间后端已取消该任务');
+          setBusy(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `review_expired_${Date.now()}`,
+              role: 'system',
+              content: '⚠️ 审核已失效（连接中断期间后端已取消该任务）。请重新发起请求。',
+              timestamp: Date.now(),
             },
           ]);
           break;
@@ -255,15 +345,6 @@ const AgentChat: React.FC = () => {
           break;
         }
 
-        // ── 设计更新（optimize_uml 修改后透传）──
-        case 'design_updated': {
-          const diagrams = event.diagrams;
-          if (Array.isArray(diagrams) && diagrams.length > 0) {
-            processDesignUpdated(diagrams, [], useUiStore.getState(), useDiagramStore.getState());
-          }
-          break;
-        }
-
         // ── 流式元素（optimize_uml 流式模式逐元素渲染）──
         case 'design_element': {
           handleDesignElementWrapper(event);
@@ -275,6 +356,8 @@ const AgentChat: React.FC = () => {
           setBusy(false);
           liveStepsRef.current = [];
           setCurrentSteps([]);
+          // 任务中断时挂起的审核已无人消费，置为失效
+          useReviewStore.getState().expire('任务已停止，审核随之失效');
           // 聊天模式下把流式消息 finalize
           setMessages((prev) =>
             prev.map((m) =>
@@ -300,6 +383,8 @@ const AgentChat: React.FC = () => {
           setBusy(false);
           liveStepsRef.current = [];
           setCurrentSteps([]);
+          // 任务出错时挂起的审核已无人消费，置为失效
+          useReviewStore.getState().expire('任务出错，审核随之失效');
           // 聊天流式半途断掉，finalize 已收到的部分
           setMessages((prev) =>
             prev.map((m) =>
@@ -351,7 +436,6 @@ const AgentChat: React.FC = () => {
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
-    setPendingReview(null);
   }, [inputValue, busy, connect, pipelineSourceDir, pipelineTestDir, currentFilepath]);
 
   // ── 中断 ──
@@ -360,20 +444,28 @@ const AgentChat: React.FC = () => {
     // 后端会发 stopped 事件，由回调处理状态更新
   }, []);
 
-  // ── 审核回复 ──
-  const handleReviewResponse = useCallback((reviewId: number, response: string) => {
-    sendReviewResponse(reviewId, response);
-    setPendingReview(null);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `review_resp_${Date.now()}`,
-        role: 'system',
-        content: `✅ 审核回复: ${response}`,
-        timestamp: Date.now(),
-      },
-    ]);
-  }, []);
+  // ── 审核状态迁移记录（pending → accepted/rejected 时在消息流留痕）──
+  const reviewStatus = review.status;
+  const reviewActedFrom = review.actedFrom;
+  const prevReviewStatusRef = useRef(reviewStatus);
+  useEffect(() => {
+    const prev = prevReviewStatusRef.current;
+    prevReviewStatusRef.current = reviewStatus;
+    if (prev === 'pending' && (reviewStatus === 'accepted' || reviewStatus === 'rejected')) {
+      const fromText = reviewActedFrom === 'diff' ? '（在 DiffViewer 操作）' : '';
+      setMessages((prevMsgs) => [
+        ...prevMsgs,
+        {
+          id: `review_done_${Date.now()}`,
+          role: 'system',
+          content: reviewStatus === 'accepted'
+            ? `✅ 已批准审核${fromText}`
+            : `🚫 已拒绝审核${fromText}，Agent 将根据反馈修订`,
+          timestamp: Date.now(),
+        },
+      ]);
+    }
+  }, [reviewStatus, reviewActedFrom]);
 
   // ── 键盘快捷键 ──
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -383,12 +475,13 @@ const AgentChat: React.FC = () => {
     }
   }, [handleSend]);
 
-  // ── 清理 ──
+  // ── 关闭面板（仅隐藏）──
+  // 连接与 agent 运行都和面板开关解耦：关面板只是收起 UI，
+  // agent 在后台继续跑，重开面板可继续查看进度或响应审核。
+  // 停止 agent 用面板里的「停止」按钮；断开连接只发生在新对话/切换会话。
   const handleClose = useCallback(() => {
-    if (busy) handleStop();
-    disconnectAgentChat();
     setAgentChatVisible(false);
-  }, [busy, handleStop, setAgentChatVisible]);
+  }, [setAgentChatVisible]);
 
   // ── 新对话（新 session）──
   const handleNewSession = useCallback(() => {
@@ -396,7 +489,7 @@ const AgentChat: React.FC = () => {
     setMessages([]);
     liveStepsRef.current = [];
     setCurrentSteps([]);
-    setPendingReview(null);
+    useReviewStore.getState().clear();
     setInputValue('');
     setBusy(false);
     connect();
@@ -431,7 +524,7 @@ const AgentChat: React.FC = () => {
       })));
       liveStepsRef.current = [];
       setCurrentSteps([]);
-      setPendingReview(null);
+      useReviewStore.getState().clear();
       setInputValue('');
       setBusy(false);
       connect();
@@ -440,6 +533,13 @@ const AgentChat: React.FC = () => {
     } finally {
       setSessionsLoading(false);
     }
+  }, [connect]);
+
+  // ── 挂载即建立长连接：连接随应用存活，与面板开关解耦 ──
+  // AgentChat 在 App 中常驻挂载（App.tsx），面板只是显示/隐藏；
+  // 连接一旦建立就不因关面板而断开，agent 在后台持续运行。
+  useEffect(() => {
+    connect();
   }, [connect]);
 
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
@@ -458,7 +558,34 @@ const AgentChat: React.FC = () => {
         setBusy(true);
         liveStepsRef.current = [];
         setCurrentSteps([]);
-        setPendingReview(null);
+      } else if (ev.event === 'review_delivery_failed') {
+        // 重连补发失败（如后端不可达）：审核置为失效并提示
+        useReviewStore.getState().expire('审核回复未能送达后端');
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `review_fail_${Date.now()}`,
+            role: 'system',
+            content: '❌ 审核回复未能送达后端（连接失败）。请确认后端已启动后重试。',
+            timestamp: Date.now(),
+          },
+        ]);
+      } else if (ev.event === 'ws_closed') {
+        // 非主动断开：后端不会再推送 done/error，解除"正在执行"避免永久卡住；
+        // 挂起的审核随连接中断失效（后端断连时已取消任务）
+        setBusy(false);
+        liveStepsRef.current = [];
+        setCurrentSteps([]);
+        useReviewStore.getState().expire('连接中断，审核随之失效');
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `ws_closed_${Date.now()}`,
+            role: 'system',
+            content: '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
+            timestamp: Date.now(),
+          },
+        ]);
       }
     });
   }, []);
@@ -494,8 +621,8 @@ const AgentChat: React.FC = () => {
           <div key={s.step} className="agent-step">
             <div className="agent-step-header">
               <Tag color="blue">Step {s.step}</Tag>
-              {s.actions.map((a) => (
-                <Tag key={a} icon={<ToolOutlined />} color="processing">{a}</Tag>
+              {s.actions.map((a, ai) => (
+                <Tag key={`${ai}_${a}`} icon={<ToolOutlined />} color="processing">{a}</Tag>
               ))}
               {s.is_final && <Tag color="success">完成</Tag>}
             </div>
@@ -701,50 +828,121 @@ const AgentChat: React.FC = () => {
               </div>
             )}
 
-            {/* 审核请求 */}
-            {pendingReview && (
+            {/* 审核请求（与 DiffViewer 联动，状态来自 reviewStore） */}
+            {review.status === 'pending' && !review.deferred && (
               <div className="agent-review-card">
-                <Alert
-                  type="warning"
-                  message={`🔔 审核请求 — ${pendingReview.review_type}`}
-                  description={
-                    <div>
-                      <p><strong>{pendingReview.title}</strong></p>
-                      <pre style={{ maxHeight: 150, overflow: 'auto', fontSize: 12 }}>
-                        {pendingReview.content.slice(0, 1000)}
-                      </pre>
-                      <p style={{ marginTop: 8 }}>❓ {pendingReview.question}</p>
-                      <Space style={{ marginTop: 8 }}>
-                        <Button
-                          type="primary"
-                          size="small"
-                          icon={<CheckCircleOutlined />}
-                          onClick={() => handleReviewResponse(pendingReview.review_id, '批准，继续')}
-                        >
-                          批准
-                        </Button>
-                        <Button
-                          size="small"
-                          icon={<CloseCircleOutlined />}
-                          onClick={() => handleReviewResponse(pendingReview.review_id, '拒绝，请修改')}
-                        >
-                          拒绝
-                        </Button>
-                        <Button
-                          size="small"
-                          onClick={() => handleReviewResponse(pendingReview.review_id, '查看后再说')}
-                        >
-                          稍后
-                        </Button>
-                      </Space>
-                    </div>
-                  }
-                />
+                {review.reviewType === 'uml_diff' ? (
+                  <Alert
+                    type="warning"
+                    message="🔔 Agent 请求设计审核"
+                    description={
+                      <div>
+                        <p style={{ margin: 0 }}><strong>{review.title}</strong></p>
+                        <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
+                          变更详情见右侧「差异对比」面板
+                        </p>
+                        <Space style={{ marginTop: 8 }}>
+                          <Button
+                            type="primary"
+                            size="small"
+                            icon={<SwapOutlined />}
+                            onClick={() => {
+                              const ui = useUiStore.getState();
+                              ui.setRightPanelTab('diff');
+                              ui.setRightPanelVisible(true);
+                              setAgentChatVisible(false); // 收起聊天面板，让出审核视野
+                            }}
+                          >
+                            去审核
+                          </Button>
+                          <Button
+                            size="small"
+                            icon={<CheckCircleOutlined />}
+                            onClick={() => useReviewStore.getState().accept('chat')}
+                          >
+                            直接批准
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => useReviewStore.getState().defer()}
+                          >
+                            稍后
+                          </Button>
+                        </Space>
+                      </div>
+                    }
+                  />
+                ) : (
+                  <Alert
+                    type="warning"
+                    message={`🔔 审核请求 — ${review.reviewType}`}
+                    description={
+                      <div>
+                        <p><strong>{review.title}</strong></p>
+                        <pre style={{ maxHeight: 150, overflow: 'auto', fontSize: 12 }}>
+                          {review.content.slice(0, 1000)}
+                        </pre>
+                        <p style={{ marginTop: 8 }}>❓ {review.question}</p>
+                        <Space style={{ marginTop: 8 }}>
+                          <Button
+                            type="primary"
+                            size="small"
+                            icon={<CheckCircleOutlined />}
+                            onClick={() => useReviewStore.getState().accept('chat')}
+                          >
+                            批准
+                          </Button>
+                          <Button
+                            size="small"
+                            icon={<CloseCircleOutlined />}
+                            onClick={() => useReviewStore.getState().reject('chat')}
+                          >
+                            拒绝
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => useReviewStore.getState().defer()}
+                          >
+                            稍后
+                          </Button>
+                        </Space>
+                      </div>
+                    }
+                  />
+                )}
               </div>
             )}
 
             <div ref={messagesEndRef} />
           </div>
+
+          {/* 待审核小条（「稍后」折叠态）：常驻输入框上方，随时可回到审核 */}
+          {review.status === 'pending' && review.deferred && (
+            <div className="agent-review-minibar">
+              <span className="agent-review-minibar-text">
+                ⏳ 待审核：{review.title}
+              </span>
+              <Button
+                size="small"
+                type="link"
+                onClick={() => {
+                  const ui = useUiStore.getState();
+                  ui.setRightPanelTab('diff');
+                  ui.setRightPanelVisible(true);
+                  setAgentChatVisible(false); // 收起聊天面板，让出审核视野
+                }}
+              >
+                去审核
+              </Button>
+              <Button
+                size="small"
+                type="link"
+                onClick={() => useReviewStore.getState().undefer()}
+              >
+                展开
+              </Button>
+            </div>
+          )}
 
           {/* Input */}
           <div className="agent-chat-input">

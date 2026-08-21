@@ -14,7 +14,9 @@ import * as Diff from 'diff';
 import { useUiStore, DiffDiagramType } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { saveReview, optimizeUml as apiOptimizeUml } from '../../services/api';
-import { sendAgentMessage, connectAgentChat } from '../../services/agentChat';
+import { sendAgentMessage } from '../../services/agentChat';
+import { restoreOriginalsToCanvas } from '../../services/designElementHandler';
+import { useReviewStore } from '../../stores/reviewStore';
 import './DiffViewer.css';
 
 const { TextArea } = Input;
@@ -74,6 +76,19 @@ const DiffViewer: React.FC = () => {
   const [rejectInstructions, setRejectInstructions] = useState('');
   const [reoptimizing, setReoptimizing] = useState(false);
 
+  // ── 与 AgentChat 联动的共享审核状态（reviewStore 为单一事实源）──
+  // reviewLinked：当前 diff 数据伴随一次 agent 审核（uml_review）
+  // reviewPending：审核待决策 → 本面板是审核工作台，按钮可用
+  // 终态（accepted/rejected/expired）→ 按钮锁定，header 显示结果
+  const reviewId = useReviewStore((s) => s.reviewId);
+  const reviewStatus = useReviewStore((s) => s.status);
+  const reviewType = useReviewStore((s) => s.reviewType);
+  const reviewActedFrom = useReviewStore((s) => s.actedFrom);
+  const reviewLinked = reviewId !== null && reviewType === 'uml_diff';
+  const reviewPending = reviewLinked && reviewStatus === 'pending';
+  // 联动模式下完成态由 store 决定；独立流程（单图优化/Pipeline）用本地 resolved
+  const resolvedEff = reviewLinked ? reviewStatus !== 'pending' : resolved;
+
   // When new optimization result arrives, reset to fresh state
   useEffect(() => {
     setResolved(false);
@@ -81,6 +96,11 @@ const DiffViewer: React.FC = () => {
     setSaving(false);
     setReoptimizing(false);
     setRejectModalVisible(false);
+    // 新对比数据到达且上一审核已终结（独立流程）→ 解除联动，避免按钮卡在旧状态
+    const st = useReviewStore.getState();
+    if (st.reviewId !== null && st.status !== 'pending') {
+      st.clear();
+    }
   }, [optimizedCode]);
 
   // Toggle canvas between original and optimized (supports multi-diagram)
@@ -144,6 +164,15 @@ const DiffViewer: React.FC = () => {
   };
 
   const handleAcceptConfirm = async () => {
+    // ── 联动模式：委托共享 store（回复 agent + 落盘评审由 store 统一处理）──
+    if (reviewPending) {
+      useReviewStore.getState().accept('diff', reviewComment);
+      message.success('已接受优化结果，评审已保存到 dev_review.txt');
+      setRightPanelTab('properties');
+      // 触发画布居中，确保用户可以看到更新后的图
+      triggerRecenter();
+      return;
+    }
     if (!optimizedDiagram && !hasMultiDiagrams) return;
     setSaving(true);
     try {
@@ -217,11 +246,24 @@ const DiffViewer: React.FC = () => {
   const handleContinueOptimize = async () => {
     setReoptimizing(true);
     const dt = originalDiagram?.diagram_type || 'class';
+
+    // ── 联动模式：拒绝 + 意见喂回 Agent ──
+    // 回滚画布 / 落盘评审 / 回复阻塞中的 agent 由共享 store 统一处理
+    if (reviewPending) {
+      useReviewStore.getState().reject('diff', rejectInstructions);
+      setRejectModalVisible(false);
+      setReviewComment('');
+      message.success({ content: '已拒绝并反馈给 AI 助手，Agent 将带着反馈继续修改', key: 'reoptimize' });
+      setReoptimizing(false);
+      return;
+    }
+
     message.loading({ content: 'LLM 正在重新优化...', key: 'reoptimize' });
     try {
       if (hasMultiDiagrams) {
         // Re-run global optimization via Agent WebSocket
-        connectAgentChat(() => {});
+        // （sendAgentMessage 内部会用常驻事件回调自愈重连，无需先 connect；
+        //  此处若 connectAgentChat(() => {}) 反而会用空回调覆盖掉常驻 handler）
         sendAgentMessage(
           `请对当前项目进行全局UML交叉验证和优化: ${rejectInstructions}`,
           { project_file: currentFilepath || '' },
@@ -262,6 +304,14 @@ const DiffViewer: React.FC = () => {
   };
 
   const handleCancelOptimize = async () => {
+    // ── 联动模式：拒绝但不附意见（回滚/落盘/回复 agent 由 store 统一处理）──
+    if (reviewPending) {
+      useReviewStore.getState().reject('diff', reviewComment || '用户拒绝了此次变更');
+      message.info('已拒绝优化结果，评审已保存到 dev_review.txt');
+      setRejectModalVisible(false);
+      setRightPanelTab('properties');
+      return;
+    }
     // Just save review and close, no further optimization
     setSaving(true);
     try {
@@ -273,7 +323,10 @@ const DiffViewer: React.FC = () => {
         optimized_name: optimizedDiagram?.name || '',
         timestamp: new Date().toISOString(),
       });
-      if (showingOptimized && originalDiagram) {
+      if (hasMultiDiagrams) {
+        // 画布回滚到审核前版本（processDesignUpdated 已预写入优化版）
+        restoreOriginalsToCanvas(originalDiagrams);
+      } else if (showingOptimized && originalDiagram) {
         setDiagram(originalDiagram);
         toggleShowingVersion();
       }
@@ -321,7 +374,7 @@ const DiffViewer: React.FC = () => {
     );
   }
 
-  const buttonsDisabled = resolved && !reoptimizing;
+  const buttonsDisabled = resolvedEff && !reoptimizing;
 
   return (
     <div className="diff-viewer">
@@ -332,6 +385,13 @@ const DiffViewer: React.FC = () => {
             ? '全局优化对比'
             : (originalDiagram?.diagram_type === 'sequence' ? '时序图优化对比' : 'UML 优化对比')}
         </h3>
+        {/* 与 AgentChat 联动的审核状态徽标 */}
+        {reviewPending && <Tag color="red">待审核</Tag>}
+        {reviewLinked && reviewStatus === 'accepted' && (
+          <Tag color="success">已批准{reviewActedFrom === 'chat' ? ' · 快捷批准' : ''}</Tag>
+        )}
+        {reviewLinked && reviewStatus === 'rejected' && <Tag color="warning">已拒绝 · Agent 修订中</Tag>}
+        {reviewLinked && reviewStatus === 'expired' && <Tag>已失效</Tag>}
         {isNewDesign ? (
           <Tag color="purple" style={{ fontSize: 12 }}>从需求全新生成</Tag>
         ) : (
@@ -449,7 +509,7 @@ const DiffViewer: React.FC = () => {
           onChange={(e) => setReviewComment(e.target.value)}
           placeholder={'输入评审意见...\n例如：\n• 组合关系改得好\n• 需要补充User的validate方法\n• 建议保留原来的Order类名'}
           rows={3}
-          disabled={resolved}
+          disabled={resolvedEff}
         />
       </div>
 
@@ -463,7 +523,7 @@ const DiffViewer: React.FC = () => {
           disabled={buttonsDisabled || saving || reoptimizing}
           block
         >
-          {resolved ? '已完成评审' : '接受优化（保存评审）'}
+          {resolvedEff ? '已完成评审' : '接受优化（保存评审）'}
         </Button>
         <Button
           danger
@@ -473,12 +533,12 @@ const DiffViewer: React.FC = () => {
           disabled={buttonsDisabled || saving || reoptimizing}
           block
         >
-          {resolved ? '已完成评审' : '拒绝优化'}
+          {resolvedEff ? '已完成评审' : '拒绝优化'}
         </Button>
       </div>
       <div style={{ fontSize: 10, color: '#999', textAlign: 'center', marginTop: 4 }}>
         评审记录将保存在 backend/dev_review.txt
-        {resolved && ' | 评审已完成，如需重新优化请点击"单图设计"或"全局优化"按钮'}
+        {resolvedEff && ' | 评审已完成，如需重新优化请点击"单图设计"或"全局优化"按钮'}
       </div>
 
       {/* Reject → Continue Optimize Modal */}
