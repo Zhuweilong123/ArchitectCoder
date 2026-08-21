@@ -10,7 +10,7 @@ import {
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
   UndoOutlined, RedoOutlined, CodeOutlined, RobotOutlined,
-  FileMarkdownOutlined, SettingOutlined, PlayCircleOutlined,
+  FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
   PlusSquareOutlined, DownOutlined, TableOutlined,
@@ -24,7 +24,7 @@ import {
   saveDiagram, openDiagram, listDiagrams,
   saveProject, openProject, listProjects,
   exportMarkdown, generateCode as apiGenerateCode,
-  optimizeUml as apiOptimizeUml, createPipeline,
+  optimizeUml as apiOptimizeUml,
   browseDirectory, type BrowseResult,
   saveGeneratedCode,
 } from '../../services/api';
@@ -65,11 +65,11 @@ const Toolbar: React.FC = () => {
     setSelectedLanguage, setGeneratedCode, setRightPanelTab,
     setRightPanelVisible, setCodeGenLoading,
     setOptimizationResult,
-    setActivePipelineId, fileDialogVisible, setFileDialogVisible,
+    fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    pipelineSourceDir, pipelineTestDir,
-    setPipelineSourceDir, setPipelineTestDir, setTraceVisible,
+    sourceDir, testDir,
+    setSourceDir, setTestDir, setTraceVisible,
   } = useUiStore();
 
   const [fileList, setFileList] = useState<Array<{
@@ -321,7 +321,7 @@ const Toolbar: React.FC = () => {
   const browseUnsafe = useRef(false);  // track whether we're browsing outside project
   const currentFileSafe = useRef(true);  // safe flag matching the currently opened file
 
-  // ── Project directory selection (for AI Agent & Pipeline) ──
+  // ── Project directory selection (for AI Agent) ──
   const [projDirBrowseVisible, setProjDirBrowseVisible] = useState(false);
   const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'source' | 'test'>('source');
   const [projDirBrowseResult, setProjDirBrowseResult] = useState<BrowseResult | null>(null);
@@ -333,8 +333,8 @@ const Toolbar: React.FC = () => {
       // 默认从当前设置的值开始浏览，无设置则用当前工作目录
       const initialPath = path || (
         target === 'source'
-          ? (pipelineSourceDir || '.')
-          : (pipelineTestDir || '.')
+          ? (sourceDir || '.')
+          : (testDir || '.')
       );
       const result = await browseDirectory(initialPath, false);
       setProjDirBrowseResult(result);
@@ -347,13 +347,13 @@ const Toolbar: React.FC = () => {
 
   const handleProjDirSelect = useCallback((dirPath: string) => {
     if (projDirBrowseTarget === 'source') {
-      setPipelineSourceDir(dirPath);
+      setSourceDir(dirPath);
     } else {
-      setPipelineTestDir(dirPath);
+      setTestDir(dirPath);
     }
     setProjDirBrowseVisible(false);
     message.success(`已设置${projDirBrowseTarget === 'source' ? '源码' : '测试'}目录: ${dirPath}`);
-  }, [projDirBrowseTarget, setPipelineSourceDir, setPipelineTestDir]);
+  }, [projDirBrowseTarget, setSourceDir, setTestDir]);
 
   const handleProjDirNav = useCallback((dirPath: string) => {
     handleBrowseDirFor(projDirBrowseTarget, dirPath);
@@ -545,24 +545,6 @@ const Toolbar: React.FC = () => {
     setOptimizing(false);
   };
 
-  const handleStartPipeline = async () => {
-    const projectDiagrams = useDiagramStore.getState().project.diagrams;
-    const classDiagram = projectDiagrams.find(d => (d.diagram_type || 'class') === 'class');
-    if (!classDiagram || !classDiagram.classes.length) {
-      message.warning('请先在类图中添加至少一个类');
-      return;
-    }
-    try {
-      const pipeline = await createPipeline(diagram.name, diagram);
-      setActivePipelineId(pipeline.pipeline_id);
-      setRightPanelTab('pipeline');
-      setRightPanelVisible(true);
-      message.info('流水线已创建，请在流水线面板中启动');
-    } catch (e) {
-      message.error('创建流水线失败: ' + String(e));
-    }
-  };
-
   // ── View controls ───────────────────────────────────
   const handleZoomIn = () => useDiagramStore.getState().setZoom(diagram.zoom * 1.2);
   const handleZoomOut = () => useDiagramStore.getState().setZoom(diagram.zoom / 1.2);
@@ -717,37 +699,37 @@ const Toolbar: React.FC = () => {
       <div className="toolbar-right" />
       </div>
 
-      {/* Row 2: Project directories (global — shared by Agent, Pipeline, etc.) */}
+      {/* Row 2: Project directories (global — shared by Agent, etc.) */}
       <div className="toolbar-row" style={{ padding: '2px 0' }}>
         <div className="toolbar-left" style={{ gap: 10, flexWrap: 'wrap', width: '100%' }}>
-          <Tooltip title="选择已有项目源码目录后，AI 助手和流水线将基于已有代码进行增量开发。留空则从 UML 设计全新生成代码。">
+          <Tooltip title="选择已有项目源码目录后，AI 助手将基于已有代码进行增量开发。留空则从 UML 设计全新生成代码。">
             <Tag
               icon={<FolderOpenOutlined />}
-              color={pipelineSourceDir ? 'blue' : 'default'}
+              color={sourceDir ? 'blue' : 'default'}
               style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               onClick={() => handleBrowseDirFor('source')}
             >
-              源码目录{pipelineSourceDir ? `: ${pipelineSourceDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+              源码目录{sourceDir ? `: ${sourceDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
             </Tag>
           </Tooltip>
-          {pipelineSourceDir && (
+          {sourceDir && (
             <Tooltip title="清除源码目录">
-              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setPipelineSourceDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
+              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setSourceDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
             </Tooltip>
           )}
-          <Tooltip title="选择已有测试代码目录后，AI 助手和流水线将运行已有测试而非从零生成。留空则自动生成 pytest 测试。">
+          <Tooltip title="选择已有测试代码目录后，AI 助手将运行已有测试而非从零生成。留空则自动生成 pytest 测试。">
             <Tag
               icon={<FolderOpenOutlined />}
-              color={pipelineTestDir ? 'green' : 'default'}
+              color={testDir ? 'green' : 'default'}
               style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               onClick={() => handleBrowseDirFor('test')}
             >
-              测试目录{pipelineTestDir ? `: ${pipelineTestDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+              测试目录{testDir ? `: ${testDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
             </Tag>
           </Tooltip>
-          {pipelineTestDir && (
+          {testDir && (
             <Tooltip title="清除测试目录">
-              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setPipelineTestDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
+              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setTestDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
             </Tooltip>
           )}
         </div>
@@ -777,11 +759,6 @@ const Toolbar: React.FC = () => {
         <Tooltip title="全局综合优化（类图+时序图+组件图交叉验证，也支持从需求描述直接生成全部图）">
           <Button icon={<RobotOutlined />} onClick={() => setGlobalOptimizeVisible(true)} style={{ color: '#722ed1' }}>
             全局优化
-          </Button>
-        </Tooltip>
-        <Tooltip title="启动自动化流水线">
-          <Button icon={<PlayCircleOutlined />} onClick={handleStartPipeline}>
-            流水线
           </Button>
         </Tooltip>
         <Tooltip title="AI 开发助手（对话驱动开发）">

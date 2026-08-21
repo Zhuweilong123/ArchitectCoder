@@ -294,6 +294,7 @@ class DevPromptBuilder:
             "- Do only what was asked.",
             "- No comments or emojis in code.",
             "- Pure chat/greeting: reply briefly without calling tools.",
+            "- Before starting any multi-step task, use todo_write to plan your steps; Update status as you go."
             "",
             _build_tool_policy(registry.list_tools()),
         ]

@@ -5,7 +5,7 @@
 import React, { useCallback } from 'react';
 import { Layout, Tabs, Button, Tooltip } from 'antd';
 import {
-  SettingOutlined, CodeOutlined, PlayCircleOutlined,
+  SettingOutlined, CodeOutlined,
   DiffOutlined, CloseOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import UMLEditor from './components/Canvas/UMLEditor';
@@ -14,7 +14,6 @@ import CompEditor from './components/Canvas/CompEditor';
 import Toolbar from './components/Toolbar/Toolbar';
 import PropertyPanel from './components/PropertyPanel/PropertyPanel';
 import CodeViewer from './components/CodeViewer/CodeViewer';
-import PipelineConsole from './components/PipelineConsole/PipelineConsole';
 import DiffViewer from './components/DiffViewer/DiffViewer';
 import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
 import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
@@ -69,15 +68,6 @@ const App: React.FC = () => {
         </Tooltip>
       ),
       children: <CodeViewer />,
-    },
-    {
-      key: 'pipeline' as RightPanelTab,
-      label: (
-        <Tooltip title="流水线">
-          <PlayCircleOutlined />
-        </Tooltip>
-      ),
-      children: <PipelineConsole />,
     },
     {
       key: 'diff' as RightPanelTab,

@@ -2,7 +2,6 @@
 
 import axios from 'axios';
 import type { UmlDiagram, Project } from '../types/uml';
-import type { PipelineState } from '../types/pipeline';
 
 // Read auth token from Vite env var (VITE_API_TOKEN in .env.local)
 const API_TOKEN = import.meta.env.VITE_API_TOKEN as string | undefined;
@@ -88,65 +87,6 @@ export async function optimizeUml(
 }> {
   const { data } = await api.post('/llm/optimize-uml', { diagram, instructions });
   return data;
-}
-
-// ─── Pipeline ───────────────────────────────────────────
-
-export async function createPipeline(diagramId: string, diagram: UmlDiagram): Promise<PipelineState> {
-  const { data } = await api.post('/pipeline/create', {
-    diagram_id: diagramId,
-    diagram: diagram,
-  });
-  return data.pipeline;
-}
-
-export async function getPipeline(pipelineId: string): Promise<PipelineState> {
-  const { data } = await api.get(`/pipeline/${pipelineId}`);
-  return data.pipeline;
-}
-
-export async function confirmStage(
-  pipelineId: string, stage: string, accepted: boolean, comment = ''
-): Promise<PipelineState> {
-  const { data } = await api.post(`/pipeline/${pipelineId}/confirm`, {
-    stage, accepted, comment,
-  });
-  return data.pipeline;
-}
-
-export async function resumePipeline(
-  pipelineId: string, diagram: UmlDiagram, language = 'python'
-): Promise<{ events: unknown[]; pipeline: PipelineState }> {
-  const { data } = await api.post(
-    `/pipeline/${pipelineId}/resume`, diagram, { params: { language } }
-  );
-  return data;
-}
-
-export function createPipelineWs(
-  pipelineId: string,
-  diagram: UmlDiagram,
-  language = 'python',
-  autoConfirm = false,
-  sourceDir = '',
-  testDir = '',
-  project?: Project,
-  maxChangeRatio = 0,
-): WebSocket {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const tokenParam = API_TOKEN ? `?token=${encodeURIComponent(API_TOKEN)}` : '';
-  const wsUrl = `${protocol}//${window.location.host}/api/pipeline/ws/${pipelineId}${tokenParam}`;
-  const ws = new WebSocket(wsUrl);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      diagram, language, auto_confirm: autoConfirm,
-      source_dir: sourceDir,
-      test_dir: testDir,
-      project: project || {},
-      max_change_ratio: maxChangeRatio,
-    }));
-  };
-  return ws;
 }
 
 // ─── Browse directories ────────────────────────────────

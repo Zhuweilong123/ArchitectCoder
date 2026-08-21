@@ -24,10 +24,58 @@ from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 
 logger = logging.getLogger(__name__)
 
-# 危险命令黑名单（借鉴 code.py DENY_LIST，Unix/Windows 通用）。
+# 危险命令黑名单。
 DENY_LIST = [
-    "rm -rf /", "rm -fr /", "sudo", "shutdown", "reboot", "mkfs",
-    "dd if=", "del /s", "rd /s", ":(){ :|:& };:",
+    # 原有 Linux/Unix 危险指令
+    "rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=",
+    
+    # -------- Windows 扩展 --------
+    # 文件/目录强制删除（含递归）
+    "del /f /s", "del /f /q", "rd /s /q", "rmdir /s /q",
+    "erase /f /s",
+    
+    # 格式化/磁盘操作
+    "format", "diskpart", "clean all", "convert gpt", "convert mbr",
+    
+    # 系统设置破坏
+    "reg delete", "reg add", "reg import", "reg export",
+    "bcdedit /delete", "bootrec /fixmbr", "bootrec /fixboot",
+    
+    # 用户/权限管理（提权或删除）
+    "net user", "net localgroup", "lusrmgr",
+    "whoami /privileges", "takeown", "icacls",
+    
+    # 进程/服务强制终止
+    "taskkill /f", "taskkill /pid", "kill -f", "Stop-Process -Force",
+    
+    # 系统关机/重启/睡眠（带强制参数）
+    "shutdown /r /f", "shutdown /s /f", "shutdown /l", "shutdown /a",
+    "rundll32 powrprof.dll,SetSuspendState",
+    
+    # 网络防火墙与路由
+    "netsh advfirewall set allprofiles state off",
+    "netsh interface ip set address",
+    "route delete",
+    
+    # PowerShell 高危命令
+    "Remove-Item -Recurse -Force", "Remove-Item -Path",
+    "Clear-Content", "Set-Content",
+    "Stop-Service", "Disable-Service",
+    "Set-Service -StartupType Disabled",
+    "Grant-SmbShareAccess", "Revoke-SmbShareAccess",
+    
+    # WMI 操作（可能用于删除或修改）
+    "wmic process call create", "wmic process delete",
+    "wmic product uninstall", "wmic os where",
+    
+    # 组策略/计划任务
+    "secedit /configure", "schtasks /delete", "schtasks /create",
+    
+    # BitLocker/加密破坏
+    "manage-bde -off", "manage-bde -lock",
+    
+    # 分区表破坏
+    "dd if=/dev/zero of=\\\\?\\PhysicalDrive",  # Windows 下的 dd 风格
 ]
 
 BASH_TIMEOUT = 120  # 秒
