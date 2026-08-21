@@ -204,6 +204,9 @@ export function sendReviewResponse(reviewId: number, response: string, decision?
       response,
       decision,
     }));
+    console.log('[AgentChat] review_response sent:', reviewId, decision || '(no decision)');
+  } else {
+    console.warn('[AgentChat] review_response NOT sent — ws state:', _ws ? _ws.readyState : 'null');
   }
 }
 
@@ -271,7 +274,8 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     console.error('[AgentChat] WebSocket error:', e);
   };
 
-  ws.onclose = () => {
+  ws.onclose = (e) => {
+    console.warn('[AgentChat] WebSocket closed:', e.code, e.reason || '(no reason)');
     _ws = null;
   };
 

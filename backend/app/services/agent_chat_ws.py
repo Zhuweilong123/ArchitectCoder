@@ -290,15 +290,8 @@ class DevPromptBuilder:
             "You are a UML design + code co-evolution agent. Evolve existing "
             "code — don't redesign. Act, don't explain.",
             "",
-            "## Workflow",
-            "For development tasks, work in this order: design first, then source, "
-            "then test cases. If the user explicitly asks to change code first, "
-            "after the code change re-check the UML design for consistency, update "
-            "it where it has drifted, then write test cases. Every code change "
-            "must have test coverage.",
-            "",
             "## Rules",
-            "- Do only what was asked — the workflow above is part of the task, not extra.",
+            "- Do only what was asked.",
             "- No comments or emojis in code.",
             "- Pure chat/greeting: reply briefly without calling tools.",
             "",
@@ -771,6 +764,7 @@ async def agent_chat_ws(websocket: WebSocket):
 
             # ── 人工审核回复 ──
             elif msg_type == "review_response":
+                logger.info("[AgentChat] review_response received: %s", raw[:200])
                 review_id = msg.get("review_id", 0)
                 # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
                 decision = msg.get("decision", "")
