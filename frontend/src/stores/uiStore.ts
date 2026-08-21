@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
 
-export type RightPanelTab = 'properties' | 'code' | 'pipeline' | 'diff' | 'testcase';
+export type RightPanelTab = 'properties' | 'code' | 'diff' | 'testcase';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
 export type DiffDiagramType = string;  // was: 'class' | 'sequence' | 'component' — now dynamic
@@ -44,10 +44,9 @@ interface UiState {
   showTestCaseInCanvas: boolean; // toggle main canvas to show test cases
   testCaseData: string; // Excel test case summary for pipeline Stage 5
 
-  // Pipeline
-  activePipelineId: string | null;
-  pipelineSourceDir: string;
-  pipelineTestDir: string;
+  // Project directories (shared by Agent chat, etc.)
+  sourceDir: string;
+  testDir: string;
 
   // Modal
   fileDialogVisible: boolean;
@@ -93,9 +92,8 @@ interface UiState {
   setShowTestCaseInCanvas: (v: boolean) => void;
   setTestCaseData: (data: string) => void;
 
-  setActivePipelineId: (id: string | null) => void;
-  setPipelineSourceDir: (dir: string) => void;
-  setPipelineTestDir: (dir: string) => void;
+  setSourceDir: (dir: string) => void;
+  setTestDir: (dir: string) => void;
 
   setFileDialogVisible: (visible: boolean) => void;
   setExportDialogVisible: (visible: boolean) => void;
@@ -134,9 +132,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   optimizationConsistencyReport: [],
   showTestCaseInCanvas: false,
   testCaseData: '',
-  activePipelineId: null,
-  pipelineSourceDir: localStorage.getItem('pipelineSourceDir') || '',
-  pipelineTestDir: localStorage.getItem('pipelineTestDir') || '',
+  sourceDir: localStorage.getItem('sourceDir') || '',
+  testDir: localStorage.getItem('testDir') || '',
   fileDialogVisible: false,
   exportDialogVisible: false,
   codeGenLoading: false,
@@ -236,14 +233,13 @@ export const useUiStore = create<UiState>((set, get) => ({
   setShowTestCaseInCanvas: (v) => set({ showTestCaseInCanvas: v }),
   setTestCaseData: (data) => set({ testCaseData: data }),
 
-  setActivePipelineId: (id) => set({ activePipelineId: id }),
-  setPipelineSourceDir: (dir) => {
-    localStorage.setItem('pipelineSourceDir', dir);
-    set({ pipelineSourceDir: dir });
+  setSourceDir: (dir) => {
+    localStorage.setItem('sourceDir', dir);
+    set({ sourceDir: dir });
   },
-  setPipelineTestDir: (dir) => {
-    localStorage.setItem('pipelineTestDir', dir);
-    set({ pipelineTestDir: dir });
+  setTestDir: (dir) => {
+    localStorage.setItem('testDir', dir);
+    set({ testDir: dir });
   },
 
   setFileDialogVisible: (visible) => set({ fileDialogVisible: visible }),

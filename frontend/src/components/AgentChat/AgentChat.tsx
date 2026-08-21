@@ -103,7 +103,7 @@ const AgentChat: React.FC = () => {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
     agentChatPosition, setAgentChatPosition,
-    pipelineSourceDir, pipelineTestDir,
+    sourceDir, testDir,
   } = useUiStore();
 
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
@@ -417,8 +417,8 @@ const AgentChat: React.FC = () => {
 
     connect();
     sendAgentMessage(text, {
-      source_dir: pipelineSourceDir,
-      test_dir: pipelineTestDir,
+      source_dir: sourceDir,
+      test_dir: testDir,
       project_file: currentFilepath || '',
       skipNotify: true,
     });
@@ -436,7 +436,7 @@ const AgentChat: React.FC = () => {
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
-  }, [inputValue, busy, connect, pipelineSourceDir, pipelineTestDir, currentFilepath]);
+  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath]);
 
   // ── 中断 ──
   const handleStop = useCallback(() => {

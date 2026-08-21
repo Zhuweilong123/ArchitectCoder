@@ -23,7 +23,6 @@ from app.core.config import get_settings
 from app.core.auth import require_auth
 from app.api.files import router as files_router
 from app.api.llm import router as llm_router
-from app.api.pipeline import router as pipeline_router
 from app.api.testhub import router as testhub_router
 from app.services.agent_chat_ws import router as agent_chat_router
 from app.api.optimize_v2 import router as optimize_v2_router
@@ -48,10 +47,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers — auth is required on LLM & pipeline endpoints
+# Include routers — auth is required on LLM endpoints
 app.include_router(files_router)
 app.include_router(llm_router, dependencies=[Depends(require_auth)])
-app.include_router(pipeline_router)  # auth: WS endpoint checks token manually; HTTP routes use Depends
 app.include_router(testhub_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
 app.include_router(optimize_v2_router)  # optimize_uml v2 (prefix already in router)
