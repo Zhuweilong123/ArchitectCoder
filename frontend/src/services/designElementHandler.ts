@@ -287,3 +287,37 @@ export function processDesignUpdated(
   uiStore.setRightPanelTab('diff');
   uiStore.setRightPanelVisible(true);
 }
+
+/**
+ * 拒绝变更时把画布恢复为审核前的原始版本（回滚 processDesignUpdated 的预写入）。
+ *
+ * 只恢复审核结果中已存在的图；Agent 本轮新建的图（originals 里没有对应
+ * 原始版本）无法"恢复"，保留现状——删除新图属于破坏性操作，交给用户手动处理。
+ */
+export function restoreOriginalsToCanvas(originals: Record<string, any>): void {
+  const project = useDiagramStore.getState().project;
+  if (!project || !Array.isArray(project.diagrams) || !originals) return;
+
+  const diagrams = [...project.diagrams];
+  let changed = false;
+  for (const [key, orig] of Object.entries(originals)) {
+    if (!orig || typeof orig !== 'object') continue;
+    const colonIdx = key.indexOf(':');
+    const dtype = colonIdx > 0 ? key.substring(0, colonIdx) : key;
+    const dname = colonIdx > 0 ? key.substring(colonIdx + 1) : '';
+    const idx = diagrams.findIndex(
+      (d: any) => (d.diagram_type || 'class') === dtype && (d.name || '') === dname,
+    );
+    if (idx >= 0) {
+      diagrams[idx] = { ...diagrams[idx], ...orig };
+      changed = true;
+    }
+  }
+  if (!changed) return;
+
+  useDiagramStore.setState({
+    project: { ...project, diagrams },
+    diagram: diagrams[project.active_diagram_index],
+    isModified: true,
+  });
+}

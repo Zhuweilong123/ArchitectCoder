@@ -245,6 +245,15 @@ class RequestReviewTool(Tool):
             result = await asyncio.wait_for(req.future, timeout=self.timeout)
         except asyncio.TimeoutError:
             result = f"⏰ 审核超时: 人类在 {self.timeout} 秒内未响应"
+            # 通知前端审核已超时失效，避免用户对着一张不会再被消费的审核卡等待
+            if self.progress is not None:
+                self.progress.emit({
+                    "event": "review_timeout",
+                    "review_id": req.id,
+                    "review_type": review_type,
+                    "title": title,
+                    "timeout": self.timeout,
+                })
 
         return f"人工审核结果 [{review_type}]: {result}"
 
@@ -372,4 +381,13 @@ class SubmitUmlReviewTool(Tool):
                 {"decision": "timeout", "feedback": "Human did not respond"},
                 ensure_ascii=False,
             )
+            # 通知前端审核已超时失效（Agent 将继续自行推进）
+            if self.progress is not None:
+                self.progress.emit({
+                    "event": "review_timeout",
+                    "review_id": req.id,
+                    "review_type": "uml_diff",
+                    "title": title,
+                    "timeout": self.timeout,
+                })
         return result
