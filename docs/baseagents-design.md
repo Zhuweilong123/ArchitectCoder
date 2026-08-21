@@ -42,7 +42,7 @@ agent_base/
     ├── registry.py                      # ToolRegistry（注册/发现/执行 + FC schema 生成）
     ├── chain.py                         # ToolChain + ToolChainManager（顺序流 + 变量模板）
     ├── async_executor.py                # AsyncToolExecutor（并行执行 I/O 密集任务）
-    ├── review.py                        # RequestReviewTool + ReviewManager（人工审核）
+    ├── review.py                        # ReviewManager（人工审核机制）+ SubmitUmlReviewTool
     │
     └── my_tools/                        # 项目特有工具
         ├── conversation_tools.py        # 7 个开发工具 + AsyncTool 基类 + ProgressRelay
@@ -153,7 +153,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
   `to_openai_schema()`。所有对话工具均继承 `AsyncTool`。
 - **ToolChain / ToolChainManager**：顺序编排 + 变量模板。
 - **AsyncToolExecutor**：并行执行 I/O 密集任务。
-- **RequestReviewTool + ReviewManager**：人工审核（asyncio.Future 阻塞等待人工响应）。
+- **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
+  `SubmitUmlReviewTool`（UML diff 审核）与 `BashTool`（敏感命令批准，见 file_system_tools）。
 
 ## 6. 对话 Agent 工具集（9 个）
 
@@ -204,7 +205,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
   │   └── ToolRegistry：9 个工具
   ├── 流式进度 → ReActProgress → 前端实时渲染
-  ├── 审核拦截 → request_review → 暂停 → 人工响应 → 继续
+  ├── 审核拦截 → submit_uml_review / bash 敏感命令 → 暂停 → 人工响应 → 继续
   └── 中断控制 → stop 消息 → 优雅终止
 ```
 
@@ -218,7 +219,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 服务端 → 客户端 (流式):
   {"event": "progress", "step": 1, "actions": [...], "thought": "...", "tool_calls_detail": [...]}
-  {"event": "request_review", "review_id": 0, "review_type": "code", "title": "...", "question": "..."}
+  {"event": "request_review", "review_id": 0, "review_type": "bash_command", "title": "...", "question": "..."}
   {"event": "done", "result": "..."}
   {"event": "stopped", "reason": "User requested stop"}
   {"event": "error", "message": "..."}
@@ -249,7 +250,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ├── explore_project → 确定性探索（非 ReAct）
 ├── generate_code / generate_tests → 直接 LLM 调用
 ├── run_tests → 直接 pytest；write_files → 文件 I/O
-└── request_review → 人工审核（暂停等待）
+├── submit_uml_review → UML diff 人工审核（暂停等待 accept/reject）
+└── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
 ```
 
 ## 8. 记忆系统集成
@@ -341,7 +343,7 @@ result = await run_optimize_v2(
 - **分层代理**：工具封装子 Agent（对话 Agent → optimize_uml/validate_code/fix_code →
   V2 引擎 / ReActAgent / ReflectionAgent 子实例）。
 - **流式进度**：ReActProgress 逐轮推送 → 前端实时渲染。
-- **人工介入**：RequestReviewTool + ReviewManager → asyncio.Future 阻塞 → 人工响应。
+- **人工介入**：ReviewManager → asyncio.Future 阻塞 → 人工响应（UML diff 审核 + bash 敏感命令批准）。
 - **可中断**：InterruptibleAgent 包装器 + should_stop 回调。
 - **记忆系统**：跨任务知识归档与检索（subject 后写覆盖 + recency + 别名 + 类型化衰退）。
 - **结构化 trace**：机读 JSONL trace，支持 TraceViewer 与确定性回放。
@@ -356,7 +358,7 @@ result = await run_optimize_v2(
 | `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
 | `backend/app/agent_base/agents/reflection_agent.py` | 反思优化 + Hook 机制 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
-| `backend/app/agent_base/tools/review.py` | RequestReviewTool + ReviewManager |
+| `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
 | `backend/app/agent_base/tools/my_tools/conversation_tools.py` | 7 开发工具 + AsyncTool + create_conversation_tools |
 | `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | 项目探索统一入口 |
 | `backend/app/services/uml_optimizer_v2.py` | V2 直连优化引擎 |

@@ -24,7 +24,7 @@ export type ReviewFrom = 'chat' | 'diff';
 
 interface ShowReviewInput {
   reviewId: number;
-  reviewType: string;            // 'uml_diff' | 'code' | 'test' | 'design'
+  reviewType: string;            // 'uml_diff' | 'bash_command' | ...
   title: string;
   content?: string;
   question?: string;

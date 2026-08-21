@@ -1,11 +1,13 @@
 """文件系统原语工具测试（safe_path + read/write/edit/glob/bash）。"""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
+from app.agent_base.tools.review import ReviewManager
 from app.agent_base.tools.my_tools.file_system_tools import (
-    safe_path, create_file_system_tools, _decode_output,
+    BashTool, safe_path, create_file_system_tools, _decode_output,
 )
 
 
@@ -113,13 +115,99 @@ def test_bash_echo(workspace):
 
 def test_bash_deny_list(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
-    result = _run(bash, {"command": "sudo ls"})
+    result = _run(bash, {"command": "format c:"})
     assert "denied" in result
+    assert "high-risk" in result
 
 
 def test_bash_empty_command(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     assert "non-empty" in _run(bash, {"command": ""})
+
+
+# ── bash 敏感命令审核（两级防护） ────────────────────────
+
+class _FakeProgress:
+    """收集 emit 的审核事件，替代 ProgressRelay。"""
+
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+
+
+def _bash_with_review(workspace, review_timeout=5):
+    src, test = workspace
+    mgr = ReviewManager()
+    progress = _FakeProgress()
+    bash = BashTool(str(src), str(test), review_manager=mgr,
+                    progress=progress, review_timeout=review_timeout)
+    return bash, mgr, progress
+
+
+# 含敏感子串但实际无害的命令（批准时只执行 echo）
+SENSITIVE_CMD = 'echo "git reset --hard is risky"'
+
+
+def test_bash_sensitive_no_channel_denied(workspace):
+    """敏感命令 + 无审核通道 → fail closed 拒绝。"""
+    bash = _tool_by_name(_tools(workspace), "bash")
+    result = _run(bash, {"command": SENSITIVE_CMD})
+    assert "requires human approval" in result
+    assert "NOT executed" in result
+
+
+def test_bash_sensitive_accept_executes(workspace):
+    """敏感命令 + 用户批准 → 正常执行。"""
+    bash, mgr, progress = _bash_with_review(workspace)
+
+    async def _scenario():
+        task = asyncio.create_task(bash._execute({"command": SENSITIVE_CMD}))
+        await asyncio.sleep(0.05)  # 让 submit + emit 完成
+        mgr.resolve(0, json.dumps({"decision": "accept", "feedback": ""}))
+        return await task
+
+    result = asyncio.run(_scenario())
+    assert "git reset --hard is risky" in result  # echo 真的执行了
+    # 审核事件已推送（前端据此弹卡）
+    assert any(e.get("event") == "review" and e.get("review_type") == "bash_command"
+               for e in progress.events)
+
+
+def test_bash_sensitive_reject_blocked(workspace):
+    """敏感命令 + 用户拒绝 → 不执行，反馈喂回 agent。"""
+    bash, mgr, _ = _bash_with_review(workspace)
+
+    async def _scenario():
+        task = asyncio.create_task(bash._execute({"command": SENSITIVE_CMD}))
+        await asyncio.sleep(0.05)
+        mgr.resolve(0, json.dumps({"decision": "reject", "feedback": "太危险"}))
+        return await task
+
+    result = asyncio.run(_scenario())
+    assert "rejected by user" in result
+    assert "太危险" in result
+    assert "NOT executed" in result
+
+
+def test_bash_sensitive_timeout_denied(workspace):
+    """敏感命令 + 审核超时 → fail closed 拒绝，并推送 review_timeout。"""
+    bash, mgr, progress = _bash_with_review(workspace, review_timeout=0.1)
+    result = _run(bash, {"command": SENSITIVE_CMD})
+    assert "timed out" in result
+    assert "NOT executed" in result
+    assert any(e.get("event") == "review_timeout" for e in progress.events)
+
+
+def test_bash_high_risk_denied_even_with_channel(workspace):
+    """高危命令即使有审核通道也直接拒绝，不产生审核请求。"""
+    bash, mgr, progress = _bash_with_review(workspace)
+    result = _run(bash, {"command": "diskpart"})
+    assert "denied" in result
+    assert "high-risk" in result
+    assert not mgr.has_pending()
+    assert not progress.events
 
 
 def test_decode_output_gbk_fallback():

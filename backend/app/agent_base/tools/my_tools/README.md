@@ -21,7 +21,8 @@
 │  Step 5: run_tests        ─→ pytest 子进程            │
 │  Step 6: fix_code         ─→ CodeFixer               │
 │  Step 7: write_files      ─→ 文件写入磁盘             │
-│  Step *: request_review   ─→ 人工审核                 │
+│  Step *: submit_uml_review ─→ UML diff 人工审核        │
+│  Step *: bash 敏感命令      ─→ 人工批准后才执行          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -160,7 +161,7 @@ async for progress in agent.arun_stream("创建一个计算器系统"):
 | `fix_code` | CodeFixer | `source_files_json`, `test_files_json`, `task` | `{success, final_source, pass_rate}` |
 | `run_tests` | pytest 子进程 | `source_files_json`, `test_files_json` | `{output, passed, total, all_passing}` |
 | `write_files` | 文件 I/O | `files_json`, `file_type` | `{written, count, directory}` |
-| `request_review` | ReviewManager | `review_type`, `title`, `content`, `question` | 人工审核结果 |
+| `submit_uml_review` | ReviewManager | `project_file`, `summary` | accept/reject + 用户反馈 |
 
 ## 工具桥接
 
@@ -190,14 +191,20 @@ finally:
     reset_runtime(token)
 ```
 
-### RequestReviewTool (`base/tools/review.py`)
+### 人工审核机制（`base/tools/review.py`）
+
+`ReviewManager` 提供「提交审核 → Future 阻塞 → 人工响应回灌」的通用机制，当前两个使用方：
 
 ```python
-# 对话 Agent 自主决定何时请求审核
-# Agent 调用 request_review(type="code", title="SQL注入修复", content="...", question="这个修复对吗?")
-# → ReviewManager 创建 Future → 编排层推送到前端
-# → 前端 resolve(review_id, "批准，但还要加参数化查询")
-# → Agent 收到 feedback 继续
+# 1. SubmitUmlReviewTool：Agent 修改 UML 后调用
+#    → ReviewManager 创建 Future → 编排层推送 DiffViewer 审核
+#    → 前端 accept/reject → resolve(review_id, {decision, feedback})
+#    → Agent 收到结论，被拒则修订后重新提交
+
+# 2. BashTool 敏感命令审核（file_system_tools.py）：
+#    高危命令（format/diskpart/dd 等）直接拒绝；
+#    敏感命令（del /f /s、taskkill /f、git reset --hard 等）
+#    → 同一 ReviewManager 通道请求人工批准，批准才执行
 ```
 
 ## 运行 Demo

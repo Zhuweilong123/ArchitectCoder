@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.base import Tool, ToolParameter
-from app.agent_base.tools.review import ReviewManager, RequestReviewTool
+from app.agent_base.tools.review import ReviewManager, SubmitUmlReviewTool
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
@@ -260,7 +260,7 @@ def demo_conversation_agent_real():
             "5. run_tests — 运行测试检查\n"
             "6. fix_code — 修复失败的测试（如有）\n"
             "7. write_files — 保存最终代码到磁盘\n"
-            "8. request_review — 在关键节点请求人工审核\n\n"
+            "8. submit_uml_review — 修改 UML 后提交人工 diff 审核\n\n"
             "每步完成后快速评估结果，果断决定下一步。保持简洁高效。"
         ),
         max_steps=12,
@@ -383,7 +383,7 @@ def main():
     print("    ├─ fix_code         → CodeFixer (ReflectionAgent)")
     print("    ├─ run_tests        → pytest 子进程")
     print("    ├─ write_files      → 文件写入磁盘")
-    print("    └─ request_review   → 人工审核")
+    print("    └─ submit_uml_review → UML diff 人工审核")
     print()
 
     demo_interruptible()

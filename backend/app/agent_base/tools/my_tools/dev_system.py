@@ -38,7 +38,7 @@ import logging
 from typing import Any, AsyncIterator, Callable, Optional
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.agent_base.tools.review import ReviewManager, RequestReviewTool
+from app.agent_base.tools.review import ReviewManager
 from app.agent_base.tools.my_tools.code_validator import CodeValidator
 from app.agent_base.tools.my_tools.code_fixer import CodeFixer
 

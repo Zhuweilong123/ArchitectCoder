@@ -43,7 +43,7 @@ Floating chat panel (bottom-right robot button). A single ReActAgent handles eve
 
 - **7 execution tools**: `optimize_uml` (V2 direct engine: scope analysis + single LLM pass + programmatic validation) → `generate_code` (12 languages) → `validate_code` → `generate_tests` → `run_tests` (real pytest) → `fix_code` → `write_files`
 - **`explore_project` sub-agent**: consolidates all read-only operations (knowledge graph queries, file reading, project info) — prevents main agent context bloat from reading files one by one
-- **`request_review`**: human approval at critical checkpoints (post code-gen, post testing) — keeps AI development within guardrails
+- **Human review**: UML design changes go through `submit_uml_review` diff approval; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
 - **Streaming progress**: every tool call, arguments, and results pushed in real time
 - **Interrupt control**: stop the Agent at any time
 - **Session persistence**: conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
