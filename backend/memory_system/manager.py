@@ -99,7 +99,7 @@ LLM 调用类型: {call_type}
   格式 "实体:方面", 短且稳定可复现——同一事实的每次更新必须用同一个键。
   例如: 类图是否存在 → uml:class_diagram:existence; 某类的方法集 → class:ModeController:methods;
   模块耦合方式 → arch:module_coupling。
-- original_text: 原始上下文详情 (2-3 句话, 保留完整细节)
+- original_text: 关键细节 (1-2 句话, 提炼要点即可, 不要逐字照抄输入)
 - tags: 2-4 个关键词标签
 - aliases: 检索别名/同义词列表 (2-4 个, 中英对照、近义说法、常见简称/缩写), 用于拓宽检索召回。
   例: 类图 → ["class diagram", "class", "类图"]; 组合模式 → ["composition", "composite"]。

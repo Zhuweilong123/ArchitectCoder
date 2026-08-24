@@ -120,11 +120,17 @@ def _usage_dict(usage) -> Optional[dict]:
     if usage is None:
         return None
     try:
-        return {
+        usage_dict = {
             "prompt_tokens": getattr(usage, "prompt_tokens", None),
             "completion_tokens": getattr(usage, "completion_tokens", None),
             "total_tokens": getattr(usage, "total_tokens", None),
         }
+        # DeepSeek 上下文缓存命中统计（其他厂商无此字段，getattr 得 None）
+        for field in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+            value = getattr(usage, field, None)
+            if value is not None:
+                usage_dict[field] = value
+        return usage_dict
     except Exception:
         return None
 
