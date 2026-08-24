@@ -1167,8 +1167,18 @@ const Toolbar: React.FC = () => {
           {projDirBrowseResult?.dirs?.map((dir) => (
             <List.Item
               key={dir.path}
-              onClick={() => handleProjDirSelect(dir.path)}
+              onClick={() => handleProjDirNav(dir.path)}
               style={{ cursor: 'pointer' }}
+              actions={[
+                <Button
+                  key="select"
+                  size="small"
+                  type="link"
+                  onClick={(e) => { e.stopPropagation(); handleProjDirSelect(dir.path); }}
+                >
+                  选择
+                </Button>,
+              ]}
             >
               <List.Item.Meta
                 avatar={<FolderOpenOutlined style={{ fontSize: 16, color: '#faad14' }} />}
