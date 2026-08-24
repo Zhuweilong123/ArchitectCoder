@@ -277,8 +277,9 @@ class DevPromptBuilder:
     - 易变上下文（workspace 目录 / 项目文件 / 记忆 / 日期）作为「尾块」，每轮
       追加到最后一条 user 消息末尾（history 之后）。尾块变化不影响 system +
       tools + history 的稳定前缀，仍然命中缓存。
-    - 尾块按 (project_file, source_dir, test_dir, design_dir, 日期) memo 化，
-      仅在项目/目录切换或跨天时重算（含记忆 recall），同项目内保持字节稳定。
+    - 尾块按 (project_file, source_dir, test_dir, design_dir, 日期, user_message)
+      memo 化：项目/目录/日期不变时结构稳定；user_message 入键是为了让记忆
+      recall 跟随当前查询，避免同项目内沿用首轮的过期记忆块。
     """
 
     def __init__(self, registry: ToolRegistry):
@@ -311,7 +312,9 @@ class DevPromptBuilder:
         design_dir = (os.path.dirname(os.path.abspath(project_file))
                       if project_file else os.path.abspath(get_settings().uml_dir))
         today = datetime.now().strftime("%Y-%m-%d")
-        key = (project_file, source_dir, test_dir, design_dir, today)
+        # user_message 必须入 key：记忆 recall 按查询相关性排序，
+        # 否则同项目同日内后续轮次会一直沿用首轮的记忆块。
+        key = (project_file, source_dir, test_dir, design_dir, today, user_message)
         if key == self._ctx_key:
             return self._ctx_value
 
@@ -438,9 +441,17 @@ def _tool_steps_summary(tool_calls_detail: list[dict], max_steps: int = 8) -> st
 
 
 def _extract_fn_for(llm: BaseAgentsLLM):
-    """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。"""
+    """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。
+
+    max_tokens 只是失控保护，必须高于模型的 reasoning 开销：deepseek
+    思考链计入 max_tokens，上限过低会把预算耗尽在想上、正文为空，
+    导致该次归档解析失败被跳过（manager 已按非致命处理）。历史正常
+    输出（含思考）约 1400-1900 tokens。
+    """
     async def _extract(prompt: str) -> str:
-        return await llm.ainvoke([{"role": "user", "content": prompt}])
+        return await llm.ainvoke(
+            [{"role": "user", "content": prompt}], max_tokens=3000
+        )
     return _extract
 
 

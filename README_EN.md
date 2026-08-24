@@ -8,13 +8,13 @@
 
 </div>
 
-Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, testing, and repair in a single integrated workflow. Built-in **AI Development Assistant (Conversational Agent)**, **Global Optimization Engine (V2)**, **Knowledge Graph**, and **BaseAgents framework**.
+Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, testing, and repair in a single integrated workflow. Built-in **AI Development Assistant (Conversational Agent)**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, and the **BaseAgents framework**.
 
 ## Why UML Designer?
 
 - **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.
 - **AI-powered validation**: cross-diagram consistency checks with fuzzy-match auto-repair — machines catch what humans miss.
-- **Natural language to running code**: Describe requirements → auto-generate UML → code gen + verification + test (pytest) → auto-repair on failure.
+- **Natural language to running code**: Describe requirements → auto-generate UML → the Agent writes code and runs real pytest → auto-repair on failure.
 
 ## Core Capabilities
 
@@ -39,15 +39,17 @@ Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** �
 
 ### AI Development Assistant
 
-Floating chat panel (bottom-right robot button). A single ReActAgent handles every message:
+Floating chat panel (bottom-right robot button). A single ReActAgent (**design + code co-evolution**: evolve existing code rather than redesigning from scratch) handles every message. Since v2.0 the fixed pipeline orchestration is gone — the Agent holds native file system tools and plans its own development steps:
 
-- **7 execution tools**: `optimize_uml` (V2 direct engine: scope analysis + single LLM pass + programmatic validation) → `generate_code` (12 languages) → `validate_code` → `generate_tests` → `run_tests` (real pytest) → `fix_code` → `write_files`
-- **`explore_project` sub-agent**: consolidates all read-only operations (knowledge graph queries, file reading, project info) — prevents main agent context bloat from reading files one by one
+- **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
+- **Task planning**: `todo_write` maintains a session task list — plan before multi-step work, update status as you go
+- **General-purpose sub-agent** `spawn_subagent`: delegates self-contained sub-tasks (exploration, summarization, isolated changes) to a flash-model sub-agent holding only a restricted file system toolset, returning just the conclusion to keep the main context lean; the review channel is passed through, so delegated work cannot bypass human approval
+- **Persistent task system**: a task DAG (create / depend / claim / complete) persisted to disk + git worktree isolation — long tasks can be decomposed and resumed across sessions
 - **Human review**: UML design changes go through `submit_uml_review` diff approval; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
 - **Streaming progress**: every tool call, arguments, and results pushed in real time
 - **Interrupt control**: stop the Agent at any time
-- **Session persistence**: conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
-- **Memory system**: cross-session memory with BM25 full-text search + jieba tokenization
+- **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
+- **Memory system**: cross-session memory — tasks are archived on completion and recalled by relevance into new tasks, with BM25 full-text search + jieba tokenization
 
 ### Global Optimization
 
@@ -58,13 +60,26 @@ Click "Global Optimization" in the toolbar, describe your needs:
 - **Streaming render**: elements appear on canvas in real time, cancelable mid-stream
 - **Multi-diagram Diff**: per-diagram tab comparison, accept or iterate independently
 
+### TestHub Test Center
+
+Excel test-case-driven test code generation:
+
+- **Case management**: load Excel test case sheets from the testHub directory, edit inline, and save back
+- **Test code generation**: full or incremental (changed cases only) modes; generated test code is viewable, copyable, and downloadable in the "Test Code" tab
+- **Review audit trail**: view / edit / generate / accept / reject operations are uniformly logged to `dev_review.txt`
+
+### Trace Viewer & Replay
+
+- **Full recording**: every Agent session is persisted as a JSONL trace (LLM requests/responses + step-by-step tool call events)
+- **TraceViewer**: a drawer-style UI for browsing historical sessions, expanding each tool call's arguments and results
+- **Deterministic replay**: `mock` mode replays from the recording with zero network access (with cursor-consistency checks); `rerun` mode re-runs the real LLM while tools stay mocked from the recording — for prompt debugging and regression comparison
+
 ### Knowledge Graph
 
-SQLite graph database + FTS5 full-text index for structured project understanding:
+SQLite graph database + FTS5 full-text index, automatically rebuilt on project save, giving the AI assistant structured project understanding:
 
 - **Three knowledge layers**: Project → Entity → Relationship (inheritance/composition/dependency + design-code mapping + test coverage)
 - **Dual-source build**: design layer (UML JSON auto-sync) + code layer (AST parsing of source directories)
-- **Encapsulated in `explore_project`**: `kg_query` / `kg_expand` / `kg_trace` / `kg_diff` — the main Agent never touches knowledge graph details directly
 
 ### Auto-Layout Engine
 
@@ -79,11 +94,11 @@ LLM-generated element positions auto-computed; manually positioned elements full
 |-------|-----------|
 | Frontend | React 18 + TypeScript + AntV X6 + Zustand + Ant Design 5 |
 | Backend | FastAPI (Python) + WebSocket |
-| Agent | BaseAgents (ReActAgent + SimpleAgent) |
+| Agent | BaseAgents (ReActAgent, native function calling) |
 | LLM | DeepSeek API (v4-pro + v4-flash) |
 | Knowledge Graph | SQLite + FTS5 |
 | Memory System | SQLite + FTS5 + jieba |
-| Testing | pytest (real subprocess execution) |
+| Testing | pytest (real subprocess execution) + openpyxl (Excel cases) |
 | Build | Vite |
 
 ## Project Structure
@@ -98,8 +113,10 @@ uml_designer/
 │   │   │   ├── PropertyPanel/      # Property editing panel
 │   │   │   ├── Toolbar/            # Toolbar
 │   │   │   ├── CodeViewer/         # Code viewer (Monaco)
-│   │   │   ├── DiffViewer/         # Diff comparison view
-│   │   │   └── PipelineConsole/    # Pipeline console
+│   │   │   ├── DiffViewer/         # UML diff comparison view
+│   │   │   ├── TestCaseViewer/     # TestHub Excel case management
+│   │   │   ├── TestCodeViewer/     # Generated test code viewer
+│   │   │   └── TraceViewer/        # Session trace visualization + replay
 │   │   ├── stores/                 # Zustand state management
 │   │   ├── services/               # API service layer (incl. agentChat WebSocket)
 │   │   ├── types/                  # TypeScript type definitions
@@ -108,16 +125,18 @@ uml_designer/
 │   └── vite.config.ts
 ├── backend/                        # FastAPI backend
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket routes
+│   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace)
 │   │   ├── core/                   # Config / auth / security
 │   │   ├── models/                 # Pydantic data models
-│   │   ├── services/               # LLM / code gen / optimization engine / trace
+│   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
 │   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
+│   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py
+│   ├── knowledge_graph/            # Knowledge Graph system (SQLite + FTS5)
+│   ├── memory_system/              # Cross-session memory system (SQLite + FTS5 + jieba)
 │   ├── requirements.txt
 │   └── .env
-├── knowledge_graph/                # Knowledge Graph system (SQLite + FTS5)
-├── memory_system/                  # Cross-session memory system (SQLite + FTS5 + jieba)
+├── docs/                           # Design docs (BaseAgents / KG / memory / trace)
 ├── uml_guide/                      # UML design guides
 ├── generated/                      # Generated code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
@@ -136,6 +155,8 @@ python -m app.main          # http://localhost:8001
 # Frontend
 cd frontend && npm install && npm run dev   # http://localhost:3000
 ```
+
+On Windows, you can also run `start.bat` to launch both backend and frontend in one click.
 
 ## Keyboard Shortcuts
 
