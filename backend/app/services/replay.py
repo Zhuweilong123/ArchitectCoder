@@ -163,14 +163,20 @@ def _build_rerun_llm():
     return BaseAgentsLLM.from_settings(temperature=0.3)
 
 
-async def replay_agent_session(session_id: str, *, mode: str = "mock") -> dict:
+async def replay_agent_session(
+    session_id: str, *, mode: str = "mock", until_turn: int | None = None
+) -> dict:
     """按 session 重放整段 agent 会话，逐轮返回 final_answer 与记录的对比。
 
     Args:
         mode: "mock"（默认，全 mock 零网络）或 "rerun"（真调 LLM，工具仍 mock）。
+        until_turn: 只重放到第 N 轮（1-based，累积语义）。None 表示重放全部轮次。
+            单步执行：复用同一个 agent 实例逐轮 arun，历史自然累积到第 N 轮，
+            等价于全量重放的前 N 轮前缀（mock 模式下逐字一致；rerun 下省后续 token）。
 
     返回：
         turns: [{user_message, final_answer, recorded_answer, matches, error}]
+        executed_turns / total_turns: 已执行轮数 / 总轮数（until_turn 截断时不同）
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
     from app.services.trace_reader import read_trace
@@ -208,6 +214,10 @@ async def replay_agent_session(session_id: str, *, mode: str = "mock") -> dict:
             None,
         )
         turns = [{"message": "", "recorded_answer": done}]
+
+    total_turns = len(turns)
+    if until_turn is not None:
+        turns = turns[:until_turn]
 
     llm = ReplayLLM(events) if mode == "mock" else _build_rerun_llm()
     registry = MockToolRegistry(events)
@@ -248,14 +258,18 @@ async def replay_agent_session(session_id: str, *, mode: str = "mock") -> dict:
     tool_total = len(_pick(events, "tool_result"))
 
     all_matched = all(r["matches"] for r in results)
-    if mode == "mock":
-        # mock 模式额外校验游标是否完整消费（回放流程与记录一致）
+    if mode == "mock" and until_turn is None:
+        # mock 模式额外校验游标是否完整消费（回放流程与记录一致）。
+        # 仅全量回放才要求消费完；until_turn 截断时游标天然消费不完，
+        # 此时 all_matched 只看已执行轮次的 matches。
         all_matched = all_matched and llm.cursor == llm_total and registry.cursor == tool_total
 
     return {
         "session_id": session_id,
         "mode": mode,
         "turns": results,
+        "executed_turns": len(results),
+        "total_turns": total_turns,
         "llm_calls": getattr(llm, "cursor", None),
         "llm_total": llm_total,
         "tool_calls": registry.cursor,

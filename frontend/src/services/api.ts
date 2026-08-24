@@ -270,6 +270,8 @@ export interface TraceReplayResult {
   session_id: string;
   mode: string;
   turns: TraceReplayTurn[];
+  executed_turns: number;
+  total_turns: number;
   llm_calls: number | null;
   llm_total: number;
   tool_calls: number;
@@ -278,10 +280,11 @@ export interface TraceReplayResult {
 }
 
 export async function replayTrace(
-  sessionId: string, mode: 'mock' | 'rerun' = 'mock',
+  sessionId: string, mode: 'mock' | 'rerun' = 'mock', turn?: number,
 ): Promise<TraceReplayResult> {
   const { data } = await api.post(
-    `/trace/${encodeURIComponent(sessionId)}/replay`, null, { params: { mode } },
+    `/trace/${encodeURIComponent(sessionId)}/replay`, null,
+    { params: { mode, ...(turn ? { turn } : {}) } },
   );
   return data;
 }

@@ -19,7 +19,7 @@ import {
 import { useUiStore } from '../../stores/uiStore';
 import {
   listTraces, getTrace, replayTrace,
-  type TraceMeta, type TraceDetail, type TraceReplayResult,
+  type TraceMeta, type TraceDetail, type TraceReplayResult, type TraceReplayTurn,
 } from '../../services/api';
 import './TraceViewer.css';
 
@@ -69,7 +69,7 @@ function baseName(path: string): string {
 }
 
 // ── 回放结果缓存（localStorage，跨抽屉/页面刷新保留）──────────
-const REPLAY_CACHE_PREFIX = 'traceReplay:';
+const REPLAY_CACHE_PREFIX = 'traceReplay:v2:';
 
 function readReplayCache(key: string): TraceReplayResult | null {
   try {
@@ -351,6 +351,50 @@ function renderWordDiff(recorded: string, final: string): React.ReactNode {
   );
 }
 
+// 渲染单轮回放结果（单步执行 / 全量回放共用）。未执行时给出引导文案。
+function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number): React.ReactNode {
+  if (!r) {
+    return <Text type="secondary">尚未执行 — 点击右上角「单步执行」查看该轮效果</Text>;
+  }
+  if (r.error) {
+    return (
+      <div>
+        <Alert type="error" showIcon message={r.error} style={{ marginBottom: 8 }} />
+        <Text type="secondary">回放在第 {turnNo} 轮中断</Text>
+      </div>
+    );
+  }
+  if (r.recorded_answer == null) {
+    return <Text type="secondary">（该轮无记录答案）</Text>;
+  }
+  if (r.matches) {
+    return (
+      <div>
+        <Tag color="green" style={{ marginBottom: 6 }}>内容一致</Tag>
+        <pre className="trace-pre">{r.final_answer}</pre>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
+        逐词差异（<span style={{ color: '#cf222e' }}>红=记录</span> / <span style={{ color: '#1a7f37' }}>绿=回放</span>）
+      </div>
+      {renderWordDiff(r.recorded_answer || '', r.final_answer)}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#cf222e', marginBottom: 4 }}>
+          记录答案（当时）
+        </div>
+        <pre className="trace-pre">{r.recorded_answer}</pre>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#1a7f37', marginBottom: 4, marginTop: 8 }}>
+          回放结果（现在）
+        </div>
+        <pre className="trace-pre">{r.final_answer}</pre>
+      </div>
+    </div>
+  );
+}
+
 // ── 主组件 ────────────────────────────────────────────
 
 const TraceViewer: React.FC = () => {
@@ -366,10 +410,26 @@ const TraceViewer: React.FC = () => {
   const [playIndex, setPlayIndex] = useState(-1);
 
   const [replaying, setReplaying] = useState(false);
+  const [singleStepTurn, setSingleStepTurn] = useState<number | null>(null);
   const [replayResult, setReplayResult] = useState<TraceReplayResult | null>(null);
+  const [turnResults, setTurnResults] = useState<Record<number, TraceReplayTurn>>({});
   const [replayModalOpen, setReplayModalOpen] = useState(false);
   const [replayFromCache, setReplayFromCache] = useState(false);
   const [replayMode, setReplayMode] = useState<'mock' | 'rerun'>('mock');
+
+  // 清空回放结果（切换会话 / 切换模式时，避免串到别的 session 或模式）
+  const clearReplay = () => {
+    setReplayResult(null);
+    setTurnResults({});
+    setReplayFromCache(false);
+  };
+
+  // 把回放返回的轮次结果填进 turnResults（键为 0-based 轮次序号）
+  const fillTurnResults = (result: TraceReplayResult) => {
+    const map: Record<number, TraceReplayTurn> = {};
+    result.turns.forEach((t, i) => { map[i] = t; });
+    setTurnResults(map);
+  };
 
   const refreshList = async () => {
     setLoadingList(true);
@@ -391,6 +451,7 @@ const TraceViewer: React.FC = () => {
     setLoadingDetail(true);
     setPlaying(false);
     setPlayIndex(-1);
+    clearReplay();
     try {
       setDetail(await getTrace(sessionId));
     } catch {
@@ -406,6 +467,17 @@ const TraceViewer: React.FC = () => {
   }, [traceVisible]);
 
   const turns = useMemo(() => (detail ? buildTurns(detail.events) : []), [detail]);
+
+  // 回放弹窗的轮次清单：直接取自已加载的 trace（无需先跑全量回放）。
+  // 与后端轮次切分口径一致（一个 user_message = 一轮）；无 user_message 时
+  // （optimize_v2 独立 trace）退化为单条占位，仍可单步执行第 1 轮。
+  const userTurns = useMemo(() => {
+    if (!detail) return [];
+    const msgs = detail.events
+      .filter((e) => e.event_type === 'user_message')
+      .map((e) => (e.message || '') as string);
+    return msgs.length ? msgs : ['（无用户输入 / 独立优化）'];
+  }, [detail]);
 
   // 渲染行：轮次头 + 事件项（事件项带全局播放序号）
   type Row = { kind: 'turn'; turn: Turn } | { kind: 'item'; item: Item; playIndex: number };
@@ -456,30 +528,48 @@ const TraceViewer: React.FC = () => {
     setPlaying(true);
   };
 
-  const runReplay = async (force = false) => {
+  const openReplay = () => {
     if (!selected) return;
-    const cacheKey = `${selected}:${replayMode}`;
-    // 命中缓存且非强制重跑：直接展示上次结果，不重新执行
-    if (!force) {
-      const cached = readReplayCache(cacheKey);
-      if (cached) {
-        setReplayFromCache(true);
-        setReplayResult(cached);
-        setReplayModalOpen(true);
-        return;
-      }
+    setReplayModalOpen(true);
+    // 有上次全量结果就直接展示，避免重复跑（rerun 尤其省 token）
+    const cached = readReplayCache(`${selected}:${replayMode}`);
+    if (cached) {
+      setReplayFromCache(true);
+      setReplayResult(cached);
+      fillTurnResults(cached);
     }
+  };
+
+  const runAll = async () => {
+    if (!selected) return;
     setReplaying(true);
     try {
       const result = await replayTrace(selected, replayMode);
-      writeReplayCache(cacheKey, result);
+      writeReplayCache(`${selected}:${replayMode}`, result);
       setReplayFromCache(false);
       setReplayResult(result);
-      setReplayModalOpen(true);
+      fillTurnResults(result);
     } catch (e: any) {
       message.error('回放失败: ' + (e?.response?.data?.detail || String(e)));
     } finally {
       setReplaying(false);
+    }
+  };
+
+  const runTurn = async (n: number) => {
+    if (!selected) return;
+    setSingleStepTurn(n);
+    try {
+      // 每次点击都真实重跑（不读缓存），rerun 下可多次采样、观察非确定性漂移
+      const result = await replayTrace(selected, replayMode, n);
+      setReplayFromCache(false);
+      setReplayResult(result);
+      const last = result.turns[result.turns.length - 1];
+      if (last) setTurnResults((prev) => ({ ...prev, [n - 1]: last }));
+    } catch (e: any) {
+      message.error('单步执行失败: ' + (e?.response?.data?.detail || String(e)));
+    } finally {
+      setSingleStepTurn(null);
     }
   };
 
@@ -504,13 +594,13 @@ const TraceViewer: React.FC = () => {
           <Segmented
             size="small"
             value={replayMode}
-            onChange={(v) => setReplayMode(v as 'mock' | 'rerun')}
+            onChange={(v) => { setReplayMode(v as 'mock' | 'rerun'); clearReplay(); }}
             options={[
               { label: 'Mock', value: 'mock' },
               { label: 'Rerun(真LLM)', value: 'rerun' },
             ]}
           />
-          <Button icon={<SyncOutlined />} onClick={() => runReplay()} loading={replaying} disabled={!selected}>
+          <Button icon={<SyncOutlined />} onClick={openReplay} disabled={!selected}>
             回放执行
           </Button>
           {!playing ? (
@@ -595,28 +685,28 @@ const TraceViewer: React.FC = () => {
         </div>
       </div>
 
-      {/* 回放结果弹窗 */}
+      {/* 回放执行弹窗 */}
       <Modal
-        title="回放执行结果"
+        title="回放执行"
         open={replayModalOpen}
         onCancel={() => setReplayModalOpen(false)}
         footer={[
           <Button
-            key="rerun"
+            key="runall"
             icon={<SyncOutlined />}
             loading={replaying}
-            onClick={() => runReplay(true)}
+            onClick={runAll}
           >
-            重新执行
+            执行全部
           </Button>,
           <Button key="close" type="primary" onClick={() => setReplayModalOpen(false)}>
             关闭
           </Button>,
         ]}
-        width={720}
+        width={760}
       >
-        {replayResult && (
-          <div>
+        <div>
+          {replayResult && replayResult.executed_turns === replayResult.total_turns ? (
             <Alert
               type={replayResult.all_matched ? 'success' : 'warning'}
               showIcon
@@ -627,62 +717,60 @@ const TraceViewer: React.FC = () => {
               }
               style={{ marginBottom: 12 }}
             />
+          ) : replayResult ? (
+            <Alert
+              type="info"
+              showIcon
+              message={`单步执行：已执行前 ${replayResult.executed_turns}/${replayResult.total_turns} 轮，查看第 ${replayResult.executed_turns} 轮效果。`}
+              style={{ marginBottom: 12 }}
+            />
+          ) : null}
+          {replayResult ? (
             <div style={{ marginBottom: 12, fontSize: 13, color: '#666' }}>
               模式 {replayResult.mode === 'mock' ? 'Mock（全模拟）' : 'Rerun（真 LLM）'} ·
-              LLM 记录 {replayResult.llm_total} 次 · 工具 {replayResult.tool_calls}/{replayResult.tool_total}
+              已执行 {replayResult.executed_turns}/{replayResult.total_turns} 轮 ·
+              LLM {replayResult.llm_calls ?? '?'}/{replayResult.llm_total} · 工具 {replayResult.tool_calls}/{replayResult.tool_total}
               {replayFromCache ? <Tag color="default" style={{ marginLeft: 8 }}>上次结果</Tag> : null}
             </div>
+          ) : (
+            <div style={{ marginBottom: 12, fontSize: 13, color: '#888' }}>
+              点击每轮右侧的「单步执行」查看该轮效果，或点击下方「执行全部」一次跑完所有轮次。
+            </div>
+          )}
+          {userTurns.length === 0 ? (
+            <Empty description="该会话无 trace 事件" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 24 }} />
+          ) : (
             <Collapse
               ghost
-              items={replayResult.turns.map((t, i) => ({
-                key: String(i),
-                label: (
-                  <span style={{ fontSize: 13 }}>
-                    {t.matches
-                      ? <CheckCircleOutlined style={{ color: '#52c41a', marginRight: 6 }} />
-                      : t.error
-                        ? <WarningOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />
-                        : <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />}
-                    第 {i + 1} 轮{t.error ? ' · 回放中断' : t.matches ? ' · 匹配' : ' · 不匹配'}
-                    {' — '}{truncate(t.user_message, 40)}
-                  </span>
-                ),
-                children: (
-                  <div>
-                    {t.error && (
-                      <Alert type="error" showIcon message={t.error} style={{ marginBottom: 8 }} />
-                    )}
-                    {t.recorded_answer == null ? (
-                      <Text type="secondary">（该轮无记录答案）</Text>
-                    ) : t.matches ? (
-                      <div>
-                        <Tag color="green" style={{ marginBottom: 6 }}>内容一致</Tag>
-                        <pre className="trace-pre">{t.final_answer}</pre>
-                      </div>
-                    ) : (
-                      <div>
-                        <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
-                          逐词差异（<span style={{ color: '#cf222e' }}>红=记录</span> / <span style={{ color: '#1a7f37' }}>绿=回放</span>）
-                        </div>
-                        {renderWordDiff(t.recorded_answer || '', t.final_answer)}
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#cf222e', marginBottom: 4 }}>
-                            记录答案（当时）
-                          </div>
-                          <pre className="trace-pre">{t.recorded_answer}</pre>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#1a7f37', marginBottom: 4, marginTop: 8 }}>
-                            回放结果（现在）
-                          </div>
-                          <pre className="trace-pre">{t.final_answer}</pre>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ),
-              }))}
+              items={userTurns.map((msg, i) => {
+                const r = turnResults[i];
+                return {
+                  key: String(i),
+                  label: (
+                    <span style={{ fontSize: 13 }}>
+                      {r && !r.error && r.matches
+                        ? <CheckCircleOutlined style={{ color: '#52c41a', marginRight: 6 }} />
+                        : r && !r.error
+                          ? <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />
+                          : null}
+                      第 {i + 1} 轮 — {truncate(msg, 40) || '（空输入）'}
+                    </span>
+                  ),
+                  extra: (
+                    <Button
+                      size="small"
+                      loading={singleStepTurn === i + 1}
+                      onClick={(e) => { e.stopPropagation(); runTurn(i + 1); }}
+                    >
+                      单步执行
+                    </Button>
+                  ),
+                  children: renderTurnResult(r, i + 1),
+                };
+              })}
             />
-          </div>
-        )}
+          )}
+        </div>
       </Modal>
     </Drawer>
   );
