@@ -258,12 +258,28 @@ export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEn
   return data.history;
 }
 
+export interface TraceReplayStepToolCall {
+  name: string;
+  arguments: Record<string, any> | string;
+  observation: string;
+}
+
+export interface TraceReplayStep {
+  step: number;
+  thought: string;
+  actions: string[];
+  tool_calls: TraceReplayStepToolCall[];
+  is_final: boolean;
+}
+
 export interface TraceReplayTurn {
   user_message: string;
   final_answer: string;
   recorded_answer: string | null;
   matches: boolean;
   error?: string | null;
+  steps?: TraceReplayStep[];
+  recorded_steps?: TraceReplayStep[];
 }
 
 export interface TraceReplayResult {
