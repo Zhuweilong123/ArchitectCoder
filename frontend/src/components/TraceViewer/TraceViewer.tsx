@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as Diff from 'diff';
 import {
-  Drawer, Button, List, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented,
+  Drawer, Button, List, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented, Timeline, Row, Col,
 } from 'antd';
 import {
   ReloadOutlined, CaretRightOutlined, PauseOutlined, StepBackwardOutlined,
@@ -19,7 +19,7 @@ import {
 import { useUiStore } from '../../stores/uiStore';
 import {
   listTraces, getTrace, replayTrace,
-  type TraceMeta, type TraceDetail, type TraceReplayResult, type TraceReplayTurn,
+  type TraceMeta, type TraceDetail, type TraceReplayResult, type TraceReplayTurn, type TraceReplayStep,
 } from '../../services/api';
 import './TraceViewer.css';
 
@@ -69,7 +69,7 @@ function baseName(path: string): string {
 }
 
 // ── 回放结果缓存（localStorage，跨抽屉/页面刷新保留）──────────
-const REPLAY_CACHE_PREFIX = 'traceReplay:v2:';
+const REPLAY_CACHE_PREFIX = 'traceReplay:v3:';
 
 function readReplayCache(key: string): TraceReplayResult | null {
   try {
@@ -351,25 +351,111 @@ function renderWordDiff(recorded: string, final: string): React.ReactNode {
   );
 }
 
+function formatArgs(args: Record<string, any> | string): string {
+  if (typeof args === 'string') return args;
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return String(args);
+  }
+}
+
+// 渲染单轮的步级执行时间线：每一步的思考 + 工具调用（名称/参数/观察结果）。
+function renderSteps(steps: TraceReplayStep[] | undefined): React.ReactNode {
+  if (!steps || steps.length === 0) return null;
+  return (
+    <Timeline
+      style={{ marginTop: 10, marginBottom: 6 }}
+      items={steps.map((s) => ({
+        color: s.is_final ? 'green' : 'blue',
+        children: (
+          <div key={`step-${s.step}`}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#444', marginBottom: 4 }}>
+              Step {s.step}
+              {s.actions.length > 0 ? (
+                <Tag color="blue" style={{ marginLeft: 6, marginRight: 0 }}>{s.actions.join(', ')}</Tag>
+              ) : null}
+              {s.is_final ? (
+                <Tag color="green" style={{ marginLeft: 6, marginRight: 0 }}>最终回答</Tag>
+              ) : null}
+            </div>
+            {!s.is_final && s.thought ? (
+              <div style={{ fontSize: 12, color: '#888', marginBottom: 4, whiteSpace: 'pre-wrap' }}>
+                {truncate(s.thought, 400)}
+              </div>
+            ) : null}
+            {s.tool_calls.map((tc, j) => (
+              <div key={j} style={{ marginBottom: 6, fontSize: 12 }}>
+                <div>
+                  <ToolOutlined style={{ color: '#1677ff', marginRight: 4 }} />
+                  <code style={{ fontSize: 12 }}>{tc.name}</code>
+                  <span style={{ color: '#666' }}>({truncate(formatArgs(tc.arguments), 200)})</span>
+                </div>
+                {tc.observation ? (
+                  <pre className="trace-pre" style={{ maxHeight: 160, overflow: 'auto', margin: '2px 0 0 0', fontSize: 11 }}>
+                    {tc.observation}
+                  </pre>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ),
+      }))}
+    />
+  );
+}
+
+// 渲染左右双列对比：左=原始工具调用，右=回放工具调用（仅 rerun 使用）。
+function renderStepsCompare(
+  recordedSteps: TraceReplayStep[] | undefined,
+  replaySteps: TraceReplayStep[] | undefined,
+): React.ReactNode {
+  const hasRecorded = !!(recordedSteps && recordedSteps.length > 0);
+  const hasReplay = !!(replaySteps && replaySteps.length > 0);
+  if (!hasRecorded && !hasReplay) return null;
+  return (
+    <Row gutter={16} style={{ marginTop: 10, marginBottom: 6 }}>
+      <Col span={12}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>原始工具调用</div>
+        {hasRecorded ? renderSteps(recordedSteps) : <Text type="secondary">（无记录）</Text>}
+      </Col>
+      <Col span={12}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>回放工具调用</div>
+        {hasReplay ? renderSteps(replaySteps) : <Text type="secondary">（无回放）</Text>}
+      </Col>
+    </Row>
+  );
+}
+
 // 渲染单轮回放结果（单步执行 / 全量回放共用）。未执行时给出引导文案。
-function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number): React.ReactNode {
+function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 'mock' | 'rerun'): React.ReactNode {
   if (!r) {
     return <Text type="secondary">尚未执行 — 点击右上角「单步执行」查看该轮效果</Text>;
   }
+  const stepsNode = mode === 'rerun'
+    ? renderStepsCompare(r.recorded_steps, r.steps)
+    : renderSteps(r.steps);
   if (r.error) {
     return (
       <div>
         <Alert type="error" showIcon message={r.error} style={{ marginBottom: 8 }} />
+        {stepsNode}
         <Text type="secondary">回放在第 {turnNo} 轮中断</Text>
       </div>
     );
   }
   if (r.recorded_answer == null) {
-    return <Text type="secondary">（该轮无记录答案）</Text>;
+    return (
+      <div>
+        {stepsNode}
+        <Text type="secondary">（该轮无记录答案）</Text>
+      </div>
+    );
   }
   if (r.matches) {
     return (
       <div>
+        {stepsNode}
         <Tag color="green" style={{ marginBottom: 6 }}>内容一致</Tag>
         <pre className="trace-pre">{r.final_answer}</pre>
       </div>
@@ -377,6 +463,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number): React
   }
   return (
     <div>
+      {stepsNode}
       <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
         逐词差异（<span style={{ color: '#cf222e' }}>红=记录</span> / <span style={{ color: '#1a7f37' }}>绿=回放</span>）
       </div>
@@ -765,7 +852,7 @@ const TraceViewer: React.FC = () => {
                       单步执行
                     </Button>
                   ),
-                  children: renderTurnResult(r, i + 1),
+                  children: renderTurnResult(r, i + 1, replayMode),
                 };
               })}
             />

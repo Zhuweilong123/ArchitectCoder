@@ -66,14 +66,23 @@ ReActAgent 循环
 
 - **后端** `backend/app/services/replay.py`：
   - `ReplayLLM` — 假 LLM，实现 `ainvoke_with_tools` / `ainvoke`，游标顺序 pop 记录的 `llm_response`。
-  - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema。
-  - `replay_agent_session(session_id, *, mode="mock")` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`。
-- **端点**：`POST /api/trace/{session_id}/replay?mode=mock|rerun`。
-- **前端**：「回放执行」按钮 + `Mock / Rerun(真LLM)` Segmented 切换；结果弹窗展示每轮匹配状态、**逐词 diff**（`diff` 库）与两侧完整答案。
+  - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema；`graceful`（rerun 专用）耗尽时返回占位而非抛错。
+  - `replay_agent_session(session_id, *, mode="mock", until_turn=None)` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
+- **端点**：`POST /api/trace/{session_id}/replay?mode=mock|rerun&turn=N`（`turn` 为单步执行的累计轮次，1-based）。
+- **前端**：「回放执行」按钮 + `Mock / Rerun(真LLM)` Segmented 切换；结果弹窗展示每轮匹配状态、**逐词 diff**（`diff` 库）、步级时间线；每轮「单步执行」只累计跑到第 N 轮，「执行全部」跑完所有轮。
 
-### 5.3 验证
+### 5.3 单步执行 + 步级明细 + 左右对比
+
+- **单步执行（累积语义）**：`replay_agent_session(until_turn=N)` 截断到第 N 轮，但复用**同一个 agent 实例逐轮 `arun`**，历史自然累积到第 N 轮——等价于全量重放的前 N 轮前缀（mock 下逐字一致；rerun 下省后续 token）。前端每轮「单步执行」按钮触发 `turn=N`。
+- **步级明细 `steps`**：回放用 `agent.arun_stream`（而非 `arun`）采集每步 `ReActProgress`，每轮返回 `[{step, thought, actions, tool_calls, is_final}]`，`tool_calls` 每项 `{name, arguments, observation}`。mock 下与记录逐字一致；rerun 下即真 LLM 实际轨迹（含发散）。
+- **原始侧 `recorded_steps`**：`_split_turn_events`（按 `user_message` 切轮）+ `_extract_recorded_steps`（`agent_step` 定步序，`tool_call`/`tool_result` 按 `span_id` 关联补齐参数与观察）从 trace 还原原始运行侧，与 `steps` 同构。
+- **左右对比（仅 rerun）**：rerun 下前端渲染双列 `Timeline`（左=原始工具调用、右=回放工具调用）；mock 下两列逐字相同，故保持单列，避免冗余。
+
+### 5.4 验证
 
 真实 8 轮会话 mock 回放：`all_matched=True`，LLM 17/17、工具 9/9 **逐字匹配**。
+
+被回放污染的旧 trace 在加入 `span_path != "replay"` 防御过滤后（见 6.5），mock 回放恢复 `6/6/6` 对齐、`all_matched=True`。
 
 ## 6. 关键设计点
 
@@ -112,10 +121,43 @@ llm_request.messages（工具返回为 [:2000] 截断版）+ tools + tool_choice
 
 Viewer 据此展示：LLM 卡头部参数徽标 + 「工具 schema」折叠项；工具卡在截断时标注「模型仅收到前 N 字」。
 
+### 6.5 回放污染与隔离（踩坑）
+
+rerun 模式真调 LLM，若全局 trace 钩子仍指向某会话，回放自身的 LLM 调用（`span_path="replay"`）会被写进**同一个** trace 文件，污染后续回放的游标对齐（曾出现「14 条步级响应 vs 6 条 tool_result」错位，触发「已耗尽」）。
+
+**双层修复**：
+
+1. **隔离**：`replay_agent_session` 在回放期间 `push_trace_hook(_suppress_trace_hook)` 压入 no-op 钩子，`finally` 中 `pop` 恢复——rerun 的 LLM 调用不再写入任何 trace。
+2. **防御过滤**：`_is_step_level` 额外排除 `span_path == "replay"`，兼容已被污染的旧文件。
+
+### 6.6 rerun 原始上下文重建
+
+rerun 真调 LLM 需要与原始运行一致的初始上下文，否则轨迹大幅漂移（原始跑 `glob/bash`，rerun 却去 `read_file`×7）。trace 已把上下文记录在步级 `llm_request` 里：
+
+- `system_prompt`：`_split_system_prompt` 把 system 消息拆成独立字段记录，`_reconstruct_original_context` 直接取首个步级请求。
+- `context`（workspace/记忆/日期）：原运行把它拼在首个 user 消息开头（`context + "\n\n" + 输入`），还原时从首个 user 内容剥掉原始输入得到。
+
+二者分别注入 `ReActAgent(system_prompt=...)` 与 `arun_stream(context=...)`。工具 schema 已由 6.3 的 `_step_level_tool_specs` 覆盖，补齐后 rerun 输入基本等价于原始运行。
+
+### 6.7 rerun 工具发散与优雅降级
+
+rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 / 调不同工具）。`MockToolRegistry(graceful=True)`（仅 rerun）在 tool_result 耗尽时返回占位观察而非抛 `ReplayExhausted`，让回放继续产出最终答案（用于漂移对比）。mock 模式仍抛错，以暴露游标对齐 bug。
+
+### 6.8 单步执行的累积语义
+
+「单步执行第 N 轮」必须是**累积**而非孤立：复用同一 agent 实例逐轮 `arun`，历史（结论级 user/assistant）自然累积到第 N 轮，等价于全量重放的前 N 轮前缀。`until_turn` 截断时 `all_matched` 只校验已执行轮次的 `matches`（游标天然消费不完，不要求全量消费）。
+
+### 6.9 步级明细与左右对比的数据流
+
+回放侧 `steps` 由 `arun_stream` 采集（`ReActProgress.tool_calls_detail` 已含 name/arguments/observation）；原始侧 `recorded_steps` 由 `_extract_recorded_steps` 从 `agent_step`+`tool_call`+`tool_result` 还原。二者同构，前端 rerun 下左（原始）右（回放）双列 `Timeline` 对比，一眼看出漂移；mock 下二者逐字一致，保持单列。
+
 ## 7. 已知边界与后续
 
 - **L3 混合回放**：需要重建真实工具注册表（`agent_chat_ws._create_dev_agent`），并对破坏性工具做可选 mock，是更大改动。
 - **tool 游标错位边界**：原始运行中 tool_call 参数非法 JSON 时，ReAct 循环跳过工具但仍写 `tool_result`，回放 tool 游标会错位（罕见）。
+- **rerun 上下文还原为第 1 轮快照**：`context` 从首个步级 `llm_request` 还原（静态 workspace + 初始记忆/日期），轮间记忆漂移不还原。
+- **rerun 发散时右列含占位观察**：偏离原始轨迹的额外工具调用无法 mock 真实结果，`steps` 会带占位文本（符合 6.7 设计，用于漂移对比）。
+- **左右对比仅 rerun 有意义**：mock 下 `steps` 与 `recorded_steps` 逐字一致，前端保持单列。
 - **同步流式路径无 trace**：`think()` / `stream_invoke()`（`llm.py:347`）未打 trace。
 - **optimize_v2 独立 trace 分文件**：无 `user_message` 事件，回放按单轮空消息兜底。
 
@@ -126,7 +168,7 @@ Viewer 据此展示：LLM 卡头部参数徽标 + 「工具 schema」折叠项�
 | `backend/app/services/chat_trace.py` | trace 记录（ChatTraceLogger / TraceSession / trace_span / 全局 hook） |
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
 | `backend/app/services/trace_reader.py` | 读取解析 JSONL（list / read） |
-| `backend/app/services/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / replay_agent_session） |
+| `backend/app/services/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / replay_agent_session / 上下文重建 / 原始侧还原 / 污染隔离） |
 | `backend/app/api/trace.py` | `/api/trace/*` 端点 |
 | `backend/app/services/agent_chat_ws.py` | agent 对话 WS，记录 tool_call/result/done，补 `start()` |
 | `frontend/src/components/TraceViewer/` | 前端查看/回放 UI |

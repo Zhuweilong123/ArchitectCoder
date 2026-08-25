@@ -91,6 +91,70 @@ def _reconstruct_original_context(events: list[dict], first_turn_msg: str) -> tu
     return system_prompt, context
 
 
+def _split_turn_events(events: list[dict]) -> list[list[dict]]:
+    """按 user_message 边界切分事件流，返回每轮的事件列表（含该轮 user_message）。
+
+    首个 user_message 之前的事件（如 session_start）不属于任何轮，跳过。
+    无 user_message 时返回空列表（调用方按单轮处理）。
+    """
+    groups: list[list[dict]] = []
+    cur: list[dict] | None = None
+    for e in events:
+        et = e.get("event_type")
+        if et == "user_message":
+            if cur is not None:
+                groups.append(cur)
+            cur = [e]
+        elif cur is not None:
+            cur.append(e)
+    if cur is not None:
+        groups.append(cur)
+    return groups
+
+
+def _extract_recorded_steps(turn_events: list[dict]) -> list[dict]:
+    """从单轮事件重建「原始运行」的步级工具执行（供 rerun 左列对比）。
+
+    依据 agent_step（步序/思考/动作/是否终步）与 tool_call + tool_result
+    （span_id 关联，补齐参数与观察结果）还原，与回放 steps 同构：
+    [{step, thought, actions, tool_calls, is_final}]，
+    tool_calls 每项 {name, arguments, observation}。
+
+    这些事件只由原始运行的 agent_chat_ws 写入，回放不写，故天然是原始侧。
+    """
+    steps: list[dict] = []
+    cur: dict | None = None
+    calls_by_span: dict[str, dict] = {}
+    for e in turn_events:
+        et = e.get("event_type")
+        if et == "agent_step":
+            if cur is not None:
+                steps.append(cur)
+            cur = {
+                "step": e.get("step"),
+                "thought": e.get("thought", "") or "",
+                "actions": list(e.get("actions") or []),
+                "tool_calls": [],
+                "is_final": bool(e.get("is_final", False)),
+            }
+        elif et == "tool_call":
+            tc = {
+                "name": e.get("tool_name", ""),
+                "arguments": e.get("arguments", {}),
+                "observation": "",
+            }
+            if cur is not None:
+                cur["tool_calls"].append(tc)
+            calls_by_span[e.get("span_id")] = tc
+        elif et == "tool_result":
+            tc = calls_by_span.get(e.get("span_id"))
+            if tc is not None:
+                tc["observation"] = str(e.get("observation", "") or "")
+    if cur is not None:
+        steps.append(cur)
+    return steps
+
+
 def _suppress_trace_hook(kind: str, *args, **kwargs):
     """no-op trace 钩子：回放期间屏蔽 LLM 调用写入任何 trace。
 
@@ -221,7 +285,12 @@ async def replay_agent_session(
             等价于全量重放的前 N 轮前缀（mock 模式下逐字一致；rerun 下省后续 token）。
 
     返回：
-        turns: [{user_message, final_answer, recorded_answer, matches, error}]
+        turns: [{user_message, final_answer, recorded_answer, matches, error, steps,
+                recorded_steps}]
+            steps 为回放侧步级执行明细；recorded_steps 为原始运行侧（从 trace 还原，
+            仅在 rerun 模式与 steps 做左右对比有意义）。两者同构：
+            [{step, thought, actions, tool_calls, is_final}]，
+            tool_calls 每项 {name, arguments, observation}。
         executed_turns / total_turns: 已执行轮数 / 总轮数（until_turn 截断时不同）
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
@@ -265,6 +334,12 @@ async def replay_agent_session(
     if until_turn is not None:
         turns = turns[:until_turn]
 
+    # 原始运行侧步级执行（与 turns 同源切分，供 rerun 左右对比）。
+    # agent_step/tool_call/tool_result 只由原始运行写入，回放不写，天然是原始侧。
+    turn_groups = _split_turn_events(events) or [events]
+    recorded_steps_by_turn = [_extract_recorded_steps(g) for g in turn_groups]
+    recorded_steps_by_turn = recorded_steps_by_turn[: len(turns)]
+
     llm = ReplayLLM(events) if mode == "mock" else _build_rerun_llm()
     registry = MockToolRegistry(events, graceful=(mode == "rerun"))
 
@@ -298,20 +373,41 @@ async def replay_agent_session(
     push_trace_hook(_suppress_trace_hook)
     try:
         results = []
-        for t in turns:
+        for idx, t in enumerate(turns):
+            steps: list[dict] = []
             try:
-                answer = await agent.arun(t["message"], context=original_context)
+                answer = ""
+                async for progress in agent.arun_stream(
+                    t["message"], context=original_context
+                ):
+                    steps.append({
+                        "step": progress.step,
+                        "thought": progress.thought,
+                        "actions": progress.actions,
+                        "tool_calls": progress.tool_calls_detail,
+                        "is_final": progress.is_final,
+                    })
+                    if progress.is_final:
+                        answer = progress.final_answer
+                if not answer:
+                    # 达到 max_steps 仍未收敛：与 arun() 的兜底口径一致
+                    answer = f"抱歉，在 {agent.max_steps} 步内未能完成任务。"
                 error = None
             except ReplayExhausted as exc:
                 answer = ""
                 error = str(exc)
             recorded = t["recorded_answer"]
+            recorded_steps = (
+                recorded_steps_by_turn[idx] if idx < len(recorded_steps_by_turn) else []
+            )
             results.append({
                 "user_message": t["message"],
                 "final_answer": answer,
                 "recorded_answer": recorded,
                 "matches": (not error and recorded is not None and answer == recorded),
                 "error": error,
+                "steps": steps,
+                "recorded_steps": recorded_steps,
             })
     finally:
         pop_trace_hook(_suppress_trace_hook)
