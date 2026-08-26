@@ -111,7 +111,34 @@ def test_truncate_hook_replaces_fed_observation():
     detail = _first_tool_detail(events)
     assert detail is not None
     assert detail["fed_truncated"] is True
-    assert detail["fed_length"] <= 10
+    # 正文被切到 10 字符，另加显式截断标记（标记有意超出 max_chars）
+    assert 10 < detail["fed_length"] <= 10 + 120
+
+
+def test_truncate_hook_appends_explicit_marker():
+    """截断必须留下标记 — 否则模型会把腰斩内容当成完整内容，
+    进而基于不存在的文本构造 edit_file 的 old_string。"""
+    hook = TruncateHook(10)
+    ctx = HookContext(
+        event=HookEvent.TOOL_AFTER, agent_name="Test",
+        tool_name="read_file", tool_output="x" * 500,
+    )
+    out = hook(ctx)
+
+    assert out.startswith("x" * 10)
+    assert "x" * 11 not in out          # 正文确实只保留了 max_chars
+    assert "truncated" in out
+    assert "500" in out                 # 如实报告了原始长度
+
+
+def test_truncate_hook_passes_through_short_output():
+    """未超长时返回 None（放行原文），不应误加标记。"""
+    hook = TruncateHook(10)
+    ctx = HookContext(
+        event=HookEvent.TOOL_AFTER, agent_name="Test",
+        tool_name="read_file", tool_output="short",
+    )
+    assert hook(ctx) is None
 
 
 def test_veto_hook_blocks_tool():

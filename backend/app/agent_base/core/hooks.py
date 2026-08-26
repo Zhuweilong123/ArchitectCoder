@@ -171,6 +171,11 @@ class TruncateHook:
 
     完整 observation 由框架统一记录，本 hook 只决定喂给模型的内容，
     因此截断策略可插拔而不影响 trace / 前端展示的完整口径。
+
+    截断后**必须**追加显式标记：否则模型会把腰斩的内容当成完整内容，
+    进而基于不存在的文本构造 ``edit_file`` 的 ``old_string``，匹配必然失败
+    且无法归因。标记会超出 ``max_chars`` 若干字符，这是有意的——
+    宁可多几十字符，也不能让模型对"内容被删过"这件事无感。
     """
 
     def __init__(self, max_chars: int = 2000):
@@ -179,7 +184,11 @@ class TruncateHook:
     def __call__(self, ctx: HookContext) -> Optional[str]:
         output = ctx.tool_output
         if output is not None and len(output) > self.max_chars:
-            return output[: self.max_chars]
+            return (
+                output[: self.max_chars]
+                + f"\n\n... [truncated: showing first {self.max_chars} "
+                  f"of {len(output)} chars — request a narrower range to see more]"
+            )
         return None
 
 
