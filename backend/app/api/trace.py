@@ -42,13 +42,20 @@ async def trace_history_endpoint(session_id: str):
 
 
 @router.post("/{session_id}/replay")
-async def replay_trace_endpoint(session_id: str, mode: str = "mock", turn: int | None = None):
-    """离线回放该 session。mode: mock（全模拟，默认）/ rerun（真调 LLM）。
+async def replay_trace_endpoint(
+    session_id: str, mode: str = "mock", turn: int | None = None,
+    tool_policy: str = "readonly",
+):
+    """离线回放该 session。
 
+    mode: mock（全模拟，默认）/ rerun（真调 LLM）/ live（真调 LLM + 只读工具真实）。
     turn: 单步执行——只重放到第 N 轮（1-based，累积语义）；省略则重放全部轮次。
+    tool_policy: live 模式下真实工具策略（readonly / full），仅 live 生效。
     """
     try:
-        return await replay_agent_session(session_id, mode=mode, until_turn=turn)
+        return await replay_agent_session(
+            session_id, mode=mode, until_turn=turn, tool_policy=tool_policy,
+        )
     except ValueError as e:
         msg = str(e)
         status = 404 if "不存在" in msg else 400

@@ -1,10 +1,12 @@
 """确定性回放驱动 — 离线重跑已记录的 agent 会话。
 
-两种模式：
+三种模式：
   - mock（默认，L1）：ReplayLLM 按序吐记录的 llm_response，MockToolRegistry 按序
     吐记录的 tool_result。零网络、零副作用。
   - rerun（L2）：用真实 LLM 重跑，但工具仍按记录 mock（含真实 tool schema，
     使模型能正常发起工具调用）。用于模型/提示词 A/B、度量漂移。
+  - live（L3）：真实 LLM + 混合工具（只读工具真实执行、其余 mock，见
+    HybridToolRegistry）。让模型读到当前项目真实状态，度量「真实执行」下的漂移。
 
 匹配策略：用「游标」按调用顺序顺序匹配（而非按内容哈希），
 因为 LLM 非确定，但同一次回放中的调用顺序稳定。
@@ -19,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,48 @@ def _reconstruct_original_context(events: list[dict], first_turn_msg: str) -> tu
         if first_turn_msg and first_user_content.endswith(first_turn_msg):
             context = first_user_content[: -len(first_turn_msg)].rstrip("\n")
     return system_prompt, context
+
+
+def _reconstruct_workspace(events: list[dict]) -> tuple[str, str, str, str]:
+    """还原 (source_dir, test_dir, design_dir, project_file)。
+
+    live 模式真实工具（read_file/glob/...）需要真实目录做 safe_path 守卫。
+    优先级：user_message 事件记录（新 trace 带 source_dir/test_dir）→
+    从首个步级 llm_request 的 context 文本解析（旧 trace 回退）。
+    design_dir 由 project_file 推导（与 create_conversation_tools 同口径）。
+    """
+    source_dir = test_dir = project_file = ""
+    for e in events:
+        if e.get("event_type") == "user_message":
+            source_dir = e.get("source_dir", "") or source_dir
+            test_dir = e.get("test_dir", "") or test_dir
+            project_file = e.get("project_file", "") or project_file
+
+    # 旧 trace 回退：从首个步级 llm_request 的首条 user 内容解析 workspace 行
+    if not (source_dir and test_dir):
+        first_user_content = ""
+        reqs = _step_level_events(events, "llm_request")
+        if reqs:
+            msgs = reqs[0].get("messages") or []
+            if msgs and msgs[0].get("role") == "user":
+                first_user_content = msgs[0].get("content", "") or ""
+        for line in first_user_content.splitlines():
+            s = line.strip()
+            if s.startswith("- Source directory:") and not source_dir:
+                source_dir = s.split(":", 1)[1].strip()
+            elif s.startswith("- Test directory:") and not test_dir:
+                test_dir = s.split(":", 1)[1].strip()
+
+    # design_dir：project_file 所在目录（当前项目设计目录），否则全局 uml_dir
+    if project_file and os.path.isfile(project_file):
+        design_dir = os.path.dirname(os.path.abspath(project_file))
+    else:
+        try:
+            from app.core.config import get_settings
+            design_dir = os.path.abspath(get_settings().uml_dir)
+        except Exception:
+            design_dir = ""
+    return source_dir, test_dir, design_dir, project_file
 
 
 def _split_turn_events(events: list[dict]) -> list[list[dict]]:
@@ -267,6 +312,108 @@ class MockToolRegistry:
         return True
 
 
+class HybridToolRegistry:
+    """L3 live 混合回放：真 LLM + 只读/文件系统工具真实执行、其余 mock。
+
+    LLM 看到的工具集（get_openai_specs）返回完整记录 schema，决策空间与原运行
+    一致（避免「工具可见性变化」混淆 A/B）；运行时按 real_policy 决定真实执行
+    还是 mock。mock 侧按工具名分队列 pop 记录结果——真实工具不消费队列，
+    交错调用不会错位（全局游标在混合执行下会错位）。
+    """
+
+    def __init__(
+        self, events: list[dict], real_registry, real_policy: set[str],
+        *, graceful: bool = True,
+    ):
+        self._real = real_registry
+        self._real_policy = real_policy
+        self._specs = _step_level_tool_specs(events)
+        self._graceful = graceful
+        self._by_tool: dict[str, list[str]] = {}
+        for r in _pick(events, "tool_result"):
+            self._by_tool.setdefault(r.get("tool_name", ""), []).append(
+                str(r.get("observation", ""))
+            )
+        self._total = sum(len(v) for v in self._by_tool.values())
+        self._calls = 0
+
+    @property
+    def cursor(self) -> int:
+        return self._calls
+
+    @property
+    def total(self) -> int:
+        return self._total
+
+    def get_openai_specs(self) -> list[dict]:
+        return self._specs
+
+    def get_tools_description(self) -> str:
+        return ""
+
+    def list_tools(self) -> list[str]:
+        return [s.get("function", {}).get("name", "") for s in self._specs]
+
+    async def aexecute_tool_with_params(self, name: str, parameters: dict) -> str:
+        self._calls += 1
+        if name in self._real_policy:
+            return await self._real.aexecute_tool_with_params(name, parameters)
+        q = self._by_tool.get(name)
+        if q:
+            return q.pop(0)
+        if self._graceful:
+            return (
+                f"[回放] 工具 {name} 的记录结果已耗尽，模型本次轨迹偏离原始运行，"
+                f"无法 mock 其真实结果。"
+            )
+        raise ReplayExhausted(
+            f"trace 记录的工具 {name} 结果已耗尽（请求 {name}）"
+        )
+
+    def __len__(self) -> int:
+        return len(self._specs) or 1
+
+    def __bool__(self) -> bool:
+        return True
+
+
+def _build_live_registry(
+    events: list[dict], source_dir: str, test_dir: str, design_dir: str,
+    *, tool_policy: str = "readonly",
+):
+    """构建 live 模式的混合工具注册表。
+
+    readonly（默认）：read_file/glob 真实执行，其余（write/edit/bash/子代理）mock。
+    full：A 层文件系统工具全部真实执行（写盘/跑命令有副作用，风险自负）；
+         bash 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
+    """
+    from app.agent_base.tools.registry import ToolRegistry
+    from app.agent_base.tools.my_tools.file_system_tools import (
+        ReadFileTool, GlobTool, WriteFileTool, EditFileTool, BashTool,
+    )
+
+    if tool_policy not in ("readonly", "full"):
+        tool_policy = "readonly"
+
+    real_policy = {"read_file", "glob"}
+    if tool_policy == "full":
+        real_policy |= {"write_file", "edit_file", "bash"}
+
+    real = ToolRegistry()
+    if "read_file" in real_policy:
+        real.register_tool(ReadFileTool(source_dir, test_dir, design_dir))
+    if "glob" in real_policy:
+        real.register_tool(GlobTool(source_dir, test_dir, design_dir))
+    if "write_file" in real_policy:
+        real.register_tool(WriteFileTool(source_dir, test_dir, design_dir))
+    if "edit_file" in real_policy:
+        real.register_tool(EditFileTool(source_dir, test_dir, design_dir))
+    if "bash" in real_policy:
+        real.register_tool(BashTool(source_dir, test_dir, design_dir))
+
+    return HybridToolRegistry(events, real, real_policy, graceful=True)
+
+
 def _build_rerun_llm():
     """构建真实 LLM（rerun 模式）。"""
     from app.agent_base.core.llm import BaseAgentsLLM
@@ -274,21 +421,25 @@ def _build_rerun_llm():
 
 
 async def replay_agent_session(
-    session_id: str, *, mode: str = "mock", until_turn: int | None = None
+    session_id: str, *, mode: str = "mock", until_turn: int | None = None,
+    tool_policy: str = "readonly",
 ) -> dict:
     """按 session 重放整段 agent 会话，逐轮返回 final_answer 与记录的对比。
 
     Args:
-        mode: "mock"（默认，全 mock 零网络）或 "rerun"（真调 LLM，工具仍 mock）。
+        mode: "mock"（默认，全 mock 零网络）/ "rerun"（真调 LLM，工具仍 mock）
+            / "live"（真调 LLM + 只读工具真实执行，其余 mock）。
         until_turn: 只重放到第 N 轮（1-based，累积语义）。None 表示重放全部轮次。
             单步执行：复用同一个 agent 实例逐轮 arun，历史自然累积到第 N 轮，
             等价于全量重放的前 N 轮前缀（mock 模式下逐字一致；rerun 下省后续 token）。
+        tool_policy: live 模式下真实执行的工具策略："readonly"（默认，read_file/
+            glob 真实）或 "full"（write_file/edit_file/bash 也真实，有副作用风险）。
 
     返回：
         turns: [{user_message, final_answer, recorded_answer, matches, error, steps,
                 recorded_steps}]
             steps 为回放侧步级执行明细；recorded_steps 为原始运行侧（从 trace 还原，
-            仅在 rerun 模式与 steps 做左右对比有意义）。两者同构：
+            仅在 rerun/live 模式与 steps 做左右对比有意义）。两者同构：
             [{step, thought, actions, tool_calls, is_final}]，
             tool_calls 每项 {name, arguments, observation}。
         executed_turns / total_turns: 已执行轮数 / 总轮数（until_turn 截断时不同）
@@ -297,8 +448,8 @@ async def replay_agent_session(
     from app.services.trace_reader import read_trace
     from app.agent_base.agents.react_agent import ReActAgent
 
-    if mode not in ("mock", "rerun"):
-        raise ValueError(f"未知回放模式: {mode}（可选 mock / rerun）")
+    if mode not in ("mock", "rerun", "live"):
+        raise ValueError(f"未知回放模式: {mode}（可选 mock / rerun / live）")
 
     data = read_trace(session_id)
     if data is None:
@@ -341,14 +492,23 @@ async def replay_agent_session(
     recorded_steps_by_turn = recorded_steps_by_turn[: len(turns)]
 
     llm = ReplayLLM(events) if mode == "mock" else _build_rerun_llm()
-    registry = MockToolRegistry(events, graceful=(mode == "rerun"))
 
-    # 重建原始上下文：rerun 真调 LLM 需与原始运行一致的 system prompt 与
+    # 重建原始上下文：真调 LLM（rerun/live）需与原始运行一致的 system prompt 与
     # workspace 上下文，否则轨迹大幅漂移。mock 模式 ReplayLLM 忽略 messages，
     # 传入亦无副作用。
     original_system_prompt, original_context = _reconstruct_original_context(
         events, turns[0]["message"] if turns else ""
     )
+
+    # live 模式还原真实 workspace 目录，供真实工具（read_file/glob/...）定位文件。
+    source_dir, test_dir, design_dir, _project_file = _reconstruct_workspace(events)
+
+    if mode == "live":
+        registry = _build_live_registry(
+            events, source_dir, test_dir, design_dir, tool_policy=tool_policy,
+        )
+    else:
+        registry = MockToolRegistry(events, graceful=(mode == "rerun"))
 
     # max_steps 给足记录中的最大 step，避免回放过早截断
     max_step = max(

@@ -799,7 +799,10 @@ async def agent_chat_ws(websocket: WebSocket):
                 stop_requested = False
 
                 # 记录用户消息（trace）
-                trace_log.user_message(user_message, project_file=project_file)
+                trace_log.user_message(
+                    user_message, project_file=project_file,
+                    source_dir=source_dir, test_dir=test_dir,
+                )
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:
@@ -895,7 +898,10 @@ async def agent_chat_ws(websocket: WebSocket):
                                 + "。请据此修改设计文件，然后调用 submit_uml_review 重新提交审核。"
                             )
                             logger.info("[AgentChat] 兜底审核被拒，开启修订轮: %s", feedback_text[:80])
-                            trace_log.user_message(followup, project_file=project_file)
+                            trace_log.user_message(
+                                followup, project_file=project_file,
+                                source_dir=source_dir, test_dir=test_dir,
+                            )
                             stop_requested = False
                             followup_context = ""
                             if prompt_builder is not None:

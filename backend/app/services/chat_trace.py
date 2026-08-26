@@ -180,8 +180,20 @@ class ChatTraceLogger:
 
     # ── 事件记录方法 ─────────────────────────────────
 
-    def user_message(self, message: str, project_file: str = "") -> None:
-        self.event(EVT_USER_MESSAGE, message=message, project_file=project_file)
+    def user_message(self, message: str, project_file: str = "",
+                     source_dir: str = "", test_dir: str = "") -> None:
+        """记录用户消息及当时的工作区目录。
+
+        source_dir / test_dir 供 live 回放（真实工具执行）重建 safe_path 守卫的
+        workspace root；旧 trace 无此二字段时回放侧回退从 context 文本解析。
+        """
+        self.event(
+            EVT_USER_MESSAGE,
+            message=message,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+        )
 
     def kg_inject(self, context: str, query: str = "") -> None:
         """记录注入给模型的知识图谱上下文（去隐私/去敏感后）。"""
