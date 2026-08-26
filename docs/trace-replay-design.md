@@ -19,7 +19,7 @@ Agent 在对话式开发中通过 `BaseAgentsLLM` 自动记录 JSONL trace（记
 |---|---|---|---|---|---|
 | **L1 Mock** | 喂回记录的 LLM 返回 + mock 工具结果 | ❌ | ❌（mock） | bug 复现、离线回归、零成本调试 | ✅ 已实现 |
 | **L2 Rerun** | 用记录 prompt 真调 LLM，工具仍 mock | ✅ | ❌（mock） | 模型/提示词 A/B、度量漂移 | ✅ 已实现 |
-| **L3 混合** | 真调 LLM + 真实工具（可 mock 破坏性工具） | ✅ | ✅（可选） | 迭代推理逻辑但需真实副作用 | ⬜ 未实现 |
+| **L3 Live** | 真调 LLM + 只读工具真实、其余 mock（`tool_policy=full` 可全真） | ✅ | ✅（部分真实） | 度量「真实执行」下的漂移、对当前代码库 A/B | ✅ 已实现 |
 
 ## 3. 架构总览
 
@@ -67,9 +67,9 @@ ReActAgent 循环
 - **后端** `backend/app/services/replay.py`：
   - `ReplayLLM` — 假 LLM，实现 `ainvoke_with_tools` / `ainvoke`，游标顺序 pop 记录的 `llm_response`。
   - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema；`graceful`（rerun 专用）耗尽时返回占位而非抛错。
-  - `replay_agent_session(session_id, *, mode="mock", until_turn=None)` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
-- **端点**：`POST /api/trace/{session_id}/replay?mode=mock|rerun&turn=N`（`turn` 为单步执行的累计轮次，1-based）。
-- **前端**：「回放执行」按钮 + `Mock / Rerun(真LLM)` Segmented 切换；结果弹窗展示每轮匹配状态、**逐词 diff**（`diff` 库）、步级时间线；每轮「单步执行」只累计跑到第 N 轮，「执行全部」跑完所有轮。
+  - `replay_agent_session(session_id, *, mode="mock", until_turn=None, tool_policy="readonly")` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
+- **端点**：`POST /api/trace/{session_id}/replay?mode=mock|rerun|live&turn=N&tool_policy=readonly|full`（`turn` 为单步执行的累计轮次，1-based；`tool_policy` 仅 live 生效）。
+- **前端**：「回放执行」按钮 + `Mock / Rerun(真LLM) / Live(真工具)` Segmented 切换；结果弹窗展示每轮匹配状态、**逐词 diff**（`diff` 库）、步级时间线；每轮「单步执行」只累计跑到第 N 轮，「执行全部」跑完所有轮。
 
 ### 5.3 单步执行 + 步级明细 + 左右对比
 
@@ -83,6 +83,16 @@ ReActAgent 循环
 真实 8 轮会话 mock 回放：`all_matched=True`，LLM 17/17、工具 9/9 **逐字匹配**。
 
 被回放污染的旧 trace 在加入 `span_path != "replay"` 防御过滤后（见 6.5），mock 回放恢复 `6/6/6` 对齐、`all_matched=True`。
+
+### 5.5 L3 — live 混合回放（真 LLM + 只读工具真实执行）
+
+- **语义**：真调 LLM，`read_file`/`glob` **真实执行**（读到当前项目真实状态），其余工具（`write_file`/`edit_file`/`bash`/子代理/`submit_uml_review`）按记录 mock。
+- **后端** `replay.py`：
+  - `HybridToolRegistry` — `get_openai_specs()` 返回完整记录 schema（LLM 决策空间与原运行一致），`aexecute_tool_with_params` 按 `real_policy` 决定真实执行或 mock；mock 侧**按工具名分队列** pop，真实工具不消费队列，交错调用不错位。
+  - `_build_live_registry(events, source_dir, test_dir, design_dir, tool_policy)` — 构建只装真实工具（read_file/glob；`full` 加 write/edit/bash）的 `ToolRegistry`；bash 不传 review_manager → 敏感命令 fail-closed、高危直接拒。
+  - `_reconstruct_workspace(events)` — 还原 `source_dir/test_dir/design_dir/project_file`（优先 `user_message` 记录，旧 trace 回退从 context 文本解析）。
+- **策略**：`tool_policy=readonly`（默认，安全）/ `full`（write/edit/bash 也真实，写盘风险自负，仅 API 逃生口）。
+- **前端**：Segmented 新增 `Live(真工具)`；`steps` vs `recorded_steps` 左右对比在 live 下最有意义（真实读当前项目 vs 原始读当时项目）。
 
 ## 6. 关键设计点
 
@@ -151,13 +161,21 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 
 回放侧 `steps` 由 `arun_stream` 采集（`ReActProgress.tool_calls_detail` 已含 name/arguments/observation）；原始侧 `recorded_steps` 由 `_extract_recorded_steps` 从 `agent_step`+`tool_call`+`tool_result` 还原。二者同构，前端 rerun 下左（原始）右（回放）双列 `Timeline` 对比，一眼看出漂移；mock 下二者逐字一致，保持单列。
 
+### 6.10 live 混合回放的关键约束
+
+- **解耦「可见」与「执行」**：`get_openai_specs()` 必须返回**完整**记录 schema，而非只暴露真实执行的只读工具。若只暴露只读工具，LLM 轨迹会因「工具可见性变化」而漂移，混淆「真实执行 vs mock」这一变量，A/B 就测不准。
+- **按工具名分队列 mock**：全局游标在「只读真实 + 破坏性 mock」交错执行下会错位（真实工具不消费游标）。改为每工具一个队列，mock 工具从自己的队列 pop，真实工具不碰队列。
+- **workspace 重建**：真实工具依赖 `source_dir/test_dir/design_dir`（`safe_path` 守卫）。trace 的 `user_message` 事件现携带 `source_dir/test_dir`（向前记录），旧 trace 回退从 context 文本 `## Workspace ...` 行解析。
+- **审核 fail-closed**：离线回放无人类可批准。`submit_uml_review` 不注册；`bash`（full 模式）不传 review_manager → 敏感命令「无审核通道」拒绝、高危命令直接拒。真实只读工具永不触发审核。
+
 ## 7. 已知边界与后续
 
-- **L3 混合回放**：需要重建真实工具注册表（`agent_chat_ws._create_dev_agent`），并对破坏性工具做可选 mock，是更大改动。
 - **tool 游标错位边界**：原始运行中 tool_call 参数非法 JSON 时，ReAct 循环跳过工具但仍写 `tool_result`，回放 tool 游标会错位（罕见）。
 - **rerun 上下文还原为第 1 轮快照**：`context` 从首个步级 `llm_request` 还原（静态 workspace + 初始记忆/日期），轮间记忆漂移不还原。
-- **rerun 发散时右列含占位观察**：偏离原始轨迹的额外工具调用无法 mock 真实结果，`steps` 会带占位文本（符合 6.7 设计，用于漂移对比）。
-- **左右对比仅 rerun 有意义**：mock 下 `steps` 与 `recorded_steps` 逐字一致，前端保持单列。
+- **rerun/live 发散时右列含占位观察**：偏离原始轨迹的额外工具调用无法 mock 真实结果，`steps` 会带占位文本（符合 6.7 设计，用于漂移对比）。
+- **左右对比仅非 mock 有意义**：mock 下 `steps` 与 `recorded_steps` 逐字一致，前端保持单列。
+- **live 真实工具需新 trace 目录字段**：`user_message` 现带 `source_dir/test_dir`（向前记录）；旧 trace 回退从 context 文本解析，路径含空格/换行时可能解析失败 → 真实工具退化为「无 workspace root」错误。
+- **full 模式有副作用**：`write_file`/`edit_file`/`bash` 真实执行会写盘/跑命令，属显式风险；默认 `readonly` 不触发。
 - **同步流式路径无 trace**：`think()` / `stream_invoke()`（`llm.py:347`）未打 trace。
 - **optimize_v2 独立 trace 分文件**：无 `user_message` 事件，回放按单轮空消息兜底。
 
@@ -165,10 +183,10 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/services/chat_trace.py` | trace 记录（ChatTraceLogger / TraceSession / trace_span / 全局 hook） |
+| `backend/app/services/chat_trace.py` | trace 记录（ChatTraceLogger / TraceSession / trace_span / 全局 hook；user_message 带 source_dir/test_dir） |
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
 | `backend/app/services/trace_reader.py` | 读取解析 JSONL（list / read） |
-| `backend/app/services/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / replay_agent_session / 上下文重建 / 原始侧还原 / 污染隔离） |
+| `backend/app/services/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
 | `backend/app/api/trace.py` | `/api/trace/*` 端点 |
 | `backend/app/services/agent_chat_ws.py` | agent 对话 WS，记录 tool_call/result/done，补 `start()` |
 | `frontend/src/components/TraceViewer/` | 前端查看/回放 UI |

@@ -428,11 +428,11 @@ function renderStepsCompare(
 }
 
 // 渲染单轮回放结果（单步执行 / 全量回放共用）。未执行时给出引导文案。
-function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 'mock' | 'rerun'): React.ReactNode {
+function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 'mock' | 'rerun' | 'live'): React.ReactNode {
   if (!r) {
     return <Text type="secondary">尚未执行 — 点击右上角「单步执行」查看该轮效果</Text>;
   }
-  const stepsNode = mode === 'rerun'
+  const stepsNode = mode !== 'mock'
     ? renderStepsCompare(r.recorded_steps, r.steps)
     : renderSteps(r.steps);
   if (r.error) {
@@ -502,7 +502,7 @@ const TraceViewer: React.FC = () => {
   const [turnResults, setTurnResults] = useState<Record<number, TraceReplayTurn>>({});
   const [replayModalOpen, setReplayModalOpen] = useState(false);
   const [replayFromCache, setReplayFromCache] = useState(false);
-  const [replayMode, setReplayMode] = useState<'mock' | 'rerun'>('mock');
+  const [replayMode, setReplayMode] = useState<'mock' | 'rerun' | 'live'>('mock');
 
   // 清空回放结果（切换会话 / 切换模式时，避免串到别的 session 或模式）
   const clearReplay = () => {
@@ -681,10 +681,11 @@ const TraceViewer: React.FC = () => {
           <Segmented
             size="small"
             value={replayMode}
-            onChange={(v) => { setReplayMode(v as 'mock' | 'rerun'); clearReplay(); }}
+            onChange={(v) => { setReplayMode(v as 'mock' | 'rerun' | 'live'); clearReplay(); }}
             options={[
               { label: 'Mock', value: 'mock' },
               { label: 'Rerun(真LLM)', value: 'rerun' },
+              { label: 'Live(真工具)', value: 'live' },
             ]}
           />
           <Button icon={<SyncOutlined />} onClick={openReplay} disabled={!selected}>
@@ -814,7 +815,7 @@ const TraceViewer: React.FC = () => {
           ) : null}
           {replayResult ? (
             <div style={{ marginBottom: 12, fontSize: 13, color: '#666' }}>
-              模式 {replayResult.mode === 'mock' ? 'Mock（全模拟）' : 'Rerun（真 LLM）'} ·
+              模式 {replayResult.mode === 'mock' ? 'Mock（全模拟）' : replayResult.mode === 'rerun' ? 'Rerun（真 LLM）' : 'Live（真工具）'} ·
               已执行 {replayResult.executed_turns}/{replayResult.total_turns} 轮 ·
               LLM {replayResult.llm_calls ?? '?'}/{replayResult.llm_total} · 工具 {replayResult.tool_calls}/{replayResult.tool_total}
               {replayFromCache ? <Tag color="default" style={{ marginLeft: 8 }}>上次结果</Tag> : null}

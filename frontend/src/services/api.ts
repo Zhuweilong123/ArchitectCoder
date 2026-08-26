@@ -295,12 +295,21 @@ export interface TraceReplayResult {
   all_matched: boolean;
 }
 
+export type TraceReplayMode = 'mock' | 'rerun' | 'live';
+
 export async function replayTrace(
-  sessionId: string, mode: 'mock' | 'rerun' = 'mock', turn?: number,
+  sessionId: string, mode: TraceReplayMode = 'mock', turn?: number,
+  tool_policy?: 'readonly' | 'full',
 ): Promise<TraceReplayResult> {
   const { data } = await api.post(
     `/trace/${encodeURIComponent(sessionId)}/replay`, null,
-    { params: { mode, ...(turn ? { turn } : {}) } },
+    {
+      params: {
+        mode,
+        ...(turn ? { turn } : {}),
+        ...(tool_policy ? { tool_policy } : {}),
+      },
+    },
   );
   return data;
 }

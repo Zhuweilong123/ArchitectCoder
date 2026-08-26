@@ -1,6 +1,6 @@
 <div align="center">
 
-# UML Designer
+# ArchitectCoder
 
 **Turn Ideas into Architecture, Let Architecture Drive Development**
 
@@ -10,7 +10,7 @@
 
 Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, testing, and repair in a single integrated workflow. Built-in **AI Development Assistant (Conversational Agent)**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, and the **BaseAgents framework**.
 
-## Why UML Designer?
+## Why ArchitectCoder?
 
 - **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.
 - **AI-powered validation**: cross-diagram consistency checks with fuzzy-match auto-repair — machines catch what humans miss.
