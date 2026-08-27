@@ -137,7 +137,7 @@ uml_designer/
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # Design docs (BaseAgents / KG / memory / trace)
-├── uml_guide/                      # UML design guides
+├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
 ├── generated/                      # Generated code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
 ├── .claude/                        # Claude Code configuration

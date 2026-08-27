@@ -113,7 +113,7 @@ async def optimize_uml(diagram: UmlDiagram, instructions: str = "") -> dict:
     guide_text = ""
     try:
         from pathlib import Path as _Path
-        guide_file = _Path(__file__).resolve().parent.parent.parent.parent / "uml_guide" / f"{dt}_diagram_guide.md"
+        guide_file = _Path(__file__).resolve().parent.parent.parent.parent / "skills" / "uml-design-guide" / f"{dt}_diagram_guide.md"
         if guide_file.exists():
             guide_text = guide_file.read_text(encoding="utf-8")
             logging.getLogger(__name__).info(f"[Optimize] Loaded design guide: {guide_file.name} ({len(guide_text)} chars)")
