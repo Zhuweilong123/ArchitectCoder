@@ -233,7 +233,7 @@ def _format_index_for_prompt(index: dict) -> str:
 # ── Scope Analysis (Phase 1) ─────────────────────────────
 # 轻量级 LLM 调用，分析任务范围，决定哪些图/指南/规则需要加载。
 
-_GUIDE_DIR = _Path(__file__).resolve().parent.parent.parent.parent / "uml_guide"
+_GUIDE_DIR = _Path(__file__).resolve().parent.parent.parent.parent / "skills" / "uml-design-guide"
 
 
 def _load_guide(name: str) -> str:
