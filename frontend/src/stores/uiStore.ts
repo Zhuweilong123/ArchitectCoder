@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
 
-export type RightPanelTab = 'properties' | 'code' | 'diff' | 'testcase';
+export type RightPanelTab = 'properties' | 'diff' | 'testcase';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
 export type DiffDiagramType = string;  // was: 'class' | 'sequence' | 'component' — now dynamic
@@ -16,10 +16,6 @@ interface UiState {
 
   // Language
   selectedLanguage: Language;
-
-  // Code viewer (project source code)
-  generatedCode: Record<string, string> | null;
-  activeCodeFile: string | null;
 
   // Test code viewer (test case code)
   generatedTestCode: Record<string, string> | null;
@@ -51,7 +47,6 @@ interface UiState {
   // Modal
   fileDialogVisible: boolean;
   exportDialogVisible: boolean;
-  codeGenLoading: boolean;
   currentBrowsePath: string;
 
   // Agent Chat dialog
@@ -70,8 +65,6 @@ interface UiState {
 
   setSelectedLanguage: (lang: Language) => void;
 
-  setGeneratedCode: (code: Record<string, string> | null) => void;
-  setActiveCodeFile: (file: string | null) => void;
   setGeneratedTestCode: (code: Record<string, string> | null) => void;
   setActiveTestFile: (file: string | null) => void;
   setDiffContent: (diff: string | null) => void;
@@ -97,7 +90,6 @@ interface UiState {
 
   setFileDialogVisible: (visible: boolean) => void;
   setExportDialogVisible: (visible: boolean) => void;
-  setCodeGenLoading: (loading: boolean) => void;
   setCurrentBrowsePath: (path: string) => void;
 
   // Agent Chat
@@ -114,8 +106,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   rightPanelTab: 'properties',
   rightPanelWidth: 420,
   selectedLanguage: 'python',
-  generatedCode: null,
-  activeCodeFile: null,
   generatedTestCode: null,
   activeTestFile: null,
   diffContent: null,
@@ -136,7 +126,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   testDir: localStorage.getItem('testDir') || '',
   fileDialogVisible: false,
   exportDialogVisible: false,
-  codeGenLoading: false,
   currentBrowsePath: '',
   agentChatVisible: false,
   agentChatExpanded: false,
@@ -168,8 +157,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setSelectedLanguage: (lang) => set({ selectedLanguage: lang }),
 
-  setGeneratedCode: (code) => set({ generatedCode: code, activeCodeFile: code ? Object.keys(code)[0] || null : null }),
-  setActiveCodeFile: (file) => set({ activeCodeFile: file }),
   setGeneratedTestCode: (code) => set({ generatedTestCode: code, activeTestFile: code ? Object.keys(code)[0] || null : null }),
   setActiveTestFile: (file) => set({ activeTestFile: file }),
   setDiffContent: (diff) => set({ diffContent: diff }),
@@ -244,7 +231,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setFileDialogVisible: (visible) => set({ fileDialogVisible: visible }),
   setExportDialogVisible: (visible) => set({ exportDialogVisible: visible }),
-  setCodeGenLoading: (loading) => set({ codeGenLoading: loading }),
   setCurrentBrowsePath: (path) => set({ currentBrowsePath: path }),
 
   setAgentChatVisible: (visible) => set({ agentChatVisible: visible }),

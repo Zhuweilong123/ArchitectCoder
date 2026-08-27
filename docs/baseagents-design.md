@@ -1,7 +1,7 @@
 # BaseAgents 框架设计
 
 > 本文归档 UML Designer 的 Agent 框架（`backend/app/agent_base/`）设计，
-> 反映最新代码（UML 优化已迁移 V2 引擎、9 工具集、记忆系统改造）。
+> 反映最新代码（UML 优化已迁移 V2 引擎、文件系统原语工具集、记忆系统改造）。
 > 作为后续扩展工具、接入新 Agent 范式、调整运行时的参考基线。
 
 ## 1. 定位与核心原则
@@ -21,7 +21,7 @@ agent_base/
 ├── __init__.py                          # 统一导出入口（20 个公开符号）
 │
 ├── agentTest/                           # 测试和演示代码（非生产代码）
-│   ├── demo_reflection.py / demo_simple.py / demo_uml_tool.py / demo_dev_system.py
+│   ├── demo_reflection.py / demo_simple.py / demo_uml_tool.py
 │
 ├── core/                                # 核心基础设施层
 │   ├── exceptions.py                    # 异常体系（BaseAgentsException + 4 子类）
@@ -45,15 +45,15 @@ agent_base/
     ├── review.py                        # ReviewManager（人工审核机制）+ SubmitUmlReviewTool
     │
     └── my_tools/                        # 项目特有工具
-        ├── conversation_tools.py        # 7 个开发工具 + AsyncTool 基类 + ProgressRelay
-        ├── explore_project_tools.py     # 项目探索统一入口（summary/locate 模式）
-        ├── knowledge_graph_tools.py     # 5 个知识图谱工具（内部，供 explore 使用）
-        ├── project_info_tools.py        # project_info / read_file / grep（内部）
-        ├── uml_tools.py                 # UmlValidationTool（5 项跨图一致性校验）
-        ├── uml_optimizer.py             # V2 引擎兼容委托（V1 已下线）
-        ├── code_validator.py            # CodeValidator（ReActAgent FC 驱动）
-        ├── code_fixer.py                # CodeFixer（ReflectionAgent + pytest 驱动）
-        └── dev_system.py                # DevSystem（编排层：验证→修复流水线）
+        ├── conversation_tools.py        # AsyncTool 基类 + ProgressRelay + create_conversation_tools
+        ├── file_system_tools.py         # 文件系统原语（read_file/write_file/edit_file/glob/bash）
+        ├── todo_tools.py                # TodoWriteTool（会话任务列表）
+        ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
+        ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
+        ├── uml_tools.py                 # UmlValidationTool（跨图一致性校验）
+        ├── explore_project_tools.py     # 项目探索（summary/locate，当前未接线）
+        ├── knowledge_graph_tools.py     # 知识图谱工具（当前未接线）
+        └── project_info_tools.py        # project_info / read_file / grep（当前未接线）
 ```
 
 ## 3. 快速开始
@@ -156,40 +156,44 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
   `SubmitUmlReviewTool`（UML diff 审核）与 `BashTool`（敏感命令批准，见 file_system_tools）。
 
-## 6. 对话 Agent 工具集（9 个）
+## 6. 对话 Agent 工具集
 
-主 Agent 注册 9 个工具，形成 **设计 → 代码 → 验证 → 测试 → 修复 → 落盘** 闭环。
+主 Agent 注册 `create_conversation_tools()` 装配的工具集（`agent_chat_ws.py` 运行时入口）。
+代码生成闭环工具（`generate_code` / `validate_code` / `generate_tests` / `fix_code` /
+`run_tests` / `write_files`）已下线移除，当前助手通过**文件系统原语**自主读写代码。
 
-### 6.1 核心开发工具（7 个）
-
-| 工具 | 内部实现 | 功能 |
-|------|---------|------|
-| `optimize_uml` | **V2 直连优化引擎**（`run_optimize_v2`） | UML 设计优化：scope 分析 + 单次 LLM + 程序化跨图验证 + 可选落盘 |
-| `generate_code` | 直接 LLM 调用 | 从 UML 类图 JSON 生成 Python 源码 |
-| `validate_code` | CodeValidator（ReActAgent FC, max_rounds=5） | 语法/导入/运行时验证，自动修复；内置 6 个验证子工具 |
-| `generate_tests` | 直接 LLM 调用 | 从源码生成 pytest 测试文件 |
-| `run_tests` | 直接 pytest 执行 | 执行测试并返回 pass/fail 统计 |
-| `fix_code` | CodeFixer（ReflectionAgent, max_iterations=5） | pytest 驱动源码修复（run→reflect→refine） |
-| `write_files` | 直接文件 I/O | 将最终源码/测试写入磁盘 |
-
-### 6.2 探索与审核（2 个）
+### 6.1 文件系统原语（`file_system_tools.py`）
 
 | 工具 | 功能 |
 |------|------|
-| `explore_project` | **项目探索统一入口**。`summary` 按资源类型（uml/source/test）总结；`locate` 定位元素精确位置。内部走确定性流程（不走 ReAct），KG 结构会与 `.umlproj` 文件交叉校验。`what='all'` 并行探索 |
-| `request_review` | **人工审核**。关键节点暂停执行，推送审核事件到前端，等待人工响应后继续 |
+| `read_file` | 按行读文件，支持 `offset`/`limit` 切片 |
+| `write_file` | 写文件（覆盖/新建，自动建父目录） |
+| `edit_file` | 精确文本替换（只替换首次出现） |
+| `glob` | 按 glob 模式查找文件 |
+| `bash` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
 
-### 6.3 内部工具（不暴露给主 Agent）
+所有文件操作经 `safe_path()` 守卫在 workspace 内（source_dir / test_dir / design_dir 三个 root）。
 
-主 Agent 的只读能力收敛进 `explore_project`，以下工具仅供 `explore_project` 等内部调用：
+### 6.2 协作与知识
 
-- **知识图谱 5 个**（`knowledge_graph_tools.py`）：`kg_query` / `kg_expand` / `kg_trace` /
-  `kg_diff` / `kg_project_structure`。
-- **项目信息**（`project_info_tools.py`）：`project_info` / `read_file` / `grep`。
-- **UML 校验**（`uml_tools.py`）：`UmlValidationTool`（5 项跨图一致性校验）。
+| 工具 | 功能 |
+|------|------|
+| `todo_write` | 会话任务列表，跟踪长任务子步骤 |
+| `skill` | 按需加载 `skills/` 领域知识包（L1 目录 / L2 正文 / L3 引用文件） |
+| `spawn_subagent` | 通用子代理（受限工具集 + `sub_agent_model`），防递归子代理 |
+| `submit_uml_review` | UML diff 人工审核（暂停等待 accept/reject） |
 
-> **设计要点**：收敛所有只读操作，主 Agent 只需 `explore_project` 一个入口即可理解
-> 项目，避免主 Agent 自己读文件导致 token 累积膨胀。
+### 6.3 任务系统（`task_system.py`）
+
+`create_task` / `update_task` / `list_tasks` / `get_task` / `claim_task` /
+`complete_task` / `create_worktree` —— 持久化任务 DAG + git worktree 隔离。
+
+### 6.4 可复用但未自动注册
+
+- **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
+  供 demo / 测试 / 未来按需接入使用。
+- **`explore_project_tools.py` / `knowledge_graph_tools.py` / `project_info_tools.py`**：
+  项目探索 / 知识图谱 / 项目信息工具，当前未接线（`conversation_tools.py` 中注释）。
 
 ## 7. 运行时架构
 
@@ -201,9 +205,9 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 前端（React 对话面板）
   ↕ WebSocket (/api/agent/ws/chat)
 后端 FastAPI
-  ├── 单 ReActAgent（跨轮复用，懒创建，max_steps=12, use_native_fc=True）
+  ├── 单 ReActAgent（跨轮复用，懒创建，max_steps=agent_max_steps, use_native_fc=True）
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
-  │   └── ToolRegistry：9 个工具
+  │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
   ├── 审核拦截 → submit_uml_review / bash 敏感命令 → 暂停 → 人工响应 → 继续
   └── 中断控制 → stop 消息 → 优雅终止
@@ -227,31 +231,18 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
   {"event": "design_element", ...}                                     # 设计元素级更新
 ```
 
-### 7.3 子 Agent 分层架构
+### 7.3 工具分层架构
 
 ```
-主 Agent: ReActAgent (FC 模式, max_steps=12)
+主 Agent: ReActAgent (FC 模式, max_steps=agent_max_steps)
 │
-├── optimize_uml  → OptimizeUmlTool → V2 直连引擎 (run_optimize_v2)
-│                    ├── scope 分析（识别影响范围）
-│                    ├── 单次 LLM 生成优化设计
-│                    └── 程序化跨图一致性验证（可选 save_to_project 落盘）
-│
-├── validate_code → ValidateCodeTool → CodeValidator (ReActAgent FC, max_rounds=5)
-│                    ├── check_imports / run_module / run_bash
-│                    ├── analyze_error / diff_code
-│                    └── finish_validation（退出信号）
-│
-├── fix_code      → FixCodeTool → CodeFixer (ReflectionAgent, max_iterations=5)
-│                    ├── initial：根据错误生成修复
-│                    ├── reflect：pytest 运行结果（Hook 验证）
-│                    └── refine：修正代码
-│
-├── explore_project → 确定性探索（非 ReAct）
-├── generate_code / generate_tests → 直接 LLM 调用
-├── run_tests → 直接 pytest；write_files → 文件 I/O
-├── submit_uml_review → UML diff 人工审核（暂停等待 accept/reject）
-└── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
+├── read_file / write_file / edit_file / glob → 文件系统原语（safe_path 守卫）
+├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
+├── todo_write → 会话任务列表
+├── skill → L1/L2/L3 知识包加载
+├── spawn_subagent → 受限子代理（文件系统原语 + skill + sub_agent_model）
+├── create_task / update_task / ... → 持久化任务 DAG
+└── submit_uml_review → UML diff 人工审核（暂停等待 accept/reject）
 ```
 
 ## 8. 记忆系统集成
@@ -334,14 +325,13 @@ result = await run_optimize_v2(
 流程：**scope 分析（识别影响范围）→ 单次 LLM 生成 → 程序化跨图一致性验证**，
 替代 V1 的「initial 生成 → 程序化验证 → 反馈注入 messages → LLM 修正」多轮反射。
 
-`uml_optimizer.py` 保留 `optimize_project_v2()` 作为 V1 `optimize_project()` 的兼容委托。
+`code_generator.py` 保留 `optimize_project()` / `optimize_project_stream()` 作为 V1 优化入口的兼容委托。
 
 ## 12. 设计参考
 
 - **架构模式**：Simple / ReAct / Reflection / Plan-and-Solve 四种经典 Agent 范式。
 - **工具系统**：万物皆为工具（Tool ABC → Registry → Chain → AsyncExecutor）。
-- **分层代理**：工具封装子 Agent（对话 Agent → optimize_uml/validate_code/fix_code →
-  V2 引擎 / ReActAgent / ReflectionAgent 子实例）。
+- **分层代理**：工具封装子 Agent（对话 Agent → `spawn_subagent` → 受限文件系统原语工具集）。
 - **流式进度**：ReActProgress 逐轮推送 → 前端实时渲染。
 - **人工介入**：ReviewManager → asyncio.Future 阻塞 → 人工响应（UML diff 审核 + bash 敏感命令批准）。
 - **可中断**：InterruptibleAgent 包装器 + should_stop 回调。
@@ -359,7 +349,10 @@ result = await run_optimize_v2(
 | `backend/app/agent_base/agents/reflection_agent.py` | 反思优化 + Hook 机制 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
-| `backend/app/agent_base/tools/my_tools/conversation_tools.py` | 7 开发工具 + AsyncTool + create_conversation_tools |
-| `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | 项目探索统一入口 |
+| `backend/app/agent_base/tools/my_tools/conversation_tools.py` | AsyncTool + ProgressRelay + create_conversation_tools |
+| `backend/app/agent_base/tools/my_tools/file_system_tools.py` | 文件系统原语（read/write/edit/glob/bash + 两级防护） |
+| `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
+| `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
+| `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
 | `backend/app/services/uml_optimizer_v2.py` | V2 直连优化引擎 |
-| `backend/app/services/agent_chat_ws.py` | 运行时入口 + 记忆归档/注入 + 9 工具注册 |
+| `backend/app/services/agent_chat_ws.py` | 运行时入口 + 记忆归档/注入 + 工具注册 |

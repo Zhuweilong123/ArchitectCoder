@@ -5,7 +5,7 @@
 import React, { useCallback } from 'react';
 import { Layout, Tabs, Button, Tooltip } from 'antd';
 import {
-  SettingOutlined, CodeOutlined,
+  SettingOutlined,
   DiffOutlined, CloseOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import UMLEditor from './components/Canvas/UMLEditor';
@@ -13,7 +13,6 @@ import SeqEditor from './components/Canvas/SeqEditor';
 import CompEditor from './components/Canvas/CompEditor';
 import Toolbar from './components/Toolbar/Toolbar';
 import PropertyPanel from './components/PropertyPanel/PropertyPanel';
-import CodeViewer from './components/CodeViewer/CodeViewer';
 import DiffViewer from './components/DiffViewer/DiffViewer';
 import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
 import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
@@ -29,7 +28,7 @@ const App: React.FC = () => {
   const {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
-    codeGenLoading, showTestCaseInCanvas,
+    showTestCaseInCanvas,
   } = useUiStore();
   const diagramType = useDiagramStore((s) => s.diagram.diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
@@ -59,15 +58,6 @@ const App: React.FC = () => {
         </Tooltip>
       ),
       children: <PropertyPanel />,
-    },
-    {
-      key: 'code' as RightPanelTab,
-      label: (
-        <Tooltip title="代码">
-          <CodeOutlined />
-        </Tooltip>
-      ),
-      children: <CodeViewer />,
     },
     {
       key: 'diff' as RightPanelTab,

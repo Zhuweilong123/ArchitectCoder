@@ -7,12 +7,11 @@ from pydantic import BaseModel, Field
 
 from app.models.uml import (
     LlmRequest, LlmResponse,
-    CodeGenRequest, CodeGenResponse,
     UmlOptimizeRequest, UmlOptimizeResponse,
 )
 from app.services.llm_service import chat
 from app.services.code_generator import (
-    SUPPORTED_LANGUAGES, generate_code, optimize_uml,
+    SUPPORTED_LANGUAGES, optimize_uml,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,18 +35,6 @@ async def llm_chat(req: LlmRequest):
 async def get_languages():
     """Get the list of supported programming languages."""
     return {"languages": SUPPORTED_LANGUAGES}
-
-
-@router.post("/generate-code", response_model=CodeGenResponse)
-async def generate_code_endpoint(req: CodeGenRequest):
-    """Generate code from a UML diagram for a specific language."""
-    if req.language not in SUPPORTED_LANGUAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported language: {req.language}. Supported: {SUPPORTED_LANGUAGES}",
-        )
-    files = await generate_code(req.diagram, req.language)
-    return CodeGenResponse(language=req.language, files=files)
 
 
 @router.post("/optimize-uml", response_model=UmlOptimizeResponse)

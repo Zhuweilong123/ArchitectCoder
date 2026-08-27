@@ -70,13 +70,6 @@ export async function llmChat(prompt: string, systemPrompt?: string): Promise<st
   return data.content;
 }
 
-export async function generateCode(
-  diagram: UmlDiagram, language: string
-): Promise<{ language: string; files: Record<string, string> }> {
-  const { data } = await api.post('/llm/generate-code', { diagram, language });
-  return data;
-}
-
 export async function optimizeUml(
   diagram: UmlDiagram, instructions = ''
 ): Promise<{
@@ -110,18 +103,6 @@ export async function browseDirectory(path?: string, safe = true): Promise<Brows
 }
 
 // ─── Review ────────────────────────────────────────────
-
-// ─── Generated Code ───────────────────────────────────
-
-export async function saveGeneratedCode(req: {
-  project_name: string;
-  language: string;
-  source_files: Record<string, string>;
-  test_files: Record<string, string>;
-}): Promise<{ success: boolean; src_dir: string; test_dir: string }> {
-  const { data } = await api.post('/files/save-generated', req);
-  return data;
-}
 
 // ─── TestHub ──────────────────────────────────────────
 
