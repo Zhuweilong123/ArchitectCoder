@@ -289,6 +289,8 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt(registry: ToolRegistry) -> str:
+        from app.agent_base.tools.my_tools.skill_loader import build_skills_section
+
         parts = [
             "You are a UML design + code co-evolution agent. Evolve existing "
             "code — don't redesign. Act, don't explain.",
@@ -301,6 +303,13 @@ class DevPromptBuilder:
             "",
             _build_tool_policy(registry.list_tools()),
         ]
+        # skill 目录（name + description）属于静态段：工具集在 session 内不变，
+        # SKILL.md 也是静态文件，字节恒定随 system 前缀一并命中缓存。
+        # 正文不进 prompt —— 由 agent 调 skill(name) 按需拉取。
+        if "skill" in registry.list_tools():
+            skills = build_skills_section()
+            if skills:
+                parts.extend(["", skills])
         return "\n".join(parts)
 
     async def build_context(

@@ -899,6 +899,10 @@ def create_conversation_tools(
     from .todo_tools import TodoWriteTool
     tools.append(TodoWriteTool())
 
+    # skill：按需加载 skills/ 下的领域知识包（L1 目录由 prompt 注入）
+    from .skill_loader import SkillTool
+    tools.append(SkillTool())
+
     # 通用子代理（受限文件系统工具集 + sub_agent_model）
     # 审核通道一并透传，否则敏感命令委托子代理即可绕过人工审核。
     from .subagent_tool import SpawnSubagentTool
