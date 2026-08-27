@@ -1,5 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
+watchfiles>=1.2.0
 python-multipart==0.0.12
 websockets==13.0
 pydantic==2.10.0
