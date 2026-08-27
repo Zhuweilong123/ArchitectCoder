@@ -171,15 +171,30 @@ class TruncateHook:
 
     完整 observation 由框架统一记录，本 hook 只决定喂给模型的内容，
     因此截断策略可插拔而不影响 trace / 前端展示的完整口径。
+
+    截断后**必须**追加显式标记：否则模型会把腰斩的内容当成完整内容，
+    进而基于不存在的文本构造 ``edit_file`` 的 ``old_string``，匹配必然失败
+    且无法归因。标记会超出 ``max_chars`` 若干字符，这是有意的——
+    宁可多几十字符，也不能让模型对"内容被删过"这件事无感。
+
+    ``per_tool`` 按工具名覆盖上限。默认 2000 是针对 ``read_file`` 这类读**任意
+    用户文件**的工具定的；而 ``skill`` 读的是仓库内受控、体量有界的知识包，
+    被腰斩等于让模型照着半份规范执行，故单独放宽。
     """
 
-    def __init__(self, max_chars: int = 2000):
+    def __init__(self, max_chars: int = 2000, per_tool: Optional[dict] = None):
         self.max_chars = max_chars
+        self.per_tool = per_tool or {}
 
     def __call__(self, ctx: HookContext) -> Optional[str]:
         output = ctx.tool_output
-        if output is not None and len(output) > self.max_chars:
-            return output[: self.max_chars]
+        limit = self.per_tool.get(ctx.tool_name, self.max_chars)
+        if output is not None and len(output) > limit:
+            return (
+                output[:limit]
+                + f"\n\n... [truncated: showing first {limit} "
+                  f"of {len(output)} chars — request a narrower range to see more]"
+            )
         return None
 
 
@@ -211,7 +226,12 @@ def _register_default_hooks() -> None:
     get_hooks().register(HookEvent.LLM_BEFORE, _interrupt_hook, priority=100)
     get_hooks().register(HookEvent.LLM_BEFORE, _todo_reminder_hook, priority=50)
     get_hooks().register(HookEvent.TOOL_BEFORE, _interrupt_hook, priority=100)
-    get_hooks().register(HookEvent.TOOL_AFTER, TruncateHook(), priority=0)
+    get_hooks().register(
+        HookEvent.TOOL_AFTER,
+        # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀
+        TruncateHook(per_tool={"skill": 20000}),
+        priority=0,
+    )
 
 
 _register_default_hooks()

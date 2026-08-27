@@ -181,6 +181,12 @@ class BaseAgentsLLM:
         },
     }
 
+    # 本地自部署端点通常不校验 api_key，但 OpenAI SDK 要求非空。
+    # 这些 provider 在缺 key 时用占位符兜底，否则 client 不会被构造，
+    # 调用直接 RuntimeError —— 本地部署路径实际是断的。
+    KEYLESS_PROVIDERS: frozenset[str] = frozenset({"ollama", "vllm", "local"})
+    NO_AUTH_PLACEHOLDER = "not-needed"
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -319,6 +325,10 @@ class BaseAgentsLLM:
             resolved_key = os.getenv(cfg["env_key"])
         if not resolved_key:
             resolved_key = os.getenv("LLM_API_KEY")
+        # 本地 provider 无需真实 key：给占位符，避免下游把「无 key」误判成
+        # 「未配置」而跳过 client 构造。
+        if not resolved_key and self.provider in self.KEYLESS_PROVIDERS:
+            resolved_key = self.NO_AUTH_PLACEHOLDER
 
         # 解析 base_url — 优先级：显式传参 > provider专用env > LLM_BASE_URL > 默认值
         resolved_url = base_url

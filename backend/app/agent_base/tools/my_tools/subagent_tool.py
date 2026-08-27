@@ -9,6 +9,7 @@ from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools
+from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class SpawnSubagentTool(AsyncTool):
         self.sub_agent_model = sub_agent_model
         self.max_steps = max_steps
 
-        # 受限子 registry：只有文件系统原语。
+        # 受限子 registry：文件系统原语 + skill。
         # 审核通道透传给子代理的 bash —— 敏感命令委托子代理也不能绕过人工审核。
         self.sub_registry = ToolRegistry()
         for t in create_file_system_tools(
@@ -59,7 +60,13 @@ class SpawnSubagentTool(AsyncTool):
             review_manager=review_manager, progress=progress,
         ):
             self.sub_registry.register_tool(t)
+        # 子代理常做「总结项目设计」，UML 建模规范对它同样有用
+        self.sub_registry.register_tool(SkillTool())
         self.sub_tools = self.sub_registry.get_openai_specs()
+
+        # skill 目录随 SKILL.md 静态不变，创建时拼一次即可
+        skills = build_skills_section()
+        self.system_prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}" if skills else SUBAGENT_SYSTEM
 
     async def _execute(self, params: dict) -> str:
         description = params.get("description", "")
@@ -67,7 +74,7 @@ class SpawnSubagentTool(AsyncTool):
             return "Error: description is required"
 
         messages: list[dict] = [
-            {"role": "system", "content": SUBAGENT_SYSTEM},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": description},
         ]
 
