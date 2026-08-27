@@ -9,7 +9,7 @@ import {
 } from 'antd';
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
-  UndoOutlined, RedoOutlined, CodeOutlined, RobotOutlined,
+  UndoOutlined, RedoOutlined, RobotOutlined,
   FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
@@ -23,10 +23,9 @@ import { createDefaultDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, listDiagrams,
   saveProject, openProject, listProjects,
-  exportMarkdown, generateCode as apiGenerateCode,
+  exportMarkdown,
   optimizeUml as apiOptimizeUml,
   browseDirectory, type BrowseResult,
-  saveGeneratedCode,
 } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './Toolbar.css';
@@ -62,8 +61,8 @@ const Toolbar: React.FC = () => {
 
   const {
     selectedLanguage,
-    setSelectedLanguage, setGeneratedCode, setRightPanelTab,
-    setRightPanelVisible, setCodeGenLoading,
+    setSelectedLanguage, setRightPanelTab,
+    setRightPanelVisible,
     setOptimizationResult,
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
@@ -497,30 +496,6 @@ const Toolbar: React.FC = () => {
   };
 
   // ── LLM operations ──────────────────────────────────
-  const handleGenerateCode = async () => {
-    const dt = diagram.diagram_type || 'class';
-    if (dt !== 'class') {
-      message.warning('代码生成目前仅支持类图');
-      return;
-    }
-    setCodeGenLoading(true);
-    message.loading({ content: '正在生成代码...', key: 'codegen' });
-    try {
-      const result = await apiGenerateCode(diagram, selectedLanguage);
-      setGeneratedCode(result.files);
-      setRightPanelTab('code');
-      setRightPanelVisible(true);
-      saveGeneratedCode({
-        project_name: diagram.name, language: selectedLanguage,
-        source_files: result.files, test_files: {},
-      }).catch(() => {});
-      message.success({ content: `已生成 ${Object.keys(result.files).length} 个文件 → generated/src`, key: 'codegen', duration: 5 });
-    } catch (e) {
-      message.error({ content: '代码生成失败: ' + String(e), key: 'codegen' });
-    }
-    setCodeGenLoading(false);
-  };
-
   // Open optimize dialog first, then send to LLM
   const handleOptimizeClick = () => {
     setOptimizeInstructions('');
@@ -746,11 +721,6 @@ const Toolbar: React.FC = () => {
           options={LANGUAGES}
           size="small"
         />
-        <Tooltip title="LLM 生成代码">
-          <Button icon={<CodeOutlined />} onClick={handleGenerateCode}>
-            生成代码
-          </Button>
-        </Tooltip>
         <Tooltip title="LLM 单图优化（仅优化当前图，弹窗收集需求）">
           <Button icon={<RobotOutlined />} onClick={handleOptimizeClick}>
             单图设计

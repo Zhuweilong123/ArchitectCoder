@@ -224,17 +224,6 @@ class LlmResponse(BaseModel):
     usage: dict = Field(default_factory=dict)
 
 
-class CodeGenRequest(BaseModel):
-    diagram: UmlDiagram
-    language: str  # one of 12 supported languages
-    include_tests: bool = False
-
-
-class CodeGenResponse(BaseModel):
-    language: str
-    files: dict[str, str]  # filename -> content
-
-
 class UmlOptimizeRequest(BaseModel):
     diagram: UmlDiagram
     instructions: str = ""

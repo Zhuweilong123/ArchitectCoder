@@ -635,7 +635,7 @@ class KgDiffTool(AsyncTool):
             if s["missing_implementations"] > 0:
                 suggestions.append(
                     f"{s['missing_implementations']} design classes not implemented; "
-                    f"call generate_code to generate them"
+                    f"consider implementing them in source"
                 )
             if s["mismatches"] > 0:
                 suggestions.append(
