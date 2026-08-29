@@ -95,6 +95,18 @@ class ProgressRelay:
 # 工厂函数
 # ═══════════════════════════════════════════════════════════
 
+def _kg_db_path() -> str:
+    """知识图谱数据库路径（与 explore_project_tools._kg_db_path 同口径）。"""
+    try:
+        from app.core.config import get_settings
+        base = os.path.dirname(get_settings().uml_dir)
+    except Exception:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")
+    return os.path.normpath(os.path.abspath(
+        os.path.join(base, "data", "knowledge_graph.db"),
+    ))
+
+
 def create_conversation_tools(
     llm: BaseAgentsLLM,
     source_dir: str = "",
@@ -155,6 +167,14 @@ def create_conversation_tools(
     #     llm=llm, project_file=project_file,
     #     source_dir=source_dir, test_dir=test_dir,
     # ))
+
+    # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
+    # read_file/grep 回答具体内容与符号）
+    from .knowledge_graph_v2_tools import create_kg_v2_tools
+    tools.extend(create_kg_v2_tools(
+        db_path=_kg_db_path(),
+        project_file=project_file, source_dir=source_dir,
+    ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool
