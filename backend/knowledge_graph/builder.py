@@ -511,6 +511,8 @@ class GraphBuilder:
                         "is_abstract": False,
                         "filename": filename,
                         "parent_class": "",
+                        "lineno": node.lineno,
+                        "end_lineno": getattr(node, "end_lineno", None) or node.lineno,
                     },
                 )
                 method_node.content_text = _build_content_text(
@@ -1268,6 +1270,8 @@ def _extract_class_ast(
         properties={
             "bases": bases,
             "filename": filename,
+            "lineno": cls_node.lineno,
+            "end_lineno": getattr(cls_node, "end_lineno", None) or cls_node.lineno,
             "methods": [],
             "attributes": [],
         },
@@ -1297,6 +1301,8 @@ def _extract_class_ast(
                     "is_abstract": _is_abstract(item),
                     "filename": filename,
                     "parent_class": cls_node.name,
+                    "lineno": item.lineno,
+                    "end_lineno": getattr(item, "end_lineno", None) or item.lineno,
                 },
             )
             m_node.content_text = _build_content_text(
@@ -1328,6 +1334,8 @@ def _extract_class_ast(
                     "default_value": None,
                     "filename": filename,
                     "parent_class": cls_node.name,
+                    "lineno": item.lineno,
+                    "end_lineno": getattr(item, "end_lineno", None) or item.lineno,
                 },
             )
             a_node.content_text = _build_content_text(
