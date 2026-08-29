@@ -43,6 +43,8 @@ interface ChatMessage {
   timestamp: number;
   steps?: AgentProgressEvent[];
   review?: AgentReviewEvent;
+  // 消息类别标记：'disconnect' 用于断线提示去重（连续断线只保留一条）
+  kind?: string;
 }
 
 // 持久化时裁剪 tool observation，避免撑爆 localStorage（5MB）
@@ -580,15 +582,25 @@ const AgentChat: React.FC = () => {
         liveStepsRef.current = [];
         setCurrentSteps([]);
         useReviewStore.getState().expire('连接中断，审核随之失效');
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `ws_closed_${Date.now()}`,
-            role: 'system',
-            content: '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
-            timestamp: Date.now(),
-          },
-        ]);
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          // 连续断线只保留一条气泡（仅刷新时间戳），避免后端不可达时无限刷屏
+          if (last && last.kind === 'disconnect') {
+            const copy = [...prev];
+            copy[prev.length - 1] = { ...last, timestamp: Date.now() };
+            return copy;
+          }
+          return [
+            ...prev,
+            {
+              id: `ws_closed_${Date.now()}`,
+              role: 'system' as const,
+              kind: 'disconnect',
+              content: '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
+              timestamp: Date.now(),
+            },
+          ];
+        });
       }
     });
   }, []);

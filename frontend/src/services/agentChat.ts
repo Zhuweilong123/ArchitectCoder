@@ -103,6 +103,13 @@ let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectAttempts = 0;
 // 主动断开（关闭面板/切换会话）时不广播 ws_closed，避免误报"连接已断开"
 let _intentionalClose = false;
+// 心跳：定时发 ping、后端回 pong；超时未回则主动关闭触发重连，避免代理/网关
+// 空闲超时静默掐断，或半开连接迟迟不被 TCP 感知。
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 60_000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let _pingTimer: ReturnType<typeof setInterval> | null = null;
+let _lastPongAt = 0;
 
 export function connectAgentChat(
   onEvent: AgentEventCallback,
@@ -195,6 +202,7 @@ export function sendAgentMessage(message: string, opts?: {
 
   // 连接断开/未建立：重连后暂存消息，onopen 中发送
   if (!_ws || _ws.readyState === WebSocket.CLOSED) {
+    _reconnectAttempts = 0; // 用户主动发送：给一次全新的重试预算
     _ensureConnection();
   }
   if (_ws && _ws.readyState === WebSocket.CONNECTING) {
@@ -272,6 +280,7 @@ export function sendReviewResponse(
   }
   // 连接断开/未建立：重连 + 排队补发（HMR 模块重载、网络抖动场景下
   // 后端 session 仍在，Agent 可能还阻塞在审核 future 上等这个回复）
+  _reconnectAttempts = 0; // 用户主动回复审核：给一次全新的重试预算
   _ensureConnection();
   if (_ws && _ws.readyState === WebSocket.CONNECTING) {
     _pendingReviewPayloads.push({ review_id: reviewId, payload });
@@ -290,6 +299,7 @@ export function disconnectAgentChat() {
     clearTimeout(_reconnectTimer);
     _reconnectTimer = null;
   }
+  _stopHeartbeat();
   _intentionalClose = true; // 主动断开不广播 ws_closed
   _pendingReviewPayloads = [];
   if (_ws) {
@@ -316,6 +326,31 @@ export function isAgentConnected(): boolean {
   return _ws !== null && _ws.readyState === WebSocket.OPEN;
 }
 
+// ── 心跳 ──────────────────────────────────────────────
+
+function _startHeartbeat(ws: WebSocket): void {
+  _stopHeartbeat();
+  _lastPongAt = Date.now();
+  _pingTimer = setInterval(() => {
+    // 超过超时阈值仍无 pong：连接已半死，主动关闭以触发干净重连
+    if (Date.now() - _lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+      console.warn('[AgentChat] heartbeat timeout, closing to reconnect');
+      ws.close();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function _stopHeartbeat(): void {
+  if (_pingTimer) {
+    clearInterval(_pingTimer);
+    _pingTimer = null;
+  }
+}
+
 // ── 底层 WebSocket ─────────────────────────────────────
 
 function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
@@ -328,6 +363,11 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   ws.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      // 心跳响应不进业务事件流
+      if (data && data.event === 'pong') {
+        _lastPongAt = Date.now();
+        return;
+      }
       // 路由给当前注册的回调（连接可被 AgentChat 重新绑定）
       if (_onEvent) _onEvent(data as AgentEvent);
     } catch {
@@ -336,7 +376,11 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   };
 
   ws.onopen = () => {
+    // 只处理当前连接：切会话/HMR 后旧连接的事件迟到时忽略
+    if (_ws !== ws) return;
     _reconnectAttempts = 0; // 连接成功，重置退避
+    _lastPongAt = Date.now();
+    _startHeartbeat(ws);
     // 发送连接建立前暂存的消息
     const pending = _pendingMessages.splice(0);
     for (const pm of pending) {
@@ -364,7 +408,11 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
 
   ws.onclose = (e) => {
     console.warn('[AgentChat] WebSocket closed:', e.code, e.reason || '(no reason)');
+    // 只处理当前连接的关闭：切会话/HMR/被新连接替换后，旧连接的 close 迟到时
+    // 直接忽略，避免误报"连接已断开"并重复建连。
+    if (_ws !== ws) return;
     _ws = null;
+    _stopHeartbeat();
     // 排队待补发的审核回复随连接关闭而失效，通知界面
     const undelivered = _pendingReviewPayloads.splice(0);
     for (const u of undelivered) {
@@ -384,7 +432,9 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
       _notifyListeners({ event: 'ws_closed' });
       // 自动重连（指数退避，最多约 30s 一次）。面板常驻挂载，_onEvent 始终有效，
       // 重连后事件能正常到达界面；后端 session 按 session_id 复用。
-      if (_onEvent) {
+      // 达到重试上限后停止后台自动重连，避免后端不可达时无限刷屏；
+      // 用户下次发消息仍会通过 _ensureConnection 重新建连。
+      if (_onEvent && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.min(1000 * 2 ** _reconnectAttempts, 30000);
         _reconnectAttempts += 1;
         console.log(`[AgentChat] reconnecting in ${delay}ms (attempt ${_reconnectAttempts})`);
@@ -392,6 +442,8 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
           _reconnectTimer = null;
           _ensureConnection();
         }, delay);
+      } else if (_onEvent) {
+        console.warn('[AgentChat] reconnect attempts exhausted, waiting for next user message');
       }
     }
   };
