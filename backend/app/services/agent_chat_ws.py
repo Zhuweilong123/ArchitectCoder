@@ -9,6 +9,7 @@ WebSocket 协议:
         {"type": "chat", "message": "创建一个计算器系统"}
         {"type": "stop"}                          # 中断当前 Agent
         {"type": "review_response", "review_id": 0, "response": "批准"}  # 人工审核回复
+        {"type": "ping"}                          # 心跳，服务端回 {"event": "pong"}
 
     服务端 → 客户端: JSON (stream)
         {"event": "progress", "step": 1, "actions": [...], "tool_calls_detail": [...]}
@@ -16,6 +17,7 @@ WebSocket 协议:
         {"event": "done", "result": "..."}
         {"event": "stopped", "reason": "..."}
         {"event": "error", "message": "..."}
+        {"event": "pong"}                         # 心跳响应
 """
 
 import asyncio
@@ -924,6 +926,10 @@ async def agent_chat_ws(websocket: WebSocket):
                                 fallback_review_ids=fallback_review_ids,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
+
+            # ── 心跳 ──
+            elif msg_type == "ping":
+                await _ws_send(websocket, {"event": "pong"})
 
             else:
                 await websocket.send_json({

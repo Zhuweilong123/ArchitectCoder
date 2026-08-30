@@ -21,9 +21,11 @@
 │  max_steps: agent_max_steps                               │
 │                                                          │
 │  read_file / write_file / edit_file / glob / bash         │  ← 文件系统原语
+│  find_nodes / expand_neighbors / analyze_impact /          │  ← KG 结构化理解
+│  get_project_map / compare_design_code                     │
 │  todo_write                        ← 会话任务列表         │
 │  skill                             ← 领域知识包（L1/L2/L3）│
-│  spawn_subagent                    ← 通用子代理           │
+│  spawn_subagent                    ← 通用子代理（toolkit） │
 │  create_task / update_task / ...   ← 持久化任务 DAG       │
 │  submit_uml_review                 ← UML diff 人工审核    │
 │  bash 敏感命令                      ← 人工批准后才执行      │
@@ -41,7 +43,8 @@
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集 + `sub_agent_model`） |
 | `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
 | `explore_project_tools.py` | 项目探索（summary/locate） | ⚠️ 当前未接线（`conversation_tools.py` 中注释） |
-| `knowledge_graph_tools.py` | 5 个知识图谱工具 | ⚠️ 当前未接线（供 explore 内部使用） |
+| `knowledge_graph_tools.py` | 旧版 5 个知识图谱工具 | ⚠️ 未接线（供 explore 内部使用，仍有使用方故保留） |
+| `knowledge_graph_v2_tools.py` | 新版 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
 | `project_info_tools.py` | `project_info` / `read_file` / `grep` | ⚠️ 当前未接线 |
 
 ## 会话工具清单（`create_conversation_tools()` 装配）
@@ -53,9 +56,14 @@
 | `edit_file` | `EditFileTool` | 精确文本替换（只替换首次出现） |
 | `glob` | `GlobTool` | 按 glob 模式查找文件 |
 | `bash` | `BashTool` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
+| `find_nodes` | `KgLocateTool` | 图谱全文检索：类/方法/组件在哪、某功能在哪个文件（code 节点带 read_file 坐标） |
+| `expand_neighbors` | `KgExpandTool` | 邻域展开：某节点的依赖/方法/关系，带距离与边类型 |
+| `analyze_impact` | `KgImpactTool` | 反依赖影响分析：改 X 会碰谁（直接/传递，含测试） |
+| `get_project_map` | `KgMapTool` | 项目结构地图：图清单、承重墙类、源码/测试统计 |
+| `compare_design_code` | `KgDiffTool` | 设计 vs 代码漂移：缺失实现/多余代码/签名不匹配/未测 |
 | `todo_write` | `TodoWriteTool` | 维护会话任务列表，跟踪长任务子步骤 |
 | `skill` | `SkillTool` | 加载 `## Skills` 目录中的知识包正文或引用文件 |
-| `spawn_subagent` | `SpawnSubagentTool` | 委托子任务，返回 summary；受限子工具集，防递归 |
+| `spawn_subagent` | `SpawnSubagentTool` | 委托子任务，返回 summary；`toolkit` 决定受限子工具集，防递归 |
 | `create_task` / `update_task` / `list_tasks` / `get_task` / `claim_task` / `complete_task` / `create_worktree` | `task_system.py` | 持久化任务 DAG + 认领/完成 + git worktree |
 | `submit_uml_review` | `SubmitUmlReviewTool` | UML diff 人工审核（暂停等待 accept/reject） |
 
@@ -76,6 +84,26 @@
   （fail closed）。超时上限 `BASH_REVIEW_TIMEOUT`。
 - 其余命令带 120s 超时直接放行；输出经 `TruncateHook` 截断。
 
+### 知识图谱理解（`knowledge_graph_v2_tools.py`）
+
+KG 提供**文件原语给不了**的结构化答案：类型化关系、设计-代码一致性、大项目的
+有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`bash` 回答
+具体内容与符号——KG 是索引/地图，文件原语是内容。
+
+- `find_nodes`：图谱全文检索（BM25 + 名称匹配）。code 层节点返回 `file` +
+  `offset`/`limit`（0 基，read_file 就绪）——构成「kg 定位 → read_file 精读」链路。
+- `expand_neighbors`：n-hop 邻域展开，`direction='incoming'` 即「谁依赖 X」。
+- `analyze_impact`：反依赖影响分析，直接/传递分级，按节点类型分组，含测试文件。
+- `get_project_map`：有界结构地图（图/类/文件统计 + in-degree 承重墙），非全量 dump。
+- `compare_design_code`：设计 vs 代码漂移（missing/extra/mismatch/no_coverage），
+  首次调用可能惰性索引代码层。
+
+设计要点：紧凑序列化（丢弃 `methods[]`/`attributes[]` 全量）+ 显式截断标记；
+`project_id` 由工厂绑定，agent 无需手填。重分析型工具（`analyze_impact` /
+`get_project_map` / `compare_design_code`）可通过
+`spawn_subagent(toolkit="kg_analysis")` 委派，避免重输出污染主上下文；
+`find_nodes` / `expand_neighbors` 保留直连以支撑 locate→read 链路。
+
 ### Skill（`skill_loader.py`）
 
 渐进式披露三级：
@@ -89,10 +117,16 @@ L3 必须由本工具投递而非走 `read_file` —— `safe_path()` 把路径�
 
 ### 子代理（`subagent_tool.py`）
 
-`spawn_subagent` 用受限子工具集（文件系统原语 + skill）+ `sub_agent_model` 独立跑
-简化 FC 循环，避免主上下文膨胀。子工具集**不含** `submit_uml_review` /
-`spawn_subagent`，防止递归子代理与 UML 审核嵌套；bash 敏感命令仍走人工审核
-（与主代理共用同一通道），防止委托绕过。
+`spawn_subagent` 按 `toolkit` 参数选择受限子工具集 + `sub_agent_model` 独立跑
+简化 FC 循环，避免主上下文膨胀。三个工具包：
+
+- `standard`：文件系统原语 + skill（可读写，默认）
+- `read_only`：`find_nodes` / `expand_neighbors` / `read_file`（只读理解，无写入）
+- `kg_analysis`：`find_nodes` / `analyze_impact` / `get_project_map` /
+  `compare_design_code` / `read_file`（KG 分析三件套，无编辑权）
+
+任何工具包**不含** `submit_uml_review` / `spawn_subagent`，防止递归子代理与
+UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理共用同一通道），防止委托绕过。
 
 ### 任务系统（`task_system.py`）
 
