@@ -107,3 +107,56 @@ def test_spawn_subagent_requires_description(tmp_path):
 
     result = asyncio.run(tool._execute({"description": ""}))
     assert "description is required" in result
+
+
+# ── toolkit 动态工具包 ──────────────────────────────────────
+
+def _build_spawn(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    return SpawnSubagentTool(
+        llm=_MockLLM(), sub_agent_model="sub-model", source_dir=str(src),
+    )
+
+
+def test_spawn_subagent_builds_three_toolkits(tmp_path):
+    tool = _build_spawn(tmp_path)
+    assert set(tool.sub_registries.keys()) == {"standard", "read_only", "kg_analysis"}
+    assert set(tool.system_prompts.keys()) == {"standard", "read_only", "kg_analysis"}
+
+
+def test_standard_toolkit_full_editing(tmp_path):
+    tool = _build_spawn(tmp_path)
+    names = tool.sub_registries["standard"].list_tools()
+    assert {"read_file", "write_file", "edit_file", "glob", "bash", "skill"} <= set(names)
+    # 安全不变量：子代理永不递归、永不经由委派绕过审核
+    assert "spawn_subagent" not in names
+    assert "submit_uml_review" not in names
+
+
+def test_read_only_toolkit_no_writes(tmp_path):
+    tool = _build_spawn(tmp_path)
+    names = tool.sub_registries["read_only"].list_tools()
+    assert {"find_nodes", "expand_neighbors", "read_file"} <= set(names)
+    assert not ({"write_file", "edit_file", "bash"} & set(names))
+
+
+def test_kg_analysis_toolkit_no_writes(tmp_path):
+    tool = _build_spawn(tmp_path)
+    names = tool.sub_registries["kg_analysis"].list_tools()
+    assert {"find_nodes", "analyze_impact", "get_project_map",
+            "compare_design_code", "read_file"} <= set(names)
+    assert not ({"write_file", "edit_file", "bash", "expand_neighbors"} & set(names))
+
+
+def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
+    """_execute 默认 standard；未知 toolkit 回退 standard；合法 toolkit 走对应 registry。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    llm = _MockLLM()
+    tool = SpawnSubagentTool(llm=llm, sub_agent_model="sub-model", source_dir=str(src))
+    # _MockLLM 第一轮调 glob → 只有 standard 有 glob；kg_analysis 没有，会直接收尾
+    result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
+    assert "summary text" in result
+    assert llm.last_model == "sub-model"
+

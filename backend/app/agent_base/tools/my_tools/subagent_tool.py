@@ -7,8 +7,9 @@ import logging
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
-from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools
+from app.agent_base.tools.my_tools.conversation_tools import AsyncTool, _kg_db_path
+from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
+from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,46 @@ SUBAGENT_SYSTEM = (
     "You are a coding subagent. Complete the given task, then return a concise "
     "final summary of what you did and found. Do not spawn more agents."
 )
+
+# ── 子代理工具包（toolkit）──────────────────────────────────────
+# 主 agent 按任务类型选工具包，框架展开成受限工具集。安全不变量由本表强制，
+# 不依赖主 agent 自觉：
+#   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
+#   * 子代理工具集是主 agent 允许集的子集（无提权）
+TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis")
+
+
+def _build_toolkit_tools(
+    kind: str,
+    source_dir: str, test_dir: str, design_dir: str,
+    db_path: str, project_file: str,
+    review_manager, progress,
+) -> list:
+    """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
+    if kind == "standard":
+        tools = list(create_file_system_tools(
+            source_dir, test_dir, design_dir,
+            review_manager=review_manager, progress=progress,
+        ))
+        tools.append(SkillTool())
+        return tools
+
+    # 只读类工具包共用 ReadFileTool（无 write/edit/bash）+ kg 工具子集
+    read_tool = ReadFileTool(source_dir, test_dir, design_dir)
+    kg = {t.name: t for t in create_kg_v2_tools(
+        db_path=db_path, project_file=project_file, source_dir=source_dir,
+    )}
+    if kind == "read_only":
+        return [kg["find_nodes"], kg["expand_neighbors"], read_tool]
+    if kind == "kg_analysis":
+        return [
+            kg["find_nodes"],
+            kg["analyze_impact"],
+            kg["get_project_map"],
+            kg["compare_design_code"],
+            read_tool,
+        ]
+    raise ValueError(f"unknown toolkit: {kind}")
 
 
 class SpawnSubagentTool(AsyncTool):
@@ -35,6 +76,7 @@ class SpawnSubagentTool(AsyncTool):
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
+        project_file: str = "",
         max_steps: int = 20,
         review_manager=None,
         progress=None,
@@ -43,45 +85,55 @@ class SpawnSubagentTool(AsyncTool):
             name="spawn_subagent",
             description=(
                 "Launch a focused subagent to complete a self-contained sub-task "
-                "(e.g. explore, summarize, or implement an isolated change) and "
-                "return only its final summary. Use to avoid cluttering the main "
-                "context with many small reads."
+                "(e.g. explore, summarize, analyze, or implement an isolated change) "
+                "and return only its final summary. Use to avoid cluttering the main "
+                "context with many small reads. Pick toolkit to scope the subagent's "
+                "tools to the task."
             ),
         )
         self.llm = llm
         self.sub_agent_model = sub_agent_model
         self.max_steps = max_steps
 
-        # 受限子 registry：文件系统原语 + skill。
-        # 审核通道透传给子代理的 bash —— 敏感命令委托子代理也不能绕过人工审核。
-        self.sub_registry = ToolRegistry()
-        for t in create_file_system_tools(
-            source_dir, test_dir, design_dir,
-            review_manager=review_manager, progress=progress,
-        ):
-            self.sub_registry.register_tool(t)
-        # 子代理常做「总结项目设计」，UML 建模规范对它同样有用
-        self.sub_registry.register_tool(SkillTool())
-        self.sub_tools = self.sub_registry.get_openai_specs()
-
-        # skill 目录随 SKILL.md 静态不变，创建时拼一次即可
+        # 每个 toolkit 一个受限子 registry。审核通道透传给子代理的 bash ——
+        # 敏感命令委托子代理也不能绕过人工审核（只有 standard 包含 bash）。
+        db_path = _kg_db_path()
         skills = build_skills_section()
-        self.system_prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}" if skills else SUBAGENT_SYSTEM
+        self.sub_registries: dict[str, ToolRegistry] = {}
+        self.system_prompts: dict[str, str] = {}
+        for kind in TOOLKIT_NAMES:
+            registry = ToolRegistry()
+            for t in _build_toolkit_tools(
+                kind, source_dir, test_dir, design_dir,
+                db_path, project_file, review_manager, progress,
+            ):
+                registry.register_tool(t)
+            self.sub_registries[kind] = registry
+            prompt = SUBAGENT_SYSTEM
+            if kind == "standard" and skills:
+                prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
+            self.system_prompts[kind] = prompt
 
     async def _execute(self, params: dict) -> str:
         description = params.get("description", "")
         if not isinstance(description, str) or not description.strip():
             return "Error: description is required"
 
+        toolkit = str(params.get("toolkit") or "standard").strip().lower()
+        if toolkit not in self.sub_registries:
+            toolkit = "standard"
+        registry = self.sub_registries[toolkit]
+        sub_tools = registry.get_openai_specs()
+
         messages: list[dict] = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self.system_prompts[toolkit]},
             {"role": "user", "content": description},
         ]
 
         for _ in range(self.max_steps):
             response = await self.llm.ainvoke_with_tools(
                 messages=messages,
-                tools=self.sub_tools,
+                tools=sub_tools,
                 tool_choice="auto",
                 model=self.sub_agent_model,
                 temperature=0.3,
@@ -103,7 +155,7 @@ class SpawnSubagentTool(AsyncTool):
                     args = json.loads(fn["arguments"])
                 except (json.JSONDecodeError, TypeError):
                     args = {}
-                result = await self.sub_registry.aexecute_tool_with_params(
+                result = await registry.aexecute_tool_with_params(
                     fn["name"], args,
                 )
                 messages.append({
@@ -130,6 +182,15 @@ class SpawnSubagentTool(AsyncTool):
                         "description": {
                             "type": "string",
                             "description": "The self-contained sub-task to delegate.",
+                        },
+                        "toolkit": {
+                            "type": "string",
+                            "description": (
+                                "Subagent tool scope: 'standard' (file read/write/edit + "
+                                "shell + skill, default) | 'read_only' (kg locate/expand + "
+                                "read, no writes) | 'kg_analysis' (kg map/impact/design-code "
+                                "analysis + read, no writes)."
+                            ),
                         },
                     },
                     "required": ["description"],
