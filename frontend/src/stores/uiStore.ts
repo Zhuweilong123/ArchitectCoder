@@ -70,7 +70,6 @@ interface UiState {
   setDiffContent: (diff: string | null) => void;
   setOriginalCode: (code: Record<string, string> | null) => void;
   setOptimizedCode: (code: Record<string, string> | null) => void;
-  setOptimizationResult: (original: UmlDiagram, optimized: UmlDiagram, diff: string, instructions: string) => void;
   setGlobalOptimizationResult: (
     originals: Record<string, any>,
     optimizeds: Record<string, any>,
@@ -162,16 +161,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setDiffContent: (diff) => set({ diffContent: diff }),
   setOriginalCode: (code) => set({ originalCode: code }),
   setOptimizedCode: (code) => set({ optimizedCode: code }),
-
-  setOptimizationResult: (original, optimized, diff, instructions) => set({
-    originalDiagram: original,
-    optimizedDiagram: optimized,
-    originalCode: { 'original.uml': JSON.stringify(original, null, 2) },
-    optimizedCode: { 'optimized.uml': JSON.stringify(optimized, null, 2) },
-    diffContent: diff,
-    optimizeInstructions: instructions || '',
-    showingOptimized: false,
-  }),
 
   setGlobalOptimizationResult: (originals, optimizeds, diffs, report, instructions) => {
     const firstType = (Object.keys(optimizeds)[0] || 'class') as DiffDiagramType;

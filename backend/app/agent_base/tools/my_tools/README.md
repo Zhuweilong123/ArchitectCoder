@@ -42,9 +42,7 @@
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集 + `sub_agent_model`） |
 | `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
-| `explore_project_tools.py` | 项目探索（summary/locate） | ⚠️ 当前未接线（`conversation_tools.py` 中注释） |
-| `knowledge_graph_tools.py` | 旧版 5 个知识图谱工具 | ⚠️ 未接线（供 explore 内部使用，仍有使用方故保留） |
-| `knowledge_graph_v2_tools.py` | 新版 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
+| `knowledge_graph_v2_tools.py` | 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
 | `project_info_tools.py` | `project_info` / `read_file` / `grep` | ⚠️ 当前未接线 |
 
 ## 会话工具清单（`create_conversation_tools()` 装配）
@@ -182,5 +180,4 @@ async for progress in agent.arun_stream("帮我实现登录模块"):
 | API | 说明 |
 |---|---|
 | `/api/agent/ws/chat`（`agent_chat_ws.py`） | 对话 Agent 运行时入口，装配 `create_conversation_tools()` |
-| `/api/llm/optimize-uml` | 单图优化（独立于 Agent 工具集） |
 | `/api/optimize_v2/*` | 全局优化 V2 引擎（独立于 Agent 工具集） |
