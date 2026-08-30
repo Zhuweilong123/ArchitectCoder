@@ -24,7 +24,6 @@ import {
   saveDiagram, openDiagram, listDiagrams,
   saveProject, openProject, listProjects,
   exportMarkdown,
-  optimizeUml as apiOptimizeUml,
   browseDirectory, type BrowseResult,
 } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
@@ -32,8 +31,6 @@ import './Toolbar.css';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
 // (reserved for future use)
-
-const { TextArea } = Input;
 
 const LANGUAGES = [
   { value: 'python', label: 'Python' },
@@ -61,9 +58,7 @@ const Toolbar: React.FC = () => {
 
   const {
     selectedLanguage,
-    setSelectedLanguage, setRightPanelTab,
-    setRightPanelVisible,
-    setOptimizationResult,
+    setSelectedLanguage,
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
@@ -103,9 +98,6 @@ const Toolbar: React.FC = () => {
   const [saving, setSaving] = useState(false);
 
   // ── Optimize dialog ─────────────────────────────────
-  const [optimizeVisible, setOptimizeVisible] = useState(false);
-  const [optimizeInstructions, setOptimizeInstructions] = useState('');
-  const [optimizing, setOptimizing] = useState(false);
   const [gridSettingsVisible, setGridSettingsVisible] = useState(false);
   const [globalOptimizeVisible, setGlobalOptimizeVisible] = useState(false);
   const [globalInstructions, setGlobalInstructions] = useState('');
@@ -495,31 +487,6 @@ const Toolbar: React.FC = () => {
     }
   };
 
-  // ── LLM operations ──────────────────────────────────
-  // Open optimize dialog first, then send to LLM
-  const handleOptimizeClick = () => {
-    setOptimizeInstructions('');
-    setOptimizeVisible(true);
-  };
-
-  const handleOptimizeConfirm = async () => {
-    setOptimizing(true);
-    const dt = diagram.diagram_type || 'class';
-    const loadText = dt === 'sequence' ? 'LLM 正在分析优化时序图...' : dt === 'component' ? 'LLM 正在分析优化组件图...' : 'LLM 正在单图优化...';
-    message.loading({ content: loadText, key: 'optimize' });
-    try {
-      const result = await apiOptimizeUml(diagram, optimizeInstructions);
-      setOptimizationResult(result.original, result.optimized, result.changes_summary, optimizeInstructions);
-      setRightPanelTab('diff');
-      setRightPanelVisible(true);
-      setOptimizeVisible(false);
-      message.success({ content: 'UML 优化完成，请在对比面板查看', key: 'optimize' });
-    } catch (e) {
-      message.error({ content: 'UML 优化失败: ' + String(e), key: 'optimize' });
-    }
-    setOptimizing(false);
-  };
-
   // ── View controls ───────────────────────────────────
   const handleZoomIn = () => useDiagramStore.getState().setZoom(diagram.zoom * 1.2);
   const handleZoomOut = () => useDiagramStore.getState().setZoom(diagram.zoom / 1.2);
@@ -721,11 +688,6 @@ const Toolbar: React.FC = () => {
           options={LANGUAGES}
           size="small"
         />
-        <Tooltip title="LLM 单图优化（仅优化当前图，弹窗收集需求）">
-          <Button icon={<RobotOutlined />} onClick={handleOptimizeClick}>
-            单图设计
-          </Button>
-        </Tooltip>
         <Tooltip title="全局综合优化（类图+时序图+组件图交叉验证，也支持从需求描述直接生成全部图）">
           <Button icon={<RobotOutlined />} onClick={() => setGlobalOptimizeVisible(true)} style={{ color: '#722ed1' }}>
             全局优化
@@ -956,39 +918,6 @@ const Toolbar: React.FC = () => {
               />
             </List.Item>
           )}
-        />
-      </Modal>
-
-      {/* ── Single-Diagram Optimize Dialog ──────────────────── */}
-      <Modal
-        title={(diagram.diagram_type === 'sequence' ? '时序图' : diagram.diagram_type === 'component' ? '组件图' : '类图') + '单图' + (diagram.classes.length || (diagram.lifelines || []).length || (diagram.components || []).length ? '优化' : '生成')}
-        open={optimizeVisible}
-        onCancel={() => setOptimizeVisible(false)}
-        onOk={handleOptimizeConfirm}
-        confirmLoading={optimizing}
-        okText="提交优化"
-        cancelText="取消"
-        width={600}
-      >
-        <p style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
-          {diagram.diagram_type === 'sequence'
-            ? <>当前时序图包含 <strong>{(diagram.lifelines || []).length}</strong> 个生命线，<strong>{(diagram.messages || []).length}</strong> 条消息。</>
-            : diagram.diagram_type === 'component'
-            ? <>当前组件图包含 <strong>{(diagram.components || []).length}</strong> 个组件，<strong>{(diagram.comp_relations || []).length}</strong> 条依赖。</>
-            : <>当前类图包含 <strong>{diagram.classes.length}</strong> 个类，<strong>{diagram.relations.length}</strong> 条关系。</>
-          }
-          请输入你的优化需求，LLM 将结合当前设计和你的需求进行优化：
-        </p>
-        <TextArea
-          value={optimizeInstructions}
-          onChange={(e) => setOptimizeInstructions(e.target.value)}
-          placeholder={diagram.diagram_type === 'sequence'
-            ? '例如：\n• 为OtaTask和CrowTask之间增加异常处理消息\n• 补充缺失的返回消息\n• 调整消息调用顺序使其更合理\n• 为关键消息添加功能备注\n...'
-            : diagram.diagram_type === 'component'
-            ? '例如：\n• 将AuthService拆分为AuthProvider和TokenManager\n• 为DataModule补充ILogger依赖接口\n• 检查组件间的循环依赖\n• 为PaymentGateway增加提供的IPayment接口\n...'
-            : '例如：\n• 将User和Order改为聚合关系\n• 为Payment添加refund方法\n• 提取公共接口IPayable\n• 优化类的职责划分，减少耦合\n• 应用工厂模式改造创建逻辑\n...'}
-          rows={6}
-          autoFocus
         />
       </Modal>
 

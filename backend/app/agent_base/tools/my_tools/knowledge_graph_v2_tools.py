@@ -1,8 +1,7 @@
 """知识图谱 v2 工具集 — 面向大型软件项目的结构化理解能力。
 
-与旧文件 ``knowledge_graph_tools.py`` 的关系：旧文件的函数仍有使用方
-（``explore_project`` 等），本文件**不改动它**，而是新建一套自包含、
-层次分明的工具集，接入主 DevAgent。
+本文件是知识图谱工具的唯一实现。旧版 ``knowledge_graph_tools.py`` 与
+``explore_project_tools.py`` 已下线删除（2026-08-30），KG 能力统一收敛到 v2。
 
 设计原则:
   - 只回答文件原语（read/grep/bash）给不了的问题：类型化关系、设计-代码

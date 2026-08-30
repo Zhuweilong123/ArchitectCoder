@@ -70,18 +70,6 @@ export async function llmChat(prompt: string, systemPrompt?: string): Promise<st
   return data.content;
 }
 
-export async function optimizeUml(
-  diagram: UmlDiagram, instructions = ''
-): Promise<{
-  original: UmlDiagram;
-  optimized: UmlDiagram;
-  changes_summary: string;
-  diff: string;
-}> {
-  const { data } = await api.post('/llm/optimize-uml', { diagram, instructions });
-  return data;
-}
-
 // ─── Browse directories ────────────────────────────────
 
 export interface BrowseResult {

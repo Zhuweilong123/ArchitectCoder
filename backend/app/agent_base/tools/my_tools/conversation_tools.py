@@ -162,13 +162,6 @@ def create_conversation_tools(
     from app.agent_base.tools.task_system import create_task_system_tools
     tools.extend(create_task_system_tools())
 
-    # # 项目探索子代理工具（总结/概览类任务委托，避免主 agent read_file 累加）
-    # from .explore_project_tools import create_explore_project_tool
-    # tools.append(create_explore_project_tool(
-    #     llm=llm, project_file=project_file,
-    #     source_dir=source_dir, test_dir=test_dir,
-    # ))
-
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）
     from .knowledge_graph_v2_tools import create_kg_v2_tools

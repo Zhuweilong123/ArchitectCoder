@@ -224,18 +224,6 @@ class LlmResponse(BaseModel):
     usage: dict = Field(default_factory=dict)
 
 
-class UmlOptimizeRequest(BaseModel):
-    diagram: UmlDiagram
-    instructions: str = ""
-
-
-class UmlOptimizeResponse(BaseModel):
-    original: UmlDiagram
-    optimized: UmlDiagram
-    changes_summary: str
-    diff: str
-
-
 # ---------- Global Optimization ----------
 
 

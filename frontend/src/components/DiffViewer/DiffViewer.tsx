@@ -13,7 +13,7 @@ import Editor from '@monaco-editor/react';
 import * as Diff from 'diff';
 import { useUiStore, DiffDiagramType } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
-import { saveReview, optimizeUml as apiOptimizeUml } from '../../services/api';
+import { saveReview } from '../../services/api';
 import { sendAgentMessage } from '../../services/agentChat';
 import { restoreOriginalsToCanvas } from '../../services/designElementHandler';
 import { useReviewStore } from '../../stores/reviewStore';
@@ -29,7 +29,7 @@ const DiffViewer: React.FC = () => {
     originalDiagrams, optimizedDiagrams, diffContents,
     activeDiffDiagramType, optimizationConsistencyReport,
     showingOptimized, toggleShowingVersion,
-    setRightPanelTab, setOptimizationResult,
+    setRightPanelTab,
     setGlobalOptimizationResult, setActiveDiffDiagramType,
     optimizeInstructions,
   } = useUiStore();
@@ -281,21 +281,6 @@ const DiffViewer: React.FC = () => {
         setResolved(false);
         setReviewComment('');
         message.success({ content: '已发送重新优化请求到 AI 助手，请查看聊天面板', key: 'reoptimize' });
-      } else if (originalDiagram) {
-        const result = await apiOptimizeUml(originalDiagram, rejectInstructions);
-        setOptimizationResult(result.original, result.optimized, result.changes_summary, rejectInstructions);
-        await saveReview({
-          action: 'reject',
-          comment: rejectInstructions || reviewComment || '(继续优化)',
-          requirements: optimizeInstructions,
-          original_name: originalDiagram?.name || '',
-          optimized_name: optimizedDiagram?.name || '',
-          timestamp: new Date().toISOString(),
-        });
-        setRejectModalVisible(false);
-        setResolved(false);
-        setReviewComment('');
-        message.success({ content: '重新优化完成，请查看新结果', key: 'reoptimize' });
       }
     } catch (e) {
       message.error({ content: '重新优化失败: ' + String(e), key: 'reoptimize' });
@@ -368,7 +353,7 @@ const DiffViewer: React.FC = () => {
     return (
       <div className="diff-viewer">
         <Empty description="暂无对比数据" image={Empty.PRESENTED_IMAGE_SIMPLE}>
-          <p>使用"单图设计"或"全局优化"功能生成设计优化对比</p>
+          <p>使用"全局优化"功能生成设计优化对比</p>
         </Empty>
       </div>
     );
@@ -538,7 +523,7 @@ const DiffViewer: React.FC = () => {
       </div>
       <div style={{ fontSize: 10, color: '#999', textAlign: 'center', marginTop: 4 }}>
         评审记录将保存在 backend/dev_review.txt
-        {resolvedEff && ' | 评审已完成，如需重新优化请点击"单图设计"或"全局优化"按钮'}
+        {resolvedEff && ' | 评审已完成，如需重新优化请点击"全局优化"按钮'}
       </div>
 
       {/* Reject → Continue Optimize Modal */}
