@@ -28,6 +28,7 @@ import asyncio
 import json
 import re
 import logging
+import time
 from typing import Optional, List, AsyncIterator
 
 from ..core.agent import Agent
@@ -153,6 +154,9 @@ class ReActAgent(Agent):
         custom_prompt: Optional[str] = None,
         max_tool_calls: int = 100,
         max_repeated_tool_calls: int = 3,
+        max_run_seconds: float = 600.0,
+        max_total_tokens: int = 100000,
+        llm_timeout_seconds: float = 120.0,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
@@ -162,6 +166,9 @@ class ReActAgent(Agent):
         self.prompt_template = custom_prompt or REACT_PROMPT
         self.max_tool_calls = max(1, max_tool_calls)
         self.max_repeated_tool_calls = max(1, max_repeated_tool_calls)
+        self.max_run_seconds = max(1.0, max_run_seconds)
+        self.max_total_tokens = max(1, max_total_tokens)
+        self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
         logger.info(
             "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
             name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
@@ -334,6 +341,8 @@ class ReActAgent(Agent):
         _turn_recorded = False
         tool_call_count = 0
         repeated_calls: dict[str, int] = {}
+        started_at = time.monotonic()
+        total_tokens = 0
 
         get_hooks().trigger(
             HookEvent.RUN_START,
@@ -342,6 +351,13 @@ class ReActAgent(Agent):
         try:
             for step in range(1, self.max_steps + 1):
                 logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
+                if time.monotonic() - started_at >= self.max_run_seconds:
+                    final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
+                    self.add_message(Message(input_text, "user"))
+                    self.add_message(Message(final_answer, "assistant"))
+                    yield ReActProgress(step=step, thought=final_answer,
+                                        is_final=True, final_answer=final_answer)
+                    return
 
                 # 1. 调用 LLM（带工具 schemas）
                 get_hooks().trigger(
@@ -350,12 +366,23 @@ class ReActAgent(Agent):
                                 messages=messages),
                 )
                 with trace_span(f"{self.name}"):
-                    response = await self.llm.ainvoke_with_tools(
-                        messages=messages,
-                        tools=tool_specs,
-                        tool_choice="auto",
-                        temperature=kwargs.get("temperature", 0.3),
-                    )
+                    try:
+                        response = await asyncio.wait_for(
+                            self.llm.ainvoke_with_tools(
+                                messages=messages,
+                                tools=tool_specs,
+                                tool_choice="auto",
+                                temperature=kwargs.get("temperature", 0.3),
+                            ),
+                            timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
+                        )
+                    except asyncio.TimeoutError:
+                        final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
+                        self.add_message(Message(input_text, "user"))
+                        self.add_message(Message(final_answer, "assistant"))
+                        yield ReActProgress(step=step, thought=final_answer,
+                                            is_final=True, final_answer=final_answer)
+                        return
                 get_hooks().trigger(
                     HookEvent.LLM_AFTER,
                     HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
@@ -364,6 +391,16 @@ class ReActAgent(Agent):
 
                 tool_calls = response.get("tool_calls")
                 content = response.get("content") or ""
+                usage = response.get("usage") or {}
+                if isinstance(usage, dict):
+                    total_tokens += int(usage.get("total_tokens") or 0)
+                if total_tokens > self.max_total_tokens:
+                    final_answer = f"已达到 token 预算（{self.max_total_tokens}），已停止继续调用工具。"
+                    self.add_message(Message(input_text, "user"))
+                    self.add_message(Message(final_answer, "assistant"))
+                    yield ReActProgress(step=step, thought=final_answer,
+                                        is_final=True, final_answer=final_answer)
+                    return
 
                 # 2. 无 tool_calls → 纯文本回复
                 if not tool_calls:

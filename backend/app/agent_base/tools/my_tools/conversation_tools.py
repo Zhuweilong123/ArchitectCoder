@@ -115,6 +115,9 @@ def create_conversation_tools(
     include_review: bool = True,
     progress: ProgressRelay | None = None,
     task_scope: str = "",
+    change_set=None,
+    review_session_id: str = "",
+    review_project_id: str = "",
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -127,7 +130,7 @@ def create_conversation_tools(
     # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
     review_mgr = None
     if include_review:
-        review_mgr = ReviewManager()
+        review_mgr = ReviewManager(session_id=review_session_id, project_id=review_project_id)
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
@@ -138,6 +141,7 @@ def create_conversation_tools(
     tools.extend(create_file_system_tools(
         source_dir, test_dir, design_dir,
         review_manager=review_mgr, progress=progress,
+        change_set=change_set,
     ))
 
     # todo_write：会话任务列表

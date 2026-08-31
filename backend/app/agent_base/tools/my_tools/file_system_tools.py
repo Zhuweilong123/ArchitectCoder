@@ -161,7 +161,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="read_file",
             description=(
@@ -216,7 +216,7 @@ class ReadFileTool(AsyncTool):
 class WriteFileTool(AsyncTool):
     """写文件到 workspace（覆盖或新建，自动建父目录）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="write_file",
             description=(
@@ -225,6 +225,7 @@ class WriteFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -234,14 +235,17 @@ class WriteFileTool(AsyncTool):
         except ValueError as e:
             return f"Error: {e}"
         try:
-            if fp.exists() and params.get("expected_sha256"):
-                current = fp.read_text(encoding="utf-8")
+            before_exists = fp.exists()
+            current = fp.read_text(encoding="utf-8") if before_exists else ""
+            if before_exists and params.get("expected_sha256"):
                 expected = str(params["expected_sha256"]).lower()
                 actual = _sha256_text(current)
                 if actual != expected:
                     return (f"Conflict: {path} changed since it was read; "
                             f"expected sha256 {expected}, actual {actual}")
             _atomic_write_text(fp, content)
+            if self._change_set is not None:
+                self._change_set.record(str(fp), before_exists, current, content)
         except Exception as e:
             return f"Error: {e}"
         return f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})"
@@ -268,7 +272,7 @@ class WriteFileTool(AsyncTool):
 class EditFileTool(AsyncTool):
     """精确文本替换（只替换首次出现）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="edit_file",
             description=(
@@ -277,6 +281,7 @@ class EditFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -305,6 +310,8 @@ class EditFileTool(AsyncTool):
             _atomic_write_text(fp, updated)
         except Exception as e:
             return f"Error: {e}"
+        if self._change_set is not None:
+            self._change_set.record(str(fp), True, text, updated)
         return f"Edited {path} (sha256={_sha256_text(updated)})"
 
     def to_openai_schema(self) -> dict:
@@ -553,16 +560,16 @@ class BashTool(AsyncTool):
 
 
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
-                             review_manager=None, progress=None) -> list[Tool]:
+                             review_manager=None, progress=None, change_set=None) -> list[Tool]:
     """创建 A 层文件系统原语工具列表。
 
     review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
     不传则敏感命令 fail closed（拒绝执行），高危命令仍直接拒绝。
     """
     return [
-        ReadFileTool(source_dir, test_dir, design_dir),
-        WriteFileTool(source_dir, test_dir, design_dir),
-        EditFileTool(source_dir, test_dir, design_dir),
+        ReadFileTool(source_dir, test_dir, design_dir, change_set=change_set),
+        WriteFileTool(source_dir, test_dir, design_dir, change_set=change_set),
+        EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         GlobTool(source_dir, test_dir, design_dir),
         BashTool(source_dir, test_dir, design_dir,
                  review_manager=review_manager, progress=progress),

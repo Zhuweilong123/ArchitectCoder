@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest:
     """一次审核请求的上下文数据"""
 
-    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future", "_response", "id", "token")
+    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future", "_response", "id", "token", "session_id", "project_id")
 
     def __init__(
         self,
@@ -46,6 +46,8 @@ class ReviewRequest:
         content: str = "",
         question: str = "",
         metadata: Optional[dict] = None,
+        session_id: str = "",
+        project_id: str = "",
     ):
         self.review_type = review_type  # "code" | "test" | "design" | "uml_diff"
         self.title = title
@@ -54,6 +56,8 @@ class ReviewRequest:
         self.metadata = metadata or {}  # 结构化数据（如 UML diagrams）
         self._future: asyncio.Future | None = None
         self._response: str | None = None
+        self.session_id = session_id
+        self.project_id = project_id
         self.id = -1  # 兼容旧前端的整数 ID；由 manager 单调分配，不再使用 list 下标
         self.token = secrets.token_urlsafe(18)  # 跨 reset / 重连时的不可猜测标识
 
@@ -65,6 +69,8 @@ class ReviewRequest:
             "question": self.question,
             "metadata": self.metadata,
             "token": self.token,
+            "session_id": self.session_id,
+            "project_id": self.project_id,
         }
 
     @property
@@ -86,9 +92,11 @@ class ReviewManager:
     4. Agent 收到 observation 继续执行
     """
 
-    def __init__(self):
+    def __init__(self, session_id: str = "", project_id: str = ""):
         self._pending: list[ReviewRequest] = []
         self._next_id = 0
+        self.session_id = session_id
+        self.project_id = project_id
         # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
         # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
         self.baseline: list | None = None
@@ -103,6 +111,8 @@ class ReviewManager:
             content=content,
             question=question,
             metadata=metadata,
+            session_id=self.session_id,
+            project_id=self.project_id,
         )
         req.id = self._next_id
         self._next_id += 1
@@ -138,10 +148,12 @@ class ReviewManager:
                 return req
         return None
 
-    def resolve(self, request_index: int | str, response: str) -> bool:
+    def resolve(self, request_index: int | str, response: str, session_id: str = "") -> bool:
         """按稳定请求 ID/token 完成审核。"""
         req = self._find(request_index)
         if req is not None:
+            if session_id and req.session_id and session_id != req.session_id:
+                return False
             if req._response is not None or (req._future is not None and req._future.done()):
                 return False
             if req._future is None:

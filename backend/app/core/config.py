@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     agent_max_steps: int = 50
     agent_max_tool_calls: int = 100
     agent_max_repeated_tool_calls: int = 3
+    agent_max_run_seconds: int = 600
+    agent_max_total_tokens: int = 100000
+    agent_llm_timeout_seconds: int = 120
 
     @field_validator("deepseek_api_key")
     @classmethod

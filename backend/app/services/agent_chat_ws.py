@@ -43,6 +43,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
+from app.services.change_set import ChangeSet
 
 logger = logging.getLogger(__name__)
 
@@ -439,10 +440,15 @@ async def _create_dev_agent(
     """
     from app.core.config import get_settings
 
+    change_set = ChangeSet(project_file=project_file)
+
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
         include_review=True, progress=progress,
         task_scope=task_scope or project_file,
+        change_set=change_set,
+        review_session_id=task_scope or "",
+        review_project_id=os.path.splitext(os.path.basename(project_file))[0] if project_file else "",
     )
 
     registry = ToolRegistry()
@@ -459,8 +465,12 @@ async def _create_dev_agent(
         max_steps=get_settings().agent_max_steps,
         max_tool_calls=get_settings().agent_max_tool_calls,
         max_repeated_tool_calls=get_settings().agent_max_repeated_tool_calls,
+        max_run_seconds=get_settings().agent_max_run_seconds,
+        max_total_tokens=get_settings().agent_max_total_tokens,
+        llm_timeout_seconds=get_settings().agent_llm_timeout_seconds,
         use_native_fc=True,
     )
+    agent.change_set = change_set
     if restore_history:
         agent.restore_history(restore_history)
     return agent, review_mgr, prompt_builder
@@ -652,6 +662,10 @@ async def _handle_dev(
 
     _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
     try:
+        change_set = getattr(agent, "change_set", None)
+        if change_set is not None:
+            change_set.project_file = project_file or change_set.project_file
+            change_set.begin()
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         allowed_tools = _select_tools_for_message(agent.tool_registry, user_message)
         async for step_progress in agent.arun_stream(
@@ -752,6 +766,9 @@ async def _handle_dev(
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
                 if trace_log:
                     trace_log.done(answer=d["final_answer"])
+                if change_set is not None and change_set.has_changes:
+                    manifest = change_set.commit()
+                    logger.info("[ChangeSet] committed %d file changes", len(manifest))
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
@@ -956,7 +973,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 else:
                     response = msg.get("response", "")
                 if review_mgr:
-                    resolved = review_mgr.resolve(review_id, response)
+                    resolved = review_mgr.resolve(review_id, response, session_id=session_id)
                     if not resolved:
                         # 待审核请求不存在（连接断开被清理/会话回收/重复回复）：
                         # 明确告知前端，避免用户以为审核已生效而 agent 实际没收到

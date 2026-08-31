@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.tools.review import ReviewManager
+from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.file_system_tools import (
     BashTool, safe_path, create_file_system_tools, _decode_output,
 )
@@ -108,6 +109,19 @@ def test_edit_file_expected_hash_prevents_lost_update(workspace):
     })
     assert "Conflict" in result
     assert (src / "a.py").read_text(encoding="utf-8").startswith("line0")
+
+
+def test_change_set_records_and_rolls_back_file_changes(workspace):
+    src, test = workspace
+    changes = ChangeSet()
+    tools = create_file_system_tools(str(src), str(test), change_set=changes)
+    write = _tool_by_name(tools, "write_file")
+
+    assert "Wrote" in _run(write, {"path": "transaction.txt", "content": "new"})
+    assert changes.has_changes
+    assert changes.manifest()[0]["path"].endswith("transaction.txt")
+    changes.rollback()
+    assert not (src / "transaction.txt").exists()
 
 
 # ── glob ───────────────────────────────────────────────
