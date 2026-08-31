@@ -15,7 +15,7 @@ Usage:
 
     # 检索
     retriever = GraphRetriever(db_path="./data/knowledge_graph.db")
-    results = await retriever.query("my_project", "User login")
+    results = retriever.query("my_project", "User login")
 """
 
 __version__ = "1.0.0"

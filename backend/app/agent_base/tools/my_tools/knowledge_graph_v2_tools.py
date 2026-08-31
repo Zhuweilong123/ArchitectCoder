@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -147,7 +148,7 @@ class KGService:
 
     # ── map: 有界结构地图 ──────────────────────────────────
 
-    async def map_project(self, project_id: str,
+    def map_project(self, project_id: str,
                           top_classes: int = MAX_MAP_CLASSES) -> dict:
         """返回项目结构地图：图清单+类数、承重墙类、源码/测试文件统计。"""
         if not project_id:
@@ -216,7 +217,7 @@ class KGService:
 
     # ── locate: 精确检索 ────────────────────────────────────
 
-    async def locate(self, project_id: str, pattern: str,
+    def locate(self, project_id: str, pattern: str,
                      node_types: Optional[list[str]] = None,
                      source: Optional[str] = None,
                      top_k: int = DEFAULT_TOP_K) -> dict:
@@ -225,7 +226,7 @@ class KGService:
             return {"error": "未绑定 project_id"}
         if not pattern:
             return {"error": "pattern 为空"}
-        results = await self.ctx.retriever.query(
+        results = self.ctx.retriever.query(
             project_id, pattern, node_types=node_types,
             source=source, top_k=top_k,
         )
@@ -236,7 +237,7 @@ class KGService:
 
     # ── expand: 邻域展开 ────────────────────────────────────
 
-    async def expand(self, project_id: str, node_ids: list[str],
+    def expand(self, project_id: str, node_ids: list[str],
                      direction: str = "outgoing",
                      edge_types: Optional[list[str]] = None,
                      max_depth: int = MAX_EXPAND_DEPTH,
@@ -279,7 +280,7 @@ class KGService:
 
     # ── impact: 反依赖影响分析 ──────────────────────────────
 
-    async def impact(self, project_id: str, node_id: str,
+    def impact(self, project_id: str, node_id: str,
                      max_depth: int = MAX_IMPACT_DEPTH,
                      max_nodes: int = MAX_IMPACT_NODES) -> dict:
         """反向依赖 BFS：改这个节点会碰谁。直接依赖(depth=1) vs 传递依赖。"""
@@ -337,11 +338,11 @@ class KGService:
 
     # ── diff: 设计-代码一致性 ───────────────────────────────
 
-    async def diff(self, project_id: str, source_dir: Optional[str] = None,
+    def diff(self, project_id: str, source_dir: Optional[str] = None,
                    force_rebuild: bool = False,
                    max_items: int = MAX_DIFF_ITEMS) -> dict:
         """设计层 vs 代码层差异（复用 GraphRetriever.diff，含代码层惰性重建）。"""
-        result = await self.ctx.retriever.diff(
+        result = self.ctx.retriever.diff(
             project_id, source_dir=source_dir, force_rebuild=force_rebuild,
         )
         items = [{
@@ -417,13 +418,27 @@ def bounded(items: list, cap: int) -> dict:
 # L4 工具层 — AsyncTool 子类，绑定 project_id
 # ═══════════════════════════════════════════════════════════════
 
-async def _with_service(db_path: str, fn: Callable[[KGService], Any]) -> Any:
-    """每次调用创建独立 context，确保连接生命周期安全（try/finally close）。"""
+def _run_service(db_path: str, fn: Callable[[KGService], Any]) -> Any:
+    """在调用线程内同步执行 service 调用（供 asyncio.to_thread 使用）。
+
+    每次调用创建独立 context，确保连接生命周期安全（try/finally close）。
+    """
     ctx = KGContext(db_path)
     try:
-        return await fn(KGService(ctx))
+        return fn(KGService(ctx))
     finally:
         ctx.close()
+
+
+async def _with_service(db_path: str, fn: Callable[[KGService], Any]) -> Any:
+    """把 KG service 的同步计算卸载到线程池，避免阻塞事件循环。
+
+    KG 工具内部是同步 SQLite/glob/AST 计算（`compare_design_code` 首次调用
+    还会惰性重建代码层，大项目下可能耗时数十秒）。若直接在 async 工具里
+    await 它们，会卡死事件循环，导致 WebSocket 心跳 ping/pong 无法应答、
+    前端误判「连接已断开」并取消任务。这里统一走 asyncio.to_thread。
+    """
+    return await asyncio.to_thread(_run_service, db_path, fn)
 
 
 class _KgTool(AsyncTool):

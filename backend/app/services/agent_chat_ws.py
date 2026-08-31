@@ -143,7 +143,7 @@ async def _build_kg_chat_context(project_file: str, user_message: str) -> str:
 
         # 检索与用户消息相关的内容
         retriever = GraphRetriever(db_path=kg_db)
-        results = await retriever.query(
+        results = retriever.query(
             project_id=project_id,
             pattern=user_message,
             top_k=15,
