@@ -9,10 +9,10 @@ GraphRetriever — 知识图谱查询接口.
 
 Usage:
     retriever = GraphRetriever(db_path="./data/knowledge_graph.db")
-    results = await retriever.query("proj", "User login", node_types=["class"])
-    neighbors = await retriever.expand(["class_xxx"], depth=2)
-    paths = await retriever.trace("class_a", "class_b")
-    diff = await retriever.diff("proj")
+    results = retriever.query("proj", "User login", node_types=["class"])
+    neighbors = retriever.expand(["class_xxx"], depth=2)
+    paths = retriever.trace("class_a", "class_b")
+    diff = retriever.diff("proj")
     retriever.close()
 """
 
@@ -88,7 +88,7 @@ class GraphRetriever:
 
     # ── query ──────────────────────────────────────────────
 
-    async def query(
+    def query(
         self,
         project_id: str,
         pattern: str,
@@ -140,7 +140,7 @@ class GraphRetriever:
 
     # ── expand ─────────────────────────────────────────────
 
-    async def expand(
+    def expand(
         self,
         node_ids: list[str],
         depth: int = 1,
@@ -213,7 +213,7 @@ class GraphRetriever:
 
     # ── trace ──────────────────────────────────────────────
 
-    async def trace(
+    def trace(
         self,
         source_id: str,
         target_id: str,
@@ -250,7 +250,7 @@ class GraphRetriever:
 
     # ── diff ───────────────────────────────────────────────
 
-    async def diff(
+    def diff(
         self,
         project_id: str,
         source_dir: Optional[str] = None,
