@@ -57,6 +57,9 @@ interface UiState {
   // Trace viewer
   traceVisible: boolean;
 
+  // Evaluation center
+  evaluationVisible: boolean;
+
   // Actions
   toggleRightPanel: () => void;
   setRightPanelVisible: (visible: boolean) => void;
@@ -98,6 +101,7 @@ interface UiState {
 
   // Trace viewer
   setTraceVisible: (visible: boolean) => void;
+  setEvaluationVisible: (visible: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -129,6 +133,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentChatVisible: false,
   agentChatExpanded: false,
   traceVisible: false,
+  evaluationVisible: false,
   agentChatPosition: (() => {
     try {
       const saved = localStorage.getItem('agentChatPosition');
@@ -232,4 +237,5 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   setTraceVisible: (visible) => set({ traceVisible: visible }),
+  setEvaluationVisible: (visible) => set({ evaluationVisible: visible }),
 }));

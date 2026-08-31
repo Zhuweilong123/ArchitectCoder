@@ -18,6 +18,7 @@ import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
 import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
 import AgentChat from './components/AgentChat/AgentChat';
 import TraceViewer from './components/TraceViewer/TraceViewer';
+import EvaluationCenter from './components/EvaluationCenter/EvaluationCenter';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { useDiagramStore } from './stores/diagramStore';
 import './App.css';
@@ -177,6 +178,9 @@ const App: React.FC = () => {
 
       {/* Trace viewer drawer */}
       <TraceViewer />
+
+      {/* Evaluation center */}
+      <EvaluationCenter />
     </Layout>
   );
 };

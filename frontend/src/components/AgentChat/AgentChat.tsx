@@ -189,7 +189,7 @@ const AgentChat: React.FC = () => {
   }, [messages, currentSteps, busy]);
 
   // ── 连接 WebSocket ──
-  const connect = useCallback(() => {
+  const connect = useCallback((open = true) => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat((event: AgentEvent) => {
       switch (event.event) {
@@ -410,7 +410,7 @@ const AgentChat: React.FC = () => {
           break;
         }
       }
-    }, token);
+    }, token, open);
 
     return ws;
   }, []);
@@ -544,8 +544,13 @@ const AgentChat: React.FC = () => {
   // AgentChat 在 App 中常驻挂载（App.tsx），面板只是显示/隐藏；
   // 连接一旦建立就不因关面板而断开，agent 在后台持续运行。
   useEffect(() => {
-    connect();
+    // AgentChat 常驻挂载但默认隐藏：先绑定事件处理器，不要立即创建连接。
+    connect(false);
   }, [connect]);
+
+  useEffect(() => {
+    if (agentChatVisible) connect();
+  }, [agentChatVisible, connect]);
 
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
   useEffect(() => {

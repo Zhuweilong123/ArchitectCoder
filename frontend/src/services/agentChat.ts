@@ -114,8 +114,24 @@ let _lastPongAt = 0;
 export function connectAgentChat(
   onEvent: AgentEventCallback,
   token?: string,
-): WebSocket {
+): WebSocket;
+export function connectAgentChat(
+  onEvent: AgentEventCallback,
+  token: string | undefined,
+  open: boolean,
+): WebSocket | null;
+export function connectAgentChat(
+  onEvent: AgentEventCallback,
+  token?: string,
+  open = true,
+): WebSocket | null {
   if (token) _lastToken = token;
+  // The chat component is mounted even when hidden. Bind its handler without
+  // opening a socket; sendAgentMessage will open one on demand.
+  if (!open) {
+    _onEvent = onEvent;
+    return _ws;
+  }
   // 如果已有连接，只更新回调（保护：不覆盖已有的真实回调为空回调）
   if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) {
     // 空回调是占位用的（如 Toolbar），不覆盖真实回调

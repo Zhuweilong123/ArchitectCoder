@@ -1,0 +1,18 @@
+{
+  "id": "radar-p1-uml-topology-001",
+  "name": "旧版 UML 结构拓扑迁移",
+  "prompt": "只修复 legacy/radar_design_0730.umlproj 的 UML 结构拓扑，使其与当前设计一致：包含 Radar System Architecture 组件图、Echo Simulation 中的 Target 类，以及 PulseCompression 对 EchoSimulation 的依赖。",
+  "project_id": "radar_sim_stale_uml_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "design/legacy/radar_design_0730.umlproj"}
+  ],
+  "checkers": [
+    {"type": "uml_contains", "path": "design/legacy/radar_design_0730.umlproj", "kind": "diagram", "name": "Radar System Architecture"},
+    {"type": "uml_contains", "path": "design/legacy/radar_design_0730.umlproj", "kind": "class", "name": "Target", "diagram": "Echo Simulation"},
+    {"type": "uml_relation", "path": "design/legacy/radar_design_0730.umlproj", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency", "diagram": "Radar System Architecture"}
+  ],
+  "max_seconds": 300,
+  "max_tool_calls": 75,
+  "max_total_tokens": 100000,
+  "metadata": {"suite": "diagnostic", "parent": "radar-p1-uml-stale-001", "capability": "uml_topology_migration", "risk": "high"}
+}

@@ -1,0 +1,17 @@
+{
+  "id": "radar-p0-padding-001",
+  "name": "修复 PRT 脉冲补零",
+  "prompt": "修复 PulseSequencer，使单个脉冲位于 PRT 周期的起始位置，剩余采样点补零，并确保现有测试全部通过。",
+  "project_id": "radar_sim_padding_bug_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
+    {"type": "file_contains", "path": "src/radar_sim/transmit.py", "text": "assemblePulseSequence"}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 40,
+  "max_total_tokens": 50000,
+  "metadata": {"suite": "p0", "capability": "transmit_waveform", "risk": "high", "seeded_defect": "pulse_position"}
+}
