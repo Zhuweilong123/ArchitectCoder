@@ -24,6 +24,7 @@ Usage::
     result = agent.run("你好！")
 """
 
+import asyncio
 import json
 import re
 import logging
@@ -150,6 +151,8 @@ class ReActAgent(Agent):
         max_steps: int = 5,
         use_native_fc: bool = True,
         custom_prompt: Optional[str] = None,
+        max_tool_calls: int = 100,
+        max_repeated_tool_calls: int = 3,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
@@ -157,6 +160,8 @@ class ReActAgent(Agent):
         self.use_native_fc = use_native_fc
         self.current_history: List[str] = []
         self.prompt_template = custom_prompt or REACT_PROMPT
+        self.max_tool_calls = max(1, max_tool_calls)
+        self.max_repeated_tool_calls = max(1, max_repeated_tool_calls)
         logger.info(
             "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
             name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
@@ -303,7 +308,12 @@ class ReActAgent(Agent):
         """
         from app.services.chat_trace import trace_span
 
-        tool_specs = self.tool_registry.get_openai_specs()
+        allowed_tools = kwargs.pop("allowed_tools", None)
+        allowed_set = set(allowed_tools) if allowed_tools is not None else None
+        tool_specs = (
+            self.tool_registry.get_openai_specs_for(list(allowed_set))
+            if allowed_set is not None else self.tool_registry.get_openai_specs()
+        )
         messages: list[dict] = [
             {"role": "system", "content": self._build_fc_system_prompt()},
         ]
@@ -322,6 +332,8 @@ class ReActAgent(Agent):
         self.current_history = []
         no_tool_call_streak = 0
         _turn_recorded = False
+        tool_call_count = 0
+        repeated_calls: dict[str, int] = {}
 
         get_hooks().trigger(
             HookEvent.RUN_START,
@@ -406,84 +418,95 @@ class ReActAgent(Agent):
                 actions: list[str] = []
                 details: list[dict] = []
 
+                parsed_calls: list[tuple[dict, str, dict, str | None]] = []
                 for tc in tool_calls:
                     fn = tc["function"]
                     tool_name = fn["name"]
-
-                    # 解析参数
                     try:
                         tool_args = json.loads(fn["arguments"])
                     except json.JSONDecodeError:
                         err_obs = (
                             f"Invalid JSON arguments for '{tool_name}'. "
-                            f"Raw: {fn.get('arguments', '')[:200]}. "
-                            f"Please re-send with valid JSON."
+                            f"Raw: {fn.get('arguments', '')[:200]}. Please re-send with valid JSON."
                         )
-                        self.current_history.append(
-                            f"Step {step}: {tool_name} → JSON解析失败"
-                        )
-                        tool_results.append({
-                            "tool_call_id": tc["id"],
-                            "content": err_obs,
-                        })
-                        actions.append(tool_name)
-                        details.append({
-                            "name": tool_name,
-                            "arguments": fn.get("arguments", ""),
-                            "observation": err_obs,
-                        })
+                        parsed_calls.append((tc, tool_name, fn.get("arguments", ""), err_obs))
                         continue
 
-                    # TOOL_BEFORE hook：返回 str 即 veto，跳过工具执行。
+                    call_key = f"{tool_name}:{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
+                    repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
+                    tool_call_count += 1
+                    blocked: str | None = None
+                    if allowed_set is not None and tool_name not in allowed_set:
+                        blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
+                                   f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
+                    elif tool_call_count > self.max_tool_calls:
+                        blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
+                                   "Stop calling tools and summarize the result.")
+                    elif repeated_calls[call_key] > self.max_repeated_tool_calls:
+                        blocked = ("Repeated identical tool call blocked by circuit breaker. "
+                                   "Use a different input or provide the current result.")
+                    parsed_calls.append((tc, tool_name, tool_args, blocked))
+
+                async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
+                    if blocked is not None:
+                        return blocked, blocked
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
                                     tool_name=tool_name, tool_input=tool_args),
                     )
                     if veto is not None:
-                        # 被 veto：veto 消息既是完整观察，也是喂给模型的口径。
-                        observation_full = veto
-                        observation_fed = veto
-                    else:
-                        # 执行工具
-                        with trace_span(f"{self.name}/{tool_name}"):
-                            result = await self.tool_registry.aexecute_tool_with_params(
-                                tool_name, tool_args,
-                            )
-                        observation_full = str(result)
-                        # TOOL_AFTER hook：返回 str 即 replace，只改喂给模型的口径。
-                        fed = get_hooks().trigger(
-                            HookEvent.TOOL_AFTER,
-                            HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
-                                        tool_name=tool_name, tool_input=tool_args,
-                                        tool_output=observation_full),
+                        return veto, veto
+                    with trace_span(f"{self.name}/{tool_name}"):
+                        result = await self.tool_registry.aexecute_tool_with_params(
+                            tool_name, tool_args,
                         )
-                        observation_fed = fed if fed is not None else observation_full
+                    observation_full = str(result)
+                    fed = get_hooks().trigger(
+                        HookEvent.TOOL_AFTER,
+                        HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
+                                    tool_name=tool_name, tool_input=tool_args,
+                                    tool_output=observation_full),
+                    )
+                    return observation_full, fed if fed is not None else observation_full
 
-                    # 框架统一记录完整 observation 与喂给模型的口径（fed_*）。
-                    fed_truncated = observation_full != observation_fed
-                    fed_length = len(observation_fed)
+                executable = [item for item in parsed_calls if item[3] is None]
+                parallel = len(executable) > 1 and all(
+                    self.tool_registry.can_parallel(item[1]) for item in executable
+                )
+                if parallel:
+                    executions = await asyncio.gather(*(
+                        _execute_one(item[1], item[2], item[3]) for item in parsed_calls
+                    ))
+                else:
+                    executions = []
+                    for item in parsed_calls:
+                        executions.append(await _execute_one(item[1], item[2], item[3]))
 
+                for item, execution in zip(parsed_calls, executions):
+                    tc, tool_name, tool_args, blocked = item
+                    if blocked is not None and isinstance(tool_args, str):
+                        observation_full = observation_fed = blocked
+                    else:
+                        observation_full, observation_fed = execution
+                    if isinstance(tool_args, str):
+                        observation_full = observation_fed = execution[0]
                     self.current_history.append(
                         f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
                         f" → {observation_fed[:150]}"
                     )
-                    tool_results.append({
-                        "tool_call_id": tc["id"],
-                        "content": observation_fed,
-                    })
+                    tool_results.append({"tool_call_id": tc["id"], "content": observation_fed})
                     actions.append(tool_name)
                     details.append({
                         "name": tool_name,
                         "arguments": tool_args,
                         "observation": observation_full,
-                        "fed_truncated": fed_truncated,
-                        "fed_length": fed_length,
+                        "fed_truncated": observation_full != observation_fed,
+                        "fed_length": len(observation_fed),
                     })
-                    logger.info("  🔧 %s(%s) → %s",
-                               tool_name,
-                               json.dumps(tool_args, ensure_ascii=False)[:80],
-                               observation_fed[:80])
+                    logger.info("  🔧 %s(%s) → %s", tool_name,
+                                json.dumps(tool_args, ensure_ascii=False)[:80],
+                                observation_fed[:80])
 
                 # 4. 追加 assistant + tool 消息到对话
                 messages.append({

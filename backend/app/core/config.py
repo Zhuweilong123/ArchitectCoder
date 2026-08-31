@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
     # consistency checks) need more than the old 12-round cap
     agent_max_steps: int = 50
+    agent_max_tool_calls: int = 100
+    agent_max_repeated_tool_calls: int = 3
 
     @field_validator("deepseek_api_key")
     @classmethod
@@ -64,6 +66,10 @@ class Settings(BaseSettings):
 
     # File storage
     uml_dir: str = "../temp/uml_files"
+
+    # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
+    # 仓库目录和 uml_dir；需要访问外部源码时显式配置此项。
+    workspace_roots: str = ""
 
     # CORS
     cors_origins: list[str] = [

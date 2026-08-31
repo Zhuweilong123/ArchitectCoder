@@ -83,9 +83,13 @@ class ToolRegistry:
         """
         specs = []
         for tool in self._tools.values():
-            specs.append(tool.to_openai_schema())
+            schema = tool.to_openai_schema()
+            params = schema.get("function", {}).get("parameters", {})
+            if params.get("type") == "object":
+                params.setdefault("additionalProperties", False)
+            specs.append(schema)
         for name, info in self._functions.items():
-            specs.append({
+            schema = {
                 "type": "function",
                 "function": {
                     "name": name,
@@ -101,13 +105,20 @@ class ToolRegistry:
                         "required": ["input"],
                     },
                 },
-            })
+            }
+            schema["function"]["parameters"]["additionalProperties"] = False
+            specs.append(schema)
         return specs
 
     def get_openai_specs_for(self, names: list[str]) -> list[dict]:
         """根据名称列表筛选 spec（用于限制本轮可用的工具）"""
         all_specs = {s["function"]["name"]: s for s in self.get_openai_specs()}
         return [all_specs[n] for n in names if n in all_specs]
+
+    def can_parallel(self, name: str) -> bool:
+        """返回工具是否明确声明可与同轮调用并行。"""
+        tool = self._tools.get(name)
+        return bool(tool and tool.read_only and tool.can_parallel)
 
     def list_tools(self) -> list[str]:
         """列出所有工具名称"""

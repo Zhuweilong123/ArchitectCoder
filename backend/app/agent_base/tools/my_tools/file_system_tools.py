@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
+import hashlib
 import json as _json
 import logging
+import os
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -132,6 +136,28 @@ def _resolve_roots(source_dir: str, test_dir: str, design_dir: str = "") -> list
     return [d for d in (source_dir, test_dir, design_dir) if d]
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """在目标文件同目录完成原子替换，避免半写文件被并发读到。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp",
+                                     dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
@@ -144,6 +170,8 @@ class ReadFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self.read_only = True
+        self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -206,11 +234,17 @@ class WriteFileTool(AsyncTool):
         except ValueError as e:
             return f"Error: {e}"
         try:
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            fp.write_text(content, encoding="utf-8")
+            if fp.exists() and params.get("expected_sha256"):
+                current = fp.read_text(encoding="utf-8")
+                expected = str(params["expected_sha256"]).lower()
+                actual = _sha256_text(current)
+                if actual != expected:
+                    return (f"Conflict: {path} changed since it was read; "
+                            f"expected sha256 {expected}, actual {actual}")
+            _atomic_write_text(fp, content)
         except Exception as e:
             return f"Error: {e}"
-        return f"Wrote {len(content)} bytes to {path}"
+        return f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})"
 
     def to_openai_schema(self) -> dict:
         return {
@@ -223,6 +257,7 @@ class WriteFileTool(AsyncTool):
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "content": {"type": "string", "description": "Full text content to write."},
+                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents overwriting a concurrent edit."},
                     },
                     "required": ["path", "content"],
                 },
@@ -258,10 +293,19 @@ class EditFileTool(AsyncTool):
         except Exception as e:
             return f"Error: {e}"
 
+        expected = params.get("expected_sha256")
+        actual = _sha256_text(text)
+        if expected and actual.lower() != str(expected).lower():
+            return (f"Conflict: {path} changed since it was read; "
+                    f"expected sha256 {expected}, actual {actual}")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        fp.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
-        return f"Edited {path}"
+        updated = text.replace(old_text, new_text, 1)
+        try:
+            _atomic_write_text(fp, updated)
+        except Exception as e:
+            return f"Error: {e}"
+        return f"Edited {path} (sha256={_sha256_text(updated)})"
 
     def to_openai_schema(self) -> dict:
         return {
@@ -275,6 +319,7 @@ class EditFileTool(AsyncTool):
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "old_text": {"type": "string", "description": "Exact text to replace."},
                         "new_text": {"type": "string", "description": "Replacement text."},
+                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents lost updates."},
                     },
                     "required": ["path", "old_text", "new_text"],
                 },
@@ -294,6 +339,8 @@ class GlobTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self.read_only = True
+        self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
         pattern = params.get("pattern", "")
@@ -371,7 +418,40 @@ class BashTool(AsyncTool):
                     return verdict  # 拒绝/超时/无通道 → 不执行
                 break  # 批准 → 继续执行
 
+        syntax_error = self._validate_shell_command(command)
+        if syntax_error:
+            return f"Error: {syntax_error}"
+
         return await self._run_command(command)
+
+    @staticmethod
+    def _validate_shell_command(command: str) -> str | None:
+        """限制 shell=True 的逃逸面。
+
+        现有工具仍支持 Windows 的 ``echo``/``dir`` 等 shell 内建命令，
+        但禁止命令串联、重定向、命令替换和脚本解释器内联代码。
+        """
+        if len(command) > 4000:
+            return "command is too long (maximum 4000 characters)"
+        if any(token in command for token in ("\n", "\r", ";", "&&", "||", "|", ">", "<", "`", "$(")):
+            return "shell operators and command substitution are not allowed"
+        lowered = command.lower()
+        if re.search(r"\b(powershell|pwsh|cmd)\s*(\.exe)?\s*(/c|/k|-command|-c)\b", lowered):
+            return "nested shell invocation is not allowed"
+        if re.search(r"\b(python|python3|py)\s+(-\w+\s+)*-c\b", lowered):
+            return "inline interpreter code is not allowed"
+        executable = command.strip().split(None, 1)[0].strip('"')
+        executable = os.path.basename(executable).lower()
+        allowed = {
+            "python", "python3", "py", "pytest", "git", "echo", "dir", "ls",
+            "type", "where", "find", "findstr", "rg", "grep", "cat", "head",
+            "tail", "sort", "wc", "pip", "uv", "node", "npm", "ruff",
+        }
+        if executable.endswith(".exe"):
+            executable = executable[:-4]
+        if executable not in allowed:
+            return f"executable '{executable}' is not allowed"
+        return None
 
     async def _request_approval(self, command: str, pattern: str) -> Optional[str]:
         """敏感命令走 ReviewManager 人工审核。返回 None 表示批准可执行，

@@ -114,6 +114,7 @@ def create_conversation_tools(
     project_file: str = "",
     include_review: bool = True,
     progress: ProgressRelay | None = None,
+    task_scope: str = "",
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -160,7 +161,7 @@ def create_conversation_tools(
 
     # 持久化任务 DAG + claim/complete + git worktree
     from app.agent_base.tools.task_system import create_task_system_tools
-    tools.extend(create_task_system_tools())
+    tools.extend(create_task_system_tools(scope=task_scope))
 
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）

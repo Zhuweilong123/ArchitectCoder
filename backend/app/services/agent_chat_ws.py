@@ -21,12 +21,16 @@ WebSocket 协议:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.core.auth import require_ws_auth
+from app.core.security import validate_agent_workspace_path
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
@@ -36,7 +40,7 @@ from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
-from app.services.chat_trace import ChatTraceLogger, set_trace_hook
+from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 
@@ -53,7 +57,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     """
     from app.services.chat_trace import current_trace_spans
 
-    tracer = _TRACE_BRIDGE.get("tracer")
+    tracer = _TRACE_BRIDGE.get()
     if tracer is None:
         return None
     spans = current_trace_spans()
@@ -88,11 +92,48 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     return None
 
 
-_TRACE_BRIDGE: dict = {"tracer": None}
+def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str] | None:
+    """轻量确定性路由：明显闲聊不暴露工具，开发/设计任务保留对应工具组。
+
+    不确定时返回 None，保持全量工具可用，避免启发式误判阻断真实任务。
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return None
+    all_tools = registry.list_tools()
+    greetings = ("你好", "您好", "hello", "hi", "嗨", "谢谢", "再见", "晚安")
+    task_words = ("uml", "类图", "时序", "架构", "设计", "diagram", "代码", "实现",
+                  "修复", "测试", "pytest", "文件", "源码", "bug", "依赖", "项目",
+                  "运行", "修改", "创建", "优化")
+    if len(text) <= 80 and not any(word in text for word in task_words):
+        if any(text.startswith(word) or text == word for word in greetings):
+            return []
+        # 简单知识问答默认不需要工具；长/含任务词的问题交给全量工具。
+        return []
+    if not any(word in text for word in task_words):
+        return None
+
+    design = any(word in text for word in ("uml", "类图", "时序", "架构", "设计", "diagram"))
+    code = any(word in text for word in ("代码", "实现", "修复", "测试", "pytest", "文件", "源码", "bug", "运行"))
+    names = {name for name in all_tools if name in {"read_file", "write_file", "edit_file", "glob",
+                                                     "bash", "todo_write", "skill", "spawn_subagent",
+                                                     "create_task", "update_task", "list_tasks", "get_task",
+                                                     "claim_task", "complete_task", "create_worktree",
+                                                     "submit_uml_review"}}
+    if design:
+        names.update(name for name in all_tools if name.startswith("kg_") or name.endswith("_uml"))
+    if not code:
+        names.discard("bash")
+    return [name for name in all_tools if name in names]
+
+
+_TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
+    "agent_chat_trace_bridge", default=None,
+)
 
 
 def _set_trace_bridge(tracer: ChatTraceLogger | None):
-    _TRACE_BRIDGE["tracer"] = tracer
+    _TRACE_BRIDGE.set(tracer)
 
 
 # ── 对话 Agent — ReActAgent + 工具 ──────────────────────
@@ -389,6 +430,7 @@ async def _create_dev_agent(
     user_message: str = "",
     progress: ProgressRelay | None = None,
     restore_history: list[dict] | None = None,
+    task_scope: str = "",
 ):
     """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
@@ -400,6 +442,7 @@ async def _create_dev_agent(
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
         include_review=True, progress=progress,
+        task_scope=task_scope or project_file,
     )
 
     registry = ToolRegistry()
@@ -414,6 +457,8 @@ async def _create_dev_agent(
         tool_registry=registry,
         system_prompt=prompt_builder.system_prompt,
         max_steps=get_settings().agent_max_steps,
+        max_tool_calls=get_settings().agent_max_tool_calls,
+        max_repeated_tool_calls=get_settings().agent_max_repeated_tool_calls,
         use_native_fc=True,
     )
     if restore_history:
@@ -608,7 +653,10 @@ async def _handle_dev(
     _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
     try:
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
-        async for step_progress in agent.arun_stream(user_message, context=context):
+        allowed_tools = _select_tools_for_message(agent.tool_registry, user_message)
+        async for step_progress in agent.arun_stream(
+            user_message, context=context, allowed_tools=allowed_tools,
+        ):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
 
@@ -745,6 +793,8 @@ async def _handle_dev(
 async def agent_chat_ws(websocket: WebSocket):
     """Agent 对话 WebSocket — 流式双向通信。"""
     await websocket.accept()
+    if not await require_ws_auth(websocket):
+        return
     logger.info("[AgentChat] WebSocket connected")
 
     # 会话 id 来自前端（localStorage 持久化），跨连接复用 agent 历史与日志文件；
@@ -770,6 +820,7 @@ async def agent_chat_ws(websocket: WebSocket):
     prompt_builder = session.prompt_builder
     stop_requested = False
     run_task: asyncio.Task | None = None
+    connection_owner = uuid.uuid4().hex
     # 兜底审核（run 结束后补推的 uml_review）的 review_id 集合。
     # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
     fallback_review_ids: set[int] = set()
@@ -777,7 +828,8 @@ async def agent_chat_ws(websocket: WebSocket):
     test_dir = ""
     project_file = ""
     _set_trace_bridge(trace_log)
-    set_trace_hook(_trace_hook_bridge)
+    trace_hook_handler = _trace_hook_bridge
+    push_trace_hook(trace_hook_handler)
 
     def _stop_check():
         return stop_requested
@@ -796,13 +848,35 @@ async def agent_chat_ws(websocket: WebSocket):
             # ── 开始对话 ──
             if msg_type == "chat":
                 user_message = msg.get("message", "")
-                source_dir = msg.get("source_dir", source_dir)
-                test_dir = msg.get("test_dir", test_dir)
-                project_file = msg.get("project_file", project_file)
+                requested_source = msg.get("source_dir", source_dir)
+                requested_test = msg.get("test_dir", test_dir)
+                requested_project = msg.get("project_file", project_file)
 
                 if not user_message:
                     await websocket.send_json({"event": "error", "message": "Empty message"})
                     continue
+
+                validated = []
+                for value, kind, label in (
+                    (requested_source, "directory", "source_dir"),
+                    (requested_test, "directory", "test_dir"),
+                    (requested_project, "file", "project_file"),
+                ):
+                    normalized, error = validate_agent_workspace_path(value, kind=kind)
+                    if error:
+                        validated.append(f"{label}: {error}")
+                    else:
+                        validated.append(normalized)
+                if any(item.startswith(("source_dir:", "test_dir:", "project_file:"))
+                       for item in validated):
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "Invalid workspace path: " + "; ".join(
+                            item for item in validated if ": " in item
+                        ),
+                    })
+                    continue
+                source_dir, test_dir, project_file = validated
 
                 if llm is None:
                     llm = BaseAgentsLLM.from_settings(temperature=0.3)
@@ -821,6 +895,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     dev_agent, review_mgr, prompt_builder = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
                         progress=progress, restore_history=restore_history,
+                        task_scope=session_id,
                     )
                     session.agent, session.review_mgr, session.progress = \
                         dev_agent, review_mgr, progress
@@ -844,6 +919,12 @@ async def agent_chat_ws(websocket: WebSocket):
                         "message": "Agent is still processing the previous request",
                     })
                     continue
+                if not session.try_claim_run(connection_owner):
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "This session is already running on another connection",
+                    })
+                    continue
                 run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
@@ -851,6 +932,9 @@ async def agent_chat_ws(websocket: WebSocket):
                     fallback_review_ids=fallback_review_ids,
                 ))
                 run_task.add_done_callback(_consume_task_exception)
+                run_task.add_done_callback(
+                    lambda _task: session.release_run(connection_owner)
+                )
 
             # ── 停止对话 ──
             elif msg_type == "stop":
@@ -926,6 +1010,9 @@ async def agent_chat_ws(websocket: WebSocket):
                                 fallback_review_ids=fallback_review_ids,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
+                            run_task.add_done_callback(
+                                lambda _task: session.release_run(connection_owner)
+                            )
 
             # ── 心跳 ──
             elif msg_type == "ping":
@@ -959,6 +1046,10 @@ async def agent_chat_ws(websocket: WebSocket):
         # 取消未完成的 agent 后台任务，避免泄漏并确保 trace bridge 清理前任务已停。
         if run_task is not None and not run_task.done():
             run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
         # 连接断开 → 该连接产生的待审核请求一并作废：被 cancel 的工具协程
         # 不会消费 future，若不清理，重连后补发的 review_response 会 resolve
         # 到无主 future 上（用户以为生效，实际无人继续）。
@@ -969,5 +1060,6 @@ async def agent_chat_ws(websocket: WebSocket):
         # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
         # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
         session.touch()
-        set_trace_hook(None)
+        session.release_run(connection_owner)
+        pop_trace_hook(trace_hook_handler)
         _set_trace_bridge(None)

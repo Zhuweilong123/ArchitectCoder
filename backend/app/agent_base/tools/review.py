@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from typing import Dict, Any, List, Optional
 
 from app.agent_base.tools.base import Tool, ToolParameter
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest:
     """一次审核请求的上下文数据"""
 
-    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future", "id")
+    __slots__ = ("review_type", "title", "content", "question", "metadata", "_future", "_response", "id", "token")
 
     def __init__(
         self,
@@ -52,7 +53,9 @@ class ReviewRequest:
         self.question = question  # 需要人工回答的问题
         self.metadata = metadata or {}  # 结构化数据（如 UML diagrams）
         self._future: asyncio.Future | None = None
-        self.id = -1  # 在 submit() 里分配（_pending 中的下标）
+        self._response: str | None = None
+        self.id = -1  # 兼容旧前端的整数 ID；由 manager 单调分配，不再使用 list 下标
+        self.token = secrets.token_urlsafe(18)  # 跨 reset / 重连时的不可猜测标识
 
     def to_dict(self) -> dict:
         return {
@@ -61,12 +64,15 @@ class ReviewRequest:
             "content": self.content,
             "question": self.question,
             "metadata": self.metadata,
+            "token": self.token,
         }
 
     @property
     def future(self) -> asyncio.Future:
         if self._future is None:
-            self._future = asyncio.Future()
+            self._future = asyncio.get_running_loop().create_future()
+            if self._response is not None:
+                self._future.set_result(self._response)
         return self._future
 
 
@@ -82,6 +88,7 @@ class ReviewManager:
 
     def __init__(self):
         self._pending: list[ReviewRequest] = []
+        self._next_id = 0
         # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
         # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
         self.baseline: list | None = None
@@ -97,7 +104,8 @@ class ReviewManager:
             question=question,
             metadata=metadata,
         )
-        req.id = len(self._pending)
+        req.id = self._next_id
+        self._next_id += 1
         self._pending.append(req)
         logger.info("📋 审核请求已提交: type=%s title=%s", review_type, title)
         return req
@@ -105,46 +113,68 @@ class ReviewManager:
     def has_pending(self) -> bool:
         """是否有等待中的审核请求。"""
         return any(
-            r.future is not None and not r.future.done()
+            r._response is None and (r._future is None or not r._future.done())
             for r in self._pending
         )
 
     def get_pending(self) -> list[dict]:
         """获取所有未完成的审核请求（供前端展示）。"""
         result = []
-        for i, r in enumerate(self._pending):
-            if r.future is not None and not r.future.done():
+        for r in self._pending:
+            if r._response is None and (r._future is None or not r._future.done()):
                 d = r.to_dict()
-                d["id"] = i
+                d["id"] = r.id
                 result.append(d)
         return result
 
-    def resolve(self, request_index: int, response: str) -> bool:
-        """人类对第 N 个请求给出响应。返回是否成功。"""
-        if 0 <= request_index < len(self._pending):
-            req = self._pending[request_index]
-            if req.future is not None and not req.future.done():
-                req.future.set_result(response)
-                logger.info("✅ 审核请求 %d 已解决: %s", request_index, response[:80])
-                return True
-        logger.warning("⚠️ 审核请求 %d 不存在或已完成", request_index)
+    def _find(self, request_id) -> ReviewRequest | None:
+        """按稳定 id/token 查找请求。
+
+        不再把整数解释为当前列表下标：reset 后按下标回退会让旧响应
+        错误地完成一条全新的审核请求。
+        """
+        for req in self._pending:
+            if request_id == req.id or request_id == req.token:
+                return req
+        return None
+
+    def resolve(self, request_index: int | str, response: str) -> bool:
+        """按稳定请求 ID/token 完成审核。"""
+        req = self._find(request_index)
+        if req is not None:
+            if req._response is not None or (req._future is not None and req._future.done()):
+                return False
+            if req._future is None:
+                req._response = response
+            else:
+                req._future.set_result(response)
+            logger.info("✅ 审核请求 %s 已解决: %s", request_index, response[:80])
+            return True
+        logger.warning("⚠️ 审核请求 %s 不存在或已完成", request_index)
         return False
 
-    def reject(self, request_index: int, reason: str = "Rejected by user") -> bool:
+    def reject(self, request_index: int | str, reason: str = "Rejected by user") -> bool:
         """人类拒绝了审核请求。"""
-        if 0 <= request_index < len(self._pending):
-            req = self._pending[request_index]
-            if req.future is not None and not req.future.done():
-                req.future.set_result(f"❌ 拒绝: {reason}")
-                logger.info("🛑 审核请求 %d 已拒绝: %s", request_index, reason)
-                return True
+        req = self._find(request_index)
+        if req is not None:
+            response = f"❌ 拒绝: {reason}"
+            if req._response is not None or (req._future is not None and req._future.done()):
+                return False
+            if req._future is None:
+                req._response = response
+            else:
+                req._future.set_result(response)
+            logger.info("🛑 审核请求 %s 已拒绝: %s", request_index, reason)
+            return True
         return False
 
     def reset(self):
         """清空所有请求（流水线重置时调用）。"""
         for r in self._pending:
-            if r.future is not None and not r.future.done():
+            if r._future is not None and not r._future.done():
                 r.future.set_result("Cancelled: pipeline reset")
+            elif r._future is None:
+                r._response = "Cancelled: pipeline reset"
         self._pending.clear()
 
 

@@ -52,8 +52,8 @@ app.include_router(files_router)
 app.include_router(llm_router, dependencies=[Depends(require_auth)])
 app.include_router(testhub_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
-app.include_router(optimize_v2_router)  # optimize_uml v2 (prefix already in router)
-app.include_router(trace_router)         # trace 浏览/读取
+app.include_router(optimize_v2_router, dependencies=[Depends(require_auth)])  # optimize_uml v2
+app.include_router(trace_router, dependencies=[Depends(require_auth)])         # trace 浏览/读取
 
 # Ensure required directories exist
 os.makedirs(settings.uml_dir, exist_ok=True)

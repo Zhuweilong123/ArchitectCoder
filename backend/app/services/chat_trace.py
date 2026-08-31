@@ -21,6 +21,7 @@ import os
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -171,12 +172,15 @@ class ChatTraceLogger:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
         try:
+            # 先写结束事件，再标记 closed。旧实现先置位，导致 event() 内部
+            # 被 _write() 直接短路，trace 永远没有 session_end。
             self.event(EVT_SESSION_END, total_events=self._n)
             logger.info("[Trace] Session trace → %s (%d events)", self.path, self._n)
         except Exception:
             logger.exception("[Trace] Failed to finalize %s", self.path)
+        finally:
+            self._closed = True
 
     # ── 事件记录方法 ─────────────────────────────────
 
@@ -377,40 +381,41 @@ def current_trace_spans() -> list[str]:
 # 内层 TraceSession push 自己的 bridge，外层不受影响。
 # LLM 调用总是路由到栈顶 handler。
 
-_TRACE_HOOK_STACK: list = []
-_TRACE_HOOK_LOCK = threading.Lock()
+# 钩子必须按协程隔离。进程级 list 会让并发 WebSocket 互相覆盖/清理 hook，
+# 也会把一个会话的 LLM trace 写入另一个会话。
+_TRACE_HOOK_STACK: ContextVar[tuple] = ContextVar(
+    "trace_hook_stack", default=()
+)
 
 
 def push_trace_hook(handler) -> None:
     """注册 LLM trace 处理器到栈顶。"""
-    with _TRACE_HOOK_LOCK:
-        _TRACE_HOOK_STACK.append(handler)
+    _TRACE_HOOK_STACK.set((*_TRACE_HOOK_STACK.get(), handler))
 
 
 def pop_trace_hook(handler) -> None:
     """注销栈顶 LLM trace 处理器（调用者应传入与 push 相同的 handler 对象）。"""
-    with _TRACE_HOOK_LOCK:
-        if _TRACE_HOOK_STACK and _TRACE_HOOK_STACK[-1] is handler:
-            _TRACE_HOOK_STACK.pop()
+    stack = _TRACE_HOOK_STACK.get()
+    if stack and stack[-1] is handler:
+        _TRACE_HOOK_STACK.set(stack[:-1])
 
 
 # 保留旧 API 兼容性（agent_chat_ws 等旧调用方仍在用，逐步迁移）
 def set_trace_hook(handler=None):
     """已废弃 — 请使用 push_trace_hook / pop_trace_hook 或 TraceSession。
 
-    为避免旧代码 push(None) 注入空 handler，传入 None 时清空整个栈（过渡期）。
+    传入 None 时仅清空当前协程上下文的栈，不影响其他会话。
     """
     if handler is None:
-        with _TRACE_HOOK_LOCK:
-            _TRACE_HOOK_STACK.clear()
+        _TRACE_HOOK_STACK.set(())
     else:
         push_trace_hook(handler)
 
 
 def get_trace_hook():
     """返回栈顶 handler（栈空则 None）。"""
-    with _TRACE_HOOK_LOCK:
-        return _TRACE_HOOK_STACK[-1] if _TRACE_HOOK_STACK else None
+    stack = _TRACE_HOOK_STACK.get()
+    return stack[-1] if stack else None
 
 
 def _safe_hook(kind: str, *args, **kwargs):

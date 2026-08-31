@@ -97,6 +97,19 @@ def test_write_file_blocks_escape(workspace):
     assert "escapes workspace" in result
 
 
+def test_edit_file_expected_hash_prevents_lost_update(workspace):
+    src, _ = workspace
+    edit = _tool_by_name(_tools(workspace), "edit_file")
+    result = _run(edit, {
+        "path": "a.py",
+        "old_text": "line0",
+        "new_text": "changed",
+        "expected_sha256": "0" * 64,
+    })
+    assert "Conflict" in result
+    assert (src / "a.py").read_text(encoding="utf-8").startswith("line0")
+
+
 # ── glob ───────────────────────────────────────────────
 
 def test_glob(workspace):
@@ -123,6 +136,12 @@ def test_bash_deny_list(workspace):
 def test_bash_empty_command(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     assert "non-empty" in _run(bash, {"command": ""})
+
+
+def test_bash_rejects_shell_chaining(workspace):
+    bash = _tool_by_name(_tools(workspace), "bash")
+    result = _run(bash, {"command": "echo safe && python -c \"open('x','w').write('bad')\""})
+    assert "shell operators" in result
 
 
 # ── bash 敏感命令审核（两级防护） ────────────────────────

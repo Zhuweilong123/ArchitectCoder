@@ -36,6 +36,9 @@ class Tool(ABC):
     def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
+        # 默认保守：只有明确声明无副作用的工具才允许同轮并发。
+        self.read_only = False
+        self.can_parallel = False
 
     @abstractmethod
     def run(self, parameters: Dict[str, Any]) -> str:
@@ -75,6 +78,7 @@ class Tool(ABC):
                     "type": "object",
                     "properties": properties,
                     "required": required,
+                    "additionalProperties": False,
                 },
             },
         }
