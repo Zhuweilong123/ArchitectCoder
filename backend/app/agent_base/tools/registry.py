@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Callable, Optional
 from .base import Tool
+from .result import ToolResult
 
 
 class ToolRegistry:
@@ -196,6 +197,12 @@ class ToolRegistry:
         当工具 run() 返回 coroutine 时，此方法会 await 它。
         ReActAgent FC 循环应优先使用此方法。
         """
+        return (await self.aexecute_tool_result_with_params(name, parameters)).text
+
+    async def aexecute_tool_result_with_params(
+        self, name: str, parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """异步执行工具并返回结构化结果；旧 API 继续返回 result.text。"""
         import asyncio
 
         tool = self._tools.get(name)
@@ -204,9 +211,9 @@ class ToolRegistry:
                 result = tool.run(parameters)
                 if asyncio.coroutines.iscoroutine(result):
                     result = await result
-                return str(result) if not isinstance(result, str) else result
+                return result if isinstance(result, ToolResult) else ToolResult.success(result)
             except Exception as e:
-                return f"❌ 工具 '{name}' 执行失败: {e}"
+                return ToolResult.error(f"❌ 工具 '{name}' 执行失败: {e}", "TOOL_EXECUTION_ERROR")
 
         func_info = self._functions.get(name)
         if func_info:
@@ -214,11 +221,11 @@ class ToolRegistry:
                 result = func_info["func"](parameters.get("input", ""))
                 if asyncio.coroutines.iscoroutine(result):
                     result = await result
-                return str(result) if not isinstance(result, str) else result
+                return result if isinstance(result, ToolResult) else ToolResult.success(result)
             except Exception as e:
-                return f"❌ 工具 '{name}' 执行失败: {e}"
+                return ToolResult.error(f"❌ 工具 '{name}' 执行失败: {e}", "TOOL_EXECUTION_ERROR")
 
-        return f"❌ 未找到工具: '{name}'"
+        return ToolResult.error(f"❌ 未找到工具: '{name}'", "TOOL_NOT_FOUND")
 
     def __len__(self) -> int:
         return len(self._tools) + len(self._functions)

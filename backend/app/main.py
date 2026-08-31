@@ -27,6 +27,7 @@ from app.api.testhub import router as testhub_router
 from app.services.agent_chat_ws import router as agent_chat_router
 from app.api.optimize_v2 import router as optimize_v2_router
 from app.api.trace import router as trace_router
+from app.api.metrics import router as metrics_router
 
 settings = get_settings()
 
@@ -54,6 +55,10 @@ app.include_router(testhub_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
 app.include_router(optimize_v2_router, dependencies=[Depends(require_auth)])  # optimize_uml v2
 app.include_router(trace_router, dependencies=[Depends(require_auth)])         # trace 浏览/读取
+app.include_router(metrics_router, dependencies=[Depends(require_auth)])        # Agent metrics
+
+if settings.strict_production and (settings.debug or not settings.internal_api_token):
+    raise RuntimeError("strict_production requires debug=false and internal_api_token")
 
 # Ensure required directories exist
 os.makedirs(settings.uml_dir, exist_ok=True)

@@ -250,7 +250,7 @@ class BaseAgentsLLM:
     # ── 工厂方法 ─────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, settings=None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
+    def from_settings(cls, settings=None, model: Optional[str] = None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
         """从项目的 ``Settings`` 对象创建实例（零配置对接现有体系）。
 
         自动读取 settings 中的 deepseek_api_key / deepseek_base_url / deepseek_model，
@@ -271,7 +271,7 @@ class BaseAgentsLLM:
         return cls(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            model=model or settings.deepseek_model,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,

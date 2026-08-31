@@ -38,6 +38,7 @@ from ..core.config import Config
 from ..core.hooks import get_hooks, HookEvent, HookContext
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
+from ..tools.result import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -486,26 +487,37 @@ class ReActAgent(Agent):
 
                 async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
                     if blocked is not None:
-                        return blocked, blocked
+                        return blocked, blocked, ToolResult(status="blocked", data=blocked,
+                                                            error_code="POLICY_BLOCKED")
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
                                     tool_name=tool_name, tool_input=tool_args),
                     )
                     if veto is not None:
-                        return veto, veto
+                        return veto, veto, ToolResult(status="blocked", data=veto,
+                                                      error_code="HOOK_VETO")
                     with trace_span(f"{self.name}/{tool_name}"):
-                        result = await self.tool_registry.aexecute_tool_with_params(
+                        started_tool = time.monotonic()
+                        result = await self.tool_registry.aexecute_tool_result_with_params(
                             tool_name, tool_args,
                         )
-                    observation_full = str(result)
+                    try:
+                        from app.services.agent_metrics import get_agent_metrics
+                        get_agent_metrics().record_tool(
+                            tool_name, result.status,
+                            (time.monotonic() - started_tool) * 1000,
+                        )
+                    except Exception:
+                        pass
+                    observation_full = result.text
                     fed = get_hooks().trigger(
                         HookEvent.TOOL_AFTER,
                         HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
                                     tool_name=tool_name, tool_input=tool_args,
                                     tool_output=observation_full),
                     )
-                    return observation_full, fed if fed is not None else observation_full
+                    return observation_full, fed if fed is not None else observation_full, result
 
                 executable = [item for item in parsed_calls if item[3] is None]
                 parallel = len(executable) > 1 and all(
@@ -524,8 +536,10 @@ class ReActAgent(Agent):
                     tc, tool_name, tool_args, blocked = item
                     if blocked is not None and isinstance(tool_args, str):
                         observation_full = observation_fed = blocked
+                        result = ToolResult(status="blocked", data=blocked,
+                                             error_code="INVALID_ARGUMENTS")
                     else:
-                        observation_full, observation_fed = execution
+                        observation_full, observation_fed, result = execution
                     if isinstance(tool_args, str):
                         observation_full = observation_fed = execution[0]
                     self.current_history.append(
@@ -540,6 +554,9 @@ class ReActAgent(Agent):
                         "observation": observation_full,
                         "fed_truncated": observation_full != observation_fed,
                         "fed_length": len(observation_fed),
+                        "status": result.status,
+                        "error_code": result.error_code,
+                        "retryable": result.retryable,
                     })
                     logger.info("  🔧 %s(%s) → %s", tool_name,
                                 json.dumps(tool_args, ensure_ascii=False)[:80],

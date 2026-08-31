@@ -31,6 +31,7 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.auth import require_ws_auth
 from app.core.security import validate_agent_workspace_path
+from app.core.config import get_settings
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
@@ -44,6 +45,7 @@ from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 from app.services.change_set import ChangeSet
+from app.services.model_router import choose_model
 
 logger = logging.getLogger(__name__)
 
@@ -416,8 +418,11 @@ class DevPromptBuilder:
         try:
             from memory_system.manager import MemoryManager
             mgr = MemoryManager(db_path=_memory_db_path())
-            results = await mgr.recall(project_id, user_message, top_k=5)
-            return mgr.inject_memories("", results).strip()
+            try:
+                results = await mgr.recall(project_id, user_message, top_k=5)
+                return mgr.inject_memories("", results).strip()
+            finally:
+                mgr.close()
         except Exception:
             logger.warning("[Memory] Recall failed (non-fatal)", exc_info=True)
             return ""
@@ -539,14 +544,17 @@ async def _archive_task_to_memory(
         # 方案 B：把工具过程组装进 llm_output，让提取器捕捉关键事实
         steps_text = _tool_steps_summary(tool_calls_detail)
         combined = f"## 工具执行过程\n{steps_text}\n\n## 最终结论\n{final_answer}"
-        await mgr.remember(
-            project_id=project_id,
-            context=f"对话 Agent 任务: {user_message[:100]}",
-            llm_call_type="agent_task",
-            user_input=user_message,
-            llm_output=combined[:2000],
-            extract_fn=_extract_fn_for(llm),
-        )
+        try:
+            await mgr.remember(
+                project_id=project_id,
+                context=f"对话 Agent 任务: {user_message[:100]}",
+                llm_call_type="agent_task",
+                user_input=user_message,
+                llm_output=combined[:2000],
+                extract_fn=_extract_fn_for(llm),
+            )
+        finally:
+            mgr.close()
         logger.info("[Memory] Archived task to memory (project=%s)", project_id)
     except Exception:
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
@@ -769,6 +777,11 @@ async def _handle_dev(
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                try:
+                    from app.services.agent_metrics import get_agent_metrics
+                    get_agent_metrics().record_run("success")
+                except Exception:
+                    pass
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
@@ -795,6 +808,11 @@ async def _handle_dev(
         })
     except Exception as e:
         logger.exception("[AgentChat] Dev agent execution error")
+        try:
+            from app.services.agent_metrics import get_agent_metrics
+            get_agent_metrics().record_run("error")
+        except Exception:
+            pass
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
         await _ws_send(websocket, {
@@ -896,7 +914,8 @@ async def agent_chat_ws(websocket: WebSocket):
                 source_dir, test_dir, project_file = validated
 
                 if llm is None:
-                    llm = BaseAgentsLLM.from_settings(temperature=0.3)
+                    route = choose_model(user_message, get_settings())
+                    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
 
                 stop_requested = False
 
