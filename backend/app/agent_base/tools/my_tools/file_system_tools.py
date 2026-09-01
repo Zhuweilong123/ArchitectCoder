@@ -20,12 +20,14 @@ import json as _json
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from app.agent_base.tools.base import Tool
+from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 
 logger = logging.getLogger(__name__)
@@ -389,7 +391,9 @@ class BashTool(AsyncTool):
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  review_manager=None, progress=None,
-                 review_timeout: float = BASH_REVIEW_TIMEOUT):
+                 review_timeout: float = BASH_REVIEW_TIMEOUT,
+                 timeout: float = BASH_TIMEOUT,
+                 output_cap: int = BASH_OUTPUT_CAP):
         super().__init__(
             name="bash",
             description=(
@@ -404,6 +408,8 @@ class BashTool(AsyncTool):
         self._review_manager = review_manager
         self._progress = progress
         self._review_timeout = review_timeout
+        self._timeout = max(0.1, min(float(timeout), 3600.0))
+        self._output_cap = max(1024, min(int(output_cap), 1_000_000))
 
     async def _execute(self, params: dict) -> str:
         command = params.get("command", "")
@@ -537,6 +543,7 @@ class BashTool(AsyncTool):
 
     async def _run_command(self, command: str) -> str:
         cwd = self._cwd or None
+        return await self._run_command_cancellable(command, cwd)
 
         def _run():
             # 同步 subprocess，在线程池执行：不依赖事件循环类型。
@@ -558,6 +565,69 @@ class BashTool(AsyncTool):
         out = out[:BASH_OUTPUT_CAP] if len(out) > BASH_OUTPUT_CAP else out
         return out or "(no output)"
 
+    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str:
+        def _start():
+            kwargs = {
+                "shell": True,
+                "cwd": cwd,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            return subprocess.Popen(command, **kwargs)
+
+        try:
+            proc = await asyncio.to_thread(_start)
+        except OSError as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
+        deadline = asyncio.get_running_loop().time() + self._timeout
+        try:
+            while not communicate.done():
+                if get_runtime().stop_check():
+                    self._terminate_process(proc)
+                    await asyncio.shield(communicate)
+                    return "Error: command canceled"
+                if asyncio.get_running_loop().time() >= deadline:
+                    self._terminate_process(proc)
+                    await asyncio.shield(communicate)
+                    return f"Error: command timed out after {self._timeout:g}s"
+                await asyncio.sleep(0.05)
+            stdout, stderr = await communicate
+        except asyncio.CancelledError:
+            self._terminate_process(proc)
+            await asyncio.shield(communicate)
+            raise
+        except OSError as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+        out = (_decode_output(stdout) + _decode_output(stderr)).strip()
+        out = out[:self._output_cap] if len(out) > self._output_cap else out
+        return out or "(no output)"
+
+    @staticmethod
+    def _terminate_process(proc: subprocess.Popen) -> None:
+        """Terminate the command process group, including child processes."""
+        if proc.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True, timeout=5, check=False,
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
     def to_openai_schema(self) -> dict:
         return {
             "type": "function",
@@ -576,7 +646,9 @@ class BashTool(AsyncTool):
 
 
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
-                             review_manager=None, progress=None, change_set=None) -> list[Tool]:
+                             review_manager=None, progress=None, change_set=None,
+                             bash_timeout: float = BASH_TIMEOUT,
+                             bash_output_cap: int = BASH_OUTPUT_CAP) -> list[Tool]:
     """创建 A 层文件系统原语工具列表。
 
     review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
@@ -588,5 +660,6 @@ def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_di
         EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         GlobTool(source_dir, test_dir, design_dir),
         BashTool(source_dir, test_dir, design_dir,
-                 review_manager=review_manager, progress=progress),
+                 review_manager=review_manager, progress=progress,
+                 timeout=bash_timeout, output_cap=bash_output_cap),
     ]
