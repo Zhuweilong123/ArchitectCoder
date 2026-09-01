@@ -180,7 +180,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 |------|------|
 | `todo_write` | 会话任务列表，跟踪长任务子步骤 |
 | `skill` | 按需加载 `skills/` 领域知识包（L1 目录 / L2 正文 / L3 引用文件） |
-| `spawn_subagent` | 通用子代理（受限工具集 + `sub_agent_model`），防递归子代理 |
+| `spawn_subagent` | 通用子代理（受限工具集，复用主代理模型），防递归子代理 |
 | `submit_uml_review` | UML diff 人工审核（暂停等待 accept/reject） |
 
 ### 6.3 任务系统（`task_system.py`）
@@ -240,7 +240,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
 ├── todo_write → 会话任务列表
 ├── skill → L1/L2/L3 知识包加载
-├── spawn_subagent → 受限子代理（文件系统原语 + skill + sub_agent_model）
+├── spawn_subagent → 受限子代理（文件系统原语 + skill，复用主代理模型）
 ├── create_task / update_task / ... → 持久化任务 DAG
 └── submit_uml_review → UML diff 人工审核（暂停等待 accept/reject）
 ```

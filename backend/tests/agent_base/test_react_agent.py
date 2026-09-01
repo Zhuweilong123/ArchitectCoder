@@ -89,6 +89,24 @@ class BudgetLLM:
                 "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
 
 
+class SoftBudgetLLM:
+    def __init__(self):
+        self.count = 0
+        self.requests = []
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        self.requests.append(messages)
+        return {
+            "content": "continue",
+            "tool_calls": [{
+                "id": f"soft-{self.count}", "type": "function",
+                "function": {"name": "echo", "arguments": json.dumps({"text": "x"})},
+            }],
+            "usage": {"prompt_tokens": 35, "completion_tokens": 5, "total_tokens": 40},
+        }
+
+
 async def _collect(agent):
     events = []
     async for p in agent.arun_stream("echo test"):
@@ -115,6 +133,17 @@ def test_react_agent_fc_loop_executes_tools():
     assert events[-1].final_answer == "完成"
 
 
+def test_react_progress_exposes_structured_tool_evidence():
+    agent = ReActAgent("Test", MockLLM(rounds=1), _registry(), max_steps=3)
+
+    events = asyncio.run(_collect(agent))
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert detail["evidence"]["id"] == "E1"
+    assert detail["evidence"]["tool_name"] == "echo"
+
+
 def test_usage_budget_is_enforced_from_llm_response():
     llm = BudgetLLM()
     agent = ReActAgent("Test", llm, _registry(), max_steps=10, max_total_tokens=10)
@@ -124,6 +153,32 @@ def test_usage_budget_is_enforced_from_llm_response():
     assert llm.count == 1
     assert events[-1].is_final is True
     assert "token" in events[-1].final_answer
+
+
+def test_soft_budget_instructs_the_next_step_to_converge():
+    llm = SoftBudgetLLM()
+    agent = ReActAgent("Test", llm, _registry(), max_steps=10, max_total_tokens=100)
+
+    events = asyncio.run(_collect(agent))
+
+    assert llm.count == 3
+    assert "token" in events[-1].final_answer
+    assert any(
+        message.get("role") == "system" and "Token budget warning" in message.get("content", "")
+        for message in llm.requests[2]
+    )
+
+
+def test_react_step_compaction_is_reported_to_observers():
+    llm = MockLLM(rounds=9)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=12)
+    reports = []
+    agent.on_context_compacted = reports.append
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].final_answer == "完成"
+    assert any(report["dropped_messages"] > 0 for report in reports)
 
 
 def test_todo_then_business_tool_in_same_batch_is_not_false_blocked():

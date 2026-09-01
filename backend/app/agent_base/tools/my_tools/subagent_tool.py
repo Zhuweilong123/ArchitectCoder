@@ -79,7 +79,7 @@ def _build_toolkit_tools(
 class SpawnSubagentTool(AsyncTool):
     """通用子代理工具 — 委托一个子任务，返回 summary。
 
-    子代理用受限工具集（文件系统原语）+ ``sub_agent_model`` 独立跑简化 FC
+    子代理复用主代理的已选模型，并以受限工具集（文件系统原语）独立跑简化 FC
     循环，避免主上下文膨胀。工具集不含 submit_uml_review / spawn_subagent，
     防止递归子代理和 UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理
     共用同一审核通道），防止委托绕过。
@@ -88,7 +88,6 @@ class SpawnSubagentTool(AsyncTool):
     def __init__(
         self,
         llm: BaseAgentsLLM,
-        sub_agent_model: str,
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
@@ -110,7 +109,6 @@ class SpawnSubagentTool(AsyncTool):
             ),
         )
         self.llm = llm
-        self.sub_agent_model = sub_agent_model
         self.max_steps = max_steps
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
@@ -164,7 +162,6 @@ class SpawnSubagentTool(AsyncTool):
                 messages=messages,
                 tools=sub_tools,
                 tool_choice="auto",
-                model=self.sub_agent_model,
                 temperature=0.3,
             )
             content = response.get("content") or ""

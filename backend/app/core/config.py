@@ -22,15 +22,9 @@ class Settings(BaseSettings):
     )
     deepseek_base_url: str = "https://api.deepseek.com"
 
-    # Default model — also used as the "pro" tier (powerful, expensive)
-    # Override via DEEPSEEK_MODEL in .env
+    # Fixed coding model for every agent in a session. Override via
+    # DEEPSEEK_MODEL in .env; application code must not route per message.
     deepseek_model: str = "deepseek-v4-pro"
-
-    # Lightweight / fast model (cheap, suitable for simple tasks)
-    deepseek_model_flash: str = "deepseek-v4-flash"
-
-    # Sub-agent model — used by tool-calling sub-agents (ReAct, pipeline stages, etc.)
-    sub_agent_model: str = "deepseek-v4-flash"
 
     # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
     # consistency checks) need more than the old 12-round cap

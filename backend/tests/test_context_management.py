@@ -128,3 +128,51 @@ def test_react_step_compaction_keeps_recent_pairs_and_checkpoint():
         )
         for message in compacted
     )
+
+
+def test_react_step_compaction_prefers_structured_evidence_over_raw_prefix():
+    manager = ContextBudgetManager()
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current task"},
+    ]
+    for index in range(3):
+        messages.extend([
+            {
+                "role": "assistant", "content": f"step {index}",
+                "tool_calls": [{"id": f"call-{index}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": f"call-{index}", "content": "RAW PREFIX MUST NOT BE USED"},
+        ])
+
+    compacted, _, _, _ = manager.compact_react_steps(
+        messages,
+        current_user_index=1,
+        max_steps=2,
+        evidence_by_call={"call-0": "[E1] read_file (ok); file=src/a.py; lines 21-40; observation_sha=abc"},
+    )
+
+    checkpoint = next(message["content"] for message in compacted if message.get("role") == "system" and "Tool execution checkpoint" in message.get("content", ""))
+    assert "file=src/a.py" in checkpoint
+    assert "RAW PREFIX MUST NOT BE USED" not in checkpoint
+
+
+def test_react_step_compaction_replaces_prior_checkpoint_instead_of_accumulating():
+    manager = ContextBudgetManager()
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current task"},
+        {"role": "system", "content": "## Tool execution checkpoint\nprior evidence"},
+    ]
+    for index in range(3):
+        messages.extend([
+            {"role": "assistant", "content": "", "tool_calls": [{"id": f"call-{index}", "type": "function", "function": {"name": "echo", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": f"call-{index}", "content": f"result {index}"},
+        ])
+
+    compacted, _, _, _ = manager.compact_react_steps(messages, current_user_index=1, max_steps=2)
+
+    assert sum(
+        message.get("role") == "system" and message.get("content", "").startswith("## Tool execution checkpoint")
+        for message in compacted
+    ) == 1

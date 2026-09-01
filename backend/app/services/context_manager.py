@@ -348,14 +348,17 @@ class ContextBudgetManager:
         *,
         current_user_index: int | None = None,
         max_steps: int = 8,
+        evidence_by_call: dict[str, str] | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int, int]:
         """Fold old FC tool steps into a small extractive checkpoint.
 
         A step is one assistant message containing ``tool_calls`` plus all
         immediately following tool results.  The newest steps stay verbatim;
         older steps become a system reference containing tool names and short
-        observations.  This keeps function-call/result pairs valid while
-        bounding repetitive exploration in long runs.
+        observations.  When the caller supplies ``evidence_by_call``, typed
+        evidence takes precedence over blind observation prefixes.  This keeps
+        function-call/result pairs valid while bounding repetitive exploration
+        in long runs.
 
         Returns ``(messages, current_user_index, dropped_message_count,
         dropped_token_count)``.
@@ -379,10 +382,24 @@ class ContextBudgetManager:
 
         old_groups = groups[:-max_steps]
         old_indices = {item for group in old_groups for item in group}
+        # Repeated compaction used to accumulate immutable system checkpoints.
+        # Fold any previous checkpoint into the replacement so the evidence
+        # reference itself remains bounded across a long tool run.
+        checkpoint_indices = {
+            pos for pos, message in enumerate(messages)
+            if message.get("role") == "system"
+            and str(message.get("content") or "").startswith("## Tool execution checkpoint")
+        }
+        previous_checkpoints = [
+            str(messages[pos].get("content") or "") for pos in sorted(checkpoint_indices)
+        ]
         lines = [
             "## Tool execution checkpoint",
             "Older tool steps were compacted; use this as reference and do not repeat identical exploration.",
         ]
+        if previous_checkpoints:
+            lines.append("Prior retained evidence:")
+            lines.extend(previous_checkpoints)
         for group in old_groups:
             assistant = messages[group[0]]
             calls = assistant.get("tool_calls") or []
@@ -390,23 +407,30 @@ class ContextBudgetManager:
                 str(call.get("function", {}).get("name", "tool"))
                 for call in calls if isinstance(call, dict)
             ]
-            observations = [
-                truncate_text(_content(messages[pos]).strip(), 180, self.token_counter)
-                for pos in group[1:]
-                if _content(messages[pos]).strip()
-            ]
+            observations = []
+            for pos in group[1:]:
+                tool_message = messages[pos]
+                call_id = str(tool_message.get("tool_call_id") or "")
+                evidence = (evidence_by_call or {}).get(call_id, "").strip()
+                if evidence:
+                    observations.append(evidence)
+                elif _content(tool_message).strip():
+                    observations.append(
+                        truncate_text(_content(tool_message).strip(), 180, self.token_counter)
+                    )
             detail = ", ".join(names) or "tool"
             if observations:
                 detail += ": " + " | ".join(observations)
             lines.append(f"- {detail}")
         summary = truncate_text("\n".join(lines), self.budget.max_summary_tokens, self.token_counter)
-        first = min(old_indices)
-        kept = [message for pos, message in enumerate(messages) if pos not in old_indices]
-        insert_at = sum(pos < first for pos in range(len(messages)) if pos not in old_indices)
+        replacement_indices = old_indices | checkpoint_indices
+        first = min(replacement_indices)
+        kept = [message for pos, message in enumerate(messages) if pos not in replacement_indices]
+        insert_at = sum(pos < first for pos in range(len(messages)) if pos not in replacement_indices)
         kept.insert(insert_at, {"role": "system", "content": summary})
         if current_user_index is not None:
             current_user_index = sum(
-                pos < current_user_index for pos in range(len(messages)) if pos not in old_indices
+                pos < current_user_index for pos in range(len(messages)) if pos not in replacement_indices
             ) + (1 if first <= current_user_index else 0)
         # The caller currently recomputes the anchor from its own state; the
         # third return value is kept for telemetry and future anchor updates.

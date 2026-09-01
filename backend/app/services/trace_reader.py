@@ -120,7 +120,7 @@ def summarize_trace(session_id: str) -> dict | None:
     """Return privacy-preserving counters for Prompt and runtime comparison.
 
     The summary intentionally excludes messages, tool arguments, observations,
-    and answers.  It is suitable for release gates and 3.0/3.1 A/B dashboards
+    and answers.  It is suitable for release gates and prompt-size dashboards
     without duplicating trace payloads in an API response.
     """
     data = read_trace(session_id)
@@ -134,8 +134,6 @@ def summarize_trace(session_id: str) -> dict | None:
     prompt_builds = 0
     prompt_chars = 0
     prompt_tokens = 0
-    candidate_savings_chars = 0
-    candidate_savings_tokens = 0
 
     for event in events:
         if event.get("event_type") == "llm_response":
@@ -152,8 +150,6 @@ def summarize_trace(session_id: str) -> dict | None:
         if isinstance(static_report, dict):
             prompt_chars += int(static_report.get("chars", 0) or 0)
             prompt_tokens += int(static_report.get("estimated_tokens", 0) or 0)
-            candidate_savings_chars += int(static_report.get("candidate_savings_chars", 0) or 0)
-            candidate_savings_tokens += int(static_report.get("candidate_savings_tokens", 0) or 0)
         prompt_chars += int(event.get("total_chars", 0) or 0)
         prompt_tokens += int(event.get("estimated_tokens", 0) or 0)
 
@@ -177,8 +173,6 @@ def summarize_trace(session_id: str) -> dict | None:
             "versions": dict(prompt_versions),
             "chars": prompt_chars,
             "estimated_tokens": prompt_tokens,
-            "candidate_savings_chars": candidate_savings_chars,
-            "candidate_savings_tokens": candidate_savings_tokens,
         },
     }
 

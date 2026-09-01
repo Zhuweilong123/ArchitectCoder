@@ -303,11 +303,13 @@ class ChatTraceLogger:
 
     def tool_result(self, *, span_id: str, tool_name: str, observation: str,
                     duration_ms: float = 0.0, error: str = "",
-                    fed_truncated: bool = False, fed_length: int = 0) -> None:
+                    fed_truncated: bool = False, fed_length: int = 0,
+                    evidence: dict | None = None) -> None:
         """记录工具返回（完整 observation，不截断）。
 
         fed_truncated / fed_length 标记该返回喂回模型前是否被截断，
-        用于区分「模型实际看到的口径」与「工具完整返回的口径」。
+        用于区分「模型实际看到的口径」与「工具完整返回的口径」。``evidence``
+        是运行时从原文提取的有界结构化事实，供评估压缩质量使用。
         """
         self._write({
             **_event(self.session_id, EVT_TOOL_RESULT,
@@ -317,6 +319,7 @@ class ChatTraceLogger:
             "observation": observation,
             "fed_truncated": fed_truncated,
             "fed_length": fed_length,
+            "evidence": evidence or {},
             "duration_ms": round(duration_ms, 1),
             "error": error,
         })

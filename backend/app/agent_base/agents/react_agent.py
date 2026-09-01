@@ -42,6 +42,7 @@ from ..core.hooks import (
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 from ..tools.result import ToolResult
+from ..evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ class ReActAgent(Agent):
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
         self.last_context_report: dict = {}
+        self.last_evidence_summary: list[dict] = []
         # Structured hand-off for a follow-up status query. The transport
         # updates this at run boundaries so status requests do not re-explore
         # the workspace.
@@ -336,8 +338,9 @@ class ReActAgent(Agent):
 
         allowed_tools = kwargs.pop("allowed_tools", None)
         allowed_set = set(allowed_tools) if allowed_tools is not None else None
-        # Preserve router order for stable schemas/cache keys; use a set only
-        # for membership checks below.
+        # Preserve caller-provided tool order for stable schemas/cache keys;
+        # use a set only for membership checks below. This is unrelated to
+        # model selection, which is fixed for the session.
         tool_specs = (
             self.tool_registry.get_openai_specs_for(allowed_tools)
             if allowed_tools is not None else self.tool_registry.get_openai_specs()
@@ -375,6 +378,9 @@ class ReActAgent(Agent):
         repeated_calls: dict[str, int] = {}
         started_at = time.monotonic()
         total_tokens = 0
+        soft_budget_notified = False
+        evidence_ledger = EvidenceLedger()
+        self.last_evidence_summary = []
 
         get_hooks().trigger(
             HookEvent.RUN_START,
@@ -382,10 +388,16 @@ class ReActAgent(Agent):
         )
         try:
             for step in range(1, self.max_steps + 1):
+                prior_call_ids = [
+                    str(message.get("tool_call_id") or "")
+                    for message in messages
+                    if message.get("role") == "tool" and message.get("tool_call_id")
+                ]
                 messages, current_user_index, compacted_steps, compacted_tokens = self.context_budget.compact_react_steps(
                     messages,
                     current_user_index=current_user_index,
                     max_steps=min(8, self.context_budget.budget.max_history_turns),
+                    evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
                 )
                 if compacted_steps:
                     self.last_context_report["react_compacted_steps"] = (
@@ -394,6 +406,21 @@ class ReActAgent(Agent):
                     self.last_context_report["react_compacted_tokens"] = (
                         self.last_context_report.get("react_compacted_tokens", 0) + compacted_tokens
                     )
+                    if self.on_context_compacted:
+                        checkpoint = next(
+                            (
+                                str(message.get("content") or "")
+                                for message in messages
+                                if message.get("role") == "system"
+                                and str(message.get("content") or "").startswith("## Tool execution checkpoint")
+                            ),
+                            "Tool execution steps compacted.",
+                        )
+                        self.on_context_compacted({
+                            "summary": checkpoint,
+                            "dropped_messages": compacted_steps,
+                            "dropped_tokens": compacted_tokens,
+                        })
                 messages, dropped = self.context_budget.fit_messages(
                     messages,
                     tools=tool_specs,
@@ -454,6 +481,18 @@ class ReActAgent(Agent):
                     yield ReActProgress(step=step, thought=final_answer,
                                         is_final=True, final_answer=final_answer)
                     return
+                if not soft_budget_notified and total_tokens >= self.max_total_tokens * 0.8:
+                    soft_budget_notified = True
+                    self.last_context_report["soft_budget_reached_tokens"] = total_tokens
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Token budget warning\n"
+                            "The run has used at least 80% of its token budget. Stop broad discovery, "
+                            "do not repeat failed exploration, and use only the minimum remaining "
+                            "actions needed to edit, verify, or accurately report partial completion."
+                        ),
+                    })
 
                 # 2. 无 tool_calls → 纯文本回复
                 if not tool_calls:
@@ -634,6 +673,16 @@ class ReActAgent(Agent):
                         observation_full, observation_fed, result = execution
                     if isinstance(tool_args, str):
                         observation_full = observation_fed = execution[0]
+                    evidence = evidence_ledger.record(
+                        call_id=str(tc.get("id") or ""), tool_name=tool_name,
+                        arguments=tool_args if isinstance(tool_args, dict) else {},
+                        observation=observation_full, status=result.status,
+                        error_code=result.error_code,
+                    )
+                    self.last_evidence_summary.append(evidence.to_dict())
+                    # Keep the public diagnostic surface bounded just like
+                    # the in-run ledger. Full evidence remains in ChatTrace.
+                    self.last_evidence_summary = self.last_evidence_summary[-32:]
                     self.current_history.append(
                         f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
                         f" → {observation_fed[:150]}"
@@ -649,6 +698,7 @@ class ReActAgent(Agent):
                         "status": result.status,
                         "error_code": result.error_code,
                         "retryable": result.retryable,
+                        "evidence": evidence.to_dict(),
                     })
                     logger.info("  🔧 %s(%s) → %s", tool_name,
                                 json.dumps(tool_args, ensure_ascii=False)[:80],

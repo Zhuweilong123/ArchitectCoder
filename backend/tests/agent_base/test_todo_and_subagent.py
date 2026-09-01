@@ -125,24 +125,22 @@ class _MockLLM:
         return {"content": "summary text", "tool_calls": None}
 
 
-def test_spawn_subagent_returns_summary_and_uses_sub_model(tmp_path):
+def test_spawn_subagent_returns_summary_without_overriding_parent_model(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("x", encoding="utf-8")
 
     llm = _MockLLM()
-    tool = SpawnSubagentTool(
-        llm=llm, sub_agent_model="sub-model", source_dir=str(src),
-    )
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
 
     result = asyncio.run(tool._execute({"description": "find files"}))
     assert "summary text" in result
-    assert llm.last_model == "sub-model"
+    assert llm.last_model is None
 
 
 def test_spawn_subagent_requires_description(tmp_path):
     llm = _MockLLM()
-    tool = SpawnSubagentTool(llm=llm, sub_agent_model="sub-model", source_dir=str(tmp_path))
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(tmp_path))
 
     result = asyncio.run(tool._execute({"description": ""}))
     assert "description is required" in result
@@ -153,9 +151,7 @@ def test_spawn_subagent_requires_description(tmp_path):
 def _build_spawn(tmp_path):
     src = tmp_path / "src"
     src.mkdir(exist_ok=True)
-    return SpawnSubagentTool(
-        llm=_MockLLM(), sub_agent_model="sub-model", source_dir=str(src),
-    )
+    return SpawnSubagentTool(llm=_MockLLM(), source_dir=str(src))
 
 
 def test_spawn_subagent_builds_all_supported_toolkits(tmp_path):
@@ -193,7 +189,7 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     tool = SpawnSubagentTool(
-        llm=_MockLLM(), sub_agent_model="sub-model", source_dir=str(src),
+        llm=_MockLLM(), source_dir=str(src),
         toolkits=("strategy",), max_steps=6, single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
@@ -215,8 +211,8 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     llm = _MockLLM()
-    tool = SpawnSubagentTool(llm=llm, sub_agent_model="sub-model", source_dir=str(src))
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
     # _MockLLM 第一轮调 glob → 只有 standard 有 glob；kg_analysis 没有，会直接收尾
     result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
     assert "summary text" in result
-    assert llm.last_model == "sub-model"
+    assert llm.last_model is None

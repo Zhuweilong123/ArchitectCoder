@@ -46,7 +46,6 @@ from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 from app.services.change_set import ChangeSet
-from app.services.model_router import choose_model
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.core.capabilities import CapabilityPolicy
 from app.services.audit_log import get_audit_logger
@@ -135,6 +134,37 @@ def _requires_todo_plan(message: str) -> bool:
     ))
     high_risk = any(word in text for word in ("删除", "清理", "delete", "remove", "drop"))
     return multi_step or high_risk
+
+
+def _is_uml_value_edit(message: str) -> bool:
+    """Recognize a bounded UML value edit that does not need full migration guidance."""
+    text = (message or "").strip().lower()
+    design = any(word in text for word in (
+        "uml", "类图", "时序", "架构", "设计", "设计图", "组件", "元素", "节点", "关系", "diagram",
+    ))
+    value_change = any(word in text for word in (
+        "改名", "重命名", "后缀", "前缀", "替换名称", "rename", "suffix", "prefix",
+    ))
+    cross_artifact = any(word in text for word in (
+        "同步", "迁移", "源码", "代码", "测试", "sync", "migrate", "source", "code", "test",
+    ))
+    return design and value_change and not cross_artifact
+
+
+def _is_uml_query(message: str) -> bool:
+    """Recognize read-only UML/KG questions before exposing file mutation tools."""
+    text = (message or "").strip().lower()
+    design = any(word in text for word in (
+        "uml", "类图", "时序", "架构", "设计", "设计图", "组件", "元素", "节点", "关系", "diagram",
+    ))
+    query = any(word in text for word in (
+        "几个", "多少", "列出", "有哪些", "查看", "查询", "是什么", "list", "show", "what", "which",
+    ))
+    mutation = any(word in text for word in (
+        "修改", "改名", "重命名", "增加", "添加", "删除", "清理", "同步", "迁移",
+        "edit", "rename", "add", "delete", "remove", "sync", "migrate",
+    ))
+    return design and query and not mutation
 
 
 def _needs_strategy_planning(message: str) -> bool:
@@ -228,6 +258,23 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
     read_only = any(phrase in text for phrase in (
         "不要修改", "不修改", "只读", "read only", "read-only", "不要改",
     ))
+
+    # Read-only graph questions need no file or shell capabilities.  Keeping
+    # this surface minimal is both a safety boundary and a material schema
+    # reduction for the common "list components" path.
+    if _is_uml_query(message):
+        names = {name for name in all_tools if name in {"get_project_map", "find_nodes"}}
+        return [name for name in all_tools if name in names]
+
+    # Renaming values in an existing diagram is deliberately narrower than a
+    # structural UML migration: direct locate/edit/review tools are enough.
+    # In particular, do not invite shell discovery or a full skill reference.
+    if _is_uml_value_edit(message):
+        names = {name for name in all_tools if name in {
+            "read_file", "search_text", "edit_file", "get_project_map",
+            "find_nodes", "submit_uml_review",
+        }}
+        return [name for name in all_tools if name in names]
 
     # These primitives are the minimum viable development surface.  Routing
     # hints must not hide one of them: an apparently design-only task may need
@@ -469,40 +516,16 @@ class DevPromptBuilder:
       recall 跟随当前查询，避免同项目内沿用首轮的过期记忆块。
     """
 
-    def __init__(self, registry: ToolRegistry):
-        self.prompt_version = os.getenv("DEVAGENT_PROMPT_VERSION", "3.0").strip().lower()
-        self.prompt_ab_enabled = os.getenv("DEVAGENT_PROMPT_AB", "").strip().lower() in {
-            "1", "true", "yes", "on",
-        }
-        if self.prompt_version in {"3.1", "compact", "devagent-3.1"}:
-            self.system_prompt = self._build_compact_static_prompt()
-        else:
-            self.prompt_version = "3.0"
-            self.system_prompt = self._build_static_prompt(registry)
+    def __init__(self):
+        # One production prompt keeps the system prefix byte-stable across
+        # sessions. Prompt experiments belong to isolated eval runs, not an
+        # environment flag that can split cache cohorts in production.
+        self.prompt_version = "3.1"
+        self.system_prompt = self._build_static_prompt()
         self.static_prompt_report = {
             "chars": len(self.system_prompt),
             "estimated_tokens": estimate_tokens(self.system_prompt),
         }
-        if self.prompt_ab_enabled:
-            candidates = {
-                "3.0": self._build_static_prompt(registry),
-                "3.1": self._build_compact_static_prompt(),
-            }
-            candidate_reports = {
-                version: {
-                    "chars": len(prompt),
-                    "estimated_tokens": estimate_tokens(prompt),
-                }
-                for version, prompt in candidates.items()
-            }
-            self.static_prompt_report["candidates"] = candidate_reports
-            self.static_prompt_report["candidate_savings_chars"] = (
-                candidate_reports["3.0"]["chars"] - candidate_reports["3.1"]["chars"]
-            )
-            self.static_prompt_report["candidate_savings_tokens"] = (
-                candidate_reports["3.0"]["estimated_tokens"]
-                - candidate_reports["3.1"]["estimated_tokens"]
-            )
         self._ctx_key: tuple | None = None
         self._ctx_value: str = ""
         self.last_context_report: dict = {
@@ -512,44 +535,25 @@ class DevPromptBuilder:
         }
 
     @staticmethod
-    def _build_static_prompt(registry: ToolRegistry) -> str:
-        parts = [
-            "You are a UML design + code co-evolution agent. Evolve existing "
-            "code — don't redesign. Act, don't explain.",
-            "",
-            "## Rules",
-            "- Do only what was asked.",
-            "- No comments or emojis in code.",
-            "- Pure chat/greeting: reply briefly without calling tools.",
-            "- Start with the smallest useful inspection, then make the minimal correct edit and run the focused test.",
-            "- For a repair, run the focused existing test early. Treat each observed failure as a checklist: repair the exact failing function before broadening scope, then rerun that test.",
-            "- Do not duplicate workspace discovery (for example, do not run a shell directory listing and a glob for the same purpose).",
-            "- The listed Source directory is the working root for relative paths and shell commands; do not inspect directories merely to discover the working directory.",
-            "- Do not create a helper script solely to inspect or summarize an existing file; use targeted reads or an existing tool instead.",
-            "- Do not claim a repair is complete until the focused test has passed; if several named targets are required, verify every target before the final response.",
-            "- Before inspecting or editing a .umlproj file, call skill(name='uml-design-guide') and follow its schema rules.",
-            "- For a full UML migration from a known canonical design to a stale peer, prefer reusing that canonical .umlproj over reconstructing JSON diagram-by-diagram. Use bash with a single workspace-local `copy` command for the transfer, then validate the target; do not create temporary parsing scripts in the project.",
-            "- A UML repair is not complete merely because JSON parses: verify the project loads with a non-empty diagram set. When a valid project file is available, use it as the structural reference instead of creating an empty placeholder.",
-            "- Do not modify UML unless the user asks for a design change or the code change alters an externally visible design contract.",
-            "- Follow the current-turn task checklist policy for todo_write; never create task graphs or worktrees for a normal repair.",
-            "- Load a skill only when it is available for the current task and its guidance is necessary.",
-            "",
-            "Tool availability is task-specific. Use only the enabled tools stated in the current-turn context and their supplied schemas.",
-        ]
-        return "\n".join(parts)
-
-    @staticmethod
-    def _build_compact_static_prompt() -> str:
-        """3.1 candidate core; task/tool specifics stay in dynamic sections/schema."""
+    def _build_static_prompt() -> str:
+        """The single production system prompt for DevAgent 3.1."""
         return "\n".join([
             "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
-            "Complete the user's request end to end: inspect relevant state, make scoped changes when requested, verify results, and report what was done and what remains.",
+            "Complete the user's request end to end: inspect relevant state, evolve existing artifacts instead of redesigning them unless requested, make scoped changes, verify results, and report what was done and what remains.",
             "",
-            "Use only tools exposed for the current task and follow their schemas. Do not invent files, tool results, tests, or completion. Prefer direct domain tools over shell workarounds.",
-            "Read enough context before editing, preserve unrelated user changes, and keep all operations inside the workspace.",
+            "## Execution rules",
+            "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
+            "- Read the smallest useful context before editing. Preserve unrelated user changes; do not add comments or emojis to code unless requested; do not invent files, tool results, tests, or completion.",
+            "- Make the minimal correct edit. For a repair, run the focused existing test early, fix its exact failure before broadening scope, then rerun it. Do not claim success until required verification passes.",
+            "- Do not duplicate discovery, inspect a directory merely to find the supplied workspace, or create a helper script solely to inspect or summarize an existing file.",
+            "- Treat the supplied Source directory as the working root for relative paths and shell commands.",
+            "- Use only tools exposed for the current task and their supplied schemas. Prefer direct domain tools over shell workarounds; treat tool errors as capability facts and change approach instead of repeating them.",
             "",
-            "For UML/code changes, maintain the requested artifact consistency. Follow the current task policy for planning and verification; do not create plans or worktrees when they are not required.",
-            "Treat tool errors as capability facts: correct the approach instead of repeating an invalid action. After changes, run the narrowest relevant verification and distinguish modified, verified, partial, blocked, and failed states.",
+            "## UML and verification",
+            "- Do not modify UML unless requested or required by an externally visible code-contract change. For UML work, prefer graph and targeted file tools; load a skill only when its guidance is necessary.",
+            "- For a full migration from a known canonical .umlproj to a stale peer, reuse the canonical file instead of reconstructing diagrams. Use one workspace-local copy operation, then validate the target.",
+            "- JSON parsing alone does not verify a UML repair: verify the project loads with a non-empty diagram set, using a valid project as structural reference rather than creating an empty placeholder.",
+            "- Follow the current task policy for planning and verification; do not create plans or worktrees when they are not required. Report modified, verified, partial, blocked, and failed states distinctly.",
             "",
             "If a safety rule, missing authority, or hard budget prevents completion, stop safely and report completed work, remaining work, and the exact reason.",
         ])
@@ -575,12 +579,25 @@ class DevPromptBuilder:
             if value:
                 sections.append((name, value))
 
-        # ── workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
-        workspace_entries = [
-            ("Source directory", source_dir),
-            ("Test directory", test_dir),
-            ("Design directory", design_dir),
-        ]
+        # ── workspace 目录（仅文件/代码任务注入）──
+        # Read-only graph questions already have project-scoped tools.  Giving
+        # them absolute paths adds tokens and encourages needless shell/file
+        # exploration.  A bounded UML value edit only needs the design root.
+        lowered = (user_message or "").lower()
+        needs_file_workspace = any(word in lowered for word in (
+            "代码", "源码", "文件", "测试", "运行", "同步", "迁移", "删除", "清理",
+            "code", "source", "file", "test", "run", "sync", "migrate", "delete", "cleanup",
+        ))
+        if _is_uml_value_edit(user_message):
+            workspace_entries = [("Design directory", design_dir)]
+        elif needs_file_workspace:
+            workspace_entries = [
+                ("Source directory", source_dir),
+                ("Test directory", test_dir),
+                ("Design directory", design_dir),
+            ]
+        else:
+            workspace_entries = []
         provided = [(label, d) for label, d in workspace_entries if d]
         if provided:
             lines = ["## Workspace (Windows environment, absolute paths)"]
@@ -589,7 +606,7 @@ class DevPromptBuilder:
             add_section("workspace", "\n".join(lines))
 
         # ── 项目上下文 ──
-        if project_file:
+        if project_file and (needs_file_workspace or _is_uml_value_edit(user_message)):
             add_section("project_context",
                 "## Project Context\n"
                 f"- Current project file: {project_file}\n"
@@ -597,7 +614,7 @@ class DevPromptBuilder:
                 "do NOT guess or shorten the filename)"
             )
 
-        message_lower = (user_message or "").lower()
+        message_lower = lowered
         mentioned_uml_paths = _UML_PATH_IN_MESSAGE.findall(user_message or "")
         asks_to_sync = any(word in message_lower for word in ("sync", "synchronize", "同步", "迁移"))
         if project_file and mentioned_uml_paths and asks_to_sync:
@@ -616,8 +633,9 @@ class DevPromptBuilder:
         if memory_block:
             add_section("memory", memory_block)
 
-        # ── 日期（量化到「日」，避免秒级时间戳破坏缓存稳定性）──
-        add_section("date", f"Current date: {today}")
+        # 日期只对会产生外部状态的任务有价值；闲聊与只读图查询不注入。
+        if needs_file_workspace:
+            add_section("date", f"Current date: {today}")
 
         self._ctx_key = key
         self._ctx_value = "\n\n".join(value for _, value in sections)
@@ -638,7 +656,7 @@ class DevPromptBuilder:
         # Status/test/cleanup turns should not be polluted by unrelated
         # long-term design memories. They use checkpoint or direct tools.
         lowered = (user_message or "").lower()
-        if _is_status_query(user_message) or any(word in lowered for word in (
+        if _is_pure_chat_message(user_message) or _is_status_query(user_message) or _is_uml_query(user_message) or _is_uml_value_edit(user_message) or any(word in lowered for word in (
             "跑测试", "运行测试", "pytest", "清理", "删除无关", "cleanup", "delete",
         )):
             return ""
@@ -702,7 +720,7 @@ async def _create_dev_agent(
     for t in tools:
         registry.register_tool(t)
 
-    prompt_builder = DevPromptBuilder(registry)
+    prompt_builder = DevPromptBuilder()
 
     settings = get_settings()
     agent = ReActAgent(
@@ -833,10 +851,45 @@ def _extract_fn_for(llm: BaseAgentsLLM):
     输出（含思考）约 1400-1900 tokens。
     """
     async def _extract(prompt: str) -> str:
-        return await llm.ainvoke(
-            [{"role": "user", "content": prompt}], max_tokens=3000
-        )
+        # Background archival must be distinguishable from foreground Agent
+        # calls in the same trace/run.  This also keeps it out of per-turn
+        # interactive latency accounting.
+        from app.services.chat_trace import trace_span
+        with trace_span("MemoryArchive"):
+            return await llm.ainvoke(
+                [{"role": "user", "content": prompt}], max_tokens=3000
+            )
     return _extract
+
+
+def _should_archive_task_memory(
+    user_message: str, checkpoint_status: str, tool_calls_detail: list[dict],
+) -> bool:
+    """Archive only completed cross-artifact work with durable potential.
+
+    Graph lookups and bounded renames are already recoverable from the live
+    project/KG.  Persisting them after every turn adds an LLM call and creates
+    stale project facts without improving future task execution.
+    """
+    return bool(
+        tool_calls_detail
+        and checkpoint_status == "completed"
+        and _needs_strategy_planning(user_message)
+    )
+
+
+def _terminal_checkpoint_status(final_answer: str, todos: list[dict]) -> tuple[str, str | None]:
+    """Map an Agent terminal answer to an honest checkpoint state."""
+    answer = (final_answer or "").lower()
+    if "token 预算" in answer:
+        return "budget_exceeded", "token budget exceeded"
+    if "时间预算" in answer or "llm 调用超过时间" in answer:
+        return "timed_out", "time budget exceeded"
+    if "task is not complete" in answer:
+        return "partial", "required task plan is incomplete"
+    if any(isinstance(todo, dict) and todo.get("status") != "completed" for todo in todos):
+        return "partial", "task checklist has pending items"
+    return "completed", None
 
 
 async def _archive_task_to_memory(
@@ -911,7 +964,7 @@ async def _handle_dev(
     project_file: str = "",
     progress: ProgressRelay | None = None,
     context: str = "",
-    fallback_review_ids: set[int] | None = None,
+    fallback_review_runs: dict[int, str] | None = None,
     run_id: str = "",
     run_owner: str = "",
     session_id: str = "",
@@ -1048,8 +1101,14 @@ async def _handle_dev(
                         span_id=tool_span,
                         tool_name=td.get("name", ""),
                         observation=str(td.get("observation", "")),
+                        error=(
+                            str(td.get("error_code", ""))
+                            if td.get("status") not in {"", "success", "completed"}
+                            else ""
+                        ),
                         fed_truncated=bool(td.get("fed_truncated", False)),
                         fed_length=int(td.get("fed_length") or 0),
+                        evidence=td.get("evidence") if isinstance(td.get("evidence"), dict) else None,
                     )
 
             ok = await _ws_send(websocket, {
@@ -1073,6 +1132,7 @@ async def _handle_dev(
                 return
 
             if d["is_final"]:
+                fallback_review_requested = False
                 # ── 兜底审核：本轮改了 .umlproj 但没调 submit_uml_review ──
                 # 审核靠 prompt 自觉，模型可能漏调；这里对比本轮前后磁盘状态，
                 # 有变更则补推一次 uml_review（接受/拒绝语义与正常审核一致：
@@ -1101,8 +1161,9 @@ async def _handle_dev(
                                     "original_diagrams": review_mgr.baseline,
                                 },
                             )
-                            if fallback_review_ids is not None:
-                                fallback_review_ids.add(req.id)
+                            if fallback_review_runs is not None:
+                                fallback_review_runs[req.id] = run_id
+                            fallback_review_requested = True
                             if trace_log:
                                 trace_log.review_request(
                                     review_id=req.id,
@@ -1124,18 +1185,18 @@ async def _handle_dev(
                     except Exception:
                         logger.exception("[AgentChat] Fallback review check failed")
 
-                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
-                if trace_log:
-                    trace_log.done(answer=d["final_answer"])
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
                 else:
                     manifest = []
                 todos = get_runtime().todos or []
+                terminal_status, stop_reason = _terminal_checkpoint_status(
+                    d["final_answer"], todos,
+                )
                 agent.last_run_checkpoint = {
                     "run_id": run_id,
-                    "status": "completed",
+                    "status": "waiting_approval" if fallback_review_requested else terminal_status,
                     "request_summary": user_message[:500],
                     "completed_items": [
                         t.get("content", "") for t in todos
@@ -1151,30 +1212,63 @@ async def _handle_dev(
                         if td.get("name", "") in {"bash", "test", "pytest"}
                     ],
                     "last_error": None,
-                    "stop_reason": None,
+                    "stop_reason": stop_reason,
                 }
+                if fallback_review_requested:
+                    agent.last_run_checkpoint.update({
+                        "review_status": "pending",
+                        "post_review_status": terminal_status,
+                    })
+
+                # A fallback review has no Agent future waiting on it.  Do
+                # not announce success before the human has resolved it.
+                if fallback_review_requested:
+                    if run_id:
+                        try:
+                            get_run_store().transition(
+                                run_id, RunStatus.WAITING_APPROVAL,
+                                expected={RunStatus.RUNNING}, owner_id=run_owner,
+                                metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                            )
+                        except RunStateError:
+                            logger.warning("[RunState] Could not mark run %s awaiting review", run_id, exc_info=True)
+                    await _ws_send(websocket, {
+                        "event": "awaiting_review",
+                        "run_id": run_id,
+                        "checkpoint": agent.last_run_checkpoint,
+                    })
+                    return
+
+                run_status = (
+                    RunStatus.SUCCEEDED if terminal_status == "completed" else RunStatus.FAILED
+                )
                 try:
                     from app.services.agent_metrics import get_agent_metrics
-                    get_agent_metrics().record_run("success")
+                    get_agent_metrics().record_run(
+                        "success" if terminal_status == "completed" else terminal_status,
+                    )
                 except Exception:
                     pass
                 if run_id:
                     try:
                         get_run_store().transition(
-                            run_id, RunStatus.SUCCEEDED,
+                            run_id, run_status,
                             expected={RunStatus.RUNNING}, owner_id=run_owner,
                             metadata_patch={"checkpoint": agent.last_run_checkpoint},
                         )
                     except RunStateError:
                         logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
                     _record_audit(
-                        "run_succeeded", run_id=run_id, session_id=session_id,
+                        "run_succeeded" if terminal_status == "completed" else "run_partial",
+                        run_id=run_id, session_id=session_id,
                         tool_call_count=len(task_tool_calls),
                     )
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
-                if project_id and task_tool_calls:
+                if project_id and _should_archive_task_memory(
+                    user_message, terminal_status, task_tool_calls,
+                ):
                     asyncio.create_task(_archive_task_to_memory(
                         project_id=project_id,
                         user_message=user_message,
@@ -1185,6 +1279,9 @@ async def _handle_dev(
                         trace_id=trace_log.trace_id if trace_log else "",
                     ))
 
+                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
+                if trace_log:
+                    trace_log.done(answer=d["final_answer"])
                 ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],
@@ -1312,9 +1409,9 @@ async def agent_chat_ws(websocket: WebSocket):
     run_task: asyncio.Task | None = None
     active_run = None
     connection_owner = uuid.uuid4().hex
-    # 兜底审核（run 结束后补推的 uml_review）的 review_id 集合。
+    # 兜底审核（run 结束后补推的 uml_review）与其原始 run 的映射。
     # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
-    fallback_review_ids: set[int] = set()
+    fallback_review_runs: dict[int, str] = {}
     source_dir = ""
     test_dir = ""
     project_file = ""
@@ -1369,20 +1466,15 @@ async def agent_chat_ws(websocket: WebSocket):
                     continue
                 source_dir, test_dir, project_file = validated
 
-                # Route every user task independently.  A greeting or a prior
-                # simple turn must not pin the rest of the session to flash;
-                # reuse the client only when the selected model is unchanged.
-                route = choose_model(user_message, get_settings())
                 # 记录用户消息（trace）
                 trace_log.user_message(
                     user_message, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                 )
                 trace_log.event(
-                    "agent_route",
-                    model=route.model,
-                    tier=route.tier,
-                    reason=route.reason,
+                    "agent_model",
+                    model=get_settings().deepseek_model,
+                    policy="fixed_session_model",
                 )
 
                 # Status follow-ups read the latest structured checkpoint and
@@ -1400,8 +1492,11 @@ async def agent_chat_ws(websocket: WebSocket):
                     })
                     continue
 
-                if llm is None or getattr(llm, "model", None) != route.model:
-                    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
+                # One session uses one configured coding model.  Do not infer
+                # model changes from a short follow-up: that makes behaviour
+                # less predictable and breaks provider prompt-cache prefixes.
+                if llm is None:
+                    llm = BaseAgentsLLM.from_settings(temperature=0.3)
                     if dev_agent is not None:
                         dev_agent.llm = llm
                         subagent = dev_agent.tool_registry.get_tool("spawn_subagent")
@@ -1501,7 +1596,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
                     progress=progress, context=context,
-                    fallback_review_ids=fallback_review_ids,
+                    fallback_review_runs=fallback_review_runs,
                     run_id=run.run_id, run_owner=connection_owner,
                     session_id=session_id,
                 ))
@@ -1551,13 +1646,69 @@ async def agent_chat_ws(websocket: WebSocket):
                     trace_log.review_response(review_id=review_id, response=response)
                     logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
 
-                    # ── 兜底审核的 reject：agent 已跑完，future 无人消费 ──
-                    # 把用户反馈作为新一轮任务发给 agent，让它修订后重新提交审核。
-                    if review_id in fallback_review_ids:
-                        fallback_review_ids.discard(review_id)
+                    # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──
+                    # accept 才把 waiting_approval 变为最终状态；reject 则把
+                    # 用户反馈作为新一轮修订任务。此前绝不能宣称 completed。
+                    if review_id in fallback_review_runs:
+                        reviewed_run_id = fallback_review_runs.pop(review_id)
+                        checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                        post_review_status = str(checkpoint.pop("post_review_status", "completed"))
+                        checkpoint["review_status"] = "accepted" if decision == "accept" else "rejected"
+                        if decision == "accept":
+                            checkpoint["status"] = post_review_status
+                            if dev_agent is not None:
+                                dev_agent.last_run_checkpoint = checkpoint
+                            resolved_run_status = (
+                                RunStatus.SUCCEEDED
+                                if post_review_status == "completed"
+                                else RunStatus.FAILED
+                            )
+                            if reviewed_run_id:
+                                try:
+                                    get_run_store().transition(
+                                        reviewed_run_id, resolved_run_status,
+                                        expected={RunStatus.WAITING_APPROVAL},
+                                        owner_id=connection_owner,
+                                        metadata_patch={"checkpoint": checkpoint},
+                                    )
+                                except RunStateError:
+                                    logger.warning(
+                                        "[RunState] Could not finalize reviewed run %s",
+                                        reviewed_run_id, exc_info=True,
+                                    )
+                            if post_review_status == "completed":
+                                answer = "设计变更已通过审核，任务已完成。"
+                            else:
+                                answer = (
+                                    "设计变更已通过审核；原任务未完整完成。"
+                                    + (f"停止原因：{checkpoint.get('stop_reason')}" if checkpoint.get("stop_reason") else "")
+                                )
+                            trace_log.done(answer=answer)
+                            await _ws_send(websocket, {
+                                "event": "done",
+                                "result": answer,
+                                "checkpoint": checkpoint,
+                            })
+                            continue
+
+                        checkpoint["status"] = "partial"
+                        if dev_agent is not None:
+                            dev_agent.last_run_checkpoint = checkpoint
+                        if reviewed_run_id:
+                            try:
+                                get_run_store().transition(
+                                    reviewed_run_id, RunStatus.FAILED,
+                                    expected={RunStatus.WAITING_APPROVAL},
+                                    owner_id=connection_owner,
+                                    metadata_patch={"checkpoint": checkpoint},
+                                )
+                            except RunStateError:
+                                logger.warning(
+                                    "[RunState] Could not mark rejected review run %s partial",
+                                    reviewed_run_id, exc_info=True,
+                                )
                         if (
-                            decision == "reject"
-                            and dev_agent is not None
+                            dev_agent is not None
                             and (run_task is None or run_task.done())
                         ):
                             feedback_text = msg.get("feedback", "") or msg.get("response", "")
@@ -1577,7 +1728,7 @@ async def agent_chat_ws(websocket: WebSocket):
                                 followup_context = await prompt_builder.build_context(
                                     project_file, source_dir, test_dir, followup,
                                 )
-                            parent_run_id = active_run.run_id if active_run else ""
+                            parent_run_id = reviewed_run_id
                             followup_run = get_run_store().create(
                                 kind="agent_chat",
                                 session_id=session_id,
@@ -1606,7 +1757,7 @@ async def agent_chat_ws(websocket: WebSocket):
                                 dev_agent, review_mgr, followup, websocket, _stop_check,
                                 trace_log=trace_log, project_file=project_file,
                                 progress=progress, context=followup_context,
-                                fallback_review_ids=fallback_review_ids,
+                                fallback_review_runs=fallback_review_runs,
                                 run_id=followup_run.run_id, run_owner=connection_owner,
                                 session_id=session_id,
                             ))

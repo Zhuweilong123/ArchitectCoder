@@ -236,7 +236,16 @@ class ToolRegistry:
                 result = tool.run(parameters)
                 if asyncio.coroutines.iscoroutine(result):
                     result = await result
-                return result if isinstance(result, ToolResult) else ToolResult.success(result)
+                if isinstance(result, ToolResult):
+                    return result
+                # Legacy tools still return plain strings.  Preserve their
+                # text API, but do not silently turn a conventional error
+                # string into a successful structured result.  ReAct retry
+                # guards, metrics and chat traces depend on this distinction.
+                text = str(result)
+                if text.lstrip().lower().startswith(("error:", "❌")):
+                    return ToolResult.error(text, "TOOL_REPORTED_ERROR")
+                return ToolResult.success(result)
             except Exception as e:
                 return ToolResult.error(f"❌ 工具 '{name}' 执行失败: {e}", "TOOL_EXECUTION_ERROR")
 

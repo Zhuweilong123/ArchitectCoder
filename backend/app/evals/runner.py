@@ -18,7 +18,6 @@ from app.agent_base.core.llm import BaseAgentsLLM
 from app.core.config import get_settings
 from app.services.agent_metrics import get_agent_metrics
 from app.services.chat_trace import TraceSession
-from app.services.model_router import choose_model
 
 from .checkers import build_checkers
 from .models import CheckerResult, EvalCase, EvalResult
@@ -63,8 +62,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
 
     settings = get_settings()
     first_prompt = case.prompts()[0]
-    route = choose_model(first_prompt, settings)
-    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
+    llm = BaseAgentsLLM.from_settings(temperature=0.3)
     manifest = load_projects().get(case.project_id) if case.project_id else None
     source_dir = workspace / manifest.source_dir if manifest else workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
@@ -224,17 +222,6 @@ class EvalRunner:
                         for turn_index, (prompt, turn_spec) in enumerate(
                             zip(prompts, turn_specs), 1
                         ):
-                            settings = get_settings()
-                            route = choose_model(prompt, settings)
-                            if production_agent and getattr(
-                                getattr(agent, "llm", None), "model", None
-                            ) != route.model:
-                                agent.llm = BaseAgentsLLM.from_settings(
-                                    model=route.model, temperature=0.3,
-                                )
-                                subagent = agent.tool_registry.get_tool("spawn_subagent")
-                                if subagent is not None and hasattr(subagent, "llm"):
-                                    subagent.llm = agent.llm
                             tracer.user_message(
                                 prompt,
                                 project_file=getattr(agent, "_eval_project_file", ""),
@@ -242,8 +229,8 @@ class EvalRunner:
                                 test_dir=getattr(agent, "_eval_test_dir", ""),
                             )
                             tracer.event(
-                                "agent_route", model=route.model,
-                                tier=route.tier, reason=route.reason, turn=turn_index,
+                                "agent_model", model=getattr(getattr(agent, "llm", None), "model", ""),
+                                policy="fixed_session_model", turn=turn_index,
                             )
 
                             if not production_agent:
@@ -268,7 +255,7 @@ class EvalRunner:
                                 turn_records.append({
                                     "turn": turn_index,
                                     "prompt": prompt,
-                                    "model": route.model,
+                                    "model": getattr(getattr(agent, "llm", None), "model", ""),
                                     "status": "completed",
                                     "tool_calls": turn_tool_calls,
                                     "total_tokens": turn_tokens,
@@ -283,7 +270,7 @@ class EvalRunner:
                                 turn_records.append({
                                     "turn": turn_index,
                                     "prompt": prompt,
-                                    "model": route.model,
+                                    "model": getattr(getattr(agent, "llm", None), "model", ""),
                                     "status": "checkpoint_fast_path",
                                     "tool_calls": 0,
                                     "total_tokens": 0,
@@ -362,7 +349,7 @@ class EvalRunner:
                             turn_records.append({
                                 "turn": turn_index,
                                 "prompt": prompt,
-                                "model": route.model,
+                                "model": getattr(getattr(agent, "llm", None), "model", ""),
                                 "status": "completed",
                                 "tool_calls": turn_tool_calls,
                                 "total_tokens": turn_tokens,
@@ -441,7 +428,16 @@ class EvalRunner:
                     score_results = await asyncio.gather(*(
                         checker.check(workspace) for checker in build_checkers(case.checkers, baseline_hashes)
                     ))
-                    checker_results = [*hard_results, *score_results]
+                    # Keep non-file execution checkers (notably
+                    # review_auto_stub).  Turn-local file checkers are
+                    # diagnostic evidence and are rerun below against final
+                    # workspace state, so including them again would skew the
+                    # final score.
+                    execution_results = [
+                        item for item in result.checker_results
+                        if item.checker == "review_auto_stub"
+                    ]
+                    checker_results = [*execution_results, *hard_results, *score_results]
                     result.checker_results = list(checker_results)
                     result.score = (
                         sum(item.score for item in checker_results) / len(checker_results)

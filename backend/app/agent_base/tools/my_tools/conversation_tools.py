@@ -166,7 +166,6 @@ def create_conversation_tools(
         from .subagent_tool import SpawnSubagentTool
         tools.append(SpawnSubagentTool(
             llm=llm,
-            sub_agent_model=get_settings().sub_agent_model,
             source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
             project_file=project_file,
             review_manager=review_mgr, progress=progress,

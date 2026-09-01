@@ -80,9 +80,11 @@ assistant tool-call 历史和 tool result 合计约占 67.5%。因此，即使�
 
 最新 trace 中，源码同步任务单轮总 token 已远超配置的 100k 预算，仍继续执行至用户主动停止。这既是成本风险，也是失控循环无法及时终止的根因之一。
 
-### 3.2 模型路由只发生在会话首条消息
+### 3.2 [历史方案] 模型路由只发生在会话首条消息
 
 WebSocket 会话只在 `llm is None` 时调用 `choose_model(user_message)`。由于首条消息是“你好”，后续包括跨设计与源码同步在内的复杂任务全部沿用首次选择的模型，复杂度路由没有按用户轮次生效。
+
+> **已废弃（2026-09-01）**：后续验证显示，无论按首轮还是按用户轮次路由，都会增加会话行为的不确定性并降低同模型 prompt-cache 命中。`model_router.py`、flash tier 与子代理独立模型均已移除；DevAgent、子代理和评测固定使用 `DEEPSEEK_MODEL`。成本控制改由 token/步骤/工具/时间预算与上下文压缩承担。
 
 ### 3.3 工具说明与真实执行约束不一致
 
@@ -779,7 +781,7 @@ safely and provide the completed work, remaining work, and exact reason.
 | 状态查询 | 22 次 LLM / 30 次工具 | 0 次 LLM / 0 次工具 | — | 3.1 使用 checkpoint fast path，避免重复探索 |
 | 静态 Prompt 候选长度 | 2,211 字符（3.0） | 1,123 字符（3.1） | -49.2% | 约减少 1,088 字符、272 估算 token |
 
-本次 3.1 运行记录：`eval_6ceaf785972a487b`，结果文件为 `temp/evals/results-v31-element-rerun.jsonl`，Trace 为 `temp/chat_log/trace_eval_6ceaf785972a487b.jsonl`。后续正式门禁应在同一用例上分别固定 `DEVAGENT_PROMPT_VERSION=3.0/3.1`，重复运行并报告均值、P95、通过率和 token/工具调用置信区间。
+本次 3.1 运行记录：`eval_6ceaf785972a487b`，结果文件为 `temp/evals/results-v31-element-rerun.jsonl`，Trace 为 `temp/chat_log/trace_eval_6ceaf785972a487b.jsonl`。该 A/B 记录保留为历史基线；生产环境现已固化唯一的合并版 3.1 静态 Prompt，后续实验应在隔离评测分支中进行。
 
 ### 7.3.1 连续对话用例与 3.0 基线实测对比
 
@@ -845,9 +847,6 @@ safely and provide the completed work, remaining work, and exact reason.
 
 | 配置 | 默认灰度值 | 作用 |
 |---|---:|---|
-| `DEVAGENT_PROMPT_VERSION` | `3.0` | 选择静态 prompt 版本 |
-| `DEVAGENT_PROMPT_AB` | `false` | 显式记录 3.0/3.1 Prompt 候选大小对比 |
-| `DEVAGENT_V31_PER_TURN_ROUTING` | `false` | 每用户轮次重新选模型 |
 | `DEVAGENT_V31_TOKEN_BUDGET` | `false` | 新 usage 与预算闭环 |
 | `DEVAGENT_V31_TYPED_INTENT` | `false` | 新意图/工具路由 |
 | `DEVAGENT_V31_TODO_TIERS` | `false` | T0/T1/T2 Todo 策略 |
@@ -879,10 +878,9 @@ safely and provide the completed work, remaining work, and exact reason.
 
 出现问题时按模块回滚，而不是整体退回：
 
-1. 静态 prompt 质量回退：切回 `DEVAGENT_PROMPT_VERSION=3.0`。
+1. 静态 prompt 质量回退：在隔离评测中修订唯一 3.1 Prompt，再以代码发布回滚。
 2. 压缩导致上下文丢失：关闭 `STEP_COMPACTION`。
 3. 意图误路由：关闭 `TYPED_INTENT`，保留专用工具。
-4. 模型路由异常：关闭 `PER_TURN_ROUTING`。
 5. 新工具安全异常：立即关闭对应工具注册，保留旧只读能力。
 
 usage 预算、安全路径检查和危险操作门禁属于正确性修复；除非实现自身存在缺陷，不应为了恢复旧行为而长期关闭。
@@ -981,7 +979,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 增加基于 Agent 实例及 RunStore 元数据的 run checkpoint 和状态追问快路径，支持重连后的持久化回退读取。
 - 记忆提取允许返回空数组；测试/清理/状态类上下文不召回无关长期记忆。
 - ReAct 历史支持 tool-call/result 成对压缩，并保留旧步骤的 extractive checkpoint。
-- PromptBuilder 增加动态区段 token 统计，并提供 `DEVAGENT_PROMPT_VERSION=3.1` 紧凑 Prompt opt-in。
+- PromptBuilder 增加动态区段 token 统计，并固化合并后的唯一 3.1 静态 Prompt。
 - 记忆召回按稳定 `subject` 去重，避免同主题候选同时注入。
 - 记忆主题冲突按“已确认优先、再按更新时间、最后按相关性”选择唯一候选，并写入治理确认标记。
 - Agent metrics 聚合 Prompt 构建次数、估算 token、压缩 token 和 Prompt 版本，支持后续 A/B 门禁且不保存 Prompt 内容。
@@ -993,7 +991,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - Todo 已具备基础 T2 判断，但完整 T0/T1/T2 策略、前端状态呈现和 feature flag 仍未完成。
 - 已有 step 级成对/抽取式压缩，但尚未完成按编辑证据、验证结果和重复失败分类的完整语义压缩。
 - checkpoint 已写入 RunStore 元数据；跨服务重启的恢复/续跑语义仍未实现，目前仅支持状态读取。
-- `DEVAGENT_PROMPT_VERSION` 已可切换 Prompt 候选，但尚未完成固定任务集 A/B 和默认版本切换。
+- 旧 3.0/3.1 Prompt A/B 已归档；生产路径不再保留版本切换。
 
 ### 15.3 未开始或未完成发布闭环
 

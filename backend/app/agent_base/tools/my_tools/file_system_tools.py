@@ -455,7 +455,7 @@ class BashTool(AsyncTool):
         execution_markers = ("pytest", "python -m", "npm ", "pnpm ", "yarn ", "git ")
         if has_listing and not any(marker in compact for marker in execution_markers):
             return (
-                "Use glob for workspace file discovery. Bash is reserved for "
+                "Error: use glob for workspace file discovery. Bash is reserved for "
                 "executing tests, builds, or an explicit file operation."
             )
 
@@ -674,6 +674,8 @@ class BashTool(AsyncTool):
 
         out = (_decode_output(stdout) + _decode_output(stderr)).strip()
         out = out[:self._output_cap] if len(out) > self._output_cap else out
+        if proc.returncode:
+            return f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
         return out or "(no output)"
 
     @staticmethod

@@ -1,14 +1,11 @@
 """P2 治理基础设施回归。"""
 
-from types import SimpleNamespace
-
 import asyncio
 
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import ToolResult
 from app.services.agent_metrics import AgentMetrics
-from app.services.model_router import choose_model
 
 
 class _StructuredTool(Tool):
@@ -20,6 +17,17 @@ class _StructuredTool(Tool):
 
     def run(self, parameters):
         return ToolResult.success({"value": 42})
+
+
+class _LegacyErrorTool(Tool):
+    def __init__(self):
+        super().__init__("legacy_error", "legacy string error")
+
+    def get_parameters(self):
+        return []
+
+    def run(self, parameters):
+        return "Error: command is unavailable"
 
 
 def test_registry_preserves_structured_tool_result():
@@ -35,13 +43,14 @@ def test_registry_preserves_structured_tool_result():
     assert '"value": 42' in result.text
 
 
-def test_model_router_selects_flash_for_simple_and_pro_for_complex():
-    settings = SimpleNamespace(
-        deepseek_model="pro-model",
-        deepseek_model_flash="flash-model",
-    )
-    assert choose_model("你好", settings).model == "flash-model"
-    assert choose_model("请分析 UML 架构并修复代码", settings).model == "pro-model"
+def test_registry_normalizes_legacy_error_text_to_structured_error():
+    registry = ToolRegistry()
+    registry.register_tool(_LegacyErrorTool())
+
+    result = asyncio.run(registry.aexecute_tool_result_with_params("legacy_error", {}))
+
+    assert result.status == "error"
+    assert result.error_code == "TOOL_REPORTED_ERROR"
 
 
 def test_agent_metrics_snapshot_and_reset():

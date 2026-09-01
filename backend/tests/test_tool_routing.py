@@ -2,6 +2,7 @@ from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _is_status_query, _requires_todo_plan,
     _latest_persisted_checkpoint, _select_tools_for_message,
+    _should_archive_task_memory, _terminal_checkpoint_status,
     _todo_progress_state, DevPromptBuilder,
 )
 
@@ -40,6 +41,19 @@ def test_design_route_adds_helpers_without_hiding_write_capability():
     route = _route("update the UML class diagram")
     assert {"read_file", "glob", "search_text", "write_file", "edit_file", "bash", "delete_path"} <= set(route)
     assert {"skill", "submit_uml_review", "get_project_map", "find_nodes"} <= set(route)
+
+
+def test_uml_query_uses_graph_tools_only():
+    route = _route("我们的项目中有几个组件，列出他们的名字")
+    assert route == ["get_project_map", "find_nodes"]
+
+
+def test_bounded_uml_rename_does_not_expose_shell_or_full_skill():
+    route = _route("将uml组件图中的组件名都加上Element后缀")
+    assert set(route) == {
+        "read_file", "edit_file", "search_text", "submit_uml_review",
+        "get_project_map", "find_nodes",
+    }
 
 
 def test_cross_domain_request_keeps_core_and_design_helpers():
@@ -112,8 +126,25 @@ def test_status_followup_uses_checkpoint_language():
     assert "src/a.py" in answer
 
 
+def test_terminal_checkpoint_status_never_calls_budget_stop_completed():
+    assert _terminal_checkpoint_status("已达到 token 预算（100000），已停止继续调用工具。", []) == (
+        "budget_exceeded", "token budget exceeded",
+    )
+    assert _terminal_checkpoint_status("完成", [{"status": "pending"}]) == (
+        "partial", "task checklist has pending items",
+    )
+    assert _terminal_checkpoint_status("完成", []) == ("completed", None)
+
+
+def test_memory_archive_skips_queries_and_partial_tasks():
+    details = [{"name": "find_nodes"}]
+    assert not _should_archive_task_memory("列出 UML 组件", "completed", details)
+    assert not _should_archive_task_memory("同步 UML 设计和源码", "budget_exceeded", details)
+    assert _should_archive_task_memory("同步 UML 设计和源码", "completed", details)
+
+
 def test_prompt_builder_reports_dynamic_sections_without_content():
-    builder = DevPromptBuilder(_Registry(TOOLS))
+    builder = DevPromptBuilder()
 
     import asyncio
     context = asyncio.run(builder.build_context("", "src", "tests", "run pytest"))
@@ -124,27 +155,23 @@ def test_prompt_builder_reports_dynamic_sections_without_content():
     assert "memory" not in builder.last_context_report["sections"]
 
 
-def test_compact_prompt_is_opt_in_and_shorter(monkeypatch):
-    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.1")
-    compact = DevPromptBuilder(_Registry(TOOLS))
-    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.0")
-    full = DevPromptBuilder(_Registry(TOOLS))
+def test_prompt_builder_omits_workspace_for_greeting_and_uml_query():
+    import asyncio
 
-    assert compact.prompt_version == "3.1"
-    assert len(compact.system_prompt) < len(full.system_prompt)
+    builder = DevPromptBuilder()
+    assert asyncio.run(builder.build_context("project.umlproj", "src", "tests", "你好")) == ""
+    assert asyncio.run(builder.build_context("project.umlproj", "src", "tests", "列出 UML 组件")) == ""
 
 
-def test_prompt_ab_report_is_opt_in_and_contains_candidate_savings(monkeypatch):
-    monkeypatch.setenv("DEVAGENT_PROMPT_AB", "1")
-    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.0")
+def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():
+    builder = DevPromptBuilder()
 
-    builder = DevPromptBuilder(_Registry(TOOLS))
-
-    report = builder.static_prompt_report
-    assert report["candidates"]["3.0"]["chars"] == report["chars"]
-    assert report["candidates"]["3.1"]["chars"] < report["candidates"]["3.0"]["chars"]
-    assert report["candidate_savings_chars"] > 0
-    assert report["candidate_savings_tokens"] > 0
+    assert builder.prompt_version == "3.1"
+    assert "instead of redesigning" in builder.system_prompt
+    assert "focused existing test early" in builder.system_prompt
+    assert "Do not modify UML unless requested" in builder.system_prompt
+    assert "known canonical .umlproj" in builder.system_prompt
+    assert set(builder.static_prompt_report) == {"chars", "estimated_tokens"}
 
 
 def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):

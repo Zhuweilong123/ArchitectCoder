@@ -71,7 +71,6 @@ def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tm
         prompt_version="devagent-3.1",
         static_prompt={
             "chars": 100, "estimated_tokens": 25,
-            "candidate_savings_chars": 40, "candidate_savings_tokens": 10,
         },
         total_chars=60,
         estimated_tokens=15,
@@ -100,8 +99,6 @@ def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tm
         "versions": {"devagent-3.1": 1},
         "chars": 160,
         "estimated_tokens": 40,
-        "candidate_savings_chars": 40,
-        "candidate_savings_tokens": 10,
     }
     assert "final answer" not in summary
 
