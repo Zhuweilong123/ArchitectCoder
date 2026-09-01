@@ -68,3 +68,73 @@ class MemoryWritePolicy:
             return MemoryWriteDecision(False, "confidence_below_threshold", confidence)
 
         return MemoryWriteDecision(True, "accepted", confidence)
+
+
+class MemoryRecallPolicy:
+    """Select relevant, diverse memories within the injection budget."""
+
+    _TYPE_PRIORITY = {
+        MemoryType.DECISION: 5,
+        MemoryType.REJECTION: 4,
+        MemoryType.CONVENTION: 3,
+        MemoryType.PREFERENCE: 2,
+        MemoryType.INSIGHT: 1,
+    }
+
+    def __init__(
+        self,
+        min_score: float = 0.0,
+        max_per_type: int = 2,
+        duplicate_threshold: float = 0.8,
+    ):
+        self.min_score = min_score
+        self.max_per_type = max(1, max_per_type)
+        self.duplicate_threshold = max(0.0, min(1.0, duplicate_threshold))
+
+    @staticmethod
+    def _tokens(text: str) -> set[str]:
+        return {token for token in str(text).lower().split() if token}
+
+    def select(self, results: list, *, top_k: int, max_tokens: int) -> list:
+        selected = []
+        type_counts: dict[MemoryType, int] = {}
+        used_tokens = 0
+        ordered = sorted(
+            results,
+            key=lambda result: (
+                result.score,
+                self._TYPE_PRIORITY.get(result.entry.memory_type, 0),
+            ),
+            reverse=True,
+        )
+        for result in ordered:
+            if len(selected) >= max(0, top_k) or result.score <= self.min_score:
+                continue
+            memory_type = result.entry.memory_type
+            if type_counts.get(memory_type, 0) >= self.max_per_type:
+                continue
+            summary = str(result.entry.summary or "").strip()
+            if not summary:
+                continue
+            candidate_tokens = self._tokens(summary)
+            if any(
+                self._similarity(candidate_tokens, self._tokens(item.entry.summary))
+                >= self.duplicate_threshold
+                for item in selected
+            ):
+                continue
+            cost = max(1, len(summary + " " + " ".join(result.entry.tags)) // 2)
+            if selected and used_tokens + cost > max(0, max_tokens):
+                continue
+            if not selected and cost > max(0, max_tokens):
+                continue
+            selected.append(result)
+            type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
+            used_tokens += cost
+        return selected
+
+    @staticmethod
+    def _similarity(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)

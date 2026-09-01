@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from memory_system.manager import MemoryManager, _normalize_subject
 from memory_system.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
-from memory_system.policy import MemoryWritePolicy
+from memory_system.policy import MemoryRecallPolicy, MemoryWritePolicy
 
 
 def _extract(items):
@@ -26,6 +26,20 @@ def test_memory_write_policy_rejects_transient_and_low_confidence_candidates():
     assert policy.evaluate({
         "memory_type": "decision", "summary": "use SQLite", "confidence": 0.8,
     }).allowed
+
+
+def test_memory_recall_policy_filters_irrelevant_and_limits_duplicates():
+    policy = MemoryRecallPolicy(min_score=0.1, max_per_type=1)
+    results = [
+        RecallResult(MemoryEntry("p", MemoryType.INSIGHT, "same design choice"), 0.9),
+        RecallResult(MemoryEntry("p", MemoryType.INSIGHT, "same design choice again"), 0.8),
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "use SQLite"), 0.7),
+        RecallResult(MemoryEntry("p", MemoryType.PREFERENCE, "irrelevant"), 0.0),
+    ]
+    selected = policy.select(results, top_k=5, max_tokens=100)
+    assert [item.entry.summary for item in selected] == [
+        "same design choice", "use SQLite"
+    ]
 
 
 def test_remember_records_provenance_and_governance_metadata(tmp_path):

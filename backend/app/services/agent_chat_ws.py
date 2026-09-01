@@ -561,7 +561,10 @@ class DevPromptBuilder:
             mgr = MemoryManager(db_path=_memory_db_path())
             try:
                 results = await mgr.recall(project_id, user_message, top_k=5)
-                return mgr.inject_memories("", results).strip()
+                block = mgr.inject_memories("", results).strip()
+                if block and results:
+                    mgr.reinforce(results, project_id=project_id)
+                return block
             finally:
                 mgr.close()
         except Exception:

@@ -48,6 +48,7 @@ from .models import (
     MemoryEntry, MemoryType, MemoryConfig,
     RecallResult, RetrieveMode,
 )
+from .policy import MemoryRecallPolicy, MemoryWriteDecision, MemoryWritePolicy
 from .policy import MemoryWriteDecision, MemoryWritePolicy
 from .database import MemoryDatabase
 from .lifecycle import LifecycleManager
