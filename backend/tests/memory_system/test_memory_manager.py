@@ -6,12 +6,49 @@ from datetime import datetime, timedelta, timezone
 
 from memory_system.manager import MemoryManager, _normalize_subject
 from memory_system.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
+from memory_system.policy import MemoryWritePolicy
 
 
 def _extract(items):
     async def fn(prompt):
         return json.dumps(items, ensure_ascii=False)
     return fn
+
+
+def test_memory_write_policy_rejects_transient_and_low_confidence_candidates():
+    policy = MemoryWritePolicy(min_confidence=0.6)
+    assert not policy.evaluate({
+        "memory_type": "insight", "summary": "temporary result", "temporary": True,
+    }).allowed
+    assert not policy.evaluate({
+        "memory_type": "decision", "summary": "unverified guess", "confidence": 0.2,
+    }).allowed
+    assert policy.evaluate({
+        "memory_type": "decision", "summary": "use SQLite", "confidence": 0.8,
+    }).allowed
+
+
+def test_remember_records_provenance_and_governance_metadata(tmp_path):
+    async def _run():
+        mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
+        await mgr.remember(
+            "p", "ctx", "agent_task", "u", "o",
+            extract_fn=_extract([{
+                "memory_type": "decision", "summary": "use SQLite",
+                "confidence": 0.9, "importance": 0.8,
+            }]),
+            source_run_id="run-1", source_trace_id="trace-1",
+            source_message_id="message-1", scope="project",
+        )
+        entry = mgr.db.list_by_project("p")[0]
+        assert entry.metadata["provenance"]["run_id"] == "run-1"
+        assert entry.metadata["provenance"]["trace_id"] == "trace-1"
+        assert entry.metadata["scope"] == "project"
+        assert entry.metadata["governance"]["confidence"] == 0.9
+        assert entry.metadata["governance"]["status"] == "active"
+        mgr.close()
+
+    asyncio.run(_run())
 
 
 def test_insight_subject_supersession(tmp_path):

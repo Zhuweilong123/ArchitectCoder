@@ -32,6 +32,7 @@ from .models import (
     RetrieveMode, RecallResult, _utc_now, _utc_now_dt,
 )
 from .tokenizer import tokenize_for_fts, tokenize
+from .policy import MemoryWritePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -170,18 +171,22 @@ class MemoryManager:
         mgr.maintenance("blog_system")
     """
 
-    __slots__ = ("db", "config", "lifecycle", "_embedding_service")
+    __slots__ = ("db", "config", "lifecycle", "_embedding_service", "write_policy")
 
     def __init__(
         self,
         db_path: str = "./memories.db",
         config: Optional[MemoryConfig] = None,
         embedding_service = None,  # EmbeddingService | None (预留)
+        write_policy: Optional[MemoryWritePolicy] = None,
     ):
         self.config = config or MemoryConfig(db_path=db_path)
         self.db = MemoryDatabase(db_path)
         self.lifecycle = LifecycleManager(self.db, self.config)
         self._embedding_service = embedding_service
+        self.write_policy = write_policy or MemoryWritePolicy(
+            min_confidence=self.config.min_write_confidence,
+        )
 
     # ==================================================================
     # Public API
@@ -198,6 +203,10 @@ class MemoryManager:
         llm_output: str = "",
         user_feedback: Optional[str] = None,
         extract_fn: Optional[ExtractFn] = None,
+        source_run_id: str = "",
+        source_trace_id: str = "",
+        source_message_id: str = "",
+        scope: str = "project",
     ) -> List[MemoryEntry]:
         """
         LLM 调用后提取并存储记忆.
@@ -256,6 +265,12 @@ class MemoryManager:
                     "context": context,
                     "call_type": llm_call_type,
                     "extracted_at": _utc_now(),
+                    "provenance": {
+                        "run_id": source_run_id,
+                        "trace_id": source_trace_id,
+                        "message_id": source_message_id,
+                    },
+                    "scope": scope or "project",
                 }
                 if "metadata" in item and isinstance(item["metadata"], dict):
                     metadata.update(item["metadata"])
@@ -271,6 +286,21 @@ class MemoryManager:
                     if s and s not in merged_tags:
                         merged_tags.append(s)
 
+                decision = self.write_policy.evaluate(
+                    item, user_feedback=user_feedback,
+                )
+                if not decision.allowed:
+                    logger.info(
+                        "[MemoryManager] Candidate rejected by write policy: %s",
+                        decision.reason,
+                    )
+                    continue
+
+                metadata["governance"] = {
+                    "confidence": decision.confidence,
+                    "status": "active",
+                    "policy": "default",
+                }
                 entry = MemoryEntry(
                     project_id=project_id,
                     memory_type=MemoryType(item.get("memory_type", "insight")),
@@ -279,7 +309,7 @@ class MemoryManager:
                     subject=_normalize_subject(item.get("subject", "")),
                     metadata=metadata,
                     tags=merged_tags,
-                    importance_score=float(item.get("importance", 0.5)),
+                    importance_score=max(0.0, min(1.0, float(item.get("importance", 0.5)))),
                     updated_at=_utc_now(),
                     user_feedback=user_feedback,
                     source=llm_call_type,

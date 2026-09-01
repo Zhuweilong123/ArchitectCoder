@@ -713,6 +713,8 @@ async def _archive_task_to_memory(
     final_answer: str,
     tool_calls_detail: list[dict],
     llm: BaseAgentsLLM,
+    run_id: str = "",
+    trace_id: str = "",
 ) -> None:
     """任务结束后异步归档：工具过程摘要 + 结论 → 记忆系统。
 
@@ -733,6 +735,8 @@ async def _archive_task_to_memory(
                 user_input=user_message,
                 llm_output=combined[:2000],
                 extract_fn=_extract_fn_for(llm),
+                source_run_id=run_id,
+                source_trace_id=trace_id,
             )
         finally:
             mgr.close()
@@ -1003,6 +1007,8 @@ async def _handle_dev(
                         final_answer=d["final_answer"] or "",
                         tool_calls_detail=task_tool_calls,
                         llm=getattr(agent, "llm", None),
+                        run_id=run_id,
+                        trace_id=trace_log.trace_id if trace_log else "",
                     ))
 
                 ok = await _ws_send(websocket, {

@@ -48,6 +48,7 @@ from .models import (
     MemoryEntry, MemoryType, MemoryConfig,
     RecallResult, RetrieveMode,
 )
+from .policy import MemoryWriteDecision, MemoryWritePolicy
 from .database import MemoryDatabase
 from .lifecycle import LifecycleManager
 from .tokenizer import tokenize, tokenize_for_index, tokenize_for_fts, is_jieba_available
