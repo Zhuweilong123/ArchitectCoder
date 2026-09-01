@@ -29,6 +29,7 @@ from typing import Optional
 from app.agent_base.tools.base import Tool
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.core.risk_policy import RiskDecision, RiskPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +394,8 @@ class BashTool(AsyncTool):
                  review_manager=None, progress=None,
                  review_timeout: float = BASH_REVIEW_TIMEOUT,
                  timeout: float = BASH_TIMEOUT,
-                 output_cap: int = BASH_OUTPUT_CAP):
+                 output_cap: int = BASH_OUTPUT_CAP,
+                 risk_policy: RiskPolicy | None = None):
         super().__init__(
             name="bash",
             description=(
@@ -410,6 +412,10 @@ class BashTool(AsyncTool):
         self._review_timeout = review_timeout
         self._timeout = max(0.1, min(float(timeout), 3600.0))
         self._output_cap = max(1024, min(int(output_cap), 1_000_000))
+        self._risk_policy = risk_policy or RiskPolicy(
+            deny_patterns=DENY_LIST,
+            approval_patterns=REVIEW_LIST,
+        )
 
     async def _execute(self, params: dict) -> str:
         command = params.get("command", "")
@@ -417,6 +423,15 @@ class BashTool(AsyncTool):
             return "Error: command must be a non-empty string"
 
         lowered = command.lower()
+        risk = self._risk_policy.evaluate("bash", {"command": command})
+        if risk.action == "deny":
+            logger.info("High-risk command denied: %s (matches %s)", command[:100], risk.pattern)
+            return f"Error: command denied (high-risk, matches deny list: {risk.pattern})"
+        approval_scope = self._risk_policy.approval_scope("bash", {"command": command})
+        if risk.action == "ask":
+            verdict = await self._request_approval(command, risk, approval_scope)
+            if verdict is not None:
+                return verdict
 
         # File discovery has a dedicated, path-sandboxed ``glob`` tool.  Pure
         # shell directory listings add noisy output and frequently lead the
@@ -441,7 +456,7 @@ class BashTool(AsyncTool):
 
         # ── 敏感：请求人工审核，批准才执行 ──
         for pattern in _REVIEW_LIST_LOWER:
-            if pattern in lowered:
+            if pattern in lowered and risk.action != "ask":
                 verdict = await self._request_approval(command, pattern)
                 if verdict is not None:
                     return verdict  # 拒绝/超时/无通道 → 不执行
@@ -482,14 +497,26 @@ class BashTool(AsyncTool):
             return f"executable '{executable}' is not allowed"
         return None
 
-    async def _request_approval(self, command: str, pattern: str) -> Optional[str]:
+    async def _request_approval(
+        self,
+        command: str,
+        pattern: str | RiskDecision,
+        approval_scope: dict[str, str] | None = None,
+    ) -> Optional[str]:
         """敏感命令走 ReviewManager 人工审核。返回 None 表示批准可执行，
         否则返回拒绝原因文本（fail closed：拒绝/超时/无审核通道都不执行）。"""
+        decision = pattern if isinstance(pattern, RiskDecision) else RiskDecision(
+            "ask", "high", "sensitive command", pattern,
+        )
+        matched_pattern = decision.pattern
+        scope = approval_scope or self._risk_policy.approval_scope(
+            "bash", {"command": command},
+        )
         if self._review_manager is None or self._progress is None:
             logger.warning("🚫 敏感命令无审核通道，拒绝执行: %s", command[:100])
             return (
                 f"Error: command requires human approval (matches sensitive list: "
-                f"{pattern}), but no review channel is available. Command NOT executed."
+                f"{matched_pattern}), but no review channel is available. Command NOT executed."
             )
 
         title = "敏感命令请求审核"
@@ -497,6 +524,11 @@ class BashTool(AsyncTool):
             review_type="bash_command",
             title=title,
             content=command,
+            metadata={
+                "risk_level": decision.level,
+                "risk_reason": decision.reason,
+                "approval_scope": scope,
+            },
             question=f"命令命中敏感规则「{pattern}」，是否允许执行？",
         )
 
@@ -536,6 +568,10 @@ class BashTool(AsyncTool):
             decision, feedback = "", str(result)
 
         if decision == "accept":
+            if not self._risk_policy.approval_is_valid(
+                "bash", {"command": command}, scope,
+            ):
+                return "Error: approval scope mismatch. Command NOT executed."
             logger.info("✅ 敏感命令已批准: %s", command[:100])
             return None
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
