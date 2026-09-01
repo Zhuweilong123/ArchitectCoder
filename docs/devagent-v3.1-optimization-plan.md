@@ -781,6 +781,28 @@ safely and provide the completed work, remaining work, and exact reason.
 
 本次 3.1 运行记录：`eval_6ceaf785972a487b`，结果文件为 `temp/evals/results-v31-element-rerun.jsonl`，Trace 为 `temp/chat_log/trace_eval_6ceaf785972a487b.jsonl`。后续正式门禁应在同一用例上分别固定 `DEVAGENT_PROMPT_VERSION=3.0/3.1`，重复运行并报告均值、P95、通过率和 token/工具调用置信区间。
 
+### 7.3.1 连续对话用例与 3.0 基线实测对比
+
+本表比较参考 Trace `20260901_181159_uq2m` 与新增连续对话用例 `trace-3-1-component-element-continuous-remove-001`。两者均为 7 条用户消息、相同消息顺序；仅将第 3 轮的“增加 `Element`”替换为“移除 `Element`”，并将新用例初始组件状态预置为带 `Element`，保证删除操作有真实前置条件。
+
+| 指标 | 3.0 参考 Trace | 3.1 连续对话实跑 | 变化 | 解释 |
+|---|---:|---:|---:|---|
+| 用户消息轮数 | 7 | 7 | 0% | 消息序列严格对齐 |
+| DevAgent LLM 响应 | 164 | 58 | -64.6% | 3.1 上下文压缩和状态快路径生效 |
+| 工具调用事件 | 214 | 105 | -50.9% | 新 Trace 含 105 个 tool_call/tool_result 对 |
+| Prompt tokens | 1,543,206 | 316,660 | -79.5% | 仍需同模型重复运行后作为正式门禁 |
+| Completion tokens | 76,534 | 29,447 | -61.5% | 受任务完成路径和预算停止影响 |
+| LLM 总 tokens | 1,619,740 | 346,107 | -78.6% | 3.1 结果仍触发了部分单轮 token 预算 |
+| 单次最大 Prompt | 23,410 | 12,554 | -46.4% | 低于 3.1 目标 12,000，仍需继续收敛 |
+| Prompt cache 命中率 | 94.9% | 59.9% | -35.0 个百分点 | 连续多轮动态上下文导致命中率下降，需专项优化 |
+| LLM 累计耗时 | 661.6 秒 | 249.7 秒 | -62.2% | 环境相同前仅作方向性判断 |
+| 失败/阻止工具结果 | 62 | 5 | -91.9% | 新 Trace 中仍有 5 个工具结果错误 |
+| 审核请求/响应 | 3 / 3 | 0 / 0 | 未覆盖 | 本次模型未触发审核工具，不能据此宣称审核链路通过 |
+| 状态查询成本 | 22 次 LLM / 30 次工具 | 0 / 0 | 全部消除 | 3.1 使用 checkpoint fast path |
+| 任务结果 | 用户主动中止 | 得分 1.0，硬校验通过 | — | 新结果仅证明最终状态正确，不代表审核链路完整 |
+
+新增实跑结果：`eval_e9184aa983c3439d`，结果文件 `temp/evals/results-v31-continuous-remove.jsonl`，Trace 文件 `temp/chat_log/trace_eval_e9184aa983c3439d.jsonl`。该表可用于 prompt、上下文和路由趋势分析；正式发布门禁还必须补齐审核事件覆盖，并在 3.0/3.1 固定模型、重复次数和预算后再比较均值与 P95。
+
 ### 7.4 单元测试
 
 - usage 字段标准化与缺失处理。
@@ -1013,4 +1035,4 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 为保证移除操作具有真实前置状态，新用例使用独立 fixture，初始组件名和源码标识均带 `CompElement`，项目入口保持参考 Trace 的 `radar_design_0730.umlproj` 结构，并启用自动审核 stub。用例元数据标记 `conversation_mode=continuous`、`reference_turn_count=7` 和 `baseline_comparable=true`，便于与 3.0 Trace 按同轮次、同模型、同 fixture 口径对比。
 
-新增用例已使用 3.1 版本实跑：`eval_e9184aa983c3439d`，7 轮均完成，所有轮次与最终硬校验通过（UML、源码标识、无关文件清理、37 个测试、审核 stub）。本次运行 100 次工具调用、346,107 tokens、249.7 秒；第 3/4 轮曾触发单轮 token 预算停止，但后续校验仍确认目标状态正确，因此该结果作为连续对话正确性样本，不作为最终性能门禁数据。
+新增用例已使用 3.1 版本实跑：`eval_e9184aa983c3439d`，7 轮均完成，UML、源码标识、无关文件清理和 37 个测试等硬校验通过。本次运行 100 次工具调用、346,107 tokens、249.7 秒；第 3/4 轮曾触发单轮 token 预算停止，且本次 Trace 未产生 `review_request/review_response` 事件，因此审核 stub 链路尚未被实际覆盖。该结果作为连续对话正确性样本，不作为最终性能门禁数据。
