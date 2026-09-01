@@ -180,6 +180,38 @@ class UMLContainsChecker(Checker):
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
 
+class UMLComponentNamesChecker(Checker):
+    """Assert the exact component names in one UML component diagram."""
+
+    name = "uml_component_names"
+
+    def __init__(self, path: str, names: list[str], diagram: str = ""):
+        self.path = path
+        self.expected = sorted(str(name) for name in names)
+        self.diagram = diagram
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            document = _load_uml(workspace, self.path)
+            actual: list[str] = []
+            for diagram in _selected_diagrams(document, self.diagram):
+                actual.extend(
+                    str(item.get("name", ""))
+                    for item in diagram.get("components", [])
+                )
+            actual = sorted(name for name in actual if name)
+            passed = actual == self.expected
+            return CheckerResult(
+                checker=self.name,
+                passed=passed,
+                score=1.0 if passed else 0.0,
+                message=f"components={actual!r}, expected={self.expected!r}",
+                details={"actual": actual, "expected": self.expected},
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
 class UMLRelationChecker(Checker):
     name = "uml_relation"
 
@@ -330,6 +362,8 @@ def build_checkers(
             result.append(UMLValidChecker(config["path"]))
         elif kind == "uml_contains":
             result.append(UMLContainsChecker(config["path"], config["kind"], config["name"], config.get("diagram", "")))
+        elif kind == "uml_component_names":
+            result.append(UMLComponentNamesChecker(config["path"], config["names"], config.get("diagram", "")))
         elif kind == "uml_relation":
             result.append(UMLRelationChecker(config["path"], config["source"], config["target"], config.get("relation_type", ""), config.get("diagram", "")))
         elif kind == "uml_method":

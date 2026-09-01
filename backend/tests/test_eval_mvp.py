@@ -55,6 +55,48 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     assert result.workspace == ""
 
 
+def test_eval_runner_reuses_agent_for_multiturn_and_status_fast_path(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _MultiAgent:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.llm = type("FakeLLM", (), {"model": "deepseek-v4-flash"})()
+            self.tool_registry = __import__("app.agent_base.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry()
+            self.last_run_checkpoint = {}
+            self.seen = []
+
+        async def arun_stream(self, prompt, **kwargs):
+            self.seen.append(prompt)
+            (self.workspace / "result.txt").write_text("evaluation passed", encoding="utf-8")
+            yield ReActProgress(step=1, is_final=True, final_answer=f"done: {prompt}")
+
+    agents = []
+
+    async def _factory(workspace, case):
+        agent = _MultiAgent(workspace)
+        agents.append(agent)
+        return agent
+
+    case = EvalCase(
+        id="multiturn-status",
+        turns=[
+            {"prompt": "先完成第一步"},
+            {"prompt": "再完成第二步"},
+            {"prompt": "上面的任务执行完成了吗？"},
+        ],
+        checkers=[{"type": "file_contains", "path": "result.txt", "text": "passed"}],
+    )
+    result = asyncio.run(EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory))
+
+    assert result.status == "passed"
+    assert agents[0].seen == ["先完成第一步", "再完成第二步"]
+    assert [turn["status"] for turn in result.metadata["turns"]] == [
+        "completed", "completed", "checkpoint_fast_path",
+    ]
+
+
 def test_eval_runner_persists_missing_fixture_result(tmp_path):
     case = EvalCase(
         id="missing-fixture",
@@ -76,11 +118,14 @@ async def _run_checkers(workspace, configs):
 def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
-    assert len(cases) == 16
+    assert len(cases) == 17
     assert "radar-base-001" in cases
     assert "radar_sim_v1" in projects
     assert "radar_sim_validation_v1" in projects
     assert "radar_sim_noise_seed_v1" in projects
+    trace_case = cases["trace-3-1-component-element-multiturn-001"]
+    assert len(trace_case.turns) == 3
+    assert trace_case.metadata["require_auto_approval"] is True
 
     fixture, manifest = resolve_fixture(cases["radar-base-001"])
     assert fixture is not None and fixture.is_dir()
@@ -96,6 +141,29 @@ def test_radar_eval_catalog_and_uml_checkers():
     ]
     results = asyncio.run(_run_checkers(fixture, configs))
     assert all(item.passed for item in results), [(item.checker, item.passed, item.message) for item in results]
+
+
+def test_uml_component_names_checker_matches_exact_component_set(tmp_path):
+    project = {
+        "diagrams": [{
+            "name": "Components",
+            "diagram_type": "component",
+            "components": [{"name": "ModeControl"}, {"name": "EchoSimulation"}],
+        }],
+    }
+    (tmp_path / "project.umlproj").write_text(
+        __import__("json").dumps(project), encoding="utf-8",
+    )
+    checker = build_checkers([{
+        "type": "uml_component_names",
+        "path": "project.umlproj",
+        "diagram": "Components",
+        "names": ["EchoSimulation", "ModeControl"],
+    }])[0]
+
+    result = asyncio.run(checker.check(tmp_path))
+
+    assert result.passed is True
 
 
 def test_eval_cases_are_pinned_to_devagent():

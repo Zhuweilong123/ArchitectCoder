@@ -21,7 +21,7 @@ from app.services.chat_trace import TraceSession
 from app.services.model_router import choose_model
 
 from .checkers import build_checkers
-from .models import EvalCase, EvalResult
+from .models import CheckerResult, EvalCase, EvalResult
 from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
@@ -62,7 +62,8 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     )
 
     settings = get_settings()
-    route = choose_model(case.prompt, settings)
+    first_prompt = case.prompts()[0]
+    route = choose_model(first_prompt, settings)
     llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
     manifest = load_projects().get(case.project_id) if case.project_id else None
     source_dir = workspace / manifest.source_dir if manifest else workspace
@@ -74,7 +75,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         source_dir=str(source_dir),
         test_dir=str(test_dir),
         project_file=str(project_file),
-        user_message=case.prompt,
+        user_message=first_prompt,
         progress=progress,
         task_scope=f"eval_{case.id}",
         auto_approve_reviews=True,
@@ -84,8 +85,12 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         max_total_tokens=min(settings.agent_max_total_tokens, case.max_total_tokens),
     )
     agent._eval_context = await prompt_builder.build_context(
-        str(project_file), str(source_dir), str(test_dir), case.prompt,
+        str(project_file), str(source_dir), str(test_dir), first_prompt,
     )
+    agent._eval_prompt_builder = prompt_builder
+    agent._eval_source_dir = str(source_dir)
+    agent._eval_test_dir = str(test_dir)
+    agent._eval_project_file = str(project_file)
     agent._eval_progress = progress
     agent._eval_review_manager = review_mgr
     agent._eval_agent_mode = "devagent"
@@ -160,8 +165,9 @@ class EvalRunner:
             try:
                 source_dir = workspace / manifest.source_dir if manifest else workspace
                 test_dir = workspace / manifest.test_dir if manifest else workspace
+                first_prompt = case.prompts()[0]
                 async with TraceSession(
-                    session_id=run_id, user_message=case.prompt,
+                    session_id=run_id, user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
                     env_snapshot={"eval_case": case.id},
                 ) as tracer:
@@ -172,67 +178,235 @@ class EvalRunner:
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()
-
-                    async def consume() -> None:
-                        context = getattr(agent, "_eval_context", "")
-                        allowed_tools = getattr(agent, "_eval_allowed_tools", None)
-                        if context:
-                            stream_kwargs = {"context": context}
-                            if allowed_tools is not None:
-                                stream_kwargs["allowed_tools"] = allowed_tools
-                            stream = agent.arun_stream(case.prompt, **stream_kwargs)
-                        elif allowed_tools is not None:
-                            stream = agent.arun_stream(case.prompt, allowed_tools=allowed_tools)
-                        else:
-                            # Preserve the original ``arun_stream(prompt)``
-                            # contract for lightweight test doubles.
-                            stream = agent.arun_stream(case.prompt)
-                        async for progress in stream:
-                            result.tool_calls += sum(
-                                detail.get("status") != "blocked"
-                                for detail in progress.tool_calls_detail or []
-                            )
-                            for detail in progress.tool_calls_detail or []:
-                                result.total_tokens += int(detail.get("total_tokens") or 0)
-                            if progress.is_final:
-                                tracer.done(answer=progress.final_answer or "")
-
-                    from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
-                    runtime_token = set_runtime(AgentRuntime(
-                        requires_todo_plan=bool(
-                            getattr(agent, "_eval_requires_todo_plan", False)
-                        ),
-                        requires_acceptance_todos=bool(
-                            getattr(agent, "_eval_requires_acceptance_todos", False)
-                        ),
-                    ))
-                    try:
-                        await asyncio.wait_for(consume(), timeout=case.max_seconds)
-                    finally:
-                        reset_runtime(runtime_token)
-                    if change_set is not None:
-                        result.metadata["change_set"] = change_set.commit()
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
-                    if progress_relay is not None:
-                        for event in progress_relay.events:
-                            if event.get("event") != "review":
-                                continue
-                            tracer.review_request(
-                                review_id=event.get("review_id", 0),
-                                review_type=event.get("review_type", ""),
-                                title=event.get("title", ""),
-                                question=event.get("question", ""),
-                                content=event.get("content", ""),
+
+                    async def consume() -> None:
+                        """Run a legacy single prompt or a shared multi-turn script."""
+                        from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+                        from app.services.agent_chat_ws import (
+                            _checkpoint_answer, _enabled_tools_context, _is_status_query,
+                            _needs_strategy_planning, _requires_todo_plan,
+                            _select_tools_for_message, _todo_plan_context,
+                        )
+
+                        prompts = case.prompts()
+                        turn_specs = case.turn_specs()
+                        turn_records: list[dict[str, Any]] = []
+                        review_offset = 0
+                        approval_offset = 0
+                        prompt_builder = getattr(agent, "_eval_prompt_builder", None)
+                        production_agent = hasattr(agent, "tool_registry")
+                        for turn_index, (prompt, turn_spec) in enumerate(
+                            zip(prompts, turn_specs), 1
+                        ):
+                            settings = get_settings()
+                            route = choose_model(prompt, settings)
+                            if production_agent and getattr(
+                                getattr(agent, "llm", None), "model", None
+                            ) != route.model:
+                                agent.llm = BaseAgentsLLM.from_settings(
+                                    model=route.model, temperature=0.3,
+                                )
+                                subagent = agent.tool_registry.get_tool("spawn_subagent")
+                                if subagent is not None and hasattr(subagent, "llm"):
+                                    subagent.llm = agent.llm
+                            tracer.user_message(
+                                prompt,
+                                project_file=getattr(agent, "_eval_project_file", ""),
+                                source_dir=getattr(agent, "_eval_source_dir", ""),
+                                test_dir=getattr(agent, "_eval_test_dir", ""),
                             )
+                            tracer.event(
+                                "agent_route", model=route.model,
+                                tier=route.tier, reason=route.reason, turn=turn_index,
+                            )
+
+                            if not production_agent:
+                                turn_tool_calls = 0
+                                turn_tokens = 0
+                                final_answer = ""
+                                async for progress in agent.arun_stream(prompt):
+                                    details = progress.tool_calls_detail or []
+                                    delta_tool_calls = sum(
+                                        detail.get("status") != "blocked" for detail in details
+                                    )
+                                    turn_tool_calls += delta_tool_calls
+                                    result.tool_calls += delta_tool_calls
+                                    for detail in details:
+                                        tokens = int(detail.get("total_tokens") or 0)
+                                        turn_tokens += tokens
+                                        result.total_tokens += tokens
+                                    if progress.is_final:
+                                        final_answer = progress.final_answer or ""
+                                        tracer.done(answer=final_answer)
+                                turn_records.append({
+                                    "turn": turn_index,
+                                    "prompt": prompt,
+                                    "model": route.model,
+                                    "status": "completed",
+                                    "tool_calls": turn_tool_calls,
+                                    "total_tokens": turn_tokens,
+                                    "answer": final_answer[:500],
+                                })
+                                continue
+
+                            if _is_status_query(prompt):
+                                checkpoint = getattr(agent, "last_run_checkpoint", {}) or {}
+                                answer = _checkpoint_answer(checkpoint)
+                                tracer.done(answer=answer)
+                                turn_records.append({
+                                    "turn": turn_index,
+                                    "prompt": prompt,
+                                    "model": route.model,
+                                    "status": "checkpoint_fast_path",
+                                    "tool_calls": 0,
+                                    "total_tokens": 0,
+                                })
+                                continue
+
+                            context = ""
+                            if prompt_builder is not None:
+                                context = await prompt_builder.build_context(
+                                    getattr(agent, "_eval_project_file", ""),
+                                    getattr(agent, "_eval_source_dir", ""),
+                                    getattr(agent, "_eval_test_dir", ""),
+                                    prompt,
+                                )
+                                tracer.event(
+                                    "prompt_context",
+                                    prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                                    static_prompt=prompt_builder.static_prompt_report,
+                                    **prompt_builder.last_context_report,
+                                    turn=turn_index,
+                                )
+                            allowed_tools = _select_tools_for_message(
+                                agent.tool_registry, prompt,
+                            )
+                            requires_todo = _requires_todo_plan(prompt)
+                            requires_acceptance = _needs_strategy_planning(prompt)
+                            context = "\n\n".join(filter(None, [
+                                context,
+                                _enabled_tools_context(allowed_tools),
+                                _todo_plan_context(requires_todo, requires_acceptance),
+                            ]))
+                            stream_kwargs: dict[str, Any] = {}
+                            if context:
+                                stream_kwargs["context"] = context
+                            if allowed_tools is not None:
+                                stream_kwargs["allowed_tools"] = allowed_tools
+
+                            runtime_token = set_runtime(AgentRuntime(
+                                requires_todo_plan=requires_todo,
+                                requires_acceptance_todos=requires_acceptance,
+                            ))
+                            turn_tool_calls = 0
+                            turn_tokens = 0
+                            final_answer = ""
+                            try:
+                                stream = agent.arun_stream(prompt, **stream_kwargs)
+                                async for progress in stream:
+                                    details = progress.tool_calls_detail or []
+                                    turn_tool_calls += sum(
+                                        detail.get("status") != "blocked" for detail in details
+                                    )
+                                    result.tool_calls += sum(
+                                        detail.get("status") != "blocked" for detail in details
+                                    )
+                                    for detail in details:
+                                        tokens = int(detail.get("total_tokens") or 0)
+                                        turn_tokens += tokens
+                                        result.total_tokens += tokens
+                                    if progress.is_final:
+                                        final_answer = progress.final_answer or ""
+                                        tracer.done(answer=final_answer)
+                            finally:
+                                reset_runtime(runtime_token)
+
+                            # Mirror the production transport's terminal
+                            # checkpoint so a following status turn exercises
+                            # the same no-LLM fast path.
+                            agent.last_run_checkpoint = {
+                                "status": "completed",
+                                "run_id": run_id,
+                                "turn": turn_index,
+                                "request": prompt[:500],
+                                "verification": [],
+                            }
+                            turn_records.append({
+                                "turn": turn_index,
+                                "prompt": prompt,
+                                "model": route.model,
+                                "status": "completed",
+                                "tool_calls": turn_tool_calls,
+                                "total_tokens": turn_tokens,
+                                "answer": final_answer[:500],
+                            })
+
+                            turn_configs = [
+                                *turn_spec.hard_checkers,
+                                *turn_spec.checkers,
+                            ]
+                            if turn_configs:
+                                turn_results = await asyncio.gather(*(
+                                    checker.check(workspace)
+                                    for checker in build_checkers(turn_configs, baseline_hashes)
+                                ))
+                                result.checker_results.extend(turn_results)
+                                turn_records[-1]["checker_results"] = [
+                                    item.model_dump() for item in turn_results
+                                ]
+
+                            if progress_relay is not None:
+                                for event in progress_relay.events[review_offset:]:
+                                    if event.get("event") != "review":
+                                        continue
+                                    tracer.review_request(
+                                        review_id=event.get("review_id", 0),
+                                        review_type=event.get("review_type", ""),
+                                        title=event.get("title", ""),
+                                        question=event.get("question", ""),
+                                        content=event.get("content", ""),
+                                    )
+                                review_offset = len(progress_relay.events)
+                            if review_mgr is not None:
+                                for event in review_mgr.approval_events[approval_offset:]:
+                                    if event.get("event") == "review_response":
+                                        tracer.review_response(
+                                            review_id=event.get("review_id", 0),
+                                            response=json.dumps(event, ensure_ascii=False),
+                                        )
+                                approval_offset = len(review_mgr.approval_events)
+
+                        result.metadata["turns"] = turn_records
+
+                    await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                    if change_set is not None:
+                        result.metadata["change_set"] = change_set.commit()
                     if review_mgr is not None:
                         result.metadata["approval_events"] = review_mgr.approval_events
-                        for event in review_mgr.approval_events:
-                            if event.get("event") == "review_response":
-                                tracer.review_response(
-                                    review_id=event.get("review_id", 0),
-                                    response=json.dumps(event, ensure_ascii=False),
-                                )
+                    if case.metadata.get("require_auto_approval"):
+                        approval_events = review_mgr.approval_events if review_mgr else []
+                        responses = [
+                            event for event in approval_events
+                            if event.get("event") == "review_response"
+                        ]
+                        approval_passed = bool(responses) and all(
+                            event.get("approval_mode") == "auto_stub"
+                            and event.get("decision") == "accept"
+                            for event in responses
+                        )
+                        result.checker_results.append(CheckerResult(
+                            checker="review_auto_stub",
+                            passed=approval_passed,
+                            score=1.0 if approval_passed else 0.0,
+                            message=(
+                                "all reviews accepted by auto stub"
+                                if approval_passed else
+                                "review approval was not fully auto-stub accepted"
+                            ),
+                            details={"responses": len(responses)},
+                        ))
                     if progress_relay is not None:
                         result.metadata["progress_events"] = progress_relay.events
                     hard_results = await asyncio.gather(*(
