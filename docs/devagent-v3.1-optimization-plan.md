@@ -935,7 +935,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 增加结构化 `search_text`、`delete_path` 工具，并接入工作区安全策略。
 - 中文 UML 组件/元素/节点/关系意图进入工具路由。
 - 模型按用户轮次重新选择，问候不会锁定后续复杂任务的模型。
-- 增加基于 Agent 实例的 run checkpoint 和状态追问快路径。
+- 增加基于 Agent 实例及 RunStore 元数据的 run checkpoint 和状态追问快路径，支持重连后的持久化回退读取。
 - 记忆提取允许返回空数组；测试/清理/状态类上下文不召回无关长期记忆。
 - ReAct 历史支持 tool-call/result 成对压缩，并保留旧步骤的 extractive checkpoint。
 - PromptBuilder 增加动态区段 token 统计，并提供 `DEVAGENT_PROMPT_VERSION=3.1` 紧凑 Prompt opt-in。
@@ -945,7 +945,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 - Todo 已具备基础 T2 判断，但完整 T0/T1/T2 策略、前端状态呈现和 feature flag 仍未完成。
 - 已有 step 级成对/抽取式压缩，但尚未完成按编辑证据、验证结果和重复失败分类的完整语义压缩。
-- checkpoint 当前保存在持久 Agent 实例内，尚未实现服务重启后的独立持久化读取。
+- checkpoint 已写入 RunStore 元数据；跨服务重启的恢复/续跑语义仍未实现，目前仅支持状态读取。
 - `DEVAGENT_PROMPT_VERSION` 已可切换 Prompt 候选，但尚未完成固定任务集 A/B 和默认版本切换。
 
 ### 15.3 未开始或未完成发布闭环

@@ -787,6 +787,20 @@ def _checkpoint_answer(checkpoint: dict) -> str:
     return "\n".join(lines)
 
 
+def _latest_persisted_checkpoint(session_id: str) -> dict:
+    """Read the newest run checkpoint for reconnects without invoking an LLM."""
+    if not session_id:
+        return {}
+    try:
+        for record in get_run_store().list(limit=20, session_id=session_id):
+            checkpoint = record.metadata.get("checkpoint")
+            if isinstance(checkpoint, dict) and checkpoint:
+                return checkpoint
+    except Exception:
+        logger.warning("[RunState] Could not read checkpoint for %s", session_id, exc_info=True)
+    return {}
+
+
 def _extract_fn_for(llm: BaseAgentsLLM):
     """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。
 
@@ -1126,6 +1140,7 @@ async def _handle_dev(
                         get_run_store().transition(
                             run_id, RunStatus.SUCCEEDED,
                             expected={RunStatus.RUNNING}, owner_id=run_owner,
+                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
                         )
                     except RunStateError:
                         logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
@@ -1168,6 +1183,7 @@ async def _handle_dev(
                     run_id, RunStatus.CANCELED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error="agent task was canceled",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
@@ -1189,6 +1205,7 @@ async def _handle_dev(
                     run_id, RunStatus.CANCELED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error="user requested stop",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
@@ -1218,6 +1235,7 @@ async def _handle_dev(
                     run_id, RunStatus.FAILED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error=f"{type(e).__name__}: {e}",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s failed", run_id, exc_info=True)
@@ -1349,6 +1367,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 # avoids repeating project discovery after a long task.
                 if _is_status_query(user_message):
                     checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                    checkpoint = checkpoint or _latest_persisted_checkpoint(session_id)
                     answer = _checkpoint_answer(checkpoint)
                     trace_log.done(answer=answer)
                     await _ws_send(websocket, {

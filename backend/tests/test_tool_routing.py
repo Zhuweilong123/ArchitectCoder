@@ -1,7 +1,8 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _is_status_query, _requires_todo_plan,
-    _select_tools_for_message, _todo_progress_state, DevPromptBuilder,
+    _latest_persisted_checkpoint, _select_tools_for_message,
+    _todo_progress_state, DevPromptBuilder,
 )
 
 
@@ -131,3 +132,18 @@ def test_compact_prompt_is_opt_in_and_shorter(monkeypatch):
 
     assert compact.prompt_version == "3.1"
     assert len(compact.system_prompt) < len(full.system_prompt)
+
+
+def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):
+    class _Record:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+    class _Store:
+        def list(self, *, limit, session_id):
+            assert limit == 20
+            assert session_id == "session-1"
+            return [_Record({"checkpoint": {"status": "succeeded"}})]
+
+    monkeypatch.setattr("app.services.agent_chat_ws.get_run_store", lambda: _Store())
+    assert _latest_persisted_checkpoint("session-1") == {"status": "succeeded"}
