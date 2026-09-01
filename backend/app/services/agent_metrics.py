@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import Counter
+import re
 
 
 class AgentMetrics:
@@ -25,6 +26,27 @@ class AgentMetrics:
             self._counters["runs_total"] += 1
             self._counters[f"runs_{status}"] += 1
 
+    def record_prompt(
+        self,
+        prompt_tokens: int,
+        *,
+        prompt_version: str = "",
+        compacted_tokens: int = 0,
+    ) -> None:
+        """Record prompt sizing without retaining prompt content.
+
+        The counters are intentionally aggregate-only: this makes prompt
+        A/B comparisons observable while avoiding another copy of potentially
+        sensitive context in process memory or metrics payloads.
+        """
+        with self._lock:
+            self._counters["prompt_builds_total"] += 1
+            self._counters["prompt_tokens_total"] += max(int(prompt_tokens or 0), 0)
+            self._counters["prompt_compacted_tokens_total"] += max(int(compacted_tokens or 0), 0)
+            if prompt_version:
+                key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(prompt_version))[:64]
+                self._counters[f"prompt_version_{key}_total"] += 1
+
     def snapshot(self) -> dict:
         with self._lock:
             result = dict(self._counters)
@@ -42,4 +64,3 @@ _METRICS = AgentMetrics()
 
 def get_agent_metrics() -> AgentMetrics:
     return _METRICS
-

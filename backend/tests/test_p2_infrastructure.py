@@ -48,11 +48,15 @@ def test_agent_metrics_snapshot_and_reset():
     metrics = AgentMetrics()
     metrics.record_tool("read_file", "success", 12.5)
     metrics.record_run("success")
+    metrics.record_prompt(120, prompt_version="devagent-3.1", compacted_tokens=8)
     snapshot = metrics.snapshot()
     assert snapshot["tool_calls_total"] == 1
     assert snapshot["tool_calls_success"] == 1
     assert snapshot["runs_success"] == 1
     assert snapshot["tool_latency_total_ms"] == 12.5
+    assert snapshot["prompt_builds_total"] == 1
+    assert snapshot["prompt_tokens_total"] == 120
+    assert snapshot["prompt_compacted_tokens_total"] == 8
+    assert snapshot["prompt_version_devagent-3.1_total"] == 1
     metrics.reset()
     assert metrics.snapshot() == {"tool_latency_total_ms": 0.0}
-

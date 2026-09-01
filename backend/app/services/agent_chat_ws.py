@@ -1414,6 +1414,17 @@ async def agent_chat_ws(websocket: WebSocket):
                         static_prompt=self.prompt_builder.static_prompt_report,
                         **prompt_builder.last_context_report,
                     )
+                    from app.services.agent_metrics import get_agent_metrics
+                    static_tokens = int(
+                        (prompt_builder.static_prompt_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    dynamic_tokens = int(
+                        (prompt_builder.last_context_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    get_agent_metrics().record_prompt(
+                        static_tokens + dynamic_tokens,
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                    )
 
                 # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，
                 # 收消息循环必须并发处理 review_response / stop 才能解阻塞。

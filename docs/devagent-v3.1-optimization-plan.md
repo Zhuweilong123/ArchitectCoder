@@ -941,6 +941,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - PromptBuilder 增加动态区段 token 统计，并提供 `DEVAGENT_PROMPT_VERSION=3.1` 紧凑 Prompt opt-in。
 - 记忆召回按稳定 `subject` 去重，避免同主题候选同时注入。
 - 记忆主题冲突按“已确认优先、再按更新时间、最后按相关性”选择唯一候选，并写入治理确认标记。
+- Agent metrics 聚合 Prompt 构建次数、估算 token、压缩 token 和 Prompt 版本，支持后续 A/B 门禁且不保存 Prompt 内容。
 
 ### 15.2 部分完成
 
