@@ -118,14 +118,19 @@ async def _run_checkers(workspace, configs):
 def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
-    assert len(cases) == 17
+    assert len(cases) == 18
     assert "radar-base-001" in cases
     assert "radar_sim_v1" in projects
     assert "radar_sim_validation_v1" in projects
     assert "radar_sim_noise_seed_v1" in projects
+    assert "radar_trace_remove_v1" in projects
     trace_case = cases["trace-3-1-component-element-multiturn-001"]
     assert len(trace_case.turns) == 3
     assert trace_case.metadata["require_auto_approval"] is True
+    continuous_case = cases["trace-3-1-component-element-continuous-remove-001"]
+    assert len(continuous_case.turns) == 7
+    assert continuous_case.metadata["reference_turn_count"] == 7
+    assert continuous_case.metadata["baseline_comparable"] is True
 
     fixture, manifest = resolve_fixture(cases["radar-base-001"])
     assert fixture is not None and fixture.is_dir()
@@ -164,6 +169,19 @@ def test_uml_component_names_checker_matches_exact_component_set(tmp_path):
     result = asyncio.run(checker.check(tmp_path))
 
     assert result.passed is True
+
+
+def test_file_absent_checker_requires_explicit_path_to_be_removed(tmp_path):
+    target = tmp_path / "temporary.txt"
+    target.write_text("temporary", encoding="utf-8")
+    checker = build_checkers([{"type": "file_absent", "path": "temporary.txt"}])[0]
+
+    before = asyncio.run(checker.check(tmp_path))
+    target.unlink()
+    after = asyncio.run(checker.check(tmp_path))
+
+    assert before.passed is False
+    assert after.passed is True
 
 
 def test_eval_cases_are_pinned_to_devagent():

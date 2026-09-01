@@ -44,6 +44,23 @@ class FileExistsChecker(Checker):
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
 
+class FileAbsentChecker(Checker):
+    name = "file_absent"
+
+    def __init__(self, path: str):
+        self.path = path
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            path = _safe_path(workspace, self.path)
+            passed = not path.exists()
+            return CheckerResult(checker=self.name, passed=passed,
+                                 score=1.0 if passed else 0.0,
+                                 message=f"{self.path} {'absent' if passed else 'still exists'}")
+        except ValueError as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
 class FileContainsChecker(Checker):
     name = "file_contains"
 
@@ -352,6 +369,8 @@ def build_checkers(
         kind = config.get("type", "")
         if kind == "file_exists":
             result.append(FileExistsChecker(config["path"]))
+        elif kind == "file_absent":
+            result.append(FileAbsentChecker(config["path"]))
         elif kind == "file_contains":
             result.append(FileContainsChecker(config["path"], config["text"]))
         elif kind == "json_field":
