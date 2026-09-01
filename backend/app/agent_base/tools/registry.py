@@ -3,6 +3,7 @@
 from typing import Dict, Any, Callable, Optional
 from .base import Tool
 from .result import ToolResult
+from app.core.capabilities import CapabilityPolicy
 
 
 class ToolRegistry:
@@ -19,9 +20,20 @@ class ToolRegistry:
         result = registry.execute_tool("calculator", "2+3")
     """
 
-    def __init__(self):
+    def __init__(self, policy: CapabilityPolicy | None = None):
         self._tools: dict[str, Tool] = {}
         self._functions: dict[str, dict[str, Any]] = {}
+        self.policy = policy or CapabilityPolicy()
+
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        """Set the current run's tool capability allowlist."""
+        self.policy.set_allowed_tools(names)
+
+    def _policy_error(self, name: str, parameters: Dict[str, Any]) -> ToolResult | None:
+        message = self.policy.check(name, parameters)
+        if message is None:
+            return None
+        return ToolResult(status="blocked", data=f"Error: {message}", error_code="POLICY_BLOCKED")
 
     # ── 注册 ──────────────────────────────────────────
 
@@ -135,6 +147,11 @@ class ToolRegistry:
         - 函数工具：input_data 直接传给函数
         """
         # 先查 Tool 对象
+        policy_input = {"command": input_data} if name == "bash" else {"input": input_data}
+        policy_error = self._policy_error(name, policy_input)
+        if policy_error is not None:
+            return policy_error.text
+
         tool = self._tools.get(name)
         if tool:
             try:
@@ -158,6 +175,10 @@ class ToolRegistry:
         Tool 对象直接接收参数字典，函数工具忽略额外参数。
         """
         import asyncio
+
+        policy_error = self._policy_error(name, parameters)
+        if policy_error is not None:
+            return policy_error.text
 
         tool = self._tools.get(name)
         if tool:
@@ -204,6 +225,10 @@ class ToolRegistry:
     ) -> ToolResult:
         """异步执行工具并返回结构化结果；旧 API 继续返回 result.text。"""
         import asyncio
+
+        policy_error = self._policy_error(name, parameters)
+        if policy_error is not None:
+            return policy_error
 
         tool = self._tools.get(name)
         if tool:

@@ -48,6 +48,7 @@ from app.services.agent_session import get_or_create
 from app.services.change_set import ChangeSet
 from app.services.model_router import choose_model
 from app.services.run_state import RunStateError, RunStatus, get_run_store
+from app.core.capabilities import CapabilityPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -593,7 +594,10 @@ async def _create_dev_agent(
         include_subagent=True,
     )
 
-    registry = ToolRegistry()
+    workspace_roots = [source_dir, test_dir]
+    if project_file:
+        workspace_roots.append(os.path.dirname(project_file))
+    registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
     for t in tools:
         registry.register_tool(t)
 
@@ -844,6 +848,7 @@ async def _handle_dev(
             change_set.begin()
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         allowed_tools = _select_tools_for_message(agent.tool_registry, user_message)
+        agent.tool_registry.set_allowed_tools(allowed_tools)
         context = "\n\n".join(filter(None, [
             context, _enabled_tools_context(allowed_tools),
             _todo_plan_context(todo_plan_required, acceptance_mode),
