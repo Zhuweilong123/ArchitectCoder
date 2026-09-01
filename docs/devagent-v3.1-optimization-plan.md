@@ -922,9 +922,11 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 该顺序确保 prompt 精简建立在运行时能力已经明确、动态噪声已经降低、质量评测已经可用的基础上，从而最大限度降低性能回退风险。
 
-## 15. 首批实现状态（2026-09-01）
+## 15. 实现进度同步（2026-09-01）
 
-已完成第一批 Phase A/B 基础改造，并通过 50 个针对性回归用例：
+当前状态：**3.1 运行时基础能力已实现，完整发布验收尚未完成**。
+
+### 15.1 已完成
 
 - LLM usage 回传到 ReAct 循环，token 硬预算在真实响应字段上累计。
 - 工具 schema 筛选保持路由顺序，避免 set 顺序造成缓存抖动。
@@ -933,7 +935,31 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 增加结构化 `search_text`、`delete_path` 工具，并接入工作区安全策略。
 - 中文 UML 组件/元素/节点/关系意图进入工具路由。
 - 模型按用户轮次重新选择，问候不会锁定后续复杂任务的模型。
-- 增加 run checkpoint 和状态追问快路径。
-- 记忆提取允许返回空数组，测试/清理/状态类上下文不召回无关长期记忆。
+- 增加基于 Agent 实例的 run checkpoint 和状态追问快路径。
+- 记忆提取允许返回空数组；测试/清理/状态类上下文不召回无关长期记忆。
+- ReAct 历史支持 tool-call/result 成对压缩，并保留旧步骤的 extractive checkpoint。
+- PromptBuilder 增加动态区段 token 统计，并提供 `DEVAGENT_PROMPT_VERSION=3.1` 紧凑 Prompt opt-in。
+- 记忆召回按稳定 `subject` 去重，避免同主题候选同时注入。
 
-尚未完成的后续项：语义级 ReAct 历史压缩、完整 T0/T1/T2 前端状态呈现、记忆主题冲突治理、静态 prompt A/B 以及正式灰度。以上项目必须在固定评测集上完成质量门禁后再默认启用。
+### 15.2 部分完成
+
+- Todo 已具备基础 T2 判断，但完整 T0/T1/T2 策略、前端状态呈现和 feature flag 仍未完成。
+- 已有 step 级成对/抽取式压缩，但尚未完成按编辑证据、验证结果和重复失败分类的完整语义压缩。
+- checkpoint 当前保存在持久 Agent 实例内，尚未实现服务重启后的独立持久化读取。
+- `DEVAGENT_PROMPT_VERSION` 已可切换 Prompt 候选，但尚未完成固定任务集 A/B 和默认版本切换。
+
+### 15.3 未开始或未完成发布闭环
+
+- 固定 trace 回放、3.0/3.1 聚合指标报告和质量门禁。
+- 记忆主题冲突的“最新且已确认”优先规则及完整治理测试。
+- 文档第 8 节列出的完整 Feature Flag、10%/50% 灰度和按模块回滚链路。
+- 3.1 发布目标（调用数、prompt token、工具失败、延迟）在真实任务集上的达标验证。
+
+### 15.4 验证与提交记录
+
+- backend 全量测试：**161 passed**（仓库既有 `.pytest_cache` 权限 warning 不影响结果）。
+- 首批提交：`f285147 feat: implement DevAgent 3.1 optimization foundation`。
+- 上下文与 Prompt telemetry：`774e58a feat: add DevAgent context compaction and prompt telemetry`。
+- 记忆主题去重：`34dd250 fix: deduplicate DevAgent memory subjects`。
+
+后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。
