@@ -991,6 +991,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - Prompt metrics 聚合：`dfd485a feat: aggregate DevAgent prompt metrics`。
 - Trace 聚合摘要：`e41717f feat: add privacy-safe trace summaries`。
 - 多轮 Element 命名评测：`e38c881 feat: add trace-derived multiturn evaluation case`。
+- 参考 Trace 严格对齐的连续对话移除评测：`fb90811 feat: add trace-aligned continuous remove evaluation`。
 
 后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。
 
