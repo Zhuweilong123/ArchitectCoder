@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from app.agent_base.agents.react_agent import ReActProgress
 from app.evals.models import EvalCase
 from app.evals.checkers import build_checkers
@@ -93,6 +95,11 @@ def test_radar_eval_catalog_and_uml_checkers():
     ]
     results = asyncio.run(_run_checkers(fixture, configs))
     assert all(item.passed for item in results), [(item.checker, item.passed, item.message) for item in results]
+
+
+def test_eval_cases_are_pinned_to_devagent():
+    with pytest.raises(ValueError):
+        EvalCase(id="legacy-agent", prompt="legacy", agent="legacy")
 
 
 def test_paths_unchanged_detects_mutation(tmp_path):

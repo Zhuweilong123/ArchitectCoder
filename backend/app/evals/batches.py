@@ -63,6 +63,7 @@ class EvalSummary(BaseModel):
 
 class EvalBatch(BaseModel):
     batch_id: str
+    agent: str = "devagent"
     suite: str = ""
     version: str
     label: str = ""
@@ -202,6 +203,7 @@ class EvalBatchManager:
             summary = row.get("summary") or {}
             trends.append({
                 "batch_id": row.get("batch_id", ""),
+                "agent": row.get("agent", "devagent"),
                 "version": row.get("version", ""),
                 "label": row.get("label", ""),
                 "suite": row.get("suite", ""),
@@ -248,6 +250,7 @@ class EvalBatchManager:
                     "created_at": data.get("created_at", ""),
                     "note": data.get("note", ""),
                     "batch_id": batch.get("batch_id", ""),
+                    "agent": batch.get("agent", "devagent"),
                     "version": batch.get("version", ""),
                     "suite": batch.get("suite", ""),
                     "summary": batch.get("summary", {}),

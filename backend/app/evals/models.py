@@ -6,16 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EvalCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(min_length=1, max_length=100)
     name: str = ""
     prompt: str = Field(min_length=1)
     project_id: str = ""
     fixture: str = ""
-    agent: str = "devagent"
     checkers: list[dict[str, Any]] = Field(default_factory=list)
     hard_checkers: list[dict[str, Any]] = Field(default_factory=list)
     max_seconds: float = Field(default=600.0, gt=0, le=3600)
@@ -67,6 +68,7 @@ class CheckerResult(BaseModel):
 class EvalResult(BaseModel):
     run_id: str
     case_id: str
+    agent: str = "devagent"
     status: str
     passed: bool
     score: float = Field(default=0.0, ge=0.0, le=1.0)

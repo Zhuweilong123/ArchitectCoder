@@ -231,6 +231,7 @@ export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEn
 
 export interface EvalCaseInfo {
   id: string;
+  agent: string;
   name: string;
   prompt: string;
   project_id: string;
@@ -256,6 +257,7 @@ export interface EvalSummary {
 export interface EvalResult {
   run_id: string;
   case_id: string;
+  agent: string;
   status: string;
   passed: boolean;
   score: number;
@@ -271,6 +273,7 @@ export interface EvalResult {
 
 export interface EvalBatch {
   batch_id: string;
+  agent: string;
   suite: string;
   version: string;
   label: string;
@@ -286,6 +289,7 @@ export interface EvalBatch {
 
 export interface EvalTrend {
   batch_id: string;
+  agent: string;
   version: string;
   label: string;
   suite: string;
@@ -300,6 +304,7 @@ export interface EvalArchive {
   created_at: string;
   note: string;
   batch_id: string;
+  agent: string;
   version: string;
   suite: string;
   summary: EvalSummary;

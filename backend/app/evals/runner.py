@@ -15,15 +15,13 @@ from typing import Any, Awaitable, Callable
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.agent_base.tools.my_tools.conversation_tools import create_conversation_tools
-from app.agent_base.tools.registry import ToolRegistry
 from app.core.config import get_settings
 from app.services.agent_metrics import get_agent_metrics
 from app.services.chat_trace import TraceSession
 from app.services.model_router import choose_model
 
 from .checkers import build_checkers
-from .models import CheckerResult, EvalCase, EvalResult
+from .models import EvalCase, EvalResult
 from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
@@ -48,41 +46,6 @@ def _trace_total_tokens(trace_path: str) -> int:
 def _default_results_path() -> Path:
     settings = get_settings()
     return Path(settings.uml_dir).resolve().parent / "evals" / "results.jsonl"
-
-
-async def react_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
-    settings = get_settings()
-    route = choose_model(case.prompt, settings)
-    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.2)
-    manifest = load_projects().get(case.project_id) if case.project_id else None
-    # An eval fixture is its own isolated project.  Its source, tests, design
-    # and migration artifacts (for example ``legacy/``) are all task resources,
-    # so make the copied fixture root the tool sandbox.  Restricting tools to
-    # ``src/`` here made valid sibling resources unreachable and encouraged
-    # temporary diagnostic scripts instead of the requested edit.
-    source_dir = workspace
-    test_dir = workspace / manifest.test_dir if manifest else workspace
-    project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
-    tools, _ = create_conversation_tools(
-        llm, source_dir=str(source_dir), test_dir=str(test_dir),
-        project_file=str(project_file), include_review=False,
-        task_scope=f"eval_{case.id}",
-    )
-    registry = ToolRegistry()
-    for tool in tools:
-        registry.register_tool(tool)
-    return ReActAgent(
-        name=f"EvalAgent:{case.id}", llm=llm, tool_registry=registry,
-        # Eval cases own their explicit budget. The interactive-agent default
-        # is intentionally lower, but capping diagnostics at that value makes
-        # focused cases fail before they can perform the requested edit.
-        max_steps=case.max_tool_calls,
-        max_tool_calls=case.max_tool_calls,
-        max_total_tokens=min(settings.agent_max_total_tokens, case.max_total_tokens),
-        max_run_seconds=case.max_seconds,
-        llm_timeout_seconds=settings.agent_llm_timeout_seconds,
-        use_native_fc=True,
-    )
 
 
 async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
@@ -139,12 +102,6 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     return agent
 
 
-async def default_agent_factory(workspace: Path, case: EvalCase) -> Any:
-    if case.agent.lower() in {"react", "reactagent", "legacy"}:
-        return await react_agent_factory(workspace, case)
-    return await dev_agent_factory(workspace, case)
-
-
 class EvalRunner:
     def __init__(self, results_path: str | Path | None = None):
         self.results_path = Path(results_path) if results_path else _default_results_path()
@@ -153,7 +110,10 @@ class EvalRunner:
         run_id = f"eval_{uuid.uuid4().hex[:16]}"
         result = EvalResult.started(run_id, case.id)
         started = time.monotonic()
-        factory = agent_factory or default_agent_factory
+        # All official evaluations use the production DevAgent assembly.
+        # ``agent_factory`` remains only as a dependency-injection seam for
+        # unit tests and local harnesses.
+        factory = agent_factory or dev_agent_factory
         result.metadata["project_id"] = case.project_id
 
         try:
@@ -208,7 +168,7 @@ class EvalRunner:
                     result.trace_id = tracer.trace_id
                     agent = await factory(workspace, case)
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
-                    result.metadata["agent"] = getattr(agent, "_eval_agent_mode", "react")
+                    result.metadata["agent"] = "devagent"
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()

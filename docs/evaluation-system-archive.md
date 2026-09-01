@@ -124,7 +124,7 @@ backend/app/evals/
    ↓
 创建独立 TraceSession
    ↓
-创建带项目路径和任务预算的 ReActAgent
+创建带项目路径和任务预算的生产 DevAgent
    ↓
 流式执行 Agent，收集工具调用、Token 和最终状态
    ↓

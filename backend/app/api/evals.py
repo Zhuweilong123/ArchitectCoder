@@ -28,6 +28,7 @@ async def list_cases():
         "cases": [
             {
                 "id": case.id,
+                "agent": "devagent",
                 "name": case.name,
                 "prompt": case.prompt,
                 "project_id": case.project_id,

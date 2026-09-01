@@ -15,6 +15,7 @@ import {
 import './EvaluationCenter.css';
 
 const { Text } = Typography;
+const EVAL_AGENT_LABEL = 'DevAgent';
 
 function fmtDuration(ms: number): string {
   if (!ms) return '-';
@@ -119,6 +120,7 @@ const EvaluationCenter: React.FC = () => {
   const activeSummary = batch?.summary;
   const resultColumns = [
     { title: '用例', dataIndex: 'case_id', key: 'case_id', ellipsis: true },
+    { title: 'Agent', dataIndex: 'agent', key: 'agent', width: 100, render: () => EVAL_AGENT_LABEL },
     { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string, row: any) => statusTag(v, row.passed) },
     { title: '得分', dataIndex: 'score', key: 'score', width: 80, render: (v: number) => `${(v * 100).toFixed(0)}%` },
     { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', width: 90, render: fmtDuration },
@@ -128,7 +130,7 @@ const EvaluationCenter: React.FC = () => {
 
   return (
     <Modal
-      title={<Space><LineChartOutlined />评测中心</Space>}
+      title={<Space><LineChartOutlined />{EVAL_AGENT_LABEL} 评测中心</Space>}
       open={evaluationVisible}
       onCancel={() => setEvaluationVisible(false)}
       footer={null}
@@ -137,6 +139,7 @@ const EvaluationCenter: React.FC = () => {
     >
       <Card size="small" className="evaluation-control-card">
         <Space wrap>
+          <Tag color="blue">{EVAL_AGENT_LABEL}</Tag>
           <Select value={suite} onChange={setSuite} style={{ width: 180 }} options={suites.map((v) => ({ value: v, label: v }))} />
           <Input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="版本号 / commit" style={{ width: 190 }} />
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={runBatch} loading={loading} disabled={!suite || !!batch && ['running', 'queued'].includes(batch.status)}>
@@ -147,7 +150,7 @@ const EvaluationCenter: React.FC = () => {
             一键归档
           </Button>
         </Space>
-        <div className="evaluation-hint">评测将在隔离工作区顺序执行；版本号用于趋势对比和归档检索。</div>
+        <div className="evaluation-hint">仅运行完整 DevAgent 生产链路；评测将在隔离工作区顺序执行，版本号用于趋势对比和归档检索。</div>
       </Card>
 
       {batch && (
