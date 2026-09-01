@@ -254,6 +254,41 @@ export interface EvalSummary {
   total_tool_calls: number;
 }
 
+export interface EvalBaselineGroup {
+  name: string;
+  total: number;
+  passed: number;
+  failed: number;
+  timeout: number;
+  pass_rate: number;
+  average_score: number;
+}
+
+export interface EvalBaseline {
+  agent: string;
+  label: string;
+  version: string;
+  model: string;
+  captured_at: string;
+  case_count: number;
+  passed: number;
+  failed: number;
+  timeout: number;
+  pass_rate: number;
+  average_score: number;
+  total_duration_ms: number;
+  total_tokens: number;
+  total_tool_calls: number;
+  groups: EvalBaselineGroup[];
+}
+
+export interface EvalRepositoryInfo {
+  branch: string;
+  commit: string;
+  version: string;
+  dirty: boolean;
+}
+
 export interface EvalResult {
   run_id: string;
   case_id: string;
@@ -313,6 +348,23 @@ export interface EvalArchive {
 export async function listEvalCases(): Promise<EvalCaseInfo[]> {
   const { data } = await api.get('/evals/cases');
   return data.cases;
+}
+
+export async function getEvalBaseline(): Promise<EvalBaseline> {
+  const { data } = await api.get('/evals/baseline');
+  return data;
+}
+
+export async function getEvalRepository(): Promise<EvalRepositoryInfo> {
+  const { data } = await api.get('/evals/repository');
+  return data;
+}
+
+export async function archiveEvalBaseline(note = ''): Promise<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}> {
+  const { data } = await api.post('/evals/baseline/archive', { note }, { timeout: 15000 });
+  return data;
 }
 
 export async function startEvalBatch(req: {

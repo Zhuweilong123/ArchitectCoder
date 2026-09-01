@@ -223,18 +223,54 @@ class EvalBatchManager:
         if batch.status in {"queued", "running"}:
             raise ValueError("evaluation batch is still running")
 
+        return self._write_archive(batch.model_dump(mode="json"), request.note)
+
+    def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]:
+        """Archive the tracked DevAgent baseline as a completed snapshot."""
+        case_count = int(snapshot.get("case_count") or 0)
+        if case_count <= 0:
+            raise ValueError("evaluation baseline has no cases")
+        batch = {
+            "batch_id": f"baseline_{uuid.uuid4().hex[:16]}",
+            "agent": snapshot.get("agent", "devagent"),
+            "suite": "baseline",
+            "version": snapshot.get("version", "baseline"),
+            "label": snapshot.get("label", "DevAgent baseline"),
+            "case_ids": [],
+            "status": "completed",
+            "started_at": snapshot.get("captured_at", ""),
+            "finished_at": snapshot.get("captured_at", ""),
+            "results": [],
+            "summary": {
+                "total": case_count,
+                "completed": case_count,
+                "passed": int(snapshot.get("passed") or 0),
+                "failed": int(snapshot.get("failed") or 0),
+                "timeout": int(snapshot.get("timeout") or 0),
+                "errors": 0,
+                "pass_rate": float(snapshot.get("pass_rate") or 0),
+                "average_score": float(snapshot.get("average_score") or 0),
+                "average_duration_ms": round(float(snapshot.get("total_duration_ms") or 0) / case_count, 1),
+                "total_tokens": int(snapshot.get("total_tokens") or 0),
+                "total_tool_calls": int(snapshot.get("total_tool_calls") or 0),
+            },
+        }
+        return self._write_archive(batch, note)
+
+    @staticmethod
+    def _write_archive(batch: dict[str, Any], note: str) -> dict[str, Any]:
         archive_id = f"archive_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
         archive = {
             "archive_id": archive_id,
             "created_at": _now(),
-            "note": request.note,
-            "batch": batch.model_dump(mode="json"),
+            "note": note,
+            "batch": batch,
         }
         root = _eval_root() / "archives"
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"{archive_id}.json"
         path.write_text(json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"archive_id": archive_id, "created_at": archive["created_at"], "path": str(path), "batch_id": batch.batch_id}
+        return {"archive_id": archive_id, "created_at": archive["created_at"], "path": str(path), "batch_id": batch.get("batch_id", "")}
 
     def list_archives(self, limit: int = 20) -> list[dict[str, Any]]:
         root = _eval_root() / "archives"

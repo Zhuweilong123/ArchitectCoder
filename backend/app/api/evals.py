@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -15,10 +19,53 @@ from app.evals.registry import load_cases
 from app.evals.runner import EvalRunner
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
+BASELINE_PATH = Path(__file__).resolve().parents[1] / "evals" / "baseline.json"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
 class EvalRunRequest(BaseModel):
     case_id: str = Field(min_length=1, max_length=100)
+
+
+class EvalBaselineArchiveRequest(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+def _read_baseline() -> dict:
+    if not BASELINE_PATH.is_file():
+        raise HTTPException(status_code=404, detail="evaluation baseline not found")
+    try:
+        return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="evaluation baseline is invalid") from exc
+
+
+def _git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPOSITORY_ROOT), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _repository_info() -> dict[str, str | bool]:
+    commit = _git_output("rev-parse", "HEAD")
+    branch = _git_output("branch", "--show-current") or "detached"
+    dirty = bool(_git_output("status", "--porcelain"))
+    version = f"{branch}@{commit}" if commit else "unknown"
+    return {
+        "branch": branch,
+        "commit": commit,
+        "version": version,
+        "dirty": dirty,
+    }
 
 
 @router.get("/cases")
@@ -39,6 +86,24 @@ async def list_cases():
             for case in cases.values()
         ]
     }
+
+
+@router.get("/baseline")
+async def get_baseline():
+    return _read_baseline()
+
+
+@router.get("/repository")
+async def get_repository():
+    return _repository_info()
+
+
+@router.post("/baseline/archive")
+async def archive_baseline(request: EvalBaselineArchiveRequest):
+    try:
+        return get_batch_manager().archive_baseline(_read_baseline(), request.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/run", response_model=EvalResult)

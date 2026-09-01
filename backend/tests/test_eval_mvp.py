@@ -13,6 +13,7 @@ from app.evals.projects import load_projects, resolve_fixture
 from app.evals.registry import load_cases
 from app.evals.runner import EvalRunner
 from app.evals.batches import EvalArchiveRequest, EvalBatch, EvalBatchManager, summarize
+from app.api.evals import BASELINE_PATH, get_baseline, get_repository
 
 
 class _FakeAgent:
@@ -102,6 +103,26 @@ def test_eval_cases_are_pinned_to_devagent():
         EvalCase(id="legacy-agent", prompt="legacy", agent="legacy")
 
 
+def test_devagent_baseline_snapshot_is_available():
+    baseline = asyncio.run(get_baseline())
+
+    assert BASELINE_PATH.is_file()
+    assert baseline["agent"] == "devagent"
+    assert baseline["case_count"] == 16
+    assert baseline["passed"] == 10
+    assert baseline["pass_rate"] == 0.625
+    assert len(baseline["groups"]) == 6
+
+
+def test_devagent_repository_version_is_available():
+    repository = asyncio.run(get_repository())
+
+    assert repository["branch"]
+    assert repository["commit"]
+    assert repository["version"].endswith(repository["commit"])
+    assert isinstance(repository["dirty"], bool)
+
+
 def test_paths_unchanged_detects_mutation(tmp_path):
     protected = tmp_path / "protected.txt"
     protected.write_text("before", encoding="utf-8")
@@ -155,3 +176,31 @@ def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
     archive_path = tmp_path / "evals" / "archives" / f"{archive['archive_id']}.json"
     assert archive_path.is_file()
     assert '"v3.0-test"' in archive_path.read_text(encoding="utf-8")
+
+
+def test_eval_batch_archive_baseline_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.evals.batches._eval_root", lambda: tmp_path / "evals")
+    manager = EvalBatchManager()
+
+    archive = manager.archive_baseline(
+        {
+            "agent": "devagent",
+            "label": "DevAgent 3.0 基线",
+            "version": "a1122e8",
+            "captured_at": "2026-09-01T03:10:58+00:00",
+            "case_count": 16,
+            "passed": 10,
+            "failed": 1,
+            "timeout": 5,
+            "pass_rate": 0.625,
+            "average_score": 0.6667,
+            "total_duration_ms": 1930200,
+            "total_tokens": 6639458,
+            "total_tool_calls": 602,
+        },
+        note="baseline",
+    )
+
+    archive_path = tmp_path / "evals" / "archives" / f"{archive['archive_id']}.json"
+    assert archive_path.is_file()
+    assert '"DevAgent 3.0 基线"' in archive_path.read_text(encoding="utf-8")

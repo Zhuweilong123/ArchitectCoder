@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Divider, Empty, Input, List, Modal, Progress,
+  Alert, Button, Card, Col, Divider, Empty, List, Modal, Progress,
   Row, Select, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import {
@@ -8,9 +8,10 @@ import {
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import {
-  archiveEvalBatch, getEvalBatch, listEvalArchives, listEvalCases,
-  listEvalTrends, startEvalBatch,
-  type EvalArchive, type EvalBatch, type EvalCaseInfo, type EvalTrend,
+  archiveEvalBaseline, archiveEvalBatch, getEvalBatch, listEvalArchives, listEvalCases,
+  getEvalBaseline, listEvalTrends, startEvalBatch,
+  getEvalRepository,
+  type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalRepositoryInfo, type EvalTrend,
 } from '../../services/api';
 import './EvaluationCenter.css';
 
@@ -39,10 +40,11 @@ function statusTag(status: string, passed?: boolean): React.ReactNode {
 const EvaluationCenter: React.FC = () => {
   const { evaluationVisible, setEvaluationVisible } = useUiStore();
   const [cases, setCases] = useState<EvalCaseInfo[]>([]);
+  const [baseline, setBaseline] = useState<EvalBaseline | null>(null);
+  const [repository, setRepository] = useState<EvalRepositoryInfo | null>(null);
   const [trends, setTrends] = useState<EvalTrend[]>([]);
   const [archives, setArchives] = useState<EvalArchive[]>([]);
   const [suite, setSuite] = useState('baseline');
-  const [version, setVersion] = useState('working-tree');
   const [batch, setBatch] = useState<EvalBatch | null>(null);
   const [loading, setLoading] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -61,6 +63,12 @@ const EvaluationCenter: React.FC = () => {
       setCases(caseList);
       setTrends(trendList);
       setArchives(archiveList);
+      setRepository(await getEvalRepository());
+      try {
+        setBaseline(await getEvalBaseline());
+      } catch {
+        setBaseline(null);
+      }
     } catch (error: any) {
       message.error(`评测数据加载失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
@@ -91,9 +99,13 @@ const EvaluationCenter: React.FC = () => {
   };
 
   const runBatch = async () => {
+    if (!repository?.version || repository.version === 'unknown') {
+      message.warning('无法获取当前仓库版本，暂时不能启动评测');
+      return;
+    }
     setLoading(true);
     try {
-      const next = await startEvalBatch({ suite, version: version.trim() || 'working-tree' });
+      const next = await startEvalBatch({ suite, version: repository.version });
       setBatch(next);
       pollBatch(next.batch_id);
     } catch (error: any) {
@@ -104,10 +116,15 @@ const EvaluationCenter: React.FC = () => {
   };
 
   const archiveBatch = async () => {
-    if (!batch || ['running', 'queued'].includes(batch.status)) return;
+    if (batch && ['running', 'queued'].includes(batch.status)) return;
+    if (!batch && !baseline) return;
     setArchiving(true);
     try {
-      await archiveEvalBatch(batch.batch_id, `${batch.version} ${batch.suite} 评测归档`);
+      if (batch) {
+        await archiveEvalBatch(batch.batch_id, `${batch.version} ${batch.suite} 评测归档`);
+      } else if (baseline) {
+        await archiveEvalBaseline(`${baseline.version} DevAgent 基线归档`);
+      }
       await refresh();
       message.success('评测结果已归档');
     } catch (error: any) {
@@ -141,17 +158,54 @@ const EvaluationCenter: React.FC = () => {
         <Space wrap>
           <Tag color="blue">{EVAL_AGENT_LABEL}</Tag>
           <Select value={suite} onChange={setSuite} style={{ width: 180 }} options={suites.map((v) => ({ value: v, label: v }))} />
-          <Input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="版本号 / commit" style={{ width: 190 }} />
-          <Button type="primary" icon={<PlayCircleOutlined />} onClick={runBatch} loading={loading} disabled={!suite || !!batch && ['running', 'queued'].includes(batch.status)}>
+          <Tag color={repository?.dirty ? 'warning' : 'green'} title={repository?.commit || undefined}>
+            {repository ? `${repository.branch}@${repository.commit.slice(0, 12)}${repository.dirty ? ' · dirty' : ''}` : '读取仓库版本中…'}
+          </Tag>
+          <Button type="primary" icon={<PlayCircleOutlined />} onClick={runBatch} loading={loading} disabled={!suite || !repository?.version || repository.version === 'unknown' || !!batch && ['running', 'queued'].includes(batch.status)}>
             一键运行
           </Button>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
-          <Button icon={<FileDoneOutlined />} onClick={archiveBatch} loading={archiving} disabled={!batch || ['running', 'queued'].includes(batch.status)}>
+          <Button icon={<FileDoneOutlined />} onClick={archiveBatch} loading={archiving} disabled={(!batch && !baseline) || !!batch && ['running', 'queued'].includes(batch.status)}>
             一键归档
           </Button>
         </Space>
-        <div className="evaluation-hint">仅运行完整 DevAgent 生产链路；评测将在隔离工作区顺序执行，版本号用于趋势对比和归档检索。</div>
+        <div className="evaluation-hint">仅运行完整 DevAgent 生产链路；版本自动取当前 Git 分支和 HEAD commit，评测将在隔离工作区顺序执行并用于趋势对比和归档检索。dirty 表示工作区存在未提交修改。</div>
       </Card>
+
+      {baseline && (
+        <Card
+          size="small"
+          className="evaluation-baseline-card"
+          title={<Space><LineChartOutlined />性能基线</Space>}
+          extra={<Space><Tag color="blue">{EVAL_AGENT_LABEL}</Tag><Text type="secondary">{baseline.version}</Text></Space>}
+        >
+          <div className="evaluation-baseline-meta">
+            {baseline.label} · {baseline.model} · 快照时间：{fmtTime(baseline.captured_at)}
+          </div>
+          <Row gutter={[12, 12]} className="evaluation-stat-row">
+            <Col xs={12} sm={8} md={4}><Statistic title="用例数" value={baseline.case_count} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="通过率" value={baseline.pass_rate} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="平均得分" value={baseline.average_score} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="通过 / 失败 / 超时" value={`${baseline.passed} / ${baseline.failed} / ${baseline.timeout}`} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="累积耗时" value={fmtDuration(baseline.total_duration_ms)} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="总 Token" value={baseline.total_tokens} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="工具调用" value={baseline.total_tool_calls} /></Col>
+          </Row>
+          <Table
+            size="small"
+            rowKey="name"
+            pagination={false}
+            columns={[
+              { title: '范围', dataIndex: 'name', key: 'name' },
+              { title: '通过', key: 'passed', render: (_: unknown, row: EvalBaseline['groups'][number]) => `${row.passed} / ${row.total}` },
+              { title: '通过率', dataIndex: 'pass_rate', key: 'pass_rate', render: (v: number) => `${(v * 100).toFixed(1)}%` },
+              { title: '平均得分', dataIndex: 'average_score', key: 'average_score', render: (v: number) => `${(v * 100).toFixed(1)}%` },
+              { title: '失败 / 超时', key: 'issues', render: (_: unknown, row: EvalBaseline['groups'][number]) => `${row.failed} / ${row.timeout}` },
+            ]}
+            dataSource={baseline.groups}
+          />
+        </Card>
+      )}
 
       {batch && (
         <>

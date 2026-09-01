@@ -1,0 +1,24 @@
+{
+  "agent": "devagent",
+  "label": "DevAgent 3.0 基线",
+  "version": "a1122e8",
+  "model": "deepseek-v4-flash",
+  "captured_at": "2026-09-01T03:10:58+00:00",
+  "case_count": 16,
+  "passed": 10,
+  "failed": 1,
+  "timeout": 5,
+  "pass_rate": 0.625,
+  "average_score": 0.6667,
+  "total_duration_ms": 1930200,
+  "total_tokens": 6639458,
+  "total_tool_calls": 602,
+  "groups": [
+    {"name": "Baseline", "total": 2, "passed": 2, "failed": 0, "timeout": 0, "pass_rate": 1.0, "average_score": 1.0},
+    {"name": "P0（含诊断）", "total": 6, "passed": 5, "failed": 1, "timeout": 0, "pass_rate": 0.8333, "average_score": 0.9444},
+    {"name": "P1（含诊断）", "total": 5, "passed": 1, "failed": 0, "timeout": 4, "pass_rate": 0.2, "average_score": 0.2},
+    {"name": "P2", "total": 3, "passed": 2, "failed": 0, "timeout": 1, "pass_rate": 0.6667, "average_score": 0.6667},
+    {"name": "正式用例（排除诊断）", "total": 12, "passed": 8, "failed": 1, "timeout": 3, "pass_rate": 0.6667, "average_score": 0.7222},
+    {"name": "诊断用例", "total": 4, "passed": 2, "failed": 0, "timeout": 2, "pass_rate": 0.5, "average_score": 0.5}
+  ]
+}

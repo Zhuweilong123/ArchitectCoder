@@ -1,4 +1,6 @@
 .evaluation-control-card { margin-bottom: 12px; background: #fafafa; }
+.evaluation-baseline-card { margin-bottom: 12px; }
+.evaluation-baseline-meta { margin-bottom: 4px; color: #8c8c8c; font-size: 12px; }
 .evaluation-hint { margin-top: 8px; color: #8c8c8c; font-size: 12px; }
 .evaluation-batch-line { display: flex; gap: 10px; align-items: center; margin: 12px 0 8px; flex-wrap: wrap; }
 .evaluation-stat-row { margin: 12px 0; }
