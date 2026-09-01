@@ -1,11 +1,11 @@
 ---
 name: feature-log
-description: UML Designer 项目功能迭代记录
+description: ArchitectCoder 项目功能迭代记录
 metadata:
   type: project
 ---
 
-# UML Designer 功能迭代记录
+# ArchitectCoder 功能迭代记录
 
 > 按实现先后顺序，记录每次功能新增和变更
 

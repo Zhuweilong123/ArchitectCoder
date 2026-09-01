@@ -1,6 +1,6 @@
 # 记忆系统设计
 
-> 本文完整归档 UML Designer 的 Agent 记忆系统（`backend/memory_system/`）设计，
+> 本文完整归档 ArchitectCoder 的 Agent 记忆系统（`backend/memory_system/`）设计，
 > 反映最新实现（含 subject 后写覆盖、recency 检索、类型化衰退）。
 > 作为后续接入向量/混合检索、调参、生命周期策略迭代的参考基线。
 

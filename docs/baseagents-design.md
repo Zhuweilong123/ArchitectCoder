@@ -1,6 +1,6 @@
 # BaseAgents 框架设计
 
-> 本文归档 UML Designer 的 Agent 框架（`backend/app/agent_base/`）设计，
+> 本文归档 ArchitectCoder 的 Agent 框架（`backend/app/agent_base/`）设计，
 > 反映最新代码（UML 优化已迁移 V2 引擎、文件系统原语工具集、记忆系统改造）。
 > 作为后续扩展工具、接入新 Agent 范式、调整运行时的参考基线。
 

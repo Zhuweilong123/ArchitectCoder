@@ -392,13 +392,13 @@ python main.py
 目录运行：
 
 ```bash
-python D:/AI_tools/uml_designer/generated/src/main.py
+python ./generated/src/main.py
 ```
 
 ### 6.2 运行测试
 
 ```bash
-cd D:/AI_tools/uml_designer/generated
+cd generated
 python -m pytest test -q
 # 37 passed
 ```

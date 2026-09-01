@@ -1,11 +1,11 @@
 ---
 name: uml-design-guide
-description: Data-model schemas, enum values, naming conventions and cross-diagram consistency rules for authoring UML class / sequence / component diagrams as UML Designer JSON. Use whenever generating or modifying diagram JSON in a .umlproj file, or when a change in one diagram must stay consistent with the others.
+description: Data-model schemas, enum values, naming conventions and cross-diagram consistency rules for authoring UML class / sequence / component diagrams as ArchitectCoder JSON. Use whenever generating or modifying diagram JSON in a .umlproj file, or when a change in one diagram must stay consistent with the others.
 ---
 
 # UML Design Guide
 
-Reference pack for producing JSON that UML Designer can load directly. Load only
+Reference pack for producing JSON that ArchitectCoder can load directly. Load only
 the file you need — each is 4-11 KB.
 
 ## Which file to load

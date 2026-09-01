@@ -51,6 +51,26 @@ Floating chat panel (bottom-right robot button). A single ReActAgent (**design +
 - **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
 - **Memory system**: cross-session memory — tasks are archived on completion and recalled by relevance into new tasks, with BM25 full-text search + jieba tokenization
 
+### DevAgent Evaluation System
+
+The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
+
+- **Case catalog**: `backend/app/evals/cases/`, currently 16 cases organized into the `baseline`, `p0`, `p1`, `p2`, and `diagnostic` suites.
+- **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
+- **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
+- **Runtime limits**: every case can configure maximum seconds, Tool Calls, and Total Tokens; results retain status, score, duration, model, token/tool usage, Trace ID, and checker details.
+- **Baseline snapshot**: the current baseline is version `a1122e8`: 10 of 16 cases passed, 1 failed, and 5 timed out; pass rate 62.5%, average score 66.67%, with 6,639,458 total tokens and 602 tool calls. Full metrics are recorded in `docs/devagent-evaluation-baseline-2026-09-01.md`.
+- **Version identity**: the Evaluation Center automatically reads the current Git branch and HEAD commit and uses `branch@commit` as the version. An uncommitted working tree is marked `dirty`.
+- **Run and archive**: the Evaluation Center supports one-click suite runs, live batch/result inspection, and one-click archiving for completed batches or the baseline snapshot under `temp/evals/archives/`. The CLI can run all cases or a selected suite:
+
+  ```bash
+  cd backend
+  python -m app.evals.cli
+  python -m app.evals.cli --suite p0
+  ```
+
+  The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
+
 ### Global Optimization
 
 Click "Global Optimization" in the toolbar, describe your needs:
@@ -104,7 +124,7 @@ LLM-generated element positions auto-computed; manually positioned elements full
 ## Project Structure
 
 ```
-uml_designer/
+ArchitectCoder/
 ├── frontend/                       # React frontend
 │   ├── src/
 │   │   ├── components/
@@ -129,6 +149,7 @@ uml_designer/
 │   │   ├── core/                   # Config / auth / security
 │   │   ├── models/                 # Pydantic data models
 │   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
+│   │   ├── evals/                  # DevAgent cases, runner, baseline, and archives
 │   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
 │   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py

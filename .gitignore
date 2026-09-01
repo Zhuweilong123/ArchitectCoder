@@ -31,7 +31,6 @@ backend/.env
 /generated/
 
 # Backend generated temp files (not checked in)
-/uml_designer/
 /temp/
 
 # Runtime artifacts (regenerated, never commit)

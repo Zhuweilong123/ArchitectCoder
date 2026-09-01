@@ -51,6 +51,26 @@
 - **多会话持久化**：新建 / 切换会话，对话历史刷新不丢失；会话日志落盘（Markdown + JSONL trace）
 - **记忆系统**：跨会话记忆，任务结束自动归档、新任务按相关性召回注入，BM25 全文检索 + jieba 分词
 
+### DevAgent 评测体系
+
+评测体系只保留生产链路 **DevAgent**，不再维护 Legacy / ReAct 独立评测方案，避免不同 Agent 路径干扰结果。每个评测用例由受控 JSON 描述，绑定固定项目 fixture 和项目 manifest，在隔离工作区中执行：
+
+- **用例目录**：`backend/app/evals/cases/`，当前 16 个用例，按 `baseline`、`p0`、`p1`、`p2` 和 `diagnostic` 套件组织。
+- **执行链路**：`case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`。
+- **确定性检查**：支持 pytest、UML 有效性/结构/方法/时序、文件存在/内容、受保护路径未变更等检查器。
+- **运行边界**：每个用例可配置最大执行时间、Tool Calls 和 Total Tokens；结果保留状态、得分、耗时、模型、Token、工具调用、Trace ID 和检查器明细。
+- **基线快照**：当前基线版本为 `a1122e8`，16 个用例通过 10 个、失败 1 个、超时 5 个，通过率 62.5%，平均得分 66.67%，累计 6,639,458 Tokens、602 次工具调用。完整指标见 `docs/devagent-evaluation-baseline-2026-09-01.md`。
+- **版本标识**：评测中心自动读取当前 Git 分支和 HEAD commit，使用 `branch@commit` 作为版本；工作区有未提交修改时标记为 `dirty`。
+- **运行与归档**：评测中心支持按套件一键运行、实时查看批次和结果，并将已完成批次或基线快照一键归档到 `temp/evals/archives/`。CLI 可运行全部用例或指定套件：
+
+  ```bash
+  cd backend
+  python -m app.evals.cli
+  python -m app.evals.cli --suite p0
+  ```
+
+  CLI 在存在失败或超时时返回非零退出码；这表示评测结果未全通过，不代表评测框架启动失败。
+
 ### 全局优化
 
 点击工具栏"全局优化"按钮，输入需求描述即可：
@@ -104,7 +124,7 @@ LLM 返回的设计元素坐标自动计算，仅影响新生成元素，手动�
 ## 项目结构
 
 ```
-uml_designer/
+ArchitectCoder/
 ├── frontend/                       # React 前端
 │   ├── src/
 │   │   ├── components/
@@ -129,6 +149,7 @@ uml_designer/
 │   │   ├── core/                   # 配置 / 鉴权 / 安全
 │   │   ├── models/                 # Pydantic 数据模型
 │   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
+│   │   ├── evals/                  # DevAgent 评测用例、Runner、基线和归档
 │   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
 │   │   │   └── tools/my_tools/     # 文件系统原语 / todo / 子代理 / 审核
 │   │   └── main.py

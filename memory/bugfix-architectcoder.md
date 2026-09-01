@@ -1,13 +1,13 @@
 ---
-name: bugfix-uml-designer
-description: 记录UML Designer项目开发中遇到的问题及解决方案
+name: bugfix-architectcoder
+description: 记录ArchitectCoder项目开发中遇到的问题及解决方案
 metadata: 
   node_type: memory
   type: project
   originSessionId: 0194a1c3-ffe7-43ae-ae97-6e9071116351
 ---
 
-# UML Designer 项目问题与解决方案汇总
+# ArchitectCoder 项目问题与解决方案汇总
 
 ## 问题速查表
 

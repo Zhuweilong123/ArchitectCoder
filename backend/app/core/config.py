@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = "UML Designer API"
+    app_name: str = "ArchitectCoder API"
     app_version: str = "1.0.0"
     debug: bool = True
 

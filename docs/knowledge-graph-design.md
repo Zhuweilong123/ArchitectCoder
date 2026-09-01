@@ -1,6 +1,6 @@
 # 知识图谱设计
 
-> 本文归档 UML Designer 的知识图谱系统（`backend/knowledge_graph/`）设计，
+> 本文归档 ArchitectCoder 的知识图谱系统（`backend/knowledge_graph/`）设计，
 > 反映最新代码（5 个内部工具、增量重建、项目作用域 id、jieba 预分词）。
 > 为 AI 助手提供结构化的项目理解能力，让模型按需查询项目结构而非被动接收全部内容。
 
