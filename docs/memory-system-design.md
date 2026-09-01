@@ -1,7 +1,7 @@
 # 记忆系统设计
 
 > 本文完整归档 ArchitectCoder 的 Agent 记忆系统（`backend/memory_system/`）设计，
-> 反映最新实现（含 subject 后写覆盖、recency 检索、类型化衰退）。
+> 反映最新实现（含 subject 后写覆盖、recency 检索、类型化衰退、写入门禁和召回治理）。
 > 作为后续接入向量/混合检索、调参、生命周期策略迭代的参考基线。
 
 ## 1. 定位与目标
@@ -9,8 +9,8 @@
 Agent 在对话式开发中需要「跨会话记住」两类信息：用户偏好/设计决策（耐久），以及对
 项目当前状态的观察（会过时）。记忆系统提供：
 
-- **写入**：从 LLM 交互中自动提取并去重存储记忆（`remember`）。
-- **检索**：对话前按查询检索相关记忆（`recall`），注入 system prompt（`inject_memories`）。
+- **写入**：从 LLM 交互中提取候选，经 `MemoryWritePolicy` 门禁后去重存储（`remember`）。
+- **检索**：对话前按查询检索，经相关性、类型、去重和预算策略筛选后注入（`recall`、`inject_memories`）。
 - **生命周期**：强化、衰减、淘汰（`LifecycleManager`）。
 
 技术栈：**SQLite + FTS5 全文索引 + jieba 分词**，向量检索接口预留。
@@ -35,7 +35,7 @@ MemoryManager ── 顶层 API / 编排
 - **写入**：`remember` → LLM 提取 → 按类型分叉（insight 后写覆盖 / 耐久类相似合并）→
   落库（同步 FTS5）。
 - **检索**：`recall` → FTS5 BM25 → recency 重排 → 截断 top_k → 注入。
-- **维护**：机会式触发 `decay + prune`。
+- **维护**：机会式触发 `decay + prune`，维护时间持久化在 SQLite 中。
 
 ## 3. 数据模型（`backend/memory_system/models.py`）
 
@@ -49,7 +49,7 @@ MemoryManager ── 顶层 API / 编排
 | `original_text` | str | 原始上下文详情（回溯用） |
 | `subject` | str | 主题键（insight 后写覆盖主键，LLM 输出） |
 | `id` | str | UUID（覆盖时保留原 id） |
-| `metadata` | dict | 元数据（context / call_type / extracted_at） |
+| `metadata` | dict | 元数据（上下文、调用类型、来源、scope、confidence、status） |
 | `embedding` | BLOB | 向量（预留） |
 | `importance_score` | float | 重要度 0~1（强化/衰减作用域） |
 | `access_count` | int | 被检索使用次数 |
@@ -70,7 +70,7 @@ MemoryManager ── 顶层 API / 编排
 
 ### 3.3 MemoryConfig
 
-见 §9 配置项。
+见 §12 配置项。
 
 ## 4. 存储层（`backend/memory_system/database.py`）
 
@@ -86,7 +86,8 @@ MemoryManager ── 顶层 API / 编排
 ### 4.1 幂等迁移
 
 `_migrate_columns` 在 `_init_schema`（首次建连）时用 `PRAGMA table_info` 判断缺列并
-`ALTER TABLE ADD COLUMN`（`subject` / `updated_at`），旧库自动补齐、幂等可重入。
+`ALTER TABLE ADD COLUMN`（`subject` / `updated_at`），旧库自动补齐、幂等可重入。新增的
+`memory_maintenance` 表保存每个项目最近一次成功维护时间，不影响旧记忆数据。
 
 ### 4.2 关键方法
 
@@ -104,7 +105,7 @@ MemoryManager ── 顶层 API / 编排
 | `insight` | **同 subject 后写覆盖 + recency 检索 + 快衰减** | insight 是观察，会过时、会被纠正 |
 
 这一设计的直接动因：一次「项目没有类图」的错误结论被归档成多条高重要度 insight，
-持续注入并自我强化、无法纠正。详见 §8.1。
+持续注入并自我强化、无法纠正。详见 §11.1。
 
 ## 6. 写入路径（remember）
 
@@ -118,7 +119,14 @@ original_text / tags / aliases / importance`。其中 `subject` 仅 `insight` �
 
 `_parse_extract_result` 兼容纯 JSON 数组 / ```json 代码块 / 额外文字包裹三种形态。
 
-### 6.2 分叉写库
+### 6.2 写入治理
+
+候选进入 `MemoryWritePolicy` 后才允许落库。策略拒绝空摘要、超长摘要、非法类型、显式
+临时/拒绝候选和低置信度候选。缺少 `confidence` 时使用兼容默认值 `0.7`；新提取器应
+显式返回置信度。`remember()` 同时将 `run_id / trace_id / message_id / scope / confidence /
+status` 写入 metadata，确保长期记忆可以追溯来源和治理状态。
+
+### 6.3 分叉写库
 
 ```
 if memory_type == INSIGHT and subject:
@@ -149,20 +157,23 @@ else:
 ```
 search_bm25(project_id, query, top_k = top_k * 3)   # 多取候选
 _apply_recency(results)                              # insight 按 age 指数衰减
-sort(score desc); truncate(top_k)
-inject_memories(system_prompt, results)              # 注入 summary + 相关性分
+MemoryRecallPolicy.select(...)                       # 相关性/类型/去重/预算筛选
+inject_memories(system_prompt, results)              # 注入 summary + scope + 相关性分
 ```
 
 - **BM25**：FTS5 `bm25()` 取负转正（高分=高相关）。
 - **`_apply_recency`**：仅对 `insight` 施加 `score *= exp(-age_hours / recency_half_life_hours)`，
   耐久类不受影响；多取候选避免新鲜低分记忆被 LIMIT 截掉。
-- **注入**：`inject_memories` 拼「## 项目历史记忆」章节，含类型标签、tags、相关性分。
+- **召回门禁**：默认过滤 `score <= 0` 的候选，并限制单类数量和高度相似结果；预算按实际
+  注入摘要和 tags 计算。
+- **注入**：`inject_memories` 使用 `<project_memory>` 边界，明确内容仅是历史参考，不是当前
+  任务指令；当前用户指令优先级更高。
 
 ## 8. 生命周期（LifecycleManager）
 
 | 操作 | 语义 | 触发 |
 |---|---|---|
-| `reinforce` | `importance += delta`（默认 0.1），`access_count++` | 显式调用（当前检索路径未接线） |
+| `reinforce` | `importance += delta`（默认 0.1），`access_count++` | 实际注入后自动调用，也支持显式调用 |
 | `decay` | 类型化乘性衰减，`MAX(importance_min, …)` | `maintenance` 内 |
 | `prune` | 超 `max_entries` 时淘汰低重要度 + 低访问 + 非 pinned，分批 | `maintenance` 内 |
 
@@ -173,10 +184,10 @@ insight    → importance * insight_decay_factor   # 0.93，快
 durable    → importance * decay_factor           # 0.98，慢
 ```
 
-**机会式触发**：`remember` 开头调 `_maybe_maintenance`，用模块级
-`_LAST_MAINTENANCE[project_id]` 时间戳节流，距上次超过 `maintenance_interval_hours`
-才跑一次完整 `decay + prune`。因调用方每次新建 `MemoryManager`，节流状态放模块级
-（进程重启重置无害）。
+**机会式触发**：`remember` 开头调 `_maybe_maintenance`，从 SQLite 的
+`memory_maintenance.last_maintenance` 读取时间，距上次超过 `maintenance_interval_hours`
+才跑一次完整 `decay + prune`。显式 `maintenance(project_id)` 成功后也会更新该时间，服务
+重启或重新创建 `MemoryManager` 不会丢失节流状态。
 
 ## 9. 检索模式（BM25 / 向量 / 混合）
 
@@ -241,6 +252,10 @@ insight 覆盖若继承旧重要度，等于把「错误的高重要度」转嫁
 | `importance_min` | 0.1 | 衰减下限（可被 prune） |
 | `prune_batch_ratio` | 0.1 | 每次最多淘汰比例 |
 | `pin_access_threshold` | 5 | access_count 达到则自动 pin |
+| `min_write_confidence` | 0.55 | 记忆写入最低置信度 |
+| `recall_min_score` | 0.0 | 召回最低 BM25/重排得分（实际过滤 `<=`） |
+| `recall_max_per_type` | 2 | 单类记忆最多注入条数 |
+| `recall_duplicate_threshold` | 0.8 | 召回摘要相似去重阈值 |
 
 ## 13. 快速开始
 
@@ -276,9 +291,9 @@ manager.maintenance("blog_system")
 
 | 方法 | 说明 |
 |---|---|
-| `remember(project_id, ...)` | LLM 调用后提取并存储记忆（insight 后写覆盖 / 耐久类合并） |
-| `recall(project_id, query, top_k, mode)` | 检索相关记忆（BM25 + recency 重排） |
-| `inject_memories(prompt, results)` | 将记忆注入 system prompt |
+| `remember(project_id, ..., source_run_id, source_trace_id, source_message_id, scope)` | LLM 调用后提取并经门禁存储记忆 |
+| `recall(project_id, query, top_k, mode)` | BM25 + recency 重排，再执行相关性/类型/去重/预算筛选 |
+| `inject_memories(prompt, results)` | 将受控记忆作为历史参考注入上下文 |
 | `reinforce(results_or_id)` | 强化记忆（被使用后调用） |
 | `forget(project_id, memory_id)` | 删除指定记忆 |
 | `list_memories(project_id, type)` | 列出项目记忆 |
@@ -301,6 +316,7 @@ manager.maintenance("blog_system")
 | 文件 | 职责 |
 |---|---|
 | `backend/memory_system/manager.py` | `MemoryManager`：remember/recall/inject/forget/reinforce/maintenance + 提取 prompt + subject 分叉 |
+| `backend/memory_system/policy.py` | `MemoryWritePolicy` / `MemoryRecallPolicy`：写入门禁和召回筛选 |
 | `backend/memory_system/database.py` | `MemoryDatabase`：SQLite + FTS5 存储、幂等迁移、BM25、`get_by_subject`、类型化 decay |
 | `backend/memory_system/models.py` | `MemoryEntry` / `MemoryType` / `MemoryConfig` / `RecallResult` / `RetrieveMode` |
 | `backend/memory_system/lifecycle.py` | `LifecycleManager`：reinforce / decay / prune / maintenance / pin |
@@ -309,3 +325,56 @@ manager.maintenance("blog_system")
 | `backend/memory_system/migrate.py` | 旧 JSON → SQLite 迁移脚本（一次性） |
 | `backend/app/services/agent_chat_ws.py` | 归档 + 注入集成 |
 | `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | explore 归档集成 |
+
+## 17. 当前治理实现（2026-09-01）
+
+本节覆盖前文旧版本描述的修订内容，以当前代码为准。
+
+### 17.1 写入门禁与来源
+
+`MemoryWritePolicy` 位于 `backend/memory_system/policy.py`，位于 LLM 提取和数据库写入之间。
+它拒绝空摘要、超长摘要、非法类型、显式临时/拒绝候选和低置信度候选。候选缺少
+`confidence` 时使用兼容默认值 `0.7`，新提取器应显式返回置信度。
+
+`remember()` 将以下治理信息写入 `metadata`：
+
+```json
+{
+  "provenance": {
+    "run_id": "...",
+    "trace_id": "...",
+    "message_id": "..."
+  },
+  "scope": "project",
+  "governance": {
+    "confidence": 0.9,
+    "status": "active",
+    "policy": "default"
+  }
+}
+```
+
+### 17.2 召回与注入
+
+召回路径为：
+
+```text
+BM25 候选 → insight recency 重排 → MemoryRecallPolicy
+         → 相关性阈值 → 类型配额 → 相似去重 → Token 预算 → 注入
+```
+
+`inject_memories()` 只注入 summary 和 tags，不默认注入 `original_text`。注入内容使用
+`<project_memory>` 边界，并声明其仅为历史参考；当前用户指令优先级更高。DevAgent 实际
+注入成功后会调用 `reinforce()`，更新访问次数和重要度。
+
+### 17.3 生命周期持久化
+
+`memory_maintenance` 表保存各项目最近一次成功维护时间。`_maybe_maintenance()` 不再
+依赖进程内时间戳作为唯一状态，服务重启或重新创建 `MemoryManager` 后仍可按
+`maintenance_interval_hours` 正确节流。显式 `maintenance(project_id)` 成功后也会更新该表。
+
+### 17.4 当前边界
+
+- 当前检索实现仍是 BM25；向量和混合检索接口继续保留但未启用。
+- 当前归档仍是任务完成后的异步流程，归档任务的持久化重试和幂等属于后续 P1。
+- 记忆冲突的 subject 后写覆盖主要适用于 insight；耐久类冲突版本管理属于后续 P1。

@@ -247,11 +247,19 @@ conda run --no-capture-output -n hello_agents python -m pytest -q
 
 当前基线结果：
 
-- 108 passed
+- 150 passed
 - Python 静态编译通过
 - `git diff --check` 通过
 
-## 8. 3.0 后续演进项
+## 8. 上下文与记忆治理状态
+
+当前 DevAgent 已具备显式上下文预算、会话历史压缩、Trace checkpoint 恢复，以及记忆写入
+门禁、来源追踪、召回筛选、注入安全边界和持久化维护状态。详细设计见：
+
+- [`context-management-design.md`](context-management-design.md)
+- [`memory-system-design.md`](memory-system-design.md)
+
+## 9. 3.0 后续演进项
 
 以下内容不影响 3.0 基线使用，但属于后续深化：
 
@@ -259,6 +267,6 @@ conda run --no-capture-output -n hello_agents python -m pytest -q
 2. Redis/数据库持久化会话、审核和分布式租约，支持多 Worker 与服务重启恢复。
 3. 进程/容器级 Bash 沙箱，替代单纯的命令过滤。
 4. optimize_v2 与统一 Agent ChangeSet、Review、Trace、KG 提交流程完全合并。
-5. 记忆来源、置信度、时间衰减、隐私过滤和自动过期。
+5. 记忆冲突版本管理、异步归档幂等、隐私过滤和自动过期；来源、置信度、召回治理和持久化维护已在当前版本落地。
 6. 基于真实任务集的 Agent Eval，包括成功率、工具选择、成本、延迟和回归测试。
 7. 更完整的 token/cost/latency 指标，并接入 Prometheus 等监控系统。
