@@ -47,6 +47,7 @@ from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 from app.services.change_set import ChangeSet
 from app.services.model_router import choose_model
+from app.services.run_state import RunStateError, RunStatus, get_run_store
 
 logger = logging.getLogger(__name__)
 
@@ -753,6 +754,8 @@ async def _handle_dev(
     progress: ProgressRelay | None = None,
     context: str = "",
     fallback_review_ids: set[int] | None = None,
+    run_id: str = "",
+    run_owner: str = "",
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -954,6 +957,14 @@ async def _handle_dev(
                     get_agent_metrics().record_run("success")
                 except Exception:
                     pass
+                if run_id:
+                    try:
+                        get_run_store().transition(
+                            run_id, RunStatus.SUCCEEDED,
+                            expected={RunStatus.RUNNING}, owner_id=run_owner,
+                        )
+                    except RunStateError:
+                        logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
@@ -974,7 +985,27 @@ async def _handle_dev(
                     return
                 return
 
+    except asyncio.CancelledError:
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.CANCELED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error="agent task was canceled",
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+        raise
     except AgentInterrupted:
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.CANCELED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error="user requested stop",
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
         await _ws_send(websocket, {
             "event": "stopped", "reason": "User requested stop",
         })
@@ -985,6 +1016,15 @@ async def _handle_dev(
             get_agent_metrics().record_run("error")
         except Exception:
             pass
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.FAILED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error=f"{type(e).__name__}: {e}",
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s failed", run_id, exc_info=True)
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
         await _ws_send(websocket, {
@@ -1027,6 +1067,7 @@ async def agent_chat_ws(websocket: WebSocket):
     prompt_builder = session.prompt_builder
     stop_requested = False
     run_task: asyncio.Task | None = None
+    active_run = None
     connection_owner = uuid.uuid4().hex
     # 兜底审核（run 结束后补推的 uml_review）的 review_id 集合。
     # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
@@ -1133,11 +1174,41 @@ async def agent_chat_ws(websocket: WebSocket):
                         "message": "This session is already running on another connection",
                     })
                     continue
+                run = get_run_store().create(
+                    kind="agent_chat",
+                    session_id=session_id,
+                    metadata={
+                        "message": user_message[:500],
+                        "source_dir": source_dir,
+                        "test_dir": test_dir,
+                        "project_file": project_file,
+                    },
+                    idempotency_key=(
+                        f"{session_id}:{msg['request_id']}"
+                        if msg.get("request_id") else ""
+                    ),
+                )
+                if run.status != RunStatus.QUEUED.value:
+                    session.release_run(connection_owner)
+                    await _ws_send(websocket, {
+                        "event": "error",
+                        "message": "This request has already been accepted",
+                        "run_id": run.run_id,
+                    })
+                    continue
+                get_run_store().claim(run.run_id, connection_owner)
+                active_run = run
+                await _ws_send(websocket, {
+                    "event": "run_started",
+                    "run_id": run.run_id,
+                    "status": RunStatus.RUNNING.value,
+                })
                 run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
                     progress=progress, context=context,
                     fallback_review_ids=fallback_review_ids,
+                    run_id=run.run_id, run_owner=connection_owner,
                 ))
                 run_task.add_done_callback(_consume_task_exception)
                 run_task.add_done_callback(
@@ -1211,11 +1282,30 @@ async def agent_chat_ws(websocket: WebSocket):
                                 followup_context = await prompt_builder.build_context(
                                     project_file, source_dir, test_dir, followup,
                                 )
+                            followup_run = get_run_store().create(
+                                kind="agent_chat",
+                                session_id=session_id,
+                                metadata={
+                                    "message": followup[:500],
+                                    "source_dir": source_dir,
+                                    "test_dir": test_dir,
+                                    "project_file": project_file,
+                                    "parent_run_id": active_run.run_id if active_run else "",
+                                },
+                            )
+                            get_run_store().claim(followup_run.run_id, connection_owner)
+                            active_run = followup_run
+                            await _ws_send(websocket, {
+                                "event": "run_started",
+                                "run_id": followup_run.run_id,
+                                "status": RunStatus.RUNNING.value,
+                            })
                             run_task = asyncio.create_task(_handle_dev(
                                 dev_agent, review_mgr, followup, websocket, _stop_check,
                                 trace_log=trace_log, project_file=project_file,
                                 progress=progress, context=followup_context,
                                 fallback_review_ids=fallback_review_ids,
+                                run_id=followup_run.run_id, run_owner=connection_owner,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
                             run_task.add_done_callback(
