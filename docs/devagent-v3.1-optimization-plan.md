@@ -973,3 +973,15 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 多轮 Element 命名评测：`e38c881 feat: add trace-derived multiturn evaluation case`。
 
 后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。
+
+### 15.5 最新版本真实模型实跑结果（2026-09-01）
+
+已使用当前 3.1 版本执行 `trace-3-1-component-element-multiturn-001`：
+
+- 运行 ID：`eval_6ceaf785972a487b`；状态：`passed`；得分：`1.0`。
+- 3 轮复用同一 Agent/workspace/checkpoint；第 1 轮增加 `Element`，第 2 轮移除，第 3 轮走 checkpoint 状态快路径。
+- 20 次 LLM 调用、33 次工具调用、0 次工具错误，总耗时约 46.4 秒，总 token 110,259。
+- 两次审核均由 `auto_stub` 返回 `accept`；UML、组件命名、源码未变更等硬校验全部通过。
+- trace 已补齐工具调用/结果事件：123 个事件，支持后续按轮次分析。
+
+当前结果证明新评测用例可运行且 3.1 逻辑链路通过；3.0 基线与 3.1 的批量 A/B 对比、聚合质量门禁仍待补齐。另需将 `max_total_tokens` 的跨轮聚合预算单独纳入门禁（本次三轮合计略高于单轮配置值）。
