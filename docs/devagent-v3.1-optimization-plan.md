@@ -940,6 +940,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - ReAct 历史支持 tool-call/result 成对压缩，并保留旧步骤的 extractive checkpoint。
 - PromptBuilder 增加动态区段 token 统计，并提供 `DEVAGENT_PROMPT_VERSION=3.1` 紧凑 Prompt opt-in。
 - 记忆召回按稳定 `subject` 去重，避免同主题候选同时注入。
+- 记忆主题冲突按“已确认优先、再按更新时间、最后按相关性”选择唯一候选，并写入治理确认标记。
 
 ### 15.2 部分完成
 
@@ -951,7 +952,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 ### 15.3 未开始或未完成发布闭环
 
 - 固定 trace 回放、3.0/3.1 聚合指标报告和质量门禁。
-- 记忆主题冲突的“最新且已确认”优先规则及完整治理测试。
+- 记忆治理的跨服务确认同步、撤销语义及完整端到端回放仍未完成。
 - 文档第 8 节列出的完整 Feature Flag、10%/50% 灰度和按模块回滚链路。
 - 3.1 发布目标（调用数、prompt token、工具失败、延迟）在真实任务集上的达标验证。
 
@@ -961,5 +962,6 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 首批提交：`f285147 feat: implement DevAgent 3.1 optimization foundation`。
 - 上下文与 Prompt telemetry：`774e58a feat: add DevAgent context compaction and prompt telemetry`。
 - 记忆主题去重：`34dd250 fix: deduplicate DevAgent memory subjects`。
+- checkpoint 持久化：`499b802 feat: persist DevAgent run checkpoints`。
 
 后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。

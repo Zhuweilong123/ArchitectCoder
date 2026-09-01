@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import re
 from typing import Any
 
 from .models import MemoryType
@@ -95,13 +97,85 @@ class MemoryRecallPolicy:
     def _tokens(text: str) -> set[str]:
         return {token for token in str(text).lower().split() if token}
 
+    @staticmethod
+    def _normalize_subject(subject: str) -> str:
+        """Use the same stable key for conflict suppression as persistence."""
+        return re.sub(r"\s+", " ", str(subject or "").strip().lower())
+
+    @staticmethod
+    def _is_confirmed(entry: Any) -> bool:
+        """Return whether a memory has explicit user/system confirmation.
+
+        ``governance.status=active`` is deliberately not treated as confirmed:
+        it only means the candidate passed the write policy.  Older rows may
+        not have the boolean, so user feedback remains a compatible fallback.
+        """
+        if getattr(entry, "user_feedback", None) in {"accepted", "modified"}:
+            return True
+        metadata = getattr(entry, "metadata", {}) or {}
+        governance = metadata.get("governance", {}) if isinstance(metadata, dict) else {}
+        return bool(
+            isinstance(governance, dict)
+            and (
+                governance.get("confirmed") is True
+                or str(governance.get("status", "")).lower()
+                in {"confirmed", "validated"}
+            )
+        )
+
+    @staticmethod
+    def _updated_timestamp(entry: Any) -> float:
+        """Parse update time for deterministic latest-wins conflict handling."""
+        for raw in (
+            getattr(entry, "updated_at", ""),
+            getattr(entry, "created_at", ""),
+        ):
+            if not raw:
+                continue
+            try:
+                return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return 0.0
+
+    @classmethod
+    def _subject_rank(cls, result: Any) -> tuple:
+        entry = result.entry
+        return (
+            int(cls._is_confirmed(entry)),
+            cls._updated_timestamp(entry),
+            float(getattr(result, "score", 0.0) or 0.0),
+            float(getattr(entry, "importance_score", 0.0) or 0.0),
+        )
+
     def select(self, results: list, *, top_k: int, max_tokens: int) -> list:
         selected = []
         type_counts: dict[MemoryType, int] = {}
         seen_subjects: set[str] = set()
         used_tokens = 0
+
+        # Resolve same-subject conflicts before global score ordering.  This
+        # prevents a stale high-score candidate from hiding a newer confirmed
+        # decision while keeping the normal relevance ordering across subjects.
+        subject_winners: dict[str, Any] = {}
+        for result in results:
+            if result.score <= self.min_score or not str(result.entry.summary or "").strip():
+                continue
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            if not subject:
+                continue
+            previous = subject_winners.get(subject)
+            if previous is None or self._subject_rank(result) > self._subject_rank(previous):
+                subject_winners[subject] = result
+
+        eligible = []
+        for result in results:
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            if subject and subject_winners.get(subject) is not result:
+                continue
+            eligible.append(result)
         ordered = sorted(
-            results,
+            eligible,
             key=lambda result: (
                 result.score,
                 self._TYPE_PRIORITY.get(result.entry.memory_type, 0),
@@ -114,7 +188,7 @@ class MemoryRecallPolicy:
             memory_type = result.entry.memory_type
             if type_counts.get(memory_type, 0) >= self.max_per_type:
                 continue
-            subject = str(getattr(result.entry, "subject", "") or "").strip().lower()
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
             if subject and subject in seen_subjects:
                 continue
             summary = str(result.entry.summary or "").strip()

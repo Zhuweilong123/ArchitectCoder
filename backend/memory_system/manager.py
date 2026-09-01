@@ -312,6 +312,7 @@ class MemoryManager:
                     "confidence": decision.confidence,
                     "status": "active",
                     "policy": "default",
+                    "confirmed": user_feedback in {"accepted", "modified"},
                 }
                 entry = MemoryEntry(
                     project_id=project_id,

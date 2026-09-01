@@ -57,6 +57,25 @@ def test_memory_recall_policy_deduplicates_subjects():
     ]
 
 
+def test_memory_recall_policy_prefers_confirmed_latest_subject_conflict():
+    policy = MemoryRecallPolicy(min_score=0.0, max_per_type=3)
+    stale = MemoryEntry(
+        "p", MemoryType.DECISION, "unconfirmed stale decision",
+        subject="arch:storage", updated_at="2025-01-01T00:00:00+00:00",
+    )
+    confirmed = MemoryEntry(
+        "p", MemoryType.DECISION, "confirmed storage decision",
+        subject="ARCH:STORAGE", user_feedback="accepted",
+        updated_at="2024-01-01T00:00:00+00:00",
+    )
+
+    selected = policy.select([
+        RecallResult(stale, 0.99), RecallResult(confirmed, 0.40),
+    ], top_k=5, max_tokens=100)
+
+    assert [item.entry.summary for item in selected] == ["confirmed storage decision"]
+
+
 def test_remember_records_provenance_and_governance_metadata(tmp_path):
     async def _run():
         mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
