@@ -50,7 +50,7 @@ from app.services.model_router import choose_model
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.core.capabilities import CapabilityPolicy
 from app.services.audit_log import get_audit_logger
-from app.services.context_manager import ContextBudget, ContextBudgetManager
+from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -470,9 +470,23 @@ class DevPromptBuilder:
     """
 
     def __init__(self, registry: ToolRegistry):
-        self.system_prompt = self._build_static_prompt(registry)
+        self.prompt_version = os.getenv("DEVAGENT_PROMPT_VERSION", "3.0").strip().lower()
+        if self.prompt_version in {"3.1", "compact", "devagent-3.1"}:
+            self.system_prompt = self._build_compact_static_prompt()
+        else:
+            self.prompt_version = "3.0"
+            self.system_prompt = self._build_static_prompt(registry)
+        self.static_prompt_report = {
+            "chars": len(self.system_prompt),
+            "estimated_tokens": estimate_tokens(self.system_prompt),
+        }
         self._ctx_key: tuple | None = None
         self._ctx_value: str = ""
+        self.last_context_report: dict = {
+            "sections": {},
+            "total_chars": 0,
+            "estimated_tokens": 0,
+        }
 
     @staticmethod
     def _build_static_prompt(registry: ToolRegistry) -> str:
@@ -501,6 +515,22 @@ class DevPromptBuilder:
         ]
         return "\n".join(parts)
 
+    @staticmethod
+    def _build_compact_static_prompt() -> str:
+        """3.1 candidate core; task/tool specifics stay in dynamic sections/schema."""
+        return "\n".join([
+            "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
+            "Complete the user's request end to end: inspect relevant state, make scoped changes when requested, verify results, and report what was done and what remains.",
+            "",
+            "Use only tools exposed for the current task and follow their schemas. Do not invent files, tool results, tests, or completion. Prefer direct domain tools over shell workarounds.",
+            "Read enough context before editing, preserve unrelated user changes, and keep all operations inside the workspace.",
+            "",
+            "For UML/code changes, maintain the requested artifact consistency. Follow the current task policy for planning and verification; do not create plans or worktrees when they are not required.",
+            "Treat tool errors as capability facts: correct the approach instead of repeating an invalid action. After changes, run the narrowest relevant verification and distinguish modified, verified, partial, blocked, and failed states.",
+            "",
+            "If a safety rule, missing authority, or hard budget prevents completion, stop safely and report completed work, remaining work, and the exact reason.",
+        ])
+
     async def build_context(
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
@@ -516,7 +546,11 @@ class DevPromptBuilder:
         if key == self._ctx_key:
             return self._ctx_value
 
-        parts: list[str] = []
+        sections: list[tuple[str, str]] = []
+
+        def add_section(name: str, value: str) -> None:
+            if value:
+                sections.append((name, value))
 
         # ── workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
         workspace_entries = [
@@ -529,11 +563,11 @@ class DevPromptBuilder:
             lines = ["## Workspace (Windows environment, absolute paths)"]
             for label, d in provided:
                 lines.append(f"- {label}: {d}")
-            parts.append("\n".join(lines))
+            add_section("workspace", "\n".join(lines))
 
         # ── 项目上下文 ──
         if project_file:
-            parts.append(
+            add_section("project_context",
                 "## Project Context\n"
                 f"- Current project file: {project_file}\n"
                 "  (use this exact path as project_file parameter; "
@@ -544,7 +578,7 @@ class DevPromptBuilder:
         mentioned_uml_paths = _UML_PATH_IN_MESSAGE.findall(user_message or "")
         asks_to_sync = any(word in message_lower for word in ("sync", "synchronize", "同步", "迁移"))
         if project_file and mentioned_uml_paths and asks_to_sync:
-            parts.append(
+            add_section("uml_sync_intent",
                 "## UML Synchronization Intent\n"
                 f"The open project file is the canonical design: {project_file}\n"
                 "The user also named another .umlproj as the synchronization target. "
@@ -557,13 +591,21 @@ class DevPromptBuilder:
                       if project_file else "")
         memory_block = await self._recall_memory_block(project_id, user_message)
         if memory_block:
-            parts.append(memory_block)
+            add_section("memory", memory_block)
 
         # ── 日期（量化到「日」，避免秒级时间戳破坏缓存稳定性）──
-        parts.append(f"Current date: {today}")
+        add_section("date", f"Current date: {today}")
 
         self._ctx_key = key
-        self._ctx_value = "\n\n".join(parts)
+        self._ctx_value = "\n\n".join(value for _, value in sections)
+        self.last_context_report = {
+            "sections": {
+                name: {"chars": len(value), "estimated_tokens": estimate_tokens(value)}
+                for name, value in sections
+            },
+            "total_chars": len(self._ctx_value),
+            "estimated_tokens": estimate_tokens(self._ctx_value),
+        }
         return self._ctx_value
 
     async def _recall_memory_block(self, project_id: str, user_message: str) -> str:
@@ -1346,6 +1388,12 @@ async def agent_chat_ws(websocket: WebSocket):
                 if prompt_builder is not None:
                     context = await prompt_builder.build_context(
                         project_file, source_dir, test_dir, user_message,
+                    )
+                    trace_log.event(
+                        "prompt_context",
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                        static_prompt=self.prompt_builder.static_prompt_report,
+                        **prompt_builder.last_context_report,
                     )
 
                 # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，

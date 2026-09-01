@@ -1,7 +1,7 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _is_status_query, _requires_todo_plan,
-    _select_tools_for_message, _todo_progress_state,
+    _select_tools_for_message, _todo_progress_state, DevPromptBuilder,
 )
 
 
@@ -109,3 +109,25 @@ def test_status_followup_uses_checkpoint_language():
     assert "任务状态：stopped" in answer
     assert "运行测试" in answer
     assert "src/a.py" in answer
+
+
+def test_prompt_builder_reports_dynamic_sections_without_content():
+    builder = DevPromptBuilder(_Registry(TOOLS))
+
+    import asyncio
+    context = asyncio.run(builder.build_context("", "src", "tests", "run pytest"))
+
+    assert "Source directory: src" in context
+    assert builder.static_prompt_report["estimated_tokens"] > 0
+    assert builder.last_context_report["sections"]["workspace"]["chars"] > 0
+    assert "memory" not in builder.last_context_report["sections"]
+
+
+def test_compact_prompt_is_opt_in_and_shorter(monkeypatch):
+    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.1")
+    compact = DevPromptBuilder(_Registry(TOOLS))
+    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.0")
+    full = DevPromptBuilder(_Registry(TOOLS))
+
+    assert compact.prompt_version == "3.1"
+    assert len(compact.system_prompt) < len(full.system_prompt)

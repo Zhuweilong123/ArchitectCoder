@@ -382,6 +382,18 @@ class ReActAgent(Agent):
         )
         try:
             for step in range(1, self.max_steps + 1):
+                messages, current_user_index, compacted_steps, compacted_tokens = self.context_budget.compact_react_steps(
+                    messages,
+                    current_user_index=current_user_index,
+                    max_steps=min(8, self.context_budget.budget.max_history_turns),
+                )
+                if compacted_steps:
+                    self.last_context_report["react_compacted_steps"] = (
+                        self.last_context_report.get("react_compacted_steps", 0) + compacted_steps
+                    )
+                    self.last_context_report["react_compacted_tokens"] = (
+                        self.last_context_report.get("react_compacted_tokens", 0) + compacted_tokens
+                    )
                 messages, dropped = self.context_budget.fit_messages(
                     messages,
                     tools=tool_specs,

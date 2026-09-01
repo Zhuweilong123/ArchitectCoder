@@ -322,18 +322,14 @@ class ContextBudgetManager:
         tool_tokens = self._tool_tokens(tools)
 
         while len(result) > 1 and self._messages_tokens(result) + tool_tokens > limit:
-            candidates = [
-                index for index, message in enumerate(result)
-                if index != 0
-                and index != current_user_index
-                and message.get("role") != "system"
-            ]
-            if not candidates:
+            group = self._oldest_removable_group(result, current_user_index)
+            if not group:
                 break
-            result.pop(candidates[0])
-            if current_user_index is not None and candidates[0] < current_user_index:
-                current_user_index -= 1
-            dropped += 1
+            for index in reversed(group):
+                result.pop(index)
+            if current_user_index is not None:
+                current_user_index -= sum(index < current_user_index for index in group)
+            dropped += len(group)
 
         if self._messages_tokens(result) + tool_tokens > limit:
             anchor = current_user_index if current_user_index is not None else len(result) - 1
@@ -345,6 +341,116 @@ class ContextBudgetManager:
                     self.token_counter,
                 )
         return result, dropped
+
+    def compact_react_steps(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        current_user_index: int | None = None,
+        max_steps: int = 8,
+    ) -> tuple[list[dict[str, Any]], int | None, int, int]:
+        """Fold old FC tool steps into a small extractive checkpoint.
+
+        A step is one assistant message containing ``tool_calls`` plus all
+        immediately following tool results.  The newest steps stay verbatim;
+        older steps become a system reference containing tool names and short
+        observations.  This keeps function-call/result pairs valid while
+        bounding repetitive exploration in long runs.
+
+        Returns ``(messages, current_user_index, dropped_message_count,
+        dropped_token_count)``.
+        """
+        if max_steps < 1:
+            max_steps = 1
+        groups: list[list[int]] = []
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                end = index + 1
+                while end < len(messages) and messages[end].get("role") == "tool":
+                    end += 1
+                groups.append(list(range(index, end)))
+                index = end
+                continue
+            index += 1
+        if len(groups) <= max_steps:
+            return messages, current_user_index, 0, 0
+
+        old_groups = groups[:-max_steps]
+        old_indices = {item for group in old_groups for item in group}
+        lines = [
+            "## Tool execution checkpoint",
+            "Older tool steps were compacted; use this as reference and do not repeat identical exploration.",
+        ]
+        for group in old_groups:
+            assistant = messages[group[0]]
+            calls = assistant.get("tool_calls") or []
+            names = [
+                str(call.get("function", {}).get("name", "tool"))
+                for call in calls if isinstance(call, dict)
+            ]
+            observations = [
+                truncate_text(_content(messages[pos]).strip(), 180, self.token_counter)
+                for pos in group[1:]
+                if _content(messages[pos]).strip()
+            ]
+            detail = ", ".join(names) or "tool"
+            if observations:
+                detail += ": " + " | ".join(observations)
+            lines.append(f"- {detail}")
+        summary = truncate_text("\n".join(lines), self.budget.max_summary_tokens, self.token_counter)
+        first = min(old_indices)
+        kept = [message for pos, message in enumerate(messages) if pos not in old_indices]
+        insert_at = sum(pos < first for pos in range(len(messages)) if pos not in old_indices)
+        kept.insert(insert_at, {"role": "system", "content": summary})
+        if current_user_index is not None:
+            current_user_index = sum(
+                pos < current_user_index for pos in range(len(messages)) if pos not in old_indices
+            ) + (1 if first <= current_user_index else 0)
+        # The caller currently recomputes the anchor from its own state; the
+        # third return value is kept for telemetry and future anchor updates.
+        dropped_tokens = sum(self._message_tokens_for(messages[pos]) for pos in old_indices)
+        return kept, current_user_index, len(old_indices), dropped_tokens
+
+    def _message_tokens_for(self, message: dict[str, Any]) -> int:
+        return _message_tokens(message, self.token_counter)
+
+    @staticmethod
+    def _oldest_removable_group(
+        messages: list[dict[str, Any]], current_user_index: int | None,
+    ) -> list[int]:
+        """Return the oldest safe-to-drop message group.
+
+        Native function-calling history must keep an assistant tool-call and
+        its tool results together. Removing one side leaves an invalid request
+        and forces the model to repeat the step, which is more expensive than
+        retaining a small paired checkpoint.
+        """
+        for index, message in enumerate(messages):
+            if index == 0 or index == current_user_index or message.get("role") == "system":
+                continue
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                call_ids = {
+                    call.get("id") for call in message.get("tool_calls", [])
+                    if isinstance(call, dict) and call.get("id")
+                }
+                end = index + 1
+                while end < len(messages) and messages[end].get("role") == "tool":
+                    end += 1
+                result_ids = {
+                    messages[pos].get("tool_call_id") for pos in range(index + 1, end)
+                }
+                if call_ids and call_ids <= result_ids:
+                    return list(range(index, end))
+                # Malformed/incomplete history: remove the assistant and any
+                # immediately following tool messages as one safe unit.
+                return list(range(index, end))
+            if message.get("role") == "tool":
+                # Defensive handling for traces restored from an older format.
+                return [index]
+            return [index]
+        return []
 
     def _messages_tokens(self, messages: Iterable[dict[str, Any]]) -> int:
         return sum(_message_tokens(message, self.token_counter) for message in messages)
