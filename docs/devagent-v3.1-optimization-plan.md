@@ -958,10 +958,11 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 ### 15.4 验证与提交记录
 
-- backend 全量测试：**161 passed**（仓库既有 `.pytest_cache` 权限 warning 不影响结果）。
+- backend 全量测试：**163 passed**（仓库既有 `.pytest_cache` 权限 warning 不影响结果）。
 - 首批提交：`f285147 feat: implement DevAgent 3.1 optimization foundation`。
 - 上下文与 Prompt telemetry：`774e58a feat: add DevAgent context compaction and prompt telemetry`。
 - 记忆主题去重：`34dd250 fix: deduplicate DevAgent memory subjects`。
 - checkpoint 持久化：`499b802 feat: persist DevAgent run checkpoints`。
+- 记忆冲突治理：`dde7b9e fix: prioritize confirmed memory conflicts`。
 
 后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。
