@@ -98,6 +98,7 @@ class MemoryRecallPolicy:
     def select(self, results: list, *, top_k: int, max_tokens: int) -> list:
         selected = []
         type_counts: dict[MemoryType, int] = {}
+        seen_subjects: set[str] = set()
         used_tokens = 0
         ordered = sorted(
             results,
@@ -112,6 +113,9 @@ class MemoryRecallPolicy:
                 continue
             memory_type = result.entry.memory_type
             if type_counts.get(memory_type, 0) >= self.max_per_type:
+                continue
+            subject = str(getattr(result.entry, "subject", "") or "").strip().lower()
+            if subject and subject in seen_subjects:
                 continue
             summary = str(result.entry.summary or "").strip()
             if not summary:
@@ -130,6 +134,8 @@ class MemoryRecallPolicy:
                 continue
             selected.append(result)
             type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
+            if subject:
+                seen_subjects.add(subject)
             used_tokens += cost
         return selected
 

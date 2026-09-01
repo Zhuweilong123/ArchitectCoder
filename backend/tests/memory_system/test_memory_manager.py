@@ -42,6 +42,21 @@ def test_memory_recall_policy_filters_irrelevant_and_limits_duplicates():
     ]
 
 
+def test_memory_recall_policy_deduplicates_subjects():
+    policy = MemoryRecallPolicy(min_score=0.0, max_per_type=3)
+    results = [
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "canonical decision", subject="arch:storage"), 0.9),
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "stale conflicting decision", subject="ARCH:STORAGE"), 0.8),
+        RecallResult(MemoryEntry("p", MemoryType.PREFERENCE, "other preference", subject="user:style"), 0.7),
+    ]
+
+    selected = policy.select(results, top_k=5, max_tokens=100)
+
+    assert [item.entry.summary for item in selected] == [
+        "canonical decision", "other preference"
+    ]
+
+
 def test_remember_records_provenance_and_governance_metadata(tmp_path):
     async def _run():
         mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
