@@ -50,6 +50,7 @@ from app.services.model_router import choose_model
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.core.capabilities import CapabilityPolicy
 from app.services.audit_log import get_audit_logger
+from app.services.context_manager import ContextBudget, ContextBudgetManager
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +628,12 @@ async def _create_dev_agent(
         max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
+        context_budget=ContextBudgetManager(budget=ContextBudget(
+            max_context_tokens=settings.agent_context_max_tokens,
+            output_reserve_tokens=settings.agent_context_output_reserve_tokens,
+            max_history_tokens=settings.agent_context_max_history_tokens,
+            max_history_turns=settings.agent_context_max_history_turns,
+        )),
     )
     agent.change_set = change_set
     if restore_history:

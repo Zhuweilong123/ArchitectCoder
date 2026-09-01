@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     agent_max_run_seconds: int = 600
     agent_max_total_tokens: int = 100000
     agent_llm_timeout_seconds: int = 120
+    agent_context_max_tokens: int = 32768
+    agent_context_output_reserve_tokens: int = 4096
+    agent_context_max_history_tokens: int = 12000
+    agent_context_max_history_turns: int = 12
     strict_production: bool = False
 
     @field_validator("deepseek_api_key")

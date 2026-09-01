@@ -42,6 +42,7 @@ from ..core.hooks import (
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 from ..tools.result import ToolResult
+from app.services.context_manager import ContextBudgetManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ class ReActAgent(Agent):
         max_run_seconds: float = 600.0,
         max_total_tokens: int = 100000,
         llm_timeout_seconds: float = 120.0,
+        context_budget: ContextBudgetManager | None = None,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
@@ -173,6 +175,9 @@ class ReActAgent(Agent):
         self.max_run_seconds = max(1.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
+        self.context_budget = context_budget or ContextBudgetManager()
+        self._history_summary = ""
+        self.last_context_report: dict = {}
         logger.info(
             "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
             name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
@@ -183,6 +188,11 @@ class ReActAgent(Agent):
 
         用于「恢复历史会话」——agent 据此在继续对话时记住之前的结论。
         """
+        self._history_summary = "\n\n".join(
+            str(m.get("content") or "")
+            for m in messages
+            if m.get("role") == "summary"
+        )
         self._history = [
             Message(m.get("content", ""), m.get("role", "user"))
             for m in messages
@@ -325,20 +335,25 @@ class ReActAgent(Agent):
             self.tool_registry.get_openai_specs_for(list(allowed_set))
             if allowed_set is not None else self.tool_registry.get_openai_specs()
         )
-        messages: list[dict] = [
-            {"role": "system", "content": self._build_fc_system_prompt()},
-        ]
-
-        # 注入已有的对话历史（多轮场景）
-        for msg in self._history:
-            messages.append({"role": msg.role, "content": msg.content})
-
-        # 最新用户输入必须放在历史末尾（多轮对话中 LLM 视最后一条 user 为当前问题）。
-        # context 是易变上下文尾块（workspace/项目/记忆/日期），追加在最后一条
-        # user 消息末尾——位于 history 之后，故其变化不会破坏 system+history 前缀
-        # 的 KV 缓存命中（最大化缓存复用的关键）。
-        user_content = f"{context}\n\n{input_text}" if context else input_text
-        messages.append({"role": "user", "content": user_content})
+        compacted = self.context_budget.prepare_history(
+            self._history, self._history_summary,
+        )
+        self._history_summary = compacted.summary
+        built = self.context_budget.build_messages(
+            self._build_fc_system_prompt(),
+            compacted.messages,
+            input_text,
+            context=context,
+            history_summary=self._history_summary,
+            tools=tool_specs,
+        )
+        messages = built.messages
+        current_user_index = built.current_user_index
+        self.last_context_report = built.to_dict()
+        self.last_context_report.update({
+            "compacted_messages": compacted.dropped_messages,
+            "compacted_tokens": compacted.dropped_tokens,
+        })
 
         self.current_history = []
         no_tool_call_streak = 0
@@ -354,6 +369,15 @@ class ReActAgent(Agent):
         )
         try:
             for step in range(1, self.max_steps + 1):
+                messages, dropped = self.context_budget.fit_messages(
+                    messages,
+                    tools=tool_specs,
+                    current_user_index=current_user_index,
+                )
+                if dropped:
+                    self.last_context_report["loop_dropped_messages"] = (
+                        self.last_context_report.get("loop_dropped_messages", 0) + dropped
+                    )
                 logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
                 if time.monotonic() - started_at >= self.max_run_seconds:
                     final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
