@@ -35,7 +35,10 @@ from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
 from ..core.config import Config
-from ..core.hooks import get_hooks, HookEvent, HookContext
+from ..core.hooks import (
+    get_hooks, HookEvent, HookContext, get_runtime,
+    todo_plan_complete,
+)
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 from ..tools.result import ToolResult
@@ -418,6 +421,33 @@ class ReActAgent(Agent):
                     # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
                     # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
                     if content.strip():
+                        # Planning mode is opt-in and only closes after its
+                        # observable acceptance contract has been satisfied.
+                        if not todo_plan_complete(get_runtime()):
+                            gate_message = (
+                                "<planning-gate>Do not finish yet. Create or update the task "
+                                "todo list and complete every item. If this is an acceptance-driven "
+                                "plan, complete its verification item only after checking its "
+                                "criterion.</planning-gate>"
+                            )
+                            if step == self.max_steps:
+                                final_answer = (
+                                    "Task is not complete: the required todo plan still has unfinished "
+                                    "work or verification."
+                                )
+                                self.add_message(Message(input_text, "user"))
+                                self.add_message(Message(final_answer, "assistant"))
+                                _turn_recorded = True
+                                yield ReActProgress(
+                                    step=step, thought=content,
+                                    is_final=True, final_answer=final_answer,
+                                )
+                                return
+                            messages.append({"role": "user", "content": gate_message})
+                            yield ReActProgress(
+                                step=step, thought=content, actions=[], is_final=False,
+                            )
+                            continue
                         logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
                         # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
                         # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
@@ -471,18 +501,25 @@ class ReActAgent(Agent):
                         continue
 
                     call_key = f"{tool_name}:{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
-                    repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
-                    tool_call_count += 1
+                    next_repetition = repeated_calls.get(call_key, 0) + 1
                     blocked: str | None = None
                     if allowed_set is not None and tool_name not in allowed_set:
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
                                    f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
-                    elif tool_call_count > self.max_tool_calls:
+                    elif (get_runtime().requires_todo_plan
+                          and not get_runtime().todos
+                          and tool_name != "todo_write"):
+                        blocked = ("Task planning is required before other tools. "
+                                   "Call todo_write first with the task checklist.")
+                    elif tool_call_count >= self.max_tool_calls:
                         blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
-                    elif repeated_calls[call_key] > self.max_repeated_tool_calls:
+                    elif next_repetition > self.max_repeated_tool_calls:
                         blocked = ("Repeated identical tool call blocked by circuit breaker. "
                                    "Use a different input or provide the current result.")
+                    else:
+                        repeated_calls[call_key] = next_repetition
+                        tool_call_count += 1
                     parsed_calls.append((tc, tool_name, tool_args, blocked))
 
                 async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):

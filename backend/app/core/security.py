@@ -80,12 +80,17 @@ def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, st
         return "", None
     try:
         settings = get_settings()
-        repo_root = Path(__file__).resolve().parents[2]
+        # security.py lives at backend/app/core/.  Agent workspaces are scoped
+        # to the repository root (one level above backend), not backend/ alone.
+        repo_root = Path(__file__).resolve().parents[3]
         configured = [p.strip() for p in settings.workspace_roots.split(",") if p.strip()]
-        roots = [Path(p).resolve() for p in configured]
-        if not roots:
-            roots = [repo_root, Path(settings.uml_dir).resolve(),
-                     Path(settings.uml_dir).resolve().parent]
+        # The application repository is always a trusted workspace baseline.
+        # Configured roots extend that baseline for external projects; they must
+        # not accidentally make in-repository artifacts such as generated/ or
+        # temp/ inaccessible.
+        roots = [repo_root, Path(settings.uml_dir).resolve(),
+                 Path(settings.uml_dir).resolve().parent]
+        roots.extend(Path(p).resolve() for p in configured)
 
         candidate = Path(user_path)
         if not candidate.is_absolute():

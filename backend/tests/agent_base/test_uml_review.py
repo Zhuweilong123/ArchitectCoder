@@ -78,3 +78,20 @@ def test_review_id_is_not_reused_after_reset():
     assert second.id != first.id
     assert mgr.resolve(first.id, "stale") is False
     assert mgr.resolve(second.token, "fresh") is True
+
+
+def test_uml_review_auto_approval_stub_keeps_tool_continuous():
+    mgr = ReviewManager(auto_approve_reviews=True)
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=1)
+
+    result = asyncio.run(tool._execute({
+        "diagrams_json": json.dumps([{"name": "accepted"}]),
+        "summary": "evaluation UML change",
+    }))
+
+    assert json.loads(result)["decision"] == "accept"
+    assert not mgr.has_pending()
+    assert [event["event"] for event in mgr.approval_events] == [
+        "review_requested", "review_response",
+    ]
+    assert mgr.approval_events[-1]["approval_mode"] == "auto_stub"

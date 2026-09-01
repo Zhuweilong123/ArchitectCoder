@@ -7,6 +7,13 @@
  * Toolbar 和 AgentChat 共享同一连接 — 通过 connectAgentChat / sendAgentMessage 操作。
  */
 
+export interface AgentTodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  kind?: 'analysis' | 'execution' | 'verification';
+  acceptance?: string;
+}
+
 export interface AgentProgressEvent {
   event: 'progress';
   step: number;
@@ -19,6 +26,9 @@ export interface AgentProgressEvent {
   }>;
   is_final: boolean;
   final_answer: string;
+  todos?: AgentTodoItem[];
+  planning_mode?: boolean;
+  strategy_advised?: boolean;
 }
 
 export interface AgentChatChunkEvent {
@@ -40,6 +50,7 @@ export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
   title: string;
+  changed_diagrams?: any[];
   diagrams: any[];                 // 更新后的图对象列表
   original_diagrams: any[] | null; // 修改前的图对象列表（DiffViewer 对比用）
   auto?: boolean;                  // true = 框架兜底补推（Agent 漏调 submit_uml_review）

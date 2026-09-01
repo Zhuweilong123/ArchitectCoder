@@ -118,6 +118,9 @@ def create_conversation_tools(
     change_set=None,
     review_session_id: str = "",
     review_project_id: str = "",
+    auto_approve_reviews: bool = False,
+    include_subagent: bool = False,
+    include_task_system: bool = False,
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -130,7 +133,11 @@ def create_conversation_tools(
     # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
     review_mgr = None
     if include_review:
-        review_mgr = ReviewManager(session_id=review_session_id, project_id=review_project_id)
+        review_mgr = ReviewManager(
+            session_id=review_session_id,
+            project_id=review_project_id,
+            auto_approve_reviews=auto_approve_reviews,
+        )
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
@@ -152,20 +159,25 @@ def create_conversation_tools(
     from .skill_loader import SkillTool
     tools.append(SkillTool())
 
-    # 通用子代理（受限文件系统工具集 + sub_agent_model）
-    # 审核通道一并透传，否则敏感命令委托子代理即可绕过人工审核。
-    from .subagent_tool import SpawnSubagentTool
-    tools.append(SpawnSubagentTool(
-        llm=llm,
-        sub_agent_model=get_settings().sub_agent_model,
-        source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
-        project_file=project_file,
-        review_manager=review_mgr, progress=progress,
-    ))
+    # 子代理和持久化任务 DAG 都会显著扩大工具 schema，并引入额外的
+    # 推理/模型调用。默认 DevAgent 保持单 Agent 的直接执行路径；仅由
+    # 专门编排场景显式开启，避免普通修复在编辑前耗尽预算。
+    if include_subagent:
+        from .subagent_tool import SpawnSubagentTool
+        tools.append(SpawnSubagentTool(
+            llm=llm,
+            sub_agent_model=get_settings().sub_agent_model,
+            source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
+            project_file=project_file,
+            review_manager=review_mgr, progress=progress,
+            toolkits=("strategy",),
+            max_steps=6,
+            single_use=True,
+        ))
 
-    # 持久化任务 DAG + claim/complete + git worktree
-    from app.agent_base.tools.task_system import create_task_system_tools
-    tools.extend(create_task_system_tools(scope=task_scope))
+    if include_task_system:
+        from app.agent_base.tools.task_system import create_task_system_tools
+        tools.extend(create_task_system_tools(scope=task_scope))
 
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）

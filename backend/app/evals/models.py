@@ -15,6 +15,7 @@ class EvalCase(BaseModel):
     prompt: str = Field(min_length=1)
     project_id: str = ""
     fixture: str = ""
+    agent: str = "devagent"
     checkers: list[dict[str, Any]] = Field(default_factory=list)
     hard_checkers: list[dict[str, Any]] = Field(default_factory=list)
     max_seconds: float = Field(default=600.0, gt=0, le=3600)

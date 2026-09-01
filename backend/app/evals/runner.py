@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
@@ -26,7 +26,7 @@ from .checkers import build_checkers
 from .models import CheckerResult, EvalCase, EvalResult
 from .projects import load_projects, resolve_fixture
 
-AgentFactory = Callable[[Path, EvalCase], Awaitable[ReActAgent]]
+AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
 
 
 def _trace_total_tokens(trace_path: str) -> int:
@@ -50,12 +50,17 @@ def _default_results_path() -> Path:
     return Path(settings.uml_dir).resolve().parent / "evals" / "results.jsonl"
 
 
-async def default_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
+async def react_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     settings = get_settings()
     route = choose_model(case.prompt, settings)
     llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.2)
     manifest = load_projects().get(case.project_id) if case.project_id else None
-    source_dir = workspace / manifest.source_dir if manifest else workspace
+    # An eval fixture is its own isolated project.  Its source, tests, design
+    # and migration artifacts (for example ``legacy/``) are all task resources,
+    # so make the copied fixture root the tool sandbox.  Restricting tools to
+    # ``src/`` here made valid sibling resources unreachable and encouraged
+    # temporary diagnostic scripts instead of the requested edit.
+    source_dir = workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
     tools, _ = create_conversation_tools(
@@ -78,6 +83,66 @@ async def default_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
     )
+
+
+async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
+    """Build the production DevAgent inside the isolated evaluation workspace.
+
+    The interactive WebSocket path and this factory share the same agent
+    assembly function. Evaluation only changes the workspace, run budgets and
+    approval policy; it does not replace the production prompt/tool chain.
+    """
+    from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
+    from app.services.agent_chat_ws import (
+        _create_dev_agent, _enabled_tools_context, _needs_strategy_planning,
+        _requires_todo_plan, _select_tools_for_message, _todo_plan_context,
+    )
+
+    settings = get_settings()
+    route = choose_model(case.prompt, settings)
+    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
+    manifest = load_projects().get(case.project_id) if case.project_id else None
+    source_dir = workspace / manifest.source_dir if manifest else workspace
+    test_dir = workspace / manifest.test_dir if manifest else workspace
+    project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
+    progress = ProgressRelay()
+    agent, review_mgr, prompt_builder = await _create_dev_agent(
+        llm,
+        source_dir=str(source_dir),
+        test_dir=str(test_dir),
+        project_file=str(project_file),
+        user_message=case.prompt,
+        progress=progress,
+        task_scope=f"eval_{case.id}",
+        auto_approve_reviews=True,
+        max_steps=case.max_tool_calls,
+        max_tool_calls=case.max_tool_calls,
+        max_run_seconds=case.max_seconds,
+        max_total_tokens=min(settings.agent_max_total_tokens, case.max_total_tokens),
+    )
+    agent._eval_context = await prompt_builder.build_context(
+        str(project_file), str(source_dir), str(test_dir), case.prompt,
+    )
+    agent._eval_progress = progress
+    agent._eval_review_manager = review_mgr
+    agent._eval_agent_mode = "devagent"
+    agent._eval_allowed_tools = _select_tools_for_message(agent.tool_registry, case.prompt)
+    agent._eval_requires_acceptance_todos = _needs_strategy_planning(case.prompt)
+    agent._eval_requires_todo_plan = _requires_todo_plan(case.prompt)
+    agent._eval_context = "\n\n".join(filter(None, [
+        agent._eval_context, _enabled_tools_context(agent._eval_allowed_tools),
+        _todo_plan_context(
+            agent._eval_requires_todo_plan,
+            agent._eval_requires_acceptance_todos,
+        ),
+    ]))
+    return agent
+
+
+async def default_agent_factory(workspace: Path, case: EvalCase) -> Any:
+    if case.agent.lower() in {"react", "reactagent", "legacy"}:
+        return await react_agent_factory(workspace, case)
+    return await dev_agent_factory(workspace, case)
 
 
 class EvalRunner:
@@ -143,16 +208,73 @@ class EvalRunner:
                     result.trace_id = tracer.trace_id
                     agent = await factory(workspace, case)
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
+                    result.metadata["agent"] = getattr(agent, "_eval_agent_mode", "react")
+                    change_set = getattr(agent, "change_set", None)
+                    if change_set is not None:
+                        change_set.begin()
 
                     async def consume() -> None:
-                        async for progress in agent.arun_stream(case.prompt):
-                            result.tool_calls += len(progress.tool_calls_detail or [])
+                        context = getattr(agent, "_eval_context", "")
+                        allowed_tools = getattr(agent, "_eval_allowed_tools", None)
+                        if context:
+                            stream_kwargs = {"context": context}
+                            if allowed_tools is not None:
+                                stream_kwargs["allowed_tools"] = allowed_tools
+                            stream = agent.arun_stream(case.prompt, **stream_kwargs)
+                        elif allowed_tools is not None:
+                            stream = agent.arun_stream(case.prompt, allowed_tools=allowed_tools)
+                        else:
+                            # Preserve the original ``arun_stream(prompt)``
+                            # contract for lightweight test doubles.
+                            stream = agent.arun_stream(case.prompt)
+                        async for progress in stream:
+                            result.tool_calls += sum(
+                                detail.get("status") != "blocked"
+                                for detail in progress.tool_calls_detail or []
+                            )
                             for detail in progress.tool_calls_detail or []:
                                 result.total_tokens += int(detail.get("total_tokens") or 0)
                             if progress.is_final:
                                 tracer.done(answer=progress.final_answer or "")
 
-                    await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                    from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+                    runtime_token = set_runtime(AgentRuntime(
+                        requires_todo_plan=bool(
+                            getattr(agent, "_eval_requires_todo_plan", False)
+                        ),
+                        requires_acceptance_todos=bool(
+                            getattr(agent, "_eval_requires_acceptance_todos", False)
+                        ),
+                    ))
+                    try:
+                        await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                    finally:
+                        reset_runtime(runtime_token)
+                    if change_set is not None:
+                        result.metadata["change_set"] = change_set.commit()
+                    review_mgr = getattr(agent, "_eval_review_manager", None)
+                    progress_relay = getattr(agent, "_eval_progress", None)
+                    if progress_relay is not None:
+                        for event in progress_relay.events:
+                            if event.get("event") != "review":
+                                continue
+                            tracer.review_request(
+                                review_id=event.get("review_id", 0),
+                                review_type=event.get("review_type", ""),
+                                title=event.get("title", ""),
+                                question=event.get("question", ""),
+                                content=event.get("content", ""),
+                            )
+                    if review_mgr is not None:
+                        result.metadata["approval_events"] = review_mgr.approval_events
+                        for event in review_mgr.approval_events:
+                            if event.get("event") == "review_response":
+                                tracer.review_response(
+                                    review_id=event.get("review_id", 0),
+                                    response=json.dumps(event, ensure_ascii=False),
+                                )
+                    if progress_relay is not None:
+                        result.metadata["progress_events"] = progress_relay.events
                     hard_results = await asyncio.gather(*(
                         checker.check(workspace) for checker in build_checkers(case.hard_checkers, baseline_hashes)
                     ))
@@ -168,9 +290,15 @@ class EvalRunner:
                     result.passed = bool(checker_results) and all(item.passed for item in checker_results)
                     result.status = "passed" if result.passed else "failed"
             except asyncio.TimeoutError:
+                change_set = locals().get("change_set")
+                if change_set is not None:
+                    change_set.rollback()
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {case.max_seconds}s"
             except Exception as exc:
+                change_set = locals().get("change_set")
+                if change_set is not None:
+                    change_set.rollback()
                 result.status = "error"
                 result.error = f"{type(exc).__name__}: {exc}"
             finally:

@@ -36,3 +36,16 @@ concrete full-diagram JSON to pattern-match against.
   the full enum lists are in §2 of each guide.
 - When editing one diagram, check `cross_diagram_guide.md` §4 (常见跨图错误)
   before assuming the change is local.
+
+## Existing-project migration and recovery
+
+- For a request to fully synchronize one existing `.umlproj` with another,
+  treat the current valid project as the canonical source. Copy or transform
+  that complete project first; do not reconstruct a large design
+  diagram-by-diagram unless the request explicitly asks for a partial merge.
+- A syntactically valid JSON object is not necessarily a usable UML project.
+  A repaired project must contain a non-empty `diagrams` collection whose
+  entries follow the relevant diagram schema.
+- Do not create helper scripts merely to inspect a UML file. Use targeted
+  reads, the design tools, or a direct workspace-local file operation, then
+  validate the resulting project.

@@ -394,6 +394,7 @@ class BashTool(AsyncTool):
             name="bash",
             description=(
                 "Run a shell command in the workspace (e.g. git status, pytest, lint). "
+                "Use the workspace-local 'copy' command to duplicate an existing file when needed. "
                 "Returns combined stdout/stderr. High-risk commands are denied outright; "
                 "sensitive commands pause for human approval before running."
             ),
@@ -410,6 +411,21 @@ class BashTool(AsyncTool):
             return "Error: command must be a non-empty string"
 
         lowered = command.lower()
+
+        # File discovery has a dedicated, path-sandboxed ``glob`` tool.  Pure
+        # shell directory listings add noisy output and frequently lead the
+        # agent to repeat the same discovery in several shell dialects.
+        # Preserve bash for its intended execution role (tests/builds and
+        # explicit file operations), but nudge listing-only requests to glob.
+        compact = " ".join(lowered.replace("\r", " ").replace("\n", " ").split())
+        listing_markers = ("dir ", "dir/", "ls ", "get-childitem")
+        has_listing = any(marker in compact for marker in listing_markers)
+        execution_markers = ("pytest", "python -m", "npm ", "pnpm ", "yarn ", "git ")
+        if has_listing and not any(marker in compact for marker in execution_markers):
+            return (
+                "Use glob for workspace file discovery. Bash is reserved for "
+                "executing tests, builds, or an explicit file operation."
+            )
 
         # ── 高危：直接拒绝，不执行、不审核 ──
         for pattern in _DENY_LIST_LOWER:
@@ -452,7 +468,7 @@ class BashTool(AsyncTool):
         allowed = {
             "python", "python3", "py", "pytest", "git", "echo", "dir", "ls",
             "type", "where", "find", "findstr", "rg", "grep", "cat", "head",
-            "tail", "sort", "wc", "pip", "uv", "node", "npm", "ruff",
+            "tail", "sort", "wc", "pip", "uv", "node", "npm", "ruff", "copy",
         }
         if executable.endswith(".exe"):
             executable = executable[:-4]

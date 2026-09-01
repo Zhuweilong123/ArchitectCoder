@@ -11,6 +11,7 @@ from app.agent_base.tools.my_tools.conversation_tools import AsyncTool, _kg_db_p
 from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
 from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
+from app.agent_base.core.hooks import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +20,19 @@ SUBAGENT_SYSTEM = (
     "final summary of what you did and found. Do not spawn more agents."
 )
 
+STRATEGY_SUBAGENT_SYSTEM = (
+    "You are a read-only strategy advisor for a development task. Do not modify "
+    "files and do not propose unverified implementation details. Inspect only the "
+    "minimum evidence needed, then return a concise plan with: canonical source, "
+    "target scope, ordered steps, acceptance criteria, and risks. Do not spawn more agents."
+)
+
 # ── 子代理工具包（toolkit）──────────────────────────────────────
 # 主 agent 按任务类型选工具包，框架展开成受限工具集。安全不变量由本表强制，
 # 不依赖主 agent 自觉：
 #   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
-TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis")
+TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy")
 
 
 def _build_toolkit_tools(
@@ -57,6 +65,14 @@ def _build_toolkit_tools(
             kg["compare_design_code"],
             read_tool,
         ]
+    if kind == "strategy":
+        return [
+            kg["find_nodes"],
+            kg["get_project_map"],
+            kg["compare_design_code"],
+            read_tool,
+            SkillTool(),
+        ]
     raise ValueError(f"unknown toolkit: {kind}")
 
 
@@ -80,6 +96,8 @@ class SpawnSubagentTool(AsyncTool):
         max_steps: int = 20,
         review_manager=None,
         progress=None,
+        toolkits: tuple[str, ...] = TOOLKIT_NAMES,
+        single_use: bool = False,
     ):
         super().__init__(
             name="spawn_subagent",
@@ -94,6 +112,11 @@ class SpawnSubagentTool(AsyncTool):
         self.llm = llm
         self.sub_agent_model = sub_agent_model
         self.max_steps = max_steps
+        self.toolkits = tuple(toolkits)
+        self.single_use = single_use
+        unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
+        if not self.toolkits or unknown_toolkits:
+            raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
 
         # 每个 toolkit 一个受限子 registry。审核通道透传给子代理的 bash ——
         # 敏感命令委托子代理也不能绕过人工审核（只有 standard 包含 bash）。
@@ -101,7 +124,7 @@ class SpawnSubagentTool(AsyncTool):
         skills = build_skills_section()
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
-        for kind in TOOLKIT_NAMES:
+        for kind in self.toolkits:
             registry = ToolRegistry()
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
@@ -109,7 +132,7 @@ class SpawnSubagentTool(AsyncTool):
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
-            prompt = SUBAGENT_SYSTEM
+            prompt = STRATEGY_SUBAGENT_SYSTEM if kind == "strategy" else SUBAGENT_SYSTEM
             if kind == "standard" and skills:
                 prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
             self.system_prompts[kind] = prompt
@@ -119,9 +142,15 @@ class SpawnSubagentTool(AsyncTool):
         if not isinstance(description, str) or not description.strip():
             return "Error: description is required"
 
-        toolkit = str(params.get("toolkit") or "standard").strip().lower()
+        runtime = get_runtime()
+        if self.single_use and runtime.strategy_subagent_used:
+            return "Error: the strategy subagent may be used only once per task"
+
+        toolkit = str(params.get("toolkit") or self.toolkits[0]).strip().lower()
         if toolkit not in self.sub_registries:
-            toolkit = "standard"
+            toolkit = self.toolkits[0]
+        if self.single_use:
+            runtime.strategy_subagent_used = True
         registry = self.sub_registries[toolkit]
         sub_tools = registry.get_openai_specs()
 
@@ -185,11 +214,10 @@ class SpawnSubagentTool(AsyncTool):
                         },
                         "toolkit": {
                             "type": "string",
+                            "enum": list(self.toolkits),
                             "description": (
-                                "Subagent tool scope: 'standard' (file read/write/edit + "
-                                "shell + skill, default) | 'read_only' (kg locate/expand + "
-                                "read, no writes) | 'kg_analysis' (kg map/impact/design-code "
-                                "analysis + read, no writes)."
+                                "Subagent tool scope. Available values: "
+                                + ", ".join(self.toolkits) + "."
                             ),
                         },
                     },

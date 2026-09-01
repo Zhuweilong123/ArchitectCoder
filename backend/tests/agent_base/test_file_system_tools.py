@@ -208,6 +208,19 @@ def test_bash_sensitive_accept_executes(workspace):
                for e in progress.events)
 
 
+def test_bash_sensitive_auto_approval_stub_executes(workspace):
+    src, test = workspace
+    mgr = ReviewManager(auto_approve_reviews=True)
+    progress = _FakeProgress()
+    bash = BashTool(str(src), str(test), review_manager=mgr, progress=progress)
+
+    result = _run(bash, {"command": SENSITIVE_CMD})
+
+    assert "git reset --hard is risky" in result
+    assert not mgr.has_pending()
+    assert mgr.approval_events[-1]["approval_mode"] == "auto_stub"
+
+
 def test_bash_sensitive_reject_blocked(workspace):
     """敏感命令 + 用户拒绝 → 不执行，反馈喂回 agent。"""
     bash, mgr, _ = _bash_with_review(workspace)

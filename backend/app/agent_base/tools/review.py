@@ -25,11 +25,13 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 from typing import Dict, Any, List, Optional
 
 from app.agent_base.tools.base import Tool, ToolParameter
+from app.services.diagram_diff import changed_diagrams
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +94,18 @@ class ReviewManager:
     4. Agent 收到 observation 继续执行
     """
 
-    def __init__(self, session_id: str = "", project_id: str = ""):
+    def __init__(
+        self,
+        session_id: str = "",
+        project_id: str = "",
+        auto_approve_reviews: bool = False,
+    ):
         self._pending: list[ReviewRequest] = []
         self._next_id = 0
         self.session_id = session_id
         self.project_id = project_id
+        self.auto_approve_reviews = auto_approve_reviews
+        self.approval_events: list[dict] = []
         # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
         # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
         self.baseline: list | None = None
@@ -117,6 +126,31 @@ class ReviewManager:
         req.id = self._next_id
         self._next_id += 1
         self._pending.append(req)
+        self.approval_events.append({
+            "event": "review_requested",
+            "review_id": req.id,
+            "review_type": review_type,
+            "title": title,
+            "approval_mode": "auto_stub" if self.auto_approve_reviews else "human",
+        })
+        # Evaluation runs have no interactive frontend. Automatically accept
+        # the reviewable operations so the real agent loop remains continuous;
+        # high-risk bash commands are still rejected by BashTool before this
+        # manager is consulted.
+        if self.auto_approve_reviews and review_type in {"uml_diff", "bash_command"}:
+            response = json.dumps({
+                "decision": "accept",
+                "feedback": "Automatically accepted by evaluation approval stub.",
+                "approval_mode": "auto_stub",
+            }, ensure_ascii=False)
+            req._response = response
+            self.approval_events.append({
+                "event": "review_response",
+                "review_id": req.id,
+                "review_type": review_type,
+                "decision": "accept",
+                "approval_mode": "auto_stub",
+            })
         logger.info("📋 审核请求已提交: type=%s title=%s", review_type, title)
         return req
 
@@ -266,7 +300,11 @@ class SubmitUmlReviewTool(Tool):
                 after = []
             before = self.manager.baseline
             content = title
-            metadata = {"diagrams": after, "original_diagrams": before}
+            metadata = {
+                "diagrams": after,
+                "changed_diagrams": changed_diagrams(after, before),
+                "original_diagrams": before,
+            }
         else:
             # ── 兜底：无 project_file 时用显式传入的 diagrams ──
             diagrams_json = parameters.get("diagrams_json", "")
@@ -282,7 +320,11 @@ class SubmitUmlReviewTool(Tool):
                 except _json.JSONDecodeError:
                     original = original_json
             content = diagrams_json if isinstance(diagrams_json, str) else _json.dumps(diagrams, ensure_ascii=False)
-            metadata = {"diagrams": diagrams, "original_diagrams": original}
+            metadata = {
+                "diagrams": diagrams,
+                "changed_diagrams": changed_diagrams(diagrams, original),
+                "original_diagrams": original,
+            }
 
         req = self.manager.submit(
             review_type="uml_diff",

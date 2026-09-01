@@ -80,6 +80,35 @@ def test_react_agent_fc_loop_executes_tools():
     assert events[-1].final_answer == "完成"
 
 
+def test_acceptance_contract_blocks_premature_final_answer():
+    llm = MockLLM(rounds=0)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    runtime_token = set_runtime(AgentRuntime(requires_acceptance_todos=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    assert llm.count == 2
+    assert events[0].is_final is False
+    assert events[-1].is_final is True
+    assert "required todo plan" in events[-1].final_answer
+
+
+def test_task_plan_blocks_other_tools_until_todo_exists():
+    llm = MockLLM(rounds=1)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert "Call todo_write first" in detail["observation"]
+
+
 def test_interrupt_hook_stops():
     llm = MockLLM(rounds=10)
     agent = ReActAgent("Test", llm, _registry(), max_steps=10)

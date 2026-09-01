@@ -25,6 +25,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -36,7 +37,7 @@ from app.core.config import get_settings
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+from app.agent_base.core.hooks import AgentRuntime, get_runtime, set_runtime, reset_runtime
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
@@ -48,6 +49,10 @@ from app.services.change_set import ChangeSet
 from app.services.model_router import choose_model
 
 logger = logging.getLogger(__name__)
+
+_UML_PATH_IN_MESSAGE = re.compile(
+    r"(?<![\w.-])(?:[\w.-]+[\\/])+[\w.-]+\.umlproj\b", re.IGNORECASE,
+)
 
 router = APIRouter(prefix="/agent", tags=["agent-chat"])
 
@@ -95,10 +100,81 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     return None
 
 
-def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str] | None:
-    """轻量确定性路由：明显闲聊不暴露工具，开发/设计任务保留对应工具组。
+def _is_pure_chat_message(message: str) -> bool:
+    """Return True only for short social/chat turns that need no task state."""
+    text = (message or "").strip().lower()
+    if not text:
+        return True
+    greetings = ("你好", "您好", "hello", "hi", "嗨", "谢谢", "再见", "晚安")
+    return len(text) <= 80 and any(text.startswith(word) or text == word for word in greetings)
 
-    不确定时返回 None，保持全量工具可用，避免启发式误判阻断真实任务。
+
+def _requires_todo_plan(message: str) -> bool:
+    """Every non-chat task gets a visible checklist; complexity changes its rigor."""
+    return not _is_pure_chat_message(message)
+
+
+def _needs_strategy_planning(message: str) -> bool:
+    """Identify only the expensive, cross-artifact tasks that need a plan first.
+
+    This is a soft routing hint, not an authorization decision: a false negative
+    keeps the normal capable tool surface, while a false positive only adds a
+    bounded planning contract to a genuinely multi-artifact request.
+    """
+    text = (message or "").strip().lower()
+    design = any(word in text for word in (
+        "uml", "类图", "时序", "架构", "设计", "diagram",
+    ))
+    code = any(word in text for word in (
+        "代码", "实现", "修复", "测试", "pytest", "源码", "bug", "运行",
+        "code", "source", "implementation", "fix", "test", "run",
+    ))
+    coordinated = any(word in text for word in (
+        "同步", "迁移", "一致", "全量", "端到端", "多步骤", "复杂", "验证",
+        "sync", "migrate", "migration", "verify", "validation", "multi-step",
+    ))
+    read_only = any(phrase in text for phrase in (
+        "不要修改", "不修改", "只读", "read only", "read-only", "不要改",
+    ))
+    return design and code and coordinated and not read_only
+
+
+def _planning_contract_context(enabled: bool) -> str:
+    if not enabled:
+        return ""
+    return (
+        "## Planning contract\n"
+        "This is a cross-artifact implementation task. Before broad inspection, "
+        "call todo_write with 3-5 items. Every item needs kind (analysis, execution, "
+        "or verification) and an observable acceptance criterion; include one "
+        "verification item. You may call spawn_subagent once with toolkit='strategy' "
+        "for read-only evidence and planning, then execute the plan yourself. Keep "
+        "the list current and do not give a final answer until every item, including "
+        "verification, is completed."
+    )
+
+
+def _todo_plan_context(required: bool, acceptance_mode: bool) -> str:
+    if acceptance_mode:
+        return _planning_contract_context(True)
+    if not required:
+        return ""
+    return (
+        "## Task checklist\n"
+        "Before using any other tool, call todo_write with a concise 1-3 item "
+        "checklist for this task. Update the list as work progresses and mark all "
+        "items completed before the final answer. Use an acceptance-driven plan "
+        "only when the task explicitly requires broad cross-artifact coordination."
+    )
+
+
+def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str] | None:
+    """Return a safe default tool surface for one message.
+
+    Keyword/regex matches are only routing hints: they may add specialised
+    design helpers, but never remove the file-operation core required to
+    finish a normal development task.  ``None`` deliberately means fail-open
+    (all registered tools) for ambiguous or cross-domain requests.
     """
     text = (message or "").strip().lower()
     if not text:
@@ -107,27 +183,64 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
     greetings = ("你好", "您好", "hello", "hi", "嗨", "谢谢", "再见", "晚安")
     task_words = ("uml", "类图", "时序", "架构", "设计", "diagram", "代码", "实现",
                   "修复", "测试", "pytest", "文件", "源码", "bug", "依赖", "项目",
-                  "运行", "修改", "创建", "优化")
+                  "运行", "修改", "创建", "优化", "code", "source", "implementation",
+                  "fix", "test", "run", "project")
     if len(text) <= 80 and not any(word in text for word in task_words):
         if any(text.startswith(word) or text == word for word in greetings):
             return []
-        # 简单知识问答默认不需要工具；长/含任务词的问题交给全量工具。
-        return []
+        # Lack of a keyword is not evidence that the user does not need the
+        # project.  Unknown short requests fail open; only clear greetings are
+        # tool-free.
+        return None
     if not any(word in text for word in task_words):
         return None
 
     design = any(word in text for word in ("uml", "类图", "时序", "架构", "设计", "diagram"))
-    code = any(word in text for word in ("代码", "实现", "修复", "测试", "pytest", "文件", "源码", "bug", "运行"))
-    names = {name for name in all_tools if name in {"read_file", "write_file", "edit_file", "glob",
-                                                     "bash", "todo_write", "skill", "spawn_subagent",
-                                                     "create_task", "update_task", "list_tasks", "get_task",
-                                                     "claim_task", "complete_task", "create_worktree",
-                                                     "submit_uml_review"}}
+    code = any(word in text for word in (
+        "代码", "实现", "修复", "测试", "pytest", "文件", "源码", "bug", "运行",
+        "code", "source", "implementation", "fix", "test", "run",
+    ))
+    read_only = any(phrase in text for phrase in (
+        "不要修改", "不修改", "只读", "read only", "read-only", "不要改",
+    ))
+
+    # These primitives are the minimum viable development surface.  Routing
+    # hints must not hide one of them: an apparently design-only task may need
+    # to copy/repair a project file, and an apparently code-only task may need
+    # to inspect an adjacent artifact.
+    core = {"read_file", "glob", "write_file", "edit_file", "bash"}
+    names = {name for name in all_tools if name in core}
+    if read_only:
+        # Explicit user intent is a safety boundary, not a heuristic.  Bash is
+        # excluded because it can mutate even when its immediate purpose looks
+        # observational.
+        names.difference_update({"write_file", "edit_file", "bash"})
     if design:
-        names.update(name for name in all_tools if name.startswith("kg_") or name.endswith("_uml"))
-    if not code:
-        names.discard("bash")
+        names.update(name for name in all_tools if name in {
+            "skill", "submit_uml_review", "get_project_map",
+            "find_nodes", "compare_design_code",
+        })
+    if _requires_todo_plan(message):
+        names.update(name for name in all_tools if name == "todo_write")
+    if _needs_strategy_planning(message):
+        names.update(name for name in all_tools if name == "spawn_subagent")
+
+    # Planning and subagent schemas are visible only to the narrow class of
+    # coordinated design/code/verification tasks above, never ordinary repairs.
     return [name for name in all_tools if name in names]
+
+
+def _enabled_tools_context(allowed_tools: list[str] | None) -> str:
+    """Describe this turn's tool surface without advertising disabled tools."""
+    if allowed_tools is None:
+        return "## Enabled tools\nUse only the tool schemas supplied for this turn."
+    if not allowed_tools:
+        return "## Enabled tools\nNo tools are enabled for this turn; respond directly."
+    return (
+        "## Enabled tools\n"
+        f"Only these tools are enabled for this turn: {', '.join(allowed_tools)}. "
+        "Do not request a tool outside this list."
+    )
 
 
 _TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
@@ -335,8 +448,6 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt(registry: ToolRegistry) -> str:
-        from app.agent_base.tools.my_tools.skill_loader import build_skills_section
-
         parts = [
             "You are a UML design + code co-evolution agent. Evolve existing "
             "code — don't redesign. Act, don't explain.",
@@ -345,17 +456,21 @@ class DevPromptBuilder:
             "- Do only what was asked.",
             "- No comments or emojis in code.",
             "- Pure chat/greeting: reply briefly without calling tools.",
-            "- Before starting any multi-step task, use todo_write to plan your steps; Update status as you go."
+            "- Start with the smallest useful inspection, then make the minimal correct edit and run the focused test.",
+            "- For a repair, run the focused existing test early. Treat each observed failure as a checklist: repair the exact failing function before broadening scope, then rerun that test.",
+            "- Do not duplicate workspace discovery (for example, do not run a shell directory listing and a glob for the same purpose).",
+            "- The listed Source directory is the working root for relative paths and shell commands; do not inspect directories merely to discover the working directory.",
+            "- Do not create a helper script solely to inspect or summarize an existing file; use targeted reads or an existing tool instead.",
+            "- Do not claim a repair is complete until the focused test has passed; if several named targets are required, verify every target before the final response.",
+            "- Before inspecting or editing a .umlproj file, call skill(name='uml-design-guide') and follow its schema rules.",
+            "- For a full UML migration from a known canonical design to a stale peer, prefer reusing that canonical .umlproj over reconstructing JSON diagram-by-diagram. Use bash with a single workspace-local `copy` command for the transfer, then validate the target; do not create temporary parsing scripts in the project.",
+            "- A UML repair is not complete merely because JSON parses: verify the project loads with a non-empty diagram set. When a valid project file is available, use it as the structural reference instead of creating an empty placeholder.",
+            "- Do not modify UML unless the user asks for a design change or the code change alters an externally visible design contract.",
+            "- Follow the current-turn task checklist policy for todo_write; never create task graphs or worktrees for a normal repair.",
+            "- Load a skill only when it is available for the current task and its guidance is necessary.",
             "",
-            _build_tool_policy(registry.list_tools()),
+            "Tool availability is task-specific. Use only the enabled tools stated in the current-turn context and their supplied schemas.",
         ]
-        # skill 目录（name + description）属于静态段：工具集在 session 内不变，
-        # SKILL.md 也是静态文件，字节恒定随 system 前缀一并命中缓存。
-        # 正文不进 prompt —— 由 agent 调 skill(name) 按需拉取。
-        if "skill" in registry.list_tools():
-            skills = build_skills_section()
-            if skills:
-                parts.extend(["", skills])
         return "\n".join(parts)
 
     async def build_context(
@@ -395,6 +510,18 @@ class DevPromptBuilder:
                 f"- Current project file: {project_file}\n"
                 "  (use this exact path as project_file parameter; "
                 "do NOT guess or shorten the filename)"
+            )
+
+        message_lower = (user_message or "").lower()
+        mentioned_uml_paths = _UML_PATH_IN_MESSAGE.findall(user_message or "")
+        asks_to_sync = any(word in message_lower for word in ("sync", "synchronize", "同步", "迁移"))
+        if project_file and mentioned_uml_paths and asks_to_sync:
+            parts.append(
+                "## UML Synchronization Intent\n"
+                f"The open project file is the canonical design: {project_file}\n"
+                "The user also named another .umlproj as the synchronization target. "
+                "For a full synchronization, first reuse the canonical design as the target's source of truth; "
+                "do not reconstruct a large project diagram-by-diagram. Then validate the target as a UML project."
             )
 
         # ── 记忆 recall（按项目，只在 key 变化时重算）──
@@ -437,6 +564,11 @@ async def _create_dev_agent(
     progress: ProgressRelay | None = None,
     restore_history: list[dict] | None = None,
     task_scope: str = "",
+    auto_approve_reviews: bool = False,
+    max_steps: int | None = None,
+    max_tool_calls: int | None = None,
+    max_run_seconds: float | None = None,
+    max_total_tokens: int | None = None,
 ):
     """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
@@ -454,6 +586,10 @@ async def _create_dev_agent(
         change_set=change_set,
         review_session_id=task_scope or "",
         review_project_id=os.path.splitext(os.path.basename(project_file))[0] if project_file else "",
+        auto_approve_reviews=auto_approve_reviews,
+        # The strategy-only tool is registered once but filtered out of each
+        # ordinary turn's schema by _select_tools_for_message.
+        include_subagent=True,
     )
 
     registry = ToolRegistry()
@@ -462,17 +598,18 @@ async def _create_dev_agent(
 
     prompt_builder = DevPromptBuilder(registry)
 
+    settings = get_settings()
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
         tool_registry=registry,
         system_prompt=prompt_builder.system_prompt,
-        max_steps=get_settings().agent_max_steps,
-        max_tool_calls=get_settings().agent_max_tool_calls,
-        max_repeated_tool_calls=get_settings().agent_max_repeated_tool_calls,
-        max_run_seconds=get_settings().agent_max_run_seconds,
-        max_total_tokens=get_settings().agent_max_total_tokens,
-        llm_timeout_seconds=get_settings().agent_llm_timeout_seconds,
+        max_steps=max_steps or settings.agent_max_steps,
+        max_tool_calls=max_tool_calls or settings.agent_max_tool_calls,
+        max_repeated_tool_calls=settings.agent_max_repeated_tool_calls,
+        max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
+        max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
+        llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
     )
     agent.change_set = change_set
@@ -509,6 +646,27 @@ def _tool_steps_summary(tool_calls_detail: list[dict], max_steps: int = 8) -> st
         args_str = json.dumps(args, ensure_ascii=False)[:150] if isinstance(args, dict) else str(args)[:150]
         lines.append(f"[{name}] 参数:{args_str}\n返回:{obs}")
     return "\n".join(lines)
+
+
+def _todo_progress_state() -> dict:
+    """Return the frontend-safe, authoritative TODO snapshot for this run."""
+    runtime = get_runtime()
+    todos: list[dict] = []
+    for item in runtime.todos:
+        if not isinstance(item, dict):
+            continue
+        snapshot = {
+            key: item[key]
+            for key in ("content", "status", "kind", "acceptance")
+            if key in item
+        }
+        if snapshot:
+            todos.append(snapshot)
+    return {
+        "todos": todos,
+        "planning_mode": runtime.requires_acceptance_todos,
+        "strategy_advised": runtime.strategy_subagent_used,
+    }
 
 
 def _extract_fn_for(llm: BaseAgentsLLM):
@@ -644,6 +802,7 @@ async def _handle_dev(
                     "review_id": ev.get("review_id", 0),
                     "title": ev.get("title", ""),
                     "diagrams": metadata.get("diagrams", []),
+                    "changed_diagrams": metadata.get("changed_diagrams"),
                     "original_diagrams": metadata.get("original_diagrams"),
                 })
             else:
@@ -668,7 +827,13 @@ async def _handle_dev(
         except Exception:
             review_mgr.baseline = None
 
-    _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
+    acceptance_mode = _needs_strategy_planning(user_message)
+    todo_plan_required = _requires_todo_plan(user_message)
+    _runtime_token = set_runtime(AgentRuntime(
+        stop_check=stop_check,
+        requires_todo_plan=todo_plan_required,
+        requires_acceptance_todos=acceptance_mode,
+    ))
     try:
         change_set = getattr(agent, "change_set", None)
         if change_set is not None:
@@ -676,6 +841,10 @@ async def _handle_dev(
             change_set.begin()
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         allowed_tools = _select_tools_for_message(agent.tool_registry, user_message)
+        context = "\n\n".join(filter(None, [
+            context, _enabled_tools_context(allowed_tools),
+            _todo_plan_context(todo_plan_required, acceptance_mode),
+        ]))
         async for step_progress in agent.arun_stream(
             user_message, context=context, allowed_tools=allowed_tools,
         ):
@@ -717,6 +886,7 @@ async def _handle_dev(
                 ],
                 "is_final": d["is_final"],
                 "final_answer": d["final_answer"] if d["is_final"] else "",
+                **_todo_progress_state(),
             })
             if not ok:
                 return
@@ -735,9 +905,9 @@ async def _handle_dev(
                 ):
                     try:
                         from app.services.file_service import load_project
+                        from app.services.diagram_diff import changed_diagrams
                         after = [d.model_dump() for d in load_project(project_file).diagrams]
-                        changed = json.dumps(after, ensure_ascii=False, sort_keys=True) != \
-                            json.dumps(review_mgr.baseline, ensure_ascii=False, sort_keys=True)
+                        changed = changed_diagrams(after, review_mgr.baseline)
                         if changed:
                             req = review_mgr.submit(
                                 review_type="uml_diff",
@@ -746,6 +916,7 @@ async def _handle_dev(
                                 question="设计文件已被修改但未经审核，请确认是否接受此变更。",
                                 metadata={
                                     "diagrams": after,
+                                    "changed_diagrams": changed,
                                     "original_diagrams": review_mgr.baseline,
                                 },
                             )
@@ -765,6 +936,7 @@ async def _handle_dev(
                                 "review_id": req.id,
                                 "title": req.title,
                                 "diagrams": after,
+                                "changed_diagrams": changed,
                                 "original_diagrams": review_mgr.baseline,
                                 "auto": True,
                             })

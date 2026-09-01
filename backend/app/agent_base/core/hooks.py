@@ -68,6 +68,32 @@ class AgentRuntime:
     stop_check: Callable[[], bool] = field(default_factory=lambda: (lambda: False))
     todos: list = field(default_factory=list)
     rounds_since_todo: int = 0
+    # Complex cross-artifact tasks opt into an explicit acceptance contract.
+    # Keep this per-run: ordinary repairs should retain the lightweight path.
+    requires_todo_plan: bool = False
+    requires_acceptance_todos: bool = False
+    strategy_subagent_used: bool = False
+
+
+def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
+    """Return whether the current task's required TODO plan is complete."""
+    runtime = runtime or get_runtime()
+    requires_plan = runtime.requires_todo_plan or runtime.requires_acceptance_todos
+    if not requires_plan:
+        return True
+    if not runtime.todos:
+        return False
+    if not all(todo.get("status") == "completed" for todo in runtime.todos):
+        return False
+    return (
+        not runtime.requires_acceptance_todos
+        or any(todo.get("kind") == "verification" for todo in runtime.todos)
+    )
+
+
+def acceptance_todo_contract_complete(runtime: AgentRuntime | None = None) -> bool:
+    """Backward-compatible alias for the general TODO completion check."""
+    return todo_plan_complete(runtime)
 
 
 _runtime_var: ContextVar[AgentRuntime] = ContextVar(
@@ -229,7 +255,10 @@ def _register_default_hooks() -> None:
     get_hooks().register(
         HookEvent.TOOL_AFTER,
         # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀
-        TruncateHook(per_tool={"skill": 20000}),
+        # Keep iterative tool history compact.  A 1200-character observation
+        # still includes a focused pytest failure and a typical source method,
+        # while substantially reducing repeated prompt context in long runs.
+        TruncateHook(max_chars=1200, per_tool={"skill": 20000}),
         priority=0,
     )
 
