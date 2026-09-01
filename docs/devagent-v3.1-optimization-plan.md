@@ -944,6 +944,7 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 记忆主题冲突按“已确认优先、再按更新时间、最后按相关性”选择唯一候选，并写入治理确认标记。
 - Agent metrics 聚合 Prompt 构建次数、估算 token、压缩 token 和 Prompt 版本，支持后续 A/B 门禁且不保存 Prompt 内容。
 - Trace 新增只读聚合摘要接口，按版本汇总 Prompt token、LLM usage、工具调用/错误和压缩次数，不返回原始内容。
+- 新增基于最新组件命名 trace 的多轮评测：先增加 `Element`、再移除 `Element`，复用同一 Agent/workspace/checkpoint，并用自动审核 stub 完成审核链路。
 
 ### 15.2 部分完成
 
@@ -954,14 +955,14 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 ### 15.3 未开始或未完成发布闭环
 
-- 固定 trace 回放、3.0/3.1 聚合指标报告和质量门禁。
+- 固定 trace 回放、3.0/3.1 聚合指标报告和质量门禁（多轮用例已加入，真实模型批量执行尚未完成）。
 - 记忆治理的跨服务确认同步、撤销语义及完整端到端回放仍未完成。
 - 文档第 8 节列出的完整 Feature Flag、10%/50% 灰度和按模块回滚链路。
 - 3.1 发布目标（调用数、prompt token、工具失败、延迟）在真实任务集上的达标验证。
 
 ### 15.4 验证与提交记录
 
-- backend 全量测试：**163 passed**（仓库既有 `.pytest_cache` 权限 warning 不影响结果）。
+- backend 全量测试：**167 passed**（仓库既有 `.pytest_cache` 权限 warning 不影响结果）。
 - 首批提交：`f285147 feat: implement DevAgent 3.1 optimization foundation`。
 - 上下文与 Prompt telemetry：`774e58a feat: add DevAgent context compaction and prompt telemetry`。
 - 记忆主题去重：`34dd250 fix: deduplicate DevAgent memory subjects`。
@@ -969,5 +970,6 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 - 记忆冲突治理：`dde7b9e fix: prioritize confirmed memory conflicts`。
 - Prompt metrics 聚合：`dfd485a feat: aggregate DevAgent prompt metrics`。
 - Trace 聚合摘要：`e41717f feat: add privacy-safe trace summaries`。
+- 多轮 Element 命名评测：`e38c881 feat: add trace-derived multiturn evaluation case`。
 
 后续工作必须先完成固定评测集的质量门禁，再将 3.1 紧凑 Prompt 和相关运行时开关设为默认。
