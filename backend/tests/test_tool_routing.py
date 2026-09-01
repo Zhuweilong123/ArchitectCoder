@@ -134,6 +134,19 @@ def test_compact_prompt_is_opt_in_and_shorter(monkeypatch):
     assert len(compact.system_prompt) < len(full.system_prompt)
 
 
+def test_prompt_ab_report_is_opt_in_and_contains_candidate_savings(monkeypatch):
+    monkeypatch.setenv("DEVAGENT_PROMPT_AB", "1")
+    monkeypatch.setenv("DEVAGENT_PROMPT_VERSION", "3.0")
+
+    builder = DevPromptBuilder(_Registry(TOOLS))
+
+    report = builder.static_prompt_report
+    assert report["candidates"]["3.0"]["chars"] == report["chars"]
+    assert report["candidates"]["3.1"]["chars"] < report["candidates"]["3.0"]["chars"]
+    assert report["candidate_savings_chars"] > 0
+    assert report["candidate_savings_tokens"] > 0
+
+
 def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):
     class _Record:
         def __init__(self, metadata):

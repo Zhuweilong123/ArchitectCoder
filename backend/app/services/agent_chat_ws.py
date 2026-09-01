@@ -471,6 +471,9 @@ class DevPromptBuilder:
 
     def __init__(self, registry: ToolRegistry):
         self.prompt_version = os.getenv("DEVAGENT_PROMPT_VERSION", "3.0").strip().lower()
+        self.prompt_ab_enabled = os.getenv("DEVAGENT_PROMPT_AB", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
         if self.prompt_version in {"3.1", "compact", "devagent-3.1"}:
             self.system_prompt = self._build_compact_static_prompt()
         else:
@@ -480,6 +483,26 @@ class DevPromptBuilder:
             "chars": len(self.system_prompt),
             "estimated_tokens": estimate_tokens(self.system_prompt),
         }
+        if self.prompt_ab_enabled:
+            candidates = {
+                "3.0": self._build_static_prompt(registry),
+                "3.1": self._build_compact_static_prompt(),
+            }
+            candidate_reports = {
+                version: {
+                    "chars": len(prompt),
+                    "estimated_tokens": estimate_tokens(prompt),
+                }
+                for version, prompt in candidates.items()
+            }
+            self.static_prompt_report["candidates"] = candidate_reports
+            self.static_prompt_report["candidate_savings_chars"] = (
+                candidate_reports["3.0"]["chars"] - candidate_reports["3.1"]["chars"]
+            )
+            self.static_prompt_report["candidate_savings_tokens"] = (
+                candidate_reports["3.0"]["estimated_tokens"]
+                - candidate_reports["3.1"]["estimated_tokens"]
+            )
         self._ctx_key: tuple | None = None
         self._ctx_value: str = ""
         self.last_context_report: dict = {

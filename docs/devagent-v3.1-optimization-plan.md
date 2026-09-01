@@ -804,6 +804,7 @@ safely and provide the completed work, remaining work, and exact reason.
 | 配置 | 默认灰度值 | 作用 |
 |---|---:|---|
 | `DEVAGENT_PROMPT_VERSION` | `3.0` | 选择静态 prompt 版本 |
+| `DEVAGENT_PROMPT_AB` | `false` | 显式记录 3.0/3.1 Prompt 候选大小对比 |
 | `DEVAGENT_V31_PER_TURN_ROUTING` | `false` | 每用户轮次重新选模型 |
 | `DEVAGENT_V31_TOKEN_BUDGET` | `false` | 新 usage 与预算闭环 |
 | `DEVAGENT_V31_TYPED_INTENT` | `false` | 新意图/工具路由 |
