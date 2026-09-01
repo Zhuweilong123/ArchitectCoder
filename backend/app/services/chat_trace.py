@@ -79,6 +79,7 @@ EVT_REVIEW_RESPONSE = "review_response"
 EVT_DONE = "done"
 EVT_ERROR = "error"
 EVT_KG_INJECT = "kg_inject"
+EVT_CONTEXT_COMPACTED = "context_compacted"
 
 
 def _event(
@@ -208,6 +209,21 @@ class ChatTraceLogger:
     def kg_inject(self, context: str, query: str = "") -> None:
         """记录注入给模型的知识图谱上下文（去隐私/去敏感后）。"""
         self.event(EVT_KG_INJECT, query=query, context_length=len(context))
+
+    def context_compacted(
+        self,
+        *,
+        summary: str,
+        dropped_messages: int = 0,
+        dropped_tokens: int = 0,
+    ) -> None:
+        """Persist the checkpoint used to restore a compacted session."""
+        self.event(
+            EVT_CONTEXT_COMPACTED,
+            summary=summary,
+            dropped_messages=dropped_messages,
+            dropped_tokens=dropped_tokens,
+        )
 
     def llm_request(self, *, provider: str, model: str, messages: list,
                     temperature: float | None, max_tokens: int | None,

@@ -14,7 +14,7 @@ import json
 import os
 from datetime import datetime
 
-from app.services.chat_trace import _chat_log_dir
+from app.services.chat_trace import EVT_CONTEXT_COMPACTED, _chat_log_dir
 
 
 def _trace_dir() -> str:
@@ -130,6 +130,7 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
 
     history: list[dict] = []
     pending_user: str | None = None
+    checkpoint: str = ""
     for e in data["events"]:
         et = e.get("event_type")
         if et == "user_message":
@@ -141,6 +142,10 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
                 history.append({"role": "user", "content": pending_user})
                 pending_user = None
             history.append({"role": "assistant", "content": e.get("answer", "")})
+        elif et == EVT_CONTEXT_COMPACTED:
+            checkpoint = str(e.get("summary") or "")
     if pending_user is not None:
         history.append({"role": "user", "content": pending_user})
+    if checkpoint:
+        history.insert(0, {"role": "summary", "content": checkpoint})
     return history

@@ -178,6 +178,7 @@ class ReActAgent(Agent):
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
         self.last_context_report: dict = {}
+        self.on_context_compacted = None
         logger.info(
             "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
             name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
@@ -354,6 +355,12 @@ class ReActAgent(Agent):
             "compacted_messages": compacted.dropped_messages,
             "compacted_tokens": compacted.dropped_tokens,
         })
+        if compacted.dropped_messages and self.on_context_compacted:
+            self.on_context_compacted({
+                "summary": compacted.summary,
+                "dropped_messages": compacted.dropped_messages,
+                "dropped_tokens": compacted.dropped_tokens,
+            })
 
         self.current_history = []
         no_tool_call_streak = 0

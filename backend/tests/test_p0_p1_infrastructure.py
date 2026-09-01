@@ -8,6 +8,7 @@ from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.task_system import _default_dirs
 from app.services.chat_trace import ChatTraceLogger, EVT_SESSION_END
+from app.services.trace_reader import reconstruct_history
 
 
 class _Echo(Tool):
@@ -39,6 +40,24 @@ def test_trace_close_writes_session_end(tmp_path, monkeypatch):
     tracer.close()
     events = [json.loads(line) for line in (tmp_path / "trace_trace-test.jsonl").read_text(encoding="utf-8").splitlines()]
     assert events[-1]["event_type"] == EVT_SESSION_END
+
+
+def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    tracer = ChatTraceLogger("checkpoint-test")
+    tracer.start()
+    tracer.user_message("old question")
+    tracer.context_compacted(summary="keep the SQLite decision", dropped_messages=2)
+    tracer.done(answer="old answer")
+    tracer.close()
+
+    history = reconstruct_history("checkpoint-test")
+    assert history[0] == {
+        "role": "summary",
+        "content": "keep the SQLite decision",
+    }
+    assert history[-1] == {"role": "assistant", "content": "old answer"}
 
 
 def test_task_dirs_are_scoped():

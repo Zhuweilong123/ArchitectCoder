@@ -879,6 +879,13 @@ async def _handle_dev(
             context, _enabled_tools_context(allowed_tools),
             _todo_plan_context(todo_plan_required, acceptance_mode),
         ]))
+        previous_compaction_callback = getattr(agent, "on_context_compacted", None)
+        if trace_log:
+            agent.on_context_compacted = lambda report: trace_log.context_compacted(
+                summary=report.get("summary", ""),
+                dropped_messages=report.get("dropped_messages", 0),
+                dropped_tokens=report.get("dropped_tokens", 0),
+            )
         async for step_progress in agent.arun_stream(
             user_message, context=context, allowed_tools=allowed_tools,
         ):
@@ -1080,6 +1087,8 @@ async def _handle_dev(
             "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
         })
     finally:
+        if 'previous_compaction_callback' in locals():
+            agent.on_context_compacted = previous_compaction_callback
         reset_runtime(_runtime_token)
 
 
