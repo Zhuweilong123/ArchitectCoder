@@ -197,6 +197,30 @@ class EvalRunner:
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
                         production_agent = hasattr(agent, "tool_registry")
+
+                        def record_tool_details(step: int, details: list[dict]) -> None:
+                            """Mirror streamed tool details into the evaluation trace."""
+                            for detail in details:
+                                name = str(detail.get("name") or "tool")
+                                arguments = detail.get("arguments")
+                                if not isinstance(arguments, dict):
+                                    arguments = {"raw": str(arguments or "")}
+                                span_id = tracer.tool_call(
+                                    step=step, tool_name=name, arguments=arguments,
+                                )
+                                status = str(detail.get("status") or "")
+                                tracer.tool_result(
+                                    span_id=span_id,
+                                    tool_name=name,
+                                    observation=str(detail.get("observation") or ""),
+                                    error=(
+                                        str(detail.get("error_code") or "")
+                                        if status not in {"", "success", "completed"} else ""
+                                    ),
+                                    fed_truncated=bool(detail.get("fed_truncated")),
+                                    fed_length=int(detail.get("fed_length") or 0),
+                                )
+
                         for turn_index, (prompt, turn_spec) in enumerate(
                             zip(prompts, turn_specs), 1
                         ):
@@ -228,6 +252,7 @@ class EvalRunner:
                                 final_answer = ""
                                 async for progress in agent.arun_stream(prompt):
                                     details = progress.tool_calls_detail or []
+                                    record_tool_details(progress.step, details)
                                     delta_tool_calls = sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
@@ -307,6 +332,7 @@ class EvalRunner:
                                 stream = agent.arun_stream(prompt, **stream_kwargs)
                                 async for progress in stream:
                                     details = progress.tool_calls_detail or []
+                                    record_tool_details(progress.step, details)
                                     turn_tool_calls += sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
