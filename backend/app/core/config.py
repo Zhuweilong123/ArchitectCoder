@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     # DEEPSEEK_MODEL in .env; application code must not route per message.
     deepseek_model: str = "deepseek-v4-pro"
 
+    # Compatibility only: releases before the fixed-model policy accepted
+    # SUB_AGENT_MODEL. Consume a stale deployment setting without using it so
+    # upgrading does not prevent the backend from starting.
+    legacy_sub_agent_model: str | None = Field(
+        default=None,
+        validation_alias="SUB_AGENT_MODEL",
+        repr=False,
+        description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
+    )
+
     # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
     # consistency checks) need more than the old 12-round cap
     agent_max_steps: int = 50

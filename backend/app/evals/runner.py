@@ -55,10 +55,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     approval policy; it does not replace the production prompt/tool chain.
     """
     from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
-    from app.services.agent_chat_ws import (
-        _create_dev_agent, _enabled_tools_context, _needs_strategy_planning,
-        _requires_todo_plan, _select_tools_for_message, _todo_plan_context,
-    )
+    from app.services.agent_chat_ws import _create_dev_agent, _enabled_tools_context
 
     settings = get_settings()
     first_prompt = case.prompts()[0]
@@ -92,15 +89,8 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     agent._eval_progress = progress
     agent._eval_review_manager = review_mgr
     agent._eval_agent_mode = "devagent"
-    agent._eval_allowed_tools = _select_tools_for_message(agent.tool_registry, case.prompt)
-    agent._eval_requires_acceptance_todos = _needs_strategy_planning(case.prompt)
-    agent._eval_requires_todo_plan = _requires_todo_plan(case.prompt)
     agent._eval_context = "\n\n".join(filter(None, [
-        agent._eval_context, _enabled_tools_context(agent._eval_allowed_tools),
-        _todo_plan_context(
-            agent._eval_requires_todo_plan,
-            agent._eval_requires_acceptance_todos,
-        ),
+        agent._eval_context, _enabled_tools_context(),
     ]))
     return agent
 
@@ -182,11 +172,7 @@ class EvalRunner:
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
                         from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
-                        from app.services.agent_chat_ws import (
-                            _checkpoint_answer, _enabled_tools_context, _is_status_query,
-                            _needs_strategy_planning, _requires_todo_plan,
-                            _select_tools_for_message, _todo_plan_context,
-                        )
+                        from app.services.agent_chat_ws import _enabled_tools_context
 
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
@@ -263,20 +249,6 @@ class EvalRunner:
                                 })
                                 continue
 
-                            if _is_status_query(prompt):
-                                checkpoint = getattr(agent, "last_run_checkpoint", {}) or {}
-                                answer = _checkpoint_answer(checkpoint)
-                                tracer.done(answer=answer)
-                                turn_records.append({
-                                    "turn": turn_index,
-                                    "prompt": prompt,
-                                    "model": getattr(getattr(agent, "llm", None), "model", ""),
-                                    "status": "checkpoint_fast_path",
-                                    "tool_calls": 0,
-                                    "total_tokens": 0,
-                                })
-                                continue
-
                             context = ""
                             if prompt_builder is not None:
                                 context = await prompt_builder.build_context(
@@ -292,25 +264,14 @@ class EvalRunner:
                                     **prompt_builder.last_context_report,
                                     turn=turn_index,
                                 )
-                            allowed_tools = _select_tools_for_message(
-                                agent.tool_registry, prompt,
-                            )
-                            requires_todo = _requires_todo_plan(prompt)
-                            requires_acceptance = _needs_strategy_planning(prompt)
                             context = "\n\n".join(filter(None, [
                                 context,
-                                _enabled_tools_context(allowed_tools),
-                                _todo_plan_context(requires_todo, requires_acceptance),
+                                _enabled_tools_context(),
                             ]))
                             stream_kwargs: dict[str, Any] = {}
                             if context:
                                 stream_kwargs["context"] = context
-                            if allowed_tools is not None:
-                                stream_kwargs["allowed_tools"] = allowed_tools
-
                             runtime_token = set_runtime(AgentRuntime(
-                                requires_todo_plan=requires_todo,
-                                requires_acceptance_todos=requires_acceptance,
                             ))
                             turn_tool_calls = 0
                             turn_tokens = 0
@@ -337,8 +298,7 @@ class EvalRunner:
                                 reset_runtime(runtime_token)
 
                             # Mirror the production transport's terminal
-                            # checkpoint so a following status turn exercises
-                            # the same no-LLM fast path.
+                            # checkpoint for explicit task-status requests.
                             agent.last_run_checkpoint = {
                                 "status": "completed",
                                 "run_id": run_id,

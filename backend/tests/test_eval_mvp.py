@@ -55,7 +55,7 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     assert result.workspace == ""
 
 
-def test_eval_runner_reuses_agent_for_multiturn_and_status_fast_path(tmp_path, monkeypatch):
+def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
     monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
@@ -91,9 +91,9 @@ def test_eval_runner_reuses_agent_for_multiturn_and_status_fast_path(tmp_path, m
     result = asyncio.run(EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory))
 
     assert result.status == "passed"
-    assert agents[0].seen == ["先完成第一步", "再完成第二步"]
+    assert agents[0].seen == ["先完成第一步", "再完成第二步", "上面的任务执行完成了吗？"]
     assert [turn["status"] for turn in result.metadata["turns"]] == [
-        "completed", "completed", "checkpoint_fast_path",
+        "completed", "completed", "completed",
     ]
 
 
