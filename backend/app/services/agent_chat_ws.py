@@ -49,12 +49,23 @@ from app.services.change_set import ChangeSet
 from app.services.model_router import choose_model
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.core.capabilities import CapabilityPolicy
+from app.services.audit_log import get_audit_logger
 
 logger = logging.getLogger(__name__)
 
 _UML_PATH_IN_MESSAGE = re.compile(
     r"(?<![\w.-])(?:[\w.-]+[\\/])+[\w.-]+\.umlproj\b", re.IGNORECASE,
 )
+
+
+def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
+    """Keep audit failures observable without breaking the Agent response."""
+    try:
+        get_audit_logger().record(
+            event_type, run_id=run_id, session_id=session_id, **payload,
+        )
+    except Exception:
+        logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
 
 router = APIRouter(prefix="/agent", tags=["agent-chat"])
 
@@ -760,6 +771,7 @@ async def _handle_dev(
     fallback_review_ids: set[int] | None = None,
     run_id: str = "",
     run_owner: str = "",
+    session_id: str = "",
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -970,6 +982,10 @@ async def _handle_dev(
                         )
                     except RunStateError:
                         logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
+                    _record_audit(
+                        "run_succeeded", run_id=run_id, session_id=session_id,
+                        tool_call_count=len(task_tool_calls),
+                    )
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
@@ -1000,6 +1016,10 @@ async def _handle_dev(
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+            _record_audit(
+                "run_canceled", run_id=run_id, session_id=session_id,
+                reason="agent task was canceled",
+            )
         raise
     except AgentInterrupted:
         if run_id:
@@ -1011,6 +1031,10 @@ async def _handle_dev(
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+            _record_audit(
+                "run_canceled", run_id=run_id, session_id=session_id,
+                reason="user requested stop",
+            )
         await _ws_send(websocket, {
             "event": "stopped", "reason": "User requested stop",
         })
@@ -1030,6 +1054,10 @@ async def _handle_dev(
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s failed", run_id, exc_info=True)
+            _record_audit(
+                "run_failed", run_id=run_id, session_id=session_id,
+                error=f"{type(e).__name__}: {e}",
+            )
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
         await _ws_send(websocket, {
@@ -1203,6 +1231,11 @@ async def agent_chat_ws(websocket: WebSocket):
                     continue
                 get_run_store().claim(run.run_id, connection_owner)
                 active_run = run
+                trace_log.set_run_id(run.run_id)
+                _record_audit(
+                    "run_started", run_id=run.run_id, session_id=session_id,
+                    kind="agent_chat", project_file=project_file,
+                )
                 await _ws_send(websocket, {
                     "event": "run_started",
                     "run_id": run.run_id,
@@ -1214,6 +1247,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     progress=progress, context=context,
                     fallback_review_ids=fallback_review_ids,
                     run_id=run.run_id, run_owner=connection_owner,
+                    session_id=session_id,
                 ))
                 run_task.add_done_callback(_consume_task_exception)
                 run_task.add_done_callback(
@@ -1287,6 +1321,7 @@ async def agent_chat_ws(websocket: WebSocket):
                                 followup_context = await prompt_builder.build_context(
                                     project_file, source_dir, test_dir, followup,
                                 )
+                            parent_run_id = active_run.run_id if active_run else ""
                             followup_run = get_run_store().create(
                                 kind="agent_chat",
                                 session_id=session_id,
@@ -1295,11 +1330,17 @@ async def agent_chat_ws(websocket: WebSocket):
                                     "source_dir": source_dir,
                                     "test_dir": test_dir,
                                     "project_file": project_file,
-                                    "parent_run_id": active_run.run_id if active_run else "",
+                                    "parent_run_id": parent_run_id,
                                 },
                             )
                             get_run_store().claim(followup_run.run_id, connection_owner)
                             active_run = followup_run
+                            trace_log.set_run_id(followup_run.run_id)
+                            _record_audit(
+                                "run_started", run_id=followup_run.run_id, session_id=session_id,
+                                kind="agent_chat", project_file=project_file,
+                                parent_run_id=parent_run_id,
+                            )
                             await _ws_send(websocket, {
                                 "event": "run_started",
                                 "run_id": followup_run.run_id,
@@ -1311,6 +1352,7 @@ async def agent_chat_ws(websocket: WebSocket):
                                 progress=progress, context=followup_context,
                                 fallback_review_ids=fallback_review_ids,
                                 run_id=followup_run.run_id, run_owner=connection_owner,
+                                session_id=session_id,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
                             run_task.add_done_callback(

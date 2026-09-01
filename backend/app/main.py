@@ -30,6 +30,7 @@ from app.api.trace import router as trace_router
 from app.api.metrics import router as metrics_router
 from app.api.evals import router as evals_router
 from app.api.runs import router as runs_router
+from app.api.audit import router as audit_router
 
 settings = get_settings()
 
@@ -60,6 +61,7 @@ app.include_router(trace_router, dependencies=[Depends(require_auth)])         #
 app.include_router(metrics_router, dependencies=[Depends(require_auth)])        # Agent metrics
 app.include_router(evals_router, dependencies=[Depends(require_auth)])          # Evaluation MVP
 app.include_router(runs_router, dependencies=[Depends(require_auth)])            # Durable harness runs
+app.include_router(audit_router, dependencies=[Depends(require_auth)])           # Harness audit events
 
 if settings.strict_production and (settings.debug or not settings.internal_api_token):
     raise RuntimeError("strict_production requires debug=false and internal_api_token")

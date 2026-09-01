@@ -111,11 +111,16 @@ class ChatTraceLogger:
 
     def __init__(self, session_id: str = ""):
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_id = ""
         self._trace_id = new_trace_id()
         self._lock = threading.Lock()
         self._path: str | None = None
         self._closed = False
         self._n = 0
+
+    def set_run_id(self, run_id: str) -> None:
+        """Associate subsequent events with one durable harness Run."""
+        self.run_id = run_id or ""
 
     @property
     def trace_id(self) -> str:
@@ -148,6 +153,7 @@ class ChatTraceLogger:
         evt = _event(
             self.session_id, event_type,
             trace_id=self._trace_id,
+            run_id=self.run_id,
             **payload,
         )
         self._write(evt)
@@ -221,7 +227,7 @@ class ChatTraceLogger:
         system_prompt, stripped = _split_system_prompt(messages)
         self._write({
             **_event(self.session_id, EVT_LLM_REQUEST,
-                     trace_id=self._trace_id, span_id=sid),
+                     trace_id=self._trace_id, span_id=sid, run_id=self.run_id),
             "system_prompt": system_prompt,
             "provider": provider,
             "model": model,
@@ -248,7 +254,7 @@ class ChatTraceLogger:
         self._write({
             **_event(self.session_id, EVT_LLM_RESPONSE,
                      trace_id=self._trace_id, span_id=span_id,
-                     parent_span_id=span_id),
+                     parent_span_id=span_id, run_id=self.run_id),
             "content": content,
             "tool_calls": tool_calls,
             "usage": usage,
@@ -272,7 +278,7 @@ class ChatTraceLogger:
         self._write({
             **_event(self.session_id, EVT_TOOL_CALL,
                      trace_id=self._trace_id, span_id=sid,
-                     parent_span_id=parent_span_id),
+                     parent_span_id=parent_span_id, run_id=self.run_id),
             "step": step,
             "tool_name": tool_name,
             "arguments": arguments,
@@ -290,7 +296,7 @@ class ChatTraceLogger:
         self._write({
             **_event(self.session_id, EVT_TOOL_RESULT,
                      trace_id=self._trace_id, span_id=span_id,
-                     parent_span_id=span_id),
+                     parent_span_id=span_id, run_id=self.run_id),
             "tool_name": tool_name,
             "observation": observation,
             "fed_truncated": fed_truncated,
