@@ -59,6 +59,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 """
 
+CREATE_MAINTENANCE_TABLE = """
+CREATE TABLE IF NOT EXISTS memory_maintenance (
+    project_id       TEXT PRIMARY KEY,
+    last_maintenance TEXT NOT NULL
+);
+"""
+
 # 索引
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);",
@@ -130,6 +137,7 @@ class MemoryDatabase:
         """建表 + 迁移列 + 索引."""
         conn = self._conn
         conn.execute(CREATE_MEMORIES_TABLE)
+        conn.execute(CREATE_MAINTENANCE_TABLE)
         self._migrate_columns(conn)
         # FTS5 表可能已存在, 忽略错误
         try:
@@ -546,6 +554,25 @@ class MemoryDatabase:
             (_utc_now(), rowid),
         )
         conn.commit()
+
+    def get_maintenance_at(self, project_id: str) -> Optional[str]:
+        """Return the durable maintenance timestamp for one project."""
+        row = self.conn.execute(
+            "SELECT last_maintenance FROM memory_maintenance WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        return row["last_maintenance"] if row else None
+
+    def set_maintenance_at(self, project_id: str, timestamp: str | None = None) -> None:
+        """Persist the last successful maintenance timestamp."""
+        timestamp = timestamp or _utc_now()
+        self.conn.execute(
+            """INSERT INTO memory_maintenance(project_id, last_maintenance)
+               VALUES (?, ?)
+               ON CONFLICT(project_id) DO UPDATE SET last_maintenance = excluded.last_maintenance""",
+            (project_id, timestamp),
+        )
+        self.conn.commit()
 
     def reinforce(self, memory_id: str, project_id: str, delta: float) -> bool:
         """

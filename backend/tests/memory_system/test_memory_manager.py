@@ -190,6 +190,18 @@ def test_migration_adds_columns_idempotently(tmp_path):
     db.close()
 
 
+def test_maintenance_timestamp_survives_manager_recreation(tmp_path):
+    db_path = str(tmp_path / "m.db")
+    first = MemoryManager(db_path=db_path)
+    first.maintenance("p")
+    assert first.db.get_maintenance_at("p")
+    first.close()
+
+    second = MemoryManager(db_path=db_path)
+    assert second.db.get_maintenance_at("p")
+    second.close()
+
+
 def test_recall_hits_chinese_and_alias(tmp_path):
     """recall 端到端：中文命中 + 英文别名命中；别名并入 tags。"""
     async def _run():

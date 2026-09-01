@@ -607,14 +607,24 @@ class MemoryManager:
         用模块级时间戳节流, 避免每次 remember 都全量衰减。
         """
         now = _utc_now_dt()
-        last = _LAST_MAINTENANCE.get(project_id)
+        last = None
+        last_raw = self.db.get_maintenance_at(project_id)
+        if last_raw:
+            try:
+                last = datetime.fromisoformat(last_raw)
+            except ValueError:
+                logger.warning(
+                    "[MemoryManager] Invalid maintenance timestamp for '%s'",
+                    project_id,
+                )
         if last is not None:
             elapsed_hours = (now - last).total_seconds() / 3600.0
             if elapsed_hours < self.config.maintenance_interval_hours:
                 return
-        _LAST_MAINTENANCE[project_id] = now
         try:
             self.lifecycle.maintenance(project_id)
+            self.db.set_maintenance_at(project_id, now.isoformat())
+            _LAST_MAINTENANCE[project_id] = now
         except Exception:
             logger.warning(
                 "[MemoryManager] Opportunistic maintenance failed", exc_info=True,
@@ -626,7 +636,10 @@ class MemoryManager:
 
         建议通过定时任务调用 (如每天一次).
         """
-        return self.lifecycle.maintenance(project_id)
+        result = self.lifecycle.maintenance(project_id)
+        self.db.set_maintenance_at(project_id)
+        _LAST_MAINTENANCE[project_id] = _utc_now_dt()
+        return result
 
     # ── pin / unpin ───────────────────────────────────────────────────
 
