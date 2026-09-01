@@ -711,9 +711,9 @@ const Toolbar: React.FC = () => {
 
         <Divider type="vertical" />
 
-        <Tooltip title="评测中心：运行评测、查看版本趋势并归档结果">
+        <Tooltip title="ArchitectCoder 能力基准中心：运行 DevAgent 基准、查看版本趋势并归档结果">
           <Button icon={<LineChartOutlined />} onClick={() => setEvaluationVisible(true)}>
-            评测
+            能力基准
           </Button>
         </Tooltip>
 

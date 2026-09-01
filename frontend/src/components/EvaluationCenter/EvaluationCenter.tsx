@@ -147,7 +147,7 @@ const EvaluationCenter: React.FC = () => {
 
   return (
     <Modal
-      title={<Space><LineChartOutlined />{EVAL_AGENT_LABEL} 评测中心</Space>}
+      title={<Space><LineChartOutlined />ArchitectCoder 能力基准中心</Space>}
       open={evaluationVisible}
       onCancel={() => setEvaluationVisible(false)}
       footer={null}

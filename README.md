@@ -8,7 +8,7 @@
 
 </div>
 
-支持类图、时序图、组件图，从设计到代码生成、测试、修复的全流程闭环；内置 **AI 协同开发助手（对话 Agent）**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱** 与 **BaseAgents 框架**。
+ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：支持类图、时序图、组件图，并将设计、代码生成、测试、修复和回放串成可追踪的闭环。内置 **DevAgent 开发助手**、**能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
 
 ## 为什么选择 ArchitectCoder？
 
@@ -39,7 +39,7 @@
 
 ### AI 开发助手
 
-右下角机器人按钮打开浮动对话面板，一个 ReActAgent（**设计 + 代码协同演进**：在现有代码上演进，不推倒重设计）承接全部消息。v2.0 起移除固定流水线编排，Agent 直接持有原生文件系统工具，自主规划开发步骤：
+右下角机器人按钮打开浮动对话面板，生产 **DevAgent**（底层使用 ReActAgent runtime）承接全部消息，支持从 UML 设计到代码实现的协同开发，并可根据任务分析、生成、修改和验证代码。v3.0 延续无固定流水线编排的模式，Agent 直接持有受控文件系统工具，自主规划和执行开发步骤：
 
 - **文件系统原语**：`read_file` / `write_file` / `edit_file` / `glob` / `bash` —— 读写代码、跑 pytest、修复失败，全由 Agent 自主编排
 - **任务规划**：`todo_write` 维护会话任务清单，多步任务先规划、边做边更新状态
@@ -51,7 +51,7 @@
 - **多会话持久化**：新建 / 切换会话，对话历史刷新不丢失；会话日志落盘（Markdown + JSONL trace）
 - **记忆系统**：跨会话记忆，任务结束自动归档、新任务按相关性召回注入，BM25 全文检索 + jieba 分词
 
-### DevAgent 评测体系
+### DevAgent 能力基准体系
 
 评测体系只保留生产链路 **DevAgent**，不再维护 Legacy / ReAct 独立评测方案，避免不同 Agent 路径干扰结果。每个评测用例由受控 JSON 描述，绑定固定项目 fixture 和项目 manifest，在隔离工作区中执行：
 
@@ -145,7 +145,7 @@ ArchitectCoder/
 │   └── vite.config.ts
 ├── backend/                        # FastAPI 后端
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket 路由 (files/llm/optimize_v2/testhub/trace)
+│   │   ├── api/                    # REST + WebSocket 路由 (files/llm/optimize_v2/testhub/trace/metrics/evals)
 │   │   ├── core/                   # 配置 / 鉴权 / 安全
 │   │   ├── models/                 # Pydantic 数据模型
 │   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
@@ -157,7 +157,7 @@ ArchitectCoder/
 │   ├── memory_system/              # 跨会话记忆系统 (SQLite + FTS5 + jieba)
 │   ├── requirements.txt
 │   └── .env
-├── docs/                           # 设计文档 (BaseAgents / KG / 记忆 / trace)
+├── docs/                           # 设计文档、评测基线和系统归档
 ├── skills/uml-design-guide/         # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
 ├── generated/                      # 生成的代码输出 (src/ + test/)
 ├── temp/                           # 运行时临时文件（不上库）
@@ -169,15 +169,29 @@ ArchitectCoder/
 
 ```bash
 # 后端
-cd backend && pip install -r requirements.txt
-# 编辑 .env：设置 DEEPSEEK_API_KEY
-python -m app.main          # http://localhost:8001
+cd backend
+python -m pip install -r requirements.txt
+# 创建 backend/.env，并至少设置：DEEPSEEK_API_KEY=你的密钥
+python -X utf8 -m app.main          # http://localhost:8001
 
 # 前端
-cd frontend && npm install && npm run dev   # http://localhost:3000
+cd frontend
+npm install
+npm run dev                           # http://localhost:3000
 ```
 
-Windows 下也可直接运行 `start.bat` 一键启动前后端。
+可选配置：`DEEPSEEK_MODEL`、`DEEPSEEK_MODEL_FLASH`、`SUB_AGENT_MODEL` 用于模型路由；设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。Windows 下依赖安装完成后，也可直接运行 `start.bat` 一键启动前后端。
+
+## API 与开发验证
+
+- 后端 REST API 默认前缀为 `/api`，包含文件操作、LLM、全局优化、TestHub、Trace、Agent 指标和 DevAgent 评测接口。
+- 对话 Agent 使用 WebSocket：`/api/ws/chat`。
+- API 文档：启动后访问 `http://localhost:8001/api/docs`。
+- 单元测试：`cd backend && python -m pytest -q`。
+- 评测全部 DevAgent 用例：`cd backend && python -m app.evals.cli`。
+- 前端生产构建：`cd frontend && npm run build`。
+
+评测和运行日志写入 `temp/`，该目录及生成代码、数据库均为运行时产物，不提交到仓库。
 
 ## 快捷键
 

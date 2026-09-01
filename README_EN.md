@@ -8,7 +8,7 @@
 
 </div>
 
-Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** — from design to code generation, testing, and repair in a single integrated workflow. Built-in **AI Development Assistant (Conversational Agent)**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, and the **BaseAgents framework**.
+ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams**, connecting design, code generation, testing, repair, and replay into one traceable workflow. It includes the **DevAgent development assistant**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
 ## Why ArchitectCoder?
 
@@ -39,7 +39,7 @@ Supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams** �
 
 ### AI Development Assistant
 
-Floating chat panel (bottom-right robot button). A single ReActAgent (**design + code co-evolution**: evolve existing code rather than redesigning from scratch) handles every message. Since v2.0 the fixed pipeline orchestration is gone — the Agent holds native file system tools and plans its own development steps:
+The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.0 the fixed pipeline orchestration remains removed — the Agent holds controlled file-system tools and plans and executes its own development steps:
 
 - **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
 - **Task planning**: `todo_write` maintains a session task list — plan before multi-step work, update status as you go
@@ -51,7 +51,7 @@ Floating chat panel (bottom-right robot button). A single ReActAgent (**design +
 - **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
 - **Memory system**: cross-session memory — tasks are archived on completion and recalled by relevance into new tasks, with BM25 full-text search + jieba tokenization
 
-### DevAgent Evaluation System
+### DevAgent Capability Benchmark
 
 The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
 
@@ -145,7 +145,7 @@ ArchitectCoder/
 │   └── vite.config.ts
 ├── backend/                        # FastAPI backend
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace)
+│   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace/metrics/evals)
 │   │   ├── core/                   # Config / auth / security
 │   │   ├── models/                 # Pydantic data models
 │   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
@@ -157,7 +157,7 @@ ArchitectCoder/
 │   ├── memory_system/              # Cross-session memory system (SQLite + FTS5 + jieba)
 │   ├── requirements.txt
 │   └── .env
-├── docs/                           # Design docs (BaseAgents / KG / memory / trace)
+├── docs/                           # Design docs, evaluation baseline, and system archives
 ├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
 ├── generated/                      # Generated code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
@@ -169,15 +169,29 @@ ArchitectCoder/
 
 ```bash
 # Backend
-cd backend && pip install -r requirements.txt
-# Edit .env: set DEEPSEEK_API_KEY
-python -m app.main          # http://localhost:8001
+cd backend
+python -m pip install -r requirements.txt
+# Create backend/.env and set at least: DEEPSEEK_API_KEY=your-key
+python -X utf8 -m app.main          # http://localhost:8001
 
 # Frontend
-cd frontend && npm install && npm run dev   # http://localhost:3000
+cd frontend
+npm install
+npm run dev                           # http://localhost:3000
 ```
 
-On Windows, you can also run `start.bat` to launch both backend and frontend in one click.
+Optional settings include `DEEPSEEK_MODEL`, `DEEPSEEK_MODEL_FLASH`, and `SUB_AGENT_MODEL` for model routing. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
+
+## API and Development Checks
+
+- Backend REST APIs use the `/api` prefix and cover file operations, LLM access, global optimization, TestHub, Trace, Agent metrics, and DevAgent evaluations.
+- The conversational Agent uses WebSocket: `/api/ws/chat`.
+- API docs: open `http://localhost:8001/api/docs` after starting the backend.
+- Unit tests: `cd backend && python -m pytest -q`.
+- Run the full DevAgent evaluation catalog: `cd backend && python -m app.evals.cli`.
+- Production frontend build: `cd frontend && npm run build`.
+
+Evaluation and runtime logs are written to `temp/`. Generated code and databases are runtime artifacts and are not committed.
 
 ## Keyboard Shortcuts
 
