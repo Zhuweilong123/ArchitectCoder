@@ -1434,7 +1434,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     trace_log.event(
                         "prompt_context",
                         prompt_version=f"devagent-{prompt_builder.prompt_version}",
-                        static_prompt=self.prompt_builder.static_prompt_report,
+                        static_prompt=prompt_builder.static_prompt_report,
                         **prompt_builder.last_context_report,
                     )
                     from app.services.agent_metrics import get_agent_metrics
