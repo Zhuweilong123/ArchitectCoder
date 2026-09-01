@@ -8,7 +8,7 @@ from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.task_system import _default_dirs
 from app.services.chat_trace import ChatTraceLogger, EVT_SESSION_END
-from app.services.trace_reader import reconstruct_history
+from app.services.trace_reader import reconstruct_history, summarize_trace
 
 
 class _Echo(Tool):
@@ -58,6 +58,52 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
         "content": "keep the SQLite decision",
     }
     assert history[-1] == {"role": "assistant", "content": "old answer"}
+
+
+def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    tracer = ChatTraceLogger("summary-test")
+    tracer.start()
+    tracer.user_message("run a task")
+    tracer.event(
+        "prompt_context",
+        prompt_version="devagent-3.1",
+        static_prompt={
+            "chars": 100, "estimated_tokens": 25,
+            "candidate_savings_chars": 40, "candidate_savings_tokens": 10,
+        },
+        total_chars=60,
+        estimated_tokens=15,
+    )
+    span_id = tracer.llm_request(
+        provider="test", model="test", messages=[], temperature=0.3, max_tokens=None,
+    )
+    tracer.llm_response(
+        span_id=span_id, content="ok",
+        usage={"prompt_tokens": 25, "completion_tokens": 5, "total_tokens": 30},
+    )
+    tool_span = tracer.tool_call(step=1, tool_name="read_file", arguments={})
+    tracer.tool_result(span_id=tool_span, tool_name="read_file", observation="ok")
+    tracer.done(answer="final answer")
+    tracer.close()
+
+    summary = summarize_trace("summary-test")
+
+    assert summary["turns"] == 1
+    assert summary["llm_usage"] == {
+        "prompt_tokens": 25, "completion_tokens": 5, "total_tokens": 30,
+    }
+    assert summary["tool_calls"] == 1
+    assert summary["prompt"] == {
+        "builds": 1,
+        "versions": {"devagent-3.1": 1},
+        "chars": 160,
+        "estimated_tokens": 40,
+        "candidate_savings_chars": 40,
+        "candidate_savings_tokens": 10,
+    }
+    assert "final answer" not in summary
 
 
 def test_task_dirs_are_scoped():
