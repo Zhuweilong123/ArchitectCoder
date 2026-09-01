@@ -8,7 +8,8 @@ import pytest
 from app.agent_base.tools.review import ReviewManager
 from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.file_system_tools import (
-    BashTool, safe_path, create_file_system_tools, _decode_output,
+    BashTool, DeletePathTool, SearchTextTool, safe_path,
+    create_file_system_tools, _decode_output,
 )
 
 
@@ -138,6 +139,35 @@ def test_glob(workspace):
 def test_bash_echo(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     assert _run(bash, {"command": "echo hello"}).strip() == "hello"
+
+
+def test_bash_cwd_alias_is_supported_and_schema_is_explicit(workspace):
+    src, test = workspace
+    bash = _tool_by_name(_tools(workspace), "bash")
+    assert _run(bash, {"command": "python --version", "cwd": "test"})
+    schema = bash.to_openai_schema()["function"]["parameters"]
+    assert "cwd" in schema["properties"]
+    assert "cd" in schema["properties"]["command"]["description"]
+
+
+def test_search_text_uses_structured_project_search(workspace):
+    search = _tool_by_name(_tools(workspace), "search_text")
+    result = _run(search, {"pattern": "line1", "path": "a.py"})
+    assert "a.py:2" in result
+    assert "line1" in result
+
+
+def test_delete_path_is_explicit_and_change_set_can_restore(workspace):
+    src, test = workspace
+    target = src / "temporary.py"
+    target.write_text("temporary", encoding="utf-8")
+    changes = ChangeSet()
+    delete = DeletePathTool(str(src), str(test), change_set=changes)
+    assert "Deleted" in delete.run({"path": "temporary.py"})
+    assert not target.exists()
+    changes.rollback()
+    assert target.read_text(encoding="utf-8") == "temporary"
+    assert "workspace root" in delete.run({"path": str(src)})
 
 
 def test_bash_deny_list(workspace):

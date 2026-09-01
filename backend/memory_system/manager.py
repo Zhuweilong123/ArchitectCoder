@@ -79,7 +79,9 @@ ExtractFn = Callable[[str], Any]
 # 默认的记忆提取 Prompt (改进版: 输出 summary + original_text 双字段)
 # ---------------------------------------------------------------------------
 
-EXTRACT_PROMPT = """你是一个知识提取助手。分析以下 LLM 交互, 提取 2-3 条对后续设计有价值的记忆。
+EXTRACT_PROMPT = """你是一个知识提取助手。分析以下 LLM 交互，提取 0-3 条对后续任务有持久价值的记忆。
+
+没有明确的长期偏好、已确认的架构决策、稳定项目约定或可复用项目事实时，必须返回空数组 []，不要为了满足数量要求编造记忆。
 
 ## 上下文
 用户在做什么: {context}
@@ -93,6 +95,7 @@ LLM 调用类型: {call_type}
 {user_feedback}
 
 ## 要求
+允许返回 0-3 条；不要记录 Todo、工具限制、策略错误、重试过程、临时状态、文件列表、单次测试结果、一次性清理/删除操作或未经确认的推断。
 返回 JSON 数组, 每条记忆包含:
 - memory_type: "preference" | "decision" | "rejection" | "convention" | "insight"
 - summary: 核心 insight 摘要 (1 句话, 简洁明确, 用于检索匹配)

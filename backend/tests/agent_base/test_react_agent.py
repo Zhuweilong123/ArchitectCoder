@@ -12,6 +12,7 @@ from app.agent_base.core.hooks import (
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
+from app.agent_base.tools.my_tools.todo_tools import TodoWriteTool
 
 
 class EchoTool(Tool):
@@ -54,6 +55,40 @@ def _registry():
     return reg
 
 
+class BatchTodoLLM:
+    """First response creates a plan and uses a business tool in one batch."""
+
+    def __init__(self):
+        self.count = 0
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        if self.count == 1:
+            return {
+                "content": "working",
+                "tool_calls": [
+                    {"id": "todo", "type": "function", "function": {
+                        "name": "todo_write",
+                        "arguments": json.dumps({"todos": [{"content": "echo", "status": "in_progress"}]}),
+                    }},
+                    {"id": "echo", "type": "function", "function": {
+                        "name": "echo", "arguments": json.dumps({"text": "x"}),
+                    }},
+                ],
+            }
+        return {"content": "完成", "tool_calls": None}
+
+
+class BudgetLLM:
+    def __init__(self):
+        self.count = 0
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        return {"content": "not finished", "tool_calls": None,
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+
+
 async def _collect(agent):
     events = []
     async for p in agent.arun_stream("echo test"):
@@ -78,6 +113,32 @@ def test_react_agent_fc_loop_executes_tools():
     assert llm.count == 3  # 2 次工具调用 + 1 次最终
     assert events[-1].is_final is True
     assert events[-1].final_answer == "完成"
+
+
+def test_usage_budget_is_enforced_from_llm_response():
+    llm = BudgetLLM()
+    agent = ReActAgent("Test", llm, _registry(), max_steps=10, max_total_tokens=10)
+
+    events = asyncio.run(_collect(agent))
+
+    assert llm.count == 1
+    assert events[-1].is_final is True
+    assert "token" in events[-1].final_answer
+
+
+def test_todo_then_business_tool_in_same_batch_is_not_false_blocked():
+    llm = BatchTodoLLM()
+    registry = _registry()
+    registry.register_tool(TodoWriteTool())
+    agent = ReActAgent("Test", llm, registry, max_steps=5)
+    runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    details = [d for event in events for d in event.tool_calls_detail]
+    assert any(d["name"] == "echo" and d["status"] == "success" for d in details)
 
 
 def test_acceptance_contract_blocks_premature_final_answer():

@@ -124,8 +124,17 @@ def _is_pure_chat_message(message: str) -> bool:
 
 
 def _requires_todo_plan(message: str) -> bool:
-    """Every non-chat task gets a visible checklist; complexity changes its rigor."""
-    return not _is_pure_chat_message(message)
+    """Require a checklist only for multi-step or risky work (T2)."""
+    text = (message or "").strip().lower()
+    if _is_pure_chat_message(text):
+        return False
+    multi_step = any(word in text for word in (
+        "every", "all", "multiple", "multi", "同步", "迁移", "重构", "清理", "删除",
+        "批量", "全部", "跨文件", "跨项目", "端到端", "验证", "migrate", "sync",
+        "cleanup", "delete", "refactor",
+    ))
+    high_risk = any(word in text for word in ("删除", "清理", "delete", "remove", "drop"))
+    return multi_step or high_risk
 
 
 def _needs_strategy_planning(message: str) -> bool:
@@ -195,7 +204,8 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
         return None
     all_tools = registry.list_tools()
     greetings = ("你好", "您好", "hello", "hi", "嗨", "谢谢", "再见", "晚安")
-    task_words = ("uml", "类图", "时序", "架构", "设计", "diagram", "代码", "实现",
+    task_words = ("uml", "类图", "时序", "架构", "设计", "设计图", "组件", "元素", "节点", "关系",
+                  "组件名", "diagram", "代码", "实现",
                   "修复", "测试", "pytest", "文件", "源码", "bug", "依赖", "项目",
                   "运行", "修改", "创建", "优化", "code", "source", "implementation",
                   "fix", "test", "run", "project")
@@ -209,7 +219,8 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
     if not any(word in text for word in task_words):
         return None
 
-    design = any(word in text for word in ("uml", "类图", "时序", "架构", "设计", "diagram"))
+    design = any(word in text for word in ("uml", "类图", "时序", "架构", "设计", "设计图", "组件", "元素",
+                                           "节点", "关系", "组件名", "diagram"))
     code = any(word in text for word in (
         "代码", "实现", "修复", "测试", "pytest", "文件", "源码", "bug", "运行",
         "code", "source", "implementation", "fix", "test", "run",
@@ -222,19 +233,26 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
     # hints must not hide one of them: an apparently design-only task may need
     # to copy/repair a project file, and an apparently code-only task may need
     # to inspect an adjacent artifact.
-    core = {"read_file", "glob", "write_file", "edit_file", "bash"}
+    core = {
+        "read_file", "glob", "search_text", "write_file", "edit_file", "bash",
+        "delete_path",
+    }
     names = {name for name in all_tools if name in core}
     if read_only:
         # Explicit user intent is a safety boundary, not a heuristic.  Bash is
         # excluded because it can mutate even when its immediate purpose looks
         # observational.
-        names.difference_update({"write_file", "edit_file", "bash"})
+        names.difference_update({"write_file", "edit_file", "bash", "delete_path"})
     if design:
         names.update(name for name in all_tools if name in {
             "skill", "submit_uml_review", "get_project_map",
             "find_nodes", "compare_design_code",
         })
     if _requires_todo_plan(message):
+        names.update(name for name in all_tools if name == "todo_write")
+    elif read_only and design:
+        # A read-only design review may still opt into a short checklist, but
+        # it is not forced through the T2 planning gate.
         names.update(name for name in all_tools if name == "todo_write")
     if _needs_strategy_planning(message):
         names.update(name for name in all_tools if name == "spawn_subagent")
@@ -245,16 +263,12 @@ def _select_tools_for_message(registry: ToolRegistry, message: str) -> list[str]
 
 
 def _enabled_tools_context(allowed_tools: list[str] | None) -> str:
-    """Describe this turn's tool surface without advertising disabled tools."""
+    """Keep the tool policy short; schemas are the authoritative tool list."""
     if allowed_tools is None:
-        return "## Enabled tools\nUse only the tool schemas supplied for this turn."
+        return "## Tool policy\nUse only the tool schemas supplied for this turn."
     if not allowed_tools:
-        return "## Enabled tools\nNo tools are enabled for this turn; respond directly."
-    return (
-        "## Enabled tools\n"
-        f"Only these tools are enabled for this turn: {', '.join(allowed_tools)}. "
-        "Do not request a tool outside this list."
-    )
+        return "## Tool policy\nNo tools are enabled; respond directly."
+    return "## Tool policy\nUse only the supplied tool schemas; do not invent tools."
 
 
 _TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
@@ -556,11 +570,18 @@ class DevPromptBuilder:
         """recall 项目相关记忆，返回注入用的 section 文本；失败返回空串。"""
         if not project_id:
             return ""
+        # Status/test/cleanup turns should not be polluted by unrelated
+        # long-term design memories. They use checkpoint or direct tools.
+        lowered = (user_message or "").lower()
+        if _is_status_query(user_message) or any(word in lowered for word in (
+            "跑测试", "运行测试", "pytest", "清理", "删除无关", "cleanup", "delete",
+        )):
+            return ""
         try:
             from memory_system.manager import MemoryManager
             mgr = MemoryManager(db_path=_memory_db_path())
             try:
-                results = await mgr.recall(project_id, user_message, top_k=5)
+                results = await mgr.recall(project_id, user_message, top_k=3, max_tokens=500)
                 block = mgr.inject_memories("", results).strip()
                 if block and results:
                     mgr.reinforce(results, project_id=project_id)
@@ -695,6 +716,35 @@ def _todo_progress_state() -> dict:
     }
 
 
+def _is_status_query(message: str) -> bool:
+    """Recognize a status-only follow-up for the checkpoint fast path."""
+    text = (message or "").strip().lower()
+    if any(phrase in text for phrase in (
+        "完成了吗", "执行完了吗", "做到哪", "进展如何", "当前状态", "任务状态",
+        "还剩什么",
+    )):
+        return True
+    return text in {"status", "progress", "is it done", "what remains", "what's the status"}
+
+
+def _checkpoint_answer(checkpoint: dict) -> str:
+    if not checkpoint:
+        return "当前会话没有可用的任务执行记录。"
+    lines = [f"任务状态：{checkpoint.get('status', 'unknown')}"]
+    for label, key in (
+        ("已完成", "completed_items"), ("未完成", "pending_items"),
+        ("已修改文件", "changed_files"), ("验证", "verification"),
+    ):
+        values = checkpoint.get(key) or []
+        if values:
+            lines.append(f"{label}：" + "；".join(map(str, values)))
+    if checkpoint.get("stop_reason"):
+        lines.append("停止原因：" + str(checkpoint["stop_reason"]))
+    if checkpoint.get("last_error"):
+        lines.append("最后错误：" + str(checkpoint["last_error"]))
+    return "\n".join(lines)
+
+
 def _extract_fn_for(llm: BaseAgentsLLM):
     """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。
 
@@ -798,6 +848,17 @@ async def _handle_dev(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     uml_review_seen = False
+    agent.last_run_checkpoint = {
+        "run_id": run_id,
+        "status": "running",
+        "request_summary": user_message[:500],
+        "completed_items": [],
+        "pending_items": [],
+        "changed_files": [],
+        "verification": [],
+        "last_error": None,
+        "stop_reason": None,
+    }
 
     async def _on_progress(ev: dict):
         """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
@@ -990,6 +1051,29 @@ async def _handle_dev(
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                else:
+                    manifest = []
+                todos = get_runtime().todos or []
+                agent.last_run_checkpoint = {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "request_summary": user_message[:500],
+                    "completed_items": [
+                        t.get("content", "") for t in todos
+                        if isinstance(t, dict) and t.get("status") == "completed"
+                    ],
+                    "pending_items": [
+                        t.get("content", "") for t in todos
+                        if isinstance(t, dict) and t.get("status") != "completed"
+                    ],
+                    "changed_files": [m.get("path", "") for m in manifest],
+                    "verification": [
+                        td.get("name", "") for td in task_tool_calls
+                        if td.get("name", "") in {"bash", "test", "pytest"}
+                    ],
+                    "last_error": None,
+                    "stop_reason": None,
+                }
                 try:
                     from app.services.agent_metrics import get_agent_metrics
                     get_agent_metrics().record_run("success")
@@ -1030,6 +1114,12 @@ async def _handle_dev(
                 return
 
     except asyncio.CancelledError:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "stopped",
+            "stop_reason": "agent task was canceled",
+        }
         if run_id:
             try:
                 get_run_store().transition(
@@ -1045,6 +1135,12 @@ async def _handle_dev(
             )
         raise
     except AgentInterrupted:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "stopped",
+            "stop_reason": "user requested stop",
+        }
         if run_id:
             try:
                 get_run_store().transition(
@@ -1062,6 +1158,12 @@ async def _handle_dev(
             "event": "stopped", "reason": "User requested stop",
         })
     except Exception as e:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "failed",
+            "last_error": f"{type(e).__name__}: {e}",
+        }
         logger.exception("[AgentChat] Dev agent execution error")
         try:
             from app.services.agent_metrics import get_agent_metrics
@@ -1184,17 +1286,45 @@ async def agent_chat_ws(websocket: WebSocket):
                     continue
                 source_dir, test_dir, project_file = validated
 
-                if llm is None:
-                    route = choose_model(user_message, get_settings())
-                    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
-
-                stop_requested = False
-
+                # Route every user task independently.  A greeting or a prior
+                # simple turn must not pin the rest of the session to flash;
+                # reuse the client only when the selected model is unchanged.
+                route = choose_model(user_message, get_settings())
                 # 记录用户消息（trace）
                 trace_log.user_message(
                     user_message, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                 )
+                trace_log.event(
+                    "agent_route",
+                    model=route.model,
+                    tier=route.tier,
+                    reason=route.reason,
+                )
+
+                # Status follow-ups read the latest structured checkpoint and
+                # never start a new ReAct run. This is the fast path that
+                # avoids repeating project discovery after a long task.
+                if _is_status_query(user_message):
+                    checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                    answer = _checkpoint_answer(checkpoint)
+                    trace_log.done(answer=answer)
+                    await _ws_send(websocket, {
+                        "event": "done",
+                        "result": answer,
+                        "checkpoint": checkpoint,
+                    })
+                    continue
+
+                if llm is None or getattr(llm, "model", None) != route.model:
+                    llm = BaseAgentsLLM.from_settings(model=route.model, temperature=0.3)
+                    if dev_agent is not None:
+                        dev_agent.llm = llm
+                        subagent = dev_agent.tool_registry.get_tool("spawn_subagent")
+                        if subagent is not None and hasattr(subagent, "llm"):
+                            subagent.llm = llm
+
+                stop_requested = False
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:

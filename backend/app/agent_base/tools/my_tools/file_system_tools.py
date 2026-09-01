@@ -29,6 +29,7 @@ from typing import Optional
 from app.agent_base.tools.base import Tool
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.my_tools.project_info_tools import GrepFileTool
 from app.core.risk_policy import RiskDecision, RiskPolicy
 
 logger = logging.getLogger(__name__)
@@ -399,14 +400,21 @@ class BashTool(AsyncTool):
         super().__init__(
             name="bash",
             description=(
-                "Run a shell command in the workspace (e.g. git status, pytest, lint). "
-                "Use the workspace-local 'copy' command to duplicate an existing file when needed. "
-                "Returns combined stdout/stderr. High-risk commands are denied outright; "
-                "sensitive commands pause for human approval before running."
+                "Run one shell command in a configured workspace directory. "
+                "Use cwd='source', 'test', or 'design' instead of cd. Do not chain "
+                "commands, use pipes/redirection, nested shells, or inline interpreter code. "
+                "Use search_text for discovery and delete_path for deletion. "
+                "High-risk commands are denied; sensitive commands require approval."
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
         self._cwd = self._roots[0] if self._roots else ""
+        self._cwd_aliases = {
+            "source": os.path.abspath(source_dir) if source_dir else "",
+            "test": os.path.abspath(test_dir) if test_dir else "",
+            "design": os.path.abspath(design_dir) if design_dir else "",
+            "workspace": self._cwd,
+        }
         self._review_manager = review_manager
         self._progress = progress
         self._review_timeout = review_timeout
@@ -421,6 +429,9 @@ class BashTool(AsyncTool):
         command = params.get("command", "")
         if not isinstance(command, str) or not command.strip():
             return "Error: command must be a non-empty string"
+        cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
+        if cwd_error:
+            return f"Error: {cwd_error}"
 
         lowered = command.lower()
         risk = self._risk_policy.evaluate("bash", {"command": command})
@@ -466,7 +477,27 @@ class BashTool(AsyncTool):
         if syntax_error:
             return f"Error: {syntax_error}"
 
-        return await self._run_command(command)
+        return await self._run_command(command, cwd)
+
+    def _resolve_cwd(self, raw_cwd) -> tuple[str | None, str | None]:
+        """Resolve a labelled or workspace-relative cwd without shell cd."""
+        if raw_cwd in (None, ""):
+            return self._cwd or None, None
+        if not isinstance(raw_cwd, str):
+            return None, "cwd must be a string"
+        value = raw_cwd.strip()
+        alias = self._cwd_aliases.get(value.lower())
+        if alias:
+            if not os.path.isdir(alias):
+                return None, f"cwd directory does not exist: {value}"
+            return alias, None
+        try:
+            candidate = safe_path(value, self._roots, require_exist=True)
+        except ValueError as exc:
+            return None, str(exc)
+        if not candidate.is_dir():
+            return None, f"cwd is not a directory: {value}"
+        return str(candidate), None
 
     @staticmethod
     def _validate_shell_command(command: str) -> str | None:
@@ -577,8 +608,8 @@ class BashTool(AsyncTool):
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
         return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
 
-    async def _run_command(self, command: str) -> str:
-        cwd = self._cwd or None
+    async def _run_command(self, command: str, cwd: str | None = None) -> str:
+        cwd = cwd if cwd is not None else (self._cwd or None)
         return await self._run_command_cancellable(command, cwd)
 
         def _run():
@@ -673,12 +704,129 @@ class BashTool(AsyncTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "Shell command to run."},
+                        "command": {
+                            "type": "string",
+                            "description": "One command only; no cd, chaining, pipes, redirection, nested shells, or inline code.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional directory alias: source, test, design, workspace; or a relative directory inside the workspace.",
+                        },
                     },
                     "required": ["command"],
                 },
             },
         }
+
+
+class SearchTextTool(GrepFileTool):
+    """Structured project search exposed under the stable ``search_text`` name."""
+
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+        # ``create_file_system_tools`` receives the design directory rather
+        # than the project file. Keep the inherited bounded scanner and add
+        # the design root explicitly, without widening its path boundary.
+        project_file = design_dir if os.path.isfile(design_dir) else ""
+        super().__init__(source_dir, test_dir, project_file)
+        self.design_dir = design_dir
+        self.name = "search_text"
+        self.description = (
+            "Search project source, tests, and design files by text or regular expression. "
+            "Returns file names, line numbers, and short matching snippets."
+        )
+        self.read_only = True
+        self.can_parallel = True
+
+    async def _execute(self, parameters):
+        # Keep the same async testing/dispatch shape as the other filesystem
+        # tools while retaining GrepFileTool's bounded synchronous scanner.
+        return self.run(parameters)
+
+    def _candidate_files(self) -> list[str]:
+        files = super()._candidate_files()
+        root = self.design_dir
+        if root and os.path.isdir(root):
+            for dirpath, _dirs, names in os.walk(root):
+                files.extend(
+                    os.path.join(dirpath, name) for name in names
+                    if name.endswith((".umlproj", ".uml", ".json"))
+                )
+        return list(dict.fromkeys(files))
+
+    def _resolve_allowed_path(self, raw_path: str) -> str | None:
+        resolved = super()._resolve_allowed_path(raw_path)
+        if resolved:
+            return resolved
+        root = self.design_dir
+        if not root:
+            return None
+        candidate = os.path.abspath(raw_path) if os.path.isabs(raw_path) else os.path.abspath(os.path.join(root, raw_path))
+        if not os.path.isfile(candidate):
+            return None
+        try:
+            if os.path.commonpath([candidate, os.path.abspath(root)]) != os.path.abspath(root):
+                return None
+        except ValueError:
+            return None
+        return candidate
+
+
+class DeletePathTool(Tool):
+    """Delete an explicit workspace file, with opt-in safe directory removal."""
+
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 change_set=None):
+        super().__init__(
+            name="delete_path",
+            description=(
+                "Delete one explicit file inside the workspace. Directories are refused unless "
+                "recursive=true; protected and workspace-root paths are always refused."
+            ),
+        )
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
+
+    def get_parameters(self):
+        from app.agent_base.tools.base import ToolParameter
+        return [
+            ToolParameter(name="path", type="string", description="Explicit workspace-relative or absolute path.", required=True),
+            ToolParameter(name="recursive", type="boolean", description="Allow deleting a directory tree; default false.", required=False, default=False),
+        ]
+
+    def run(self, parameters):
+        raw_path = str(parameters.get("path", "")).strip()
+        if not raw_path:
+            return "Error: path must be a non-empty string"
+        try:
+            target = safe_path(raw_path, self._roots, require_exist=True)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if not target.exists():
+            return f"Error: path not found: {raw_path}"
+        if target in {Path(root).resolve() for root in self._roots}:
+            return "Error: deleting a workspace root is not allowed"
+        if any(part in {".git", ".ssh"} or part.startswith(".env") for part in target.parts):
+            return "Error: deleting protected paths is not allowed"
+        recursive = bool(parameters.get("recursive", False))
+        if target.is_dir() and not recursive:
+            return "Error: target is a directory; set recursive=true explicitly"
+        before = ""
+        if target.is_file():
+            try:
+                before = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                before = ""
+        try:
+            if self._change_set is not None and target.is_file():
+                self._change_set.record(str(target), True, before, "")
+            if target.is_dir():
+                import shutil
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except OSError as exc:
+            return f"Error: delete failed: {exc}"
+        return f"Deleted: {raw_path}"
 
 
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
@@ -695,6 +843,8 @@ def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_di
         WriteFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         GlobTool(source_dir, test_dir, design_dir),
+        SearchTextTool(source_dir, test_dir, design_dir),
+        DeletePathTool(source_dir, test_dir, design_dir, change_set=change_set),
         BashTool(source_dir, test_dir, design_dir,
                  review_manager=review_manager, progress=progress,
                  timeout=bash_timeout, output_cap=bash_output_cap),

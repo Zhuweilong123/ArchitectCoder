@@ -120,16 +120,23 @@ def _usage_dict(usage) -> Optional[dict]:
     if usage is None:
         return None
     try:
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+            total_tokens = int(prompt_tokens) + int(completion_tokens)
         usage_dict = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "total_tokens": getattr(usage, "total_tokens", None),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
         }
         # DeepSeek 上下文缓存命中统计（其他厂商无此字段，getattr 得 None）
         for field in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
             value = getattr(usage, field, None)
             if value is not None:
                 usage_dict[field] = value
+        if "prompt_cache_hit_tokens" in usage_dict:
+            usage_dict["cached_tokens"] = usage_dict["prompt_cache_hit_tokens"]
         return usage_dict
     except Exception:
         return None
@@ -515,7 +522,13 @@ class BaseAgentsLLM:
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         msg = response.choices[0].message
-        result: dict = {"content": msg.content, "tool_calls": None}
+        # Return usage to the ReAct loop as well as recording it in trace.
+        # Without this field the configured token budget cannot accumulate.
+        result: dict = {
+            "content": msg.content,
+            "tool_calls": None,
+            "usage": _usage_dict(getattr(response, "usage", None)),
+        }
         if msg.tool_calls:
             result["tool_calls"] = [
                 {
@@ -530,7 +543,7 @@ class BaseAgentsLLM:
             ]
         _trace_hook("llm_response", span_id=span_id, content=result["content"] or "",
                     tool_calls=result["tool_calls"],
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=result["usage"],
                     duration_ms=(time.monotonic() - _t0) * 1000)
         return result
 

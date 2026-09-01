@@ -178,6 +178,10 @@ class ReActAgent(Agent):
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
         self.last_context_report: dict = {}
+        # Structured hand-off for a follow-up status query. The transport
+        # updates this at run boundaries so status requests do not re-explore
+        # the workspace.
+        self.last_run_checkpoint: dict = {}
         self.on_context_compacted = None
         logger.info(
             "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
@@ -332,9 +336,11 @@ class ReActAgent(Agent):
 
         allowed_tools = kwargs.pop("allowed_tools", None)
         allowed_set = set(allowed_tools) if allowed_tools is not None else None
+        # Preserve router order for stable schemas/cache keys; use a set only
+        # for membership checks below.
         tool_specs = (
-            self.tool_registry.get_openai_specs_for(list(allowed_set))
-            if allowed_set is not None else self.tool_registry.get_openai_specs()
+            self.tool_registry.get_openai_specs_for(allowed_tools)
+            if allowed_tools is not None else self.tool_registry.get_openai_specs()
         )
         compacted = self.context_budget.prepare_history(
             self._history, self._history_summary,
@@ -429,7 +435,7 @@ class ReActAgent(Agent):
                 usage = response.get("usage") or {}
                 if isinstance(usage, dict):
                     total_tokens += int(usage.get("total_tokens") or 0)
-                if total_tokens > self.max_total_tokens:
+                if total_tokens >= self.max_total_tokens:
                     final_answer = f"已达到 token 预算（{self.max_total_tokens}），已停止继续调用工具。"
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
@@ -537,11 +543,6 @@ class ReActAgent(Agent):
                     if allowed_set is not None and tool_name not in allowed_set:
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
                                    f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
-                    elif (get_runtime().requires_todo_plan
-                          and not get_runtime().todos
-                          and tool_name != "todo_write"):
-                        blocked = ("Task planning is required before other tools. "
-                                   "Call todo_write first with the task checklist.")
                     elif tool_call_count >= self.max_tool_calls:
                         blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
@@ -557,6 +558,17 @@ class ReActAgent(Agent):
                     if blocked is not None:
                         return blocked, blocked, ToolResult(status="blocked", data=blocked,
                                                             error_code="POLICY_BLOCKED")
+                    # Check the planning gate immediately before execution.
+                    # A preceding todo_write in the same response can therefore
+                    # establish the plan before business tools run.
+                    if (get_runtime().requires_todo_plan
+                            and not get_runtime().todos
+                            and tool_name != "todo_write"):
+                        blocked = ("Task planning is required before other tools. "
+                                   "Call todo_write first with the task checklist.")
+                        return blocked, blocked, ToolResult(
+                            status="blocked", data=blocked, error_code="POLICY_BLOCKED",
+                        )
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,

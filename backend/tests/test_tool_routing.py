@@ -1,6 +1,7 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
-    _requires_todo_plan, _select_tools_for_message, _todo_progress_state,
+    _checkpoint_answer, _is_status_query, _requires_todo_plan,
+    _select_tools_for_message, _todo_progress_state,
 )
 
 
@@ -13,7 +14,7 @@ class _Registry:
 
 
 TOOLS = [
-    "read_file", "glob", "write_file", "edit_file", "bash", "todo_write",
+    "read_file", "glob", "search_text", "write_file", "edit_file", "bash", "delete_path", "todo_write",
     "skill", "submit_uml_review", "get_project_map", "find_nodes",
     "compare_design_code", "spawn_subagent",
 ]
@@ -30,19 +31,19 @@ def test_clear_greeting_is_tool_free_but_ambiguous_request_fails_open():
 
 def test_code_route_keeps_every_core_execution_tool():
     route = _route("fix the failing pytest case in the source code")
-    assert {"read_file", "glob", "write_file", "edit_file", "bash"} <= set(route)
+    assert {"read_file", "glob", "search_text", "write_file", "edit_file", "bash", "delete_path"} <= set(route)
     assert "skill" not in route
 
 
 def test_design_route_adds_helpers_without_hiding_write_capability():
     route = _route("update the UML class diagram")
-    assert {"read_file", "glob", "write_file", "edit_file", "bash"} <= set(route)
+    assert {"read_file", "glob", "search_text", "write_file", "edit_file", "bash", "delete_path"} <= set(route)
     assert {"skill", "submit_uml_review", "get_project_map", "find_nodes"} <= set(route)
 
 
 def test_cross_domain_request_keeps_core_and_design_helpers():
     route = _route("sync the UML design with the source code")
-    assert {"read_file", "glob", "write_file", "edit_file", "bash"} <= set(route)
+    assert {"read_file", "glob", "search_text", "write_file", "edit_file", "bash", "delete_path"} <= set(route)
     assert {"skill", "submit_uml_review", "get_project_map", "find_nodes"} <= set(route)
     assert {"todo_write", "spawn_subagent"} <= set(route)
 
@@ -87,8 +88,24 @@ def test_explicit_read_only_intent_is_the_hard_safety_boundary():
     assert {"read_file", "glob", "skill", "submit_uml_review"} <= set(route)
     assert "todo_write" in route
     assert not {"write_file", "edit_file", "bash"} & set(route)
+    assert "delete_path" not in route
 
 
 def test_todo_plan_is_default_for_non_chat_tasks_only():
     assert _requires_todo_plan("hello") is False
     assert _requires_todo_plan("rename every component") is True
+
+
+def test_status_followup_uses_checkpoint_language():
+    assert _is_status_query("上面的任务执行完了吗") is True
+    answer = _checkpoint_answer({
+        "status": "stopped",
+        "completed_items": ["读取设计"],
+        "pending_items": ["运行测试"],
+        "changed_files": ["src/a.py"],
+        "verification": [],
+        "stop_reason": "user requested stop",
+    })
+    assert "任务状态：stopped" in answer
+    assert "运行测试" in answer
+    assert "src/a.py" in answer
