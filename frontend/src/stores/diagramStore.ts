@@ -51,6 +51,10 @@ interface DiagramState {
   selectedRelationId: string | null;
   isModified: boolean;
   currentFilepath: string | null;
+  /** Directory used for new/unsaved projects and relative path display. */
+  currentWorkspacePath: string | null;
+  /** Whether the current workspace is inside the application safe root. */
+  currentWorkspaceSafe: boolean;
 
   // History (per active diagram)
   undoStack: Snapshot[];
@@ -163,6 +167,7 @@ interface DiagramState {
   // ── File ──────────────────────────────────────
 
   setCurrentFilepath: (path: string | null) => void;
+  setCurrentWorkspacePath: (path: string | null, safe?: boolean) => void;
 }
 
 const _initialProject = createDefaultProject();
@@ -178,6 +183,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   selectedCompRelationId: null,
   isModified: false,
   currentFilepath: null,
+  currentWorkspacePath: null,
+  currentWorkspaceSafe: true,
   undoStack: [],
   redoStack: [],
   lastOperationTime: 0,
@@ -808,4 +815,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   clearHistory: () => set({ undoStack: [], redoStack: [], lastOperationTime: 0, lastMergeKey: null }),
 
   setCurrentFilepath: (path) => set({ currentFilepath: path }),
+  setCurrentWorkspacePath: (path, safe = true) => set({
+    currentWorkspacePath: path,
+    currentWorkspaceSafe: safe,
+  }),
 }));
