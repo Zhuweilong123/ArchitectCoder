@@ -55,7 +55,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 评测体系只保留生产链路 **DevAgent**，不再维护 Legacy / ReAct 独立评测方案，避免不同 Agent 路径干扰结果。每个评测用例由受控 JSON 描述，绑定固定项目 fixture 和项目 manifest，在隔离工作区中执行：
 
-- **用例目录**：`backend/app/evals/cases/`，当前 16 个用例，按 `baseline`、`p0`、`p1`、`p2` 和 `diagnostic` 套件组织。
+- **用例目录**：`backend/evals/cases/`，当前 18 个用例，按 `baseline`、`p0`、`p1`、`p2`、`diagnostic` 和 `trace-3.1` 套件组织。
 - **执行链路**：`case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`。
 - **确定性检查**：支持 pytest、UML 有效性/结构/方法/时序、文件存在/内容、受保护路径未变更等检查器。
 - **运行边界**：每个用例可配置最大执行时间、Tool Calls 和 Total Tokens；结果保留状态、得分、耗时、模型、Token、工具调用、Trace ID 和检查器明细。
@@ -149,12 +149,15 @@ ArchitectCoder/
 │   │   ├── core/                   # 配置 / 鉴权 / 安全
 │   │   ├── models/                 # Pydantic 数据模型
 │   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
-│   │   ├── evals/                  # DevAgent 评测用例、Runner、基线和归档
+│   │   ├── evals/                  # DevAgent 评测运行时代码
 │   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
 │   │   │   └── tools/my_tools/     # 文件系统原语 / todo / 子代理 / 审核
 │   │   └── main.py
+│   ├── evals/                      # 版本化评测用例和 fixture
+│   ├── examples/                   # 可选 BaseAgent 示例
 │   ├── knowledge_graph/            # 知识图谱系统 (SQLite + FTS5)
 │   ├── memory_system/              # 跨会话记忆系统 (SQLite + FTS5 + jieba)
+│   ├── tests/                      # 单元测试和集成测试
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # 设计文档、评测基线和系统归档

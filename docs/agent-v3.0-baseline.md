@@ -188,7 +188,7 @@ GET /api/metrics
 
 3.0 基线新增 `app/evals/` 评测能力，提供受保护的评测接口：
 
-- `GET /api/evals/cases`：列出 `backend/app/evals/cases/*.json` 中的评测用例。
+- `GET /api/evals/cases`：列出 `backend/evals/cases/*.json` 中的评测用例。
 - `POST /api/evals/run`：按 `case_id` 在临时工作区执行 Agent，并持久化结果。
 - `GET /api/evals/results`：读取最近的 JSONL 评测结果。
 - `POST /api/evals/runs`：按 suite 或 case_ids 异步启动评测批次。
@@ -205,7 +205,7 @@ GET /api/metrics
 
 评测项目基于 `project/src` 冻结为 `radar_sim_v1`，包含四个雷达信号处理组件、六张 UML 图和 37 个原始测试。根目录的旧版 `radar_design_0730.umlproj` 单独作为 UML 迁移 fixture，不与当前基线混用。
 
-首批用例位于 `app/evals/cases/`，共 16 个：2 个 baseline、4 个 P0、3 个 P1、3 个 P2，以及 4 个 diagnostic 拆分用例。fixture 位于 `app/evals/fixtures/`，项目清单位于 `app/evals/projects/`。每个项目固定为同级的 `design/`、`src/`、`test/` 三类资源，分别表示设计、源码和测试。P0 fixture 包含延迟方向、PRT 补零和非有限参数三个可复现缺陷；P1 fixture 包含噪声 seed 可复现性契约，用于验证 Agent 是否真正完成修复。
+首批用例位于 `backend/evals/cases/`，当前共 18 个：2 个 baseline、4 个 P0、3 个 P1、3 个 P2、4 个 diagnostic，以及 2 个 `trace-3.1` 对话评测用例。fixture 位于 `backend/evals/fixtures/`，项目清单位于 `backend/evals/projects/`。每个项目固定为同级的 `design/`、`src/`、`test/` 三类资源，分别表示设计、源码和测试。P0 fixture 包含延迟方向、PRT 补零和非有限参数三个可复现缺陷；P1 fixture 包含噪声 seed 可复现性契约，用于验证 Agent 是否真正完成修复。
 
 UML 检查器已支持项目有效性、组件/类/方法存在性、关系存在性和时序消息顺序；`paths_unchanged` 用于验证只读任务和受保护文件不被修改。
 

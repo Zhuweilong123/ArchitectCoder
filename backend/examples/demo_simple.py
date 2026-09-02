@@ -2,7 +2,7 @@
 SimpleAgent 对话示例
 
 运行方式:
-    cd backend && python app/agent_base/agentTest/demo_simple.py
+    cd backend && python examples/demo_simple.py
 """
 
 import sys

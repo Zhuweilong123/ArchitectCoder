@@ -2,7 +2,7 @@
 精简示例：ReflectionAgent 基础用法
 
 运行方式:
-    cd backend && python app/agent_base/agentTest/demo_reflection.py
+    cd backend && python examples/demo_reflection.py
 """
 
 import sys

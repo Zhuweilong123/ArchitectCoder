@@ -2,7 +2,7 @@
 UmlValidationTool 使用示例
 
 运行方式:
-    cd backend && python app/agent_base/agentTest/demo_uml_tool.py
+    cd backend && python examples/demo_uml_tool.py
 """
 
 import sys

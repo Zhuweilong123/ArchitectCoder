@@ -17,7 +17,7 @@ def test_repo_workspace_remains_allowed_when_external_roots_are_configured(monke
 
     # Use a tracked repository directory.  ``project/`` is a runtime output
     # and is intentionally ignored, so it may not exist in a clean CI checkout.
-    repo_workspace = Path(__file__).resolve().parents[2] / "backend"
+    repo_workspace = Path(__file__).resolve().parents[3] / "backend"
     normalized, error = security.validate_agent_workspace_path(
         str(repo_workspace), kind="directory",
     )

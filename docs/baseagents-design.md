@@ -20,7 +20,7 @@
 agent_base/
 ├── __init__.py                          # 统一导出入口（20 个公开符号）
 │
-├── agentTest/                           # 测试和演示代码（非生产代码）
+├── examples/                            # 示例代码（非生产代码）
 │   ├── demo_reflection.py / demo_simple.py / demo_uml_tool.py
 │
 ├── core/                                # 核心基础设施层

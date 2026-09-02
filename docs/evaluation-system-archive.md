@@ -2,7 +2,7 @@
 
 > 归档版本：3.0 evaluation baseline
 > 归档日期：2026-08-31
-> 适用范围：`backend/app/evals`、评测项目 fixture、评测 API、评测中心前端和运行结果治理
+> 适用范围：`backend/app/evals` 执行代码、`backend/evals` 评测数据、评测 API、评测中心前端和运行结果治理
 
 本文档记录当前智能体评测体系的实际构建结果、目录约定、运行链路、历史基线和未完成事项。它是评测系统的总览归档；`docs/agent-v3.0-baseline.md` 继续承担 3.0 版本整体工程基线的职责。
 
@@ -22,10 +22,7 @@
 ### 2.1 评测代码
 
 ```text
-backend/app/evals/
-├── cases/       # 用例定义，JSON，受控加载
-├── projects/    # 项目 manifest，声明 fixture 和资源边界
-├── fixtures/    # 可复制、可复现的项目快照
+backend/app/evals/          # 评测执行代码
 ├── models.py    # EvalCase、EvalResult、CheckerResult 等模型
 ├── registry.py  # 用例注册和加载
 ├── projects.py  # 项目清单加载、fixture 路径解析
@@ -33,6 +30,12 @@ backend/app/evals/
 ├── checkers.py  # 确定性检查器
 ├── batches.py   # 批次、汇总、趋势和快照归档
 └── cli.py       # 命令行运行入口
+
+backend/evals/               # 版本化评测数据
+├── cases/                   # 用例定义，JSON，受控加载
+├── projects/                # 项目 manifest，声明 fixture 和资源边界
+├── fixtures/                # 可复制、可复现的项目快照
+└── baseline.json            # 基线指标
 ```
 
 ### 2.2 项目固定为三类资源
@@ -66,11 +69,11 @@ backend/app/evals/
 | `radar_sim_stale_uml_v1` | 旧版 UML 向当前代码和设计迁移 |
 | `radar_sim_broken_uml_v1` | 损坏 UML 文件恢复，同时保护主设计文件 |
 
-项目 manifest 只允许相对路径，并由 `projects.py` 将 fixture 限制在 `backend/app/evals/fixtures/` 目录内。默认保护路径是 `design/radar_sim_design.umlproj` 和 `DESIGN.md`，可写范围通常是 `src`、`test`，迁移项目额外允许 `legacy`。
+项目 manifest 只允许相对路径，并由 `projects.py` 将 fixture 限制在 `backend/evals/fixtures/` 目录内。默认保护路径是 `design/radar_sim_design.umlproj` 和 `DESIGN.md`，可写范围通常是 `src`、`test`，迁移项目额外允许 `legacy`。
 
 ## 3. 用例资产和分层
 
-当前 `backend/app/evals/cases/` 共有 16 个用例，按元数据中的 `suite` 分组：
+当前 `backend/evals/cases/` 共有 18 个用例，按元数据中的 `suite` 分组：
 
 | 分组 | 数量 | 主要验证内容 | 是否用于正式基线 |
 |---|---:|---|---|
@@ -79,8 +82,9 @@ backend/app/evals/
 | `p1` | 3 | 随机性、UML-代码契约、旧版 UML 迁移 | 是 |
 | `p2` | 3 | 损坏文件恢复、预算边界、只读保护 | 是 |
 | `diagnostic` | 4 | 从父用例拆出的领域校验和 UML 迁移定位用例 | 否，主要用于诊断 |
+| `trace-3.1` | 2 | 组件图命名迁移和连续多轮对话能力 | 否，专项回归 |
 
-正式基线目前是前四组共 12 个用例；`diagnostic` 用例用于把一个复合失败拆成更小的能力问题，不应直接和正式正向通过率混合计算。
+正式基线目前是前四组共 12 个用例；`diagnostic` 用例用于把一个复合失败拆成更小的能力问题，`trace-3.1` 用例用于专项回归，均不应直接和正式正向通过率混合计算。
 
 用例 JSON 的主要字段是：
 
