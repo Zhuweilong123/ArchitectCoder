@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 import tempfile
 import time
 import uuid
@@ -20,6 +19,7 @@ from app.services.agent_metrics import get_agent_metrics
 from app.services.chat_trace import TraceSession
 
 from .checkers import build_checkers
+from .fixture_materializer import materialize_fixture
 from .models import CheckerResult, EvalCase, EvalResult
 from .projects import load_projects, resolve_fixture
 
@@ -128,14 +128,7 @@ class EvalRunner:
                     self._append_result(finished)
                     get_agent_metrics().record_run("eval_error")
                     return finished
-                for child in fixture.iterdir():
-                    if child.name in {".pytest_cache", "__pycache__", "temp_pytest.txt"}:
-                        continue
-                    target = workspace / child.name
-                    if child.is_dir():
-                        shutil.copytree(child, target)
-                    else:
-                        shutil.copy2(child, target)
+                materialize_fixture(fixture, workspace, manifest)
 
             baseline_hashes: dict[str, str | None] = {}
             for config in [*case.hard_checkers, *case.checkers]:

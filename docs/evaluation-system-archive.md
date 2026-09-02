@@ -34,7 +34,7 @@ backend/app/evals/          # 评测执行代码
 backend/evals/               # 版本化评测数据
 ├── cases/                   # 用例定义，JSON，受控加载
 ├── projects/                # 项目 manifest，声明 fixture 和资源边界
-├── fixtures/                # 可复制、可复现的项目快照
+├── fixtures/                # 可复制、可复现的项目快照（支持 base_fixture 覆盖层）
 └── baseline.json            # 基线指标
 ```
 
@@ -69,7 +69,7 @@ backend/evals/               # 版本化评测数据
 | `radar_sim_stale_uml_v1` | 旧版 UML 向当前代码和设计迁移 |
 | `radar_sim_broken_uml_v1` | 损坏 UML 文件恢复，同时保护主设计文件 |
 
-项目 manifest 只允许相对路径，并由 `projects.py` 将 fixture 限制在 `backend/evals/fixtures/` 目录内。默认保护路径是 `design/radar_sim_design.umlproj` 和 `DESIGN.md`，可写范围通常是 `src`、`test`，迁移项目额外允许 `legacy`。
+项目 manifest 只允许相对路径，并由 `projects.py` 将 fixture 限制在 `backend/evals/fixtures/` 目录内。`base_fixture` 可选，用于声明一个完整基础快照；运行时由 `fixture_materializer.py` 先复制基础 fixture，再用当前 fixture 目录中的差异文件覆盖。默认保护路径是 `design/radar_sim_design.umlproj` 和 `DESIGN.md`，可写范围通常是 `src`、`test`，迁移项目额外允许 `legacy`。
 
 ## 3. 用例资产和分层
 
