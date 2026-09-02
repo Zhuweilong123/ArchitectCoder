@@ -203,7 +203,7 @@ GET /api/metrics
 
 ### 5.7 radar_sim_v1 领域评测集
 
-评测项目基于 `generated/src` 冻结为 `radar_sim_v1`，包含四个雷达信号处理组件、六张 UML 图和 37 个原始测试。根目录的旧版 `radar_design_0730.umlproj` 单独作为 UML 迁移 fixture，不与当前基线混用。
+评测项目基于 `project/src` 冻结为 `radar_sim_v1`，包含四个雷达信号处理组件、六张 UML 图和 37 个原始测试。根目录的旧版 `radar_design_0730.umlproj` 单独作为 UML 迁移 fixture，不与当前基线混用。
 
 首批用例位于 `app/evals/cases/`，共 16 个：2 个 baseline、4 个 P0、3 个 P1、3 个 P2，以及 4 个 diagnostic 拆分用例。fixture 位于 `app/evals/fixtures/`，项目清单位于 `app/evals/projects/`。每个项目固定为同级的 `design/`、`src/`、`test/` 三类资源，分别表示设计、源码和测试。P0 fixture 包含延迟方向、PRT 补零和非有限参数三个可复现缺陷；P1 fixture 包含噪声 seed 可复现性契约，用于验证 Agent 是否真正完成修复。
 

@@ -161,7 +161,7 @@ ArchitectCoder/
 │   └── .env
 ├── docs/                           # Design docs, evaluation baseline, and system archives
 ├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
-├── generated/                      # Generated code output (src/ + test/)
+├── project/                        # Project code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
 ├── .claude/                        # Claude Code configuration
 ├── README.md                       # English project documentation (default)

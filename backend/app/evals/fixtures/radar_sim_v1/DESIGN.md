@@ -392,13 +392,13 @@ python main.py
 目录运行：
 
 ```bash
-python ./generated/src/main.py
+python ./project/src/main.py
 ```
 
 ### 6.2 运行测试
 
 ```bash
-cd generated
+cd project
 python -m pytest test -q
 # 37 passed
 ```

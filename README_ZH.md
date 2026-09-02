@@ -159,7 +159,7 @@ ArchitectCoder/
 │   └── .env
 ├── docs/                           # 设计文档、评测基线和系统归档
 ├── skills/uml-design-guide/         # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
-├── generated/                      # 生成的代码输出 (src/ + test/)
+├── project/                        # 项目代码输出 (src/ + test/)
 ├── temp/                           # 运行时临时文件（不上库）
 ├── .claude/                        # Claude Code 配置
 ├── README.md                       # 英文项目文档（默认）
