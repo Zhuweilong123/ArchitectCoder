@@ -141,9 +141,17 @@ class MemoryRecallPolicy:
     @classmethod
     def _subject_rank(cls, result: Any) -> tuple:
         entry = result.entry
+        # Entries assembled directly by callers often have only the automatic
+        # ``created_at`` timestamp.  Treat that timestamp as unspecified for
+        # conflict ordering; otherwise two candidates created in the same test
+        # or request can win merely because one was instantiated microseconds
+        # later. Persisted/updated entries still use explicit ``updated_at``
+        # for latest-wins semantics.
+        updated_at = str(getattr(entry, "updated_at", "") or "").strip()
         return (
             int(cls._is_confirmed(entry)),
-            cls._updated_timestamp(entry),
+            int(bool(updated_at)),
+            cls._updated_timestamp(entry) if updated_at else 0.0,
             float(getattr(result, "score", 0.0) or 0.0),
             float(getattr(entry, "importance_score", 0.0) or 0.0),
         )

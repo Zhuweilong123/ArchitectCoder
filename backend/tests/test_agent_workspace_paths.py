@@ -15,10 +15,12 @@ def test_repo_workspace_remains_allowed_when_external_roots_are_configured(monke
         uml_dir=str(uml_dir),
     ))
 
-    generated_src = Path(__file__).resolve().parents[2] / "generated" / "src"
+    # Use a tracked repository directory.  ``generated/`` is a runtime output
+    # and is intentionally ignored, so it may not exist in a clean CI checkout.
+    repo_workspace = Path(__file__).resolve().parents[2] / "backend"
     normalized, error = security.validate_agent_workspace_path(
-        str(generated_src), kind="directory",
+        str(repo_workspace), kind="directory",
     )
 
     assert error is None
-    assert Path(normalized) == generated_src.resolve()
+    assert Path(normalized) == repo_workspace.resolve()
