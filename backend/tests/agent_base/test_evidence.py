@@ -46,3 +46,24 @@ def test_evidence_ledger_normalizes_bash_failure():
     assert "error_code=TOOL_REPORTED_ERROR" in rendered
     assert "FAILED test_broken.py" in rendered
     assert record.status == "error"
+
+
+def test_evidence_ledger_extracts_project_and_comparison_facts_without_raw_json():
+    ledger = EvidenceLedger(max_records=4)
+    project = ledger.record(
+        call_id="map", tool_name="get_project_map", arguments={},
+        observation='{"project_id":"radar","stats":{"total_nodes":12,"total_edges":15},"diagrams":[{},{}],"files":{"source_count":4,"test_count":2}}',
+    )
+    comparison = ledger.record(
+        call_id="compare", tool_name="compare_design_code", arguments={},
+        observation='{"summary":{"coverage_rate":0.75,"mismatches":1,"missing_implementations":2,"extra_code":3}}',
+    )
+
+    rendered = ledger.summary_for(["map", "compare"])
+
+    assert "project_id=radar" in rendered["map"]
+    assert "total_nodes=12" in rendered["map"]
+    assert "coverage_rate=0.75" in rendered["compare"]
+    assert "missing_implementations=2" in rendered["compare"]
+    assert "{" not in project.detail
+    assert "{" not in comparison.detail

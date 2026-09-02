@@ -1027,6 +1027,31 @@ DevAgent 3.1 只有在以下条件全部满足时才视为完成：
 
 当前结果证明新评测用例可运行且 3.1 逻辑链路通过；3.0 基线与 3.1 的批量 A/B 对比、聚合质量门禁仍待补齐。另需将 `max_total_tokens` 的跨轮聚合预算单独纳入门禁（本次三轮合计略高于单轮配置值）。
 
+### 15.5.1 Runtime convergence configuration (2026-09-02)
+
+The production ReAct loop uses a configurable “work steps + evidence compaction +
+tool-free final delivery” policy. Each setting is read from `backend/.env` using
+the uppercase variable name below and takes effect after the backend restarts.
+
+| Environment variable | Default | Purpose |
+|---|---:|---|
+| `AGENT_MAX_STEPS` | `50` | Maximum productive work steps; it excludes the optional final summary request. |
+| `AGENT_MAX_TOTAL_TOKENS` | `120000` | Cumulative LLM usage budget for one task. |
+| `AGENT_TOKEN_FINALIZATION_RESERVE_TOKENS` | `12000` | Enter a no-tools finalization request when remaining budget is at or below this amount. |
+| `AGENT_CONVERGENCE_TOOL_STEPS` | `25` | Start evidence compaction after this many executed tool calls; parallel calls count individually. |
+| `AGENT_CONVERGENCE_BUDGET_RATIO` | `0.8` | Also start evidence compaction and a convergence warning at this budget ratio. |
+| `AGENT_CONVERGENCE_KEEP_RECENT_STEPS` | `3` | Preserve this many latest complete tool-call/result steps; compact older work into an evidence checkpoint. |
+| `AGENT_EVIDENCE_MAX_RECORDS` | `128` | Maximum structured evidence records retained during a run; the effective value is never below the tool-call limit. |
+| `AGENT_FORCE_FINAL_SUMMARY_ON_STEP_LIMIT` | `true` | Issue one tool-free summary request after the productive-step limit. |
+| `AGENT_FINAL_SUMMARY_MAX_TOKENS` | `3000` | Output cap for that final summary request. |
+
+Budget finalization takes precedence: if the reserve zone is reached before the
+productive-step limit, the agent stops requesting tools and delivers from current
+evidence. At a hard budget limit it makes no further model call. Otherwise the
+50th productive step is followed by one tool-free summary call. The effective
+policy and stop reason are included in the context report/checkpoint for trace
+analysis and runtime tuning.
+
 ### 15.6 参考 Trace 严格对齐连续对话用例
 
 保留原有三轮状态迁移用例，新增 `trace-3-1-component-element-continuous-remove-001`。新增用例严格复用参考 Trace 的 7 轮消息顺序：问候、列出组件、组件重命名、源码同步、状态追问、删除源码无关文件、运行测试；唯一的行为变更是将“增加 `Element`”改为“移除 `Element`”。

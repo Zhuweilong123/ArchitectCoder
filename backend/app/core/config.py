@@ -10,6 +10,7 @@ import logging
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationInfo, field_validator
 from functools import lru_cache
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,39 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 100
     agent_max_repeated_tool_calls: int = 3
     agent_max_run_seconds: int = 600
-    agent_max_total_tokens: int = 100000
+    agent_max_total_tokens: int = 120000
+    # Reserve enough room to turn completed evidence into a final user-facing
+    # answer.  This is a convergence guard, separate from the context limit.
+    agent_token_finalization_reserve_tokens: int = 12000
+    agent_convergence_tool_steps: int = 25
+    agent_convergence_budget_ratio: float = 0.8
+    agent_convergence_keep_recent_steps: int = 3
+    # Keep structured evidence for all tool calls in a normal run so context
+    # compaction never falls back to raw, high-volume tool observations.
+    agent_evidence_max_records: int = 128
+    agent_force_final_summary_on_step_limit: bool = True
+    agent_final_summary_max_tokens: int = 3000
     agent_llm_timeout_seconds: int = 120
-    agent_context_max_tokens: int = 32768
-    agent_context_output_reserve_tokens: int = 4096
-    agent_context_max_history_tokens: int = 12000
-    agent_context_max_history_turns: int = 12
+    # The configured model supports a 1M window.  Keep 128K as the default
+    # active working set so the agent can retain substantially more evidence
+    # without blindly injecting an entire long-lived session.
+    agent_context_max_tokens: int = 131072
+    agent_context_output_reserve_tokens: int = 8192
+    agent_context_max_history_tokens: int = 88000
+    agent_context_max_history_turns: int = 48
+    agent_context_max_summary_tokens: int = 4000
+    agent_context_max_react_steps: int = 24
+
+    # Command tools expose one Linux/POSIX contract.  Windows deployments use
+    # the configured WSL distribution instead of asking the model to choose a
+    # cmd/PowerShell/Linux dialect per command.
+    agent_command_environment: Literal["auto", "wsl", "native_linux"] = "auto"
+    agent_wsl_distribution: str = ""
+    agent_wsl_executable: str = "wsl.exe"
+    # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
+    # this separate from the much longer per-command timeout used by BashTool.
+    agent_wsl_preflight_timeout_seconds: float = 20.0
+
     strict_production: bool = False
 
     @field_validator("deepseek_api_key")

@@ -501,17 +501,20 @@ class BaseAgentsLLM:
         call_kwargs = dict(
             model=kwargs.pop("model", self.model),
             messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
             temperature=kwargs.get("temperature", self.temperature),
         )
+        # A budget-finalization response must not carry the full tool schema
+        # payload or give the provider an opportunity to issue new actions.
+        if tools:
+            call_kwargs["tools"] = tools
+            call_kwargs["tool_choice"] = tool_choice
         if kwargs.get("max_tokens", self.max_tokens):
             call_kwargs["max_tokens"] = kwargs.get("max_tokens", self.max_tokens)
 
         span_id = _trace_hook("llm_request", model=call_kwargs["model"],
                               messages=messages, temperature=call_kwargs.get("temperature"),
                               max_tokens=call_kwargs.get("max_tokens"),
-                              tools=tools, tool_choice=tool_choice) or ""
+                              tools=tools or None, tool_choice=tool_choice if tools else None) or ""
         _t0 = time.monotonic()
         try:
             response = await _await_with_retry(

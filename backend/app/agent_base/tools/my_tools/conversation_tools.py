@@ -119,6 +119,7 @@ def create_conversation_tools(
     review_session_id: str = "",
     review_project_id: str = "",
     auto_approve_reviews: bool = False,
+    command_executor=None,
     include_subagent: bool = False,
     include_task_system: bool = False,
 ) -> tuple[list[Tool], ReviewManager | None]:
@@ -128,6 +129,13 @@ def create_conversation_tools(
         (tools, review_manager) — tool 列表 + 审核管理器（若启用）
     """
     tools: list[Tool] = []
+    if command_executor is None:
+        # Conversation agents always use the configured production command
+        # environment. Standalone low-level file-tool tests may inject the
+        # compatibility adapter explicitly instead.
+        from app.agent_base.execution import build_linux_command_executor
+        from app.core.config import get_settings
+        command_executor = build_linux_command_executor(get_settings())
 
     # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
     # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
@@ -149,6 +157,7 @@ def create_conversation_tools(
         source_dir, test_dir, design_dir,
         review_manager=review_mgr, progress=progress,
         change_set=change_set,
+        command_executor=command_executor,
     ))
 
     # todo_write：会话任务列表

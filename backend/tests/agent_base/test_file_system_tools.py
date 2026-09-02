@@ -141,6 +141,19 @@ def test_bash_echo(workspace):
     assert _run(bash, {"command": "echo hello"}).strip() == "hello"
 
 
+def test_bash_allows_model_selected_file_discovery(workspace, monkeypatch):
+    """Listing commands are governed by the normal bash policy, not glob-only routing."""
+    bash = _tool_by_name(_tools(workspace), "bash")
+
+    async def fake_run(command, cwd=None):
+        return f"executed:{command}:{cwd}"
+
+    monkeypatch.setattr(bash, "_run_command", fake_run)
+    result = _run(bash, {"command": "ls -la", "cwd": "source"})
+
+    assert result == "executed:ls -la:" + str(workspace[0])
+
+
 def test_bash_cwd_alias_is_supported_and_schema_is_explicit(workspace):
     src, test = workspace
     bash = _tool_by_name(_tools(workspace), "bash")

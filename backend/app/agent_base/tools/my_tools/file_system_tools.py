@@ -20,13 +20,12 @@ import json as _json
 import logging
 import os
 import re
-import signal
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from app.agent_base.tools.base import Tool
+from app.agent_base.execution import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 from app.agent_base.tools.my_tools.project_info_tools import GrepFileTool
@@ -396,16 +395,12 @@ class BashTool(AsyncTool):
                  review_timeout: float = BASH_REVIEW_TIMEOUT,
                  timeout: float = BASH_TIMEOUT,
                  output_cap: int = BASH_OUTPUT_CAP,
-                 risk_policy: RiskPolicy | None = None):
+                 risk_policy: RiskPolicy | None = None,
+                 command_executor: CommandExecutor | None = None):
+        self._command_executor = command_executor or HostShellExecutor()
         super().__init__(
             name="bash",
-            description=(
-                "Run one shell command in a configured workspace directory. "
-                "Use cwd='source', 'test', or 'design' instead of cd. Do not chain "
-                "commands, use pipes/redirection, nested shells, or inline interpreter code. "
-                "Use search_text for discovery and delete_path for deletion. "
-                "High-risk commands are denied; sensitive commands require approval."
-            ),
+            description=self._command_executor.profile.tool_description,
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
         self._cwd = self._roots[0] if self._roots else ""
@@ -444,21 +439,6 @@ class BashTool(AsyncTool):
             if verdict is not None:
                 return verdict
 
-        # File discovery has a dedicated, path-sandboxed ``glob`` tool.  Pure
-        # shell directory listings add noisy output and frequently lead the
-        # agent to repeat the same discovery in several shell dialects.
-        # Preserve bash for its intended execution role (tests/builds and
-        # explicit file operations), but nudge listing-only requests to glob.
-        compact = " ".join(lowered.replace("\r", " ").replace("\n", " ").split())
-        listing_markers = ("dir ", "dir/", "ls ", "get-childitem")
-        has_listing = any(marker in compact for marker in listing_markers)
-        execution_markers = ("pytest", "python -m", "npm ", "pnpm ", "yarn ", "git ")
-        if has_listing and not any(marker in compact for marker in execution_markers):
-            return (
-                "Error: use glob for workspace file discovery. Bash is reserved for "
-                "executing tests, builds, or an explicit file operation."
-            )
-
         # ── 高危：直接拒绝，不执行、不审核 ──
         for pattern in _DENY_LIST_LOWER:
             if pattern in lowered:
@@ -476,6 +456,10 @@ class BashTool(AsyncTool):
         syntax_error = self._validate_shell_command(command)
         if syntax_error:
             return f"Error: {syntax_error}"
+
+        environment_error = self._command_executor.validate_command(command)
+        if environment_error:
+            return f"Error: {environment_error}"
 
         return await self._run_command(command, cwd)
 
@@ -503,24 +487,25 @@ class BashTool(AsyncTool):
     def _validate_shell_command(command: str) -> str | None:
         """限制 shell=True 的逃逸面。
 
-        现有工具仍支持 Windows 的 ``echo``/``dir`` 等 shell 内建命令，
-        但禁止命令串联、重定向、命令替换和脚本解释器内联代码。
+        The production command contract is POSIX bash.  The host adapter owns
+        WSL/native process launch; this validator only enforces the stable
+        agent-facing command subset.
         """
         if len(command) > 4000:
             return "command is too long (maximum 4000 characters)"
         if any(token in command for token in ("\n", "\r", ";", "&&", "||", "|", ">", "<", "`", "$(")):
             return "shell operators and command substitution are not allowed"
         lowered = command.lower()
-        if re.search(r"\b(powershell|pwsh|cmd)\s*(\.exe)?\s*(/c|/k|-command|-c)\b", lowered):
+        if re.search(r"\b(powershell|pwsh|cmd|wsl|bash|sh)\s*(\.exe)?\s*(/c|/k|-command|-c)\b", lowered):
             return "nested shell invocation is not allowed"
         if re.search(r"\b(python|python3|py)\s+(-\w+\s+)*-c\b", lowered):
             return "inline interpreter code is not allowed"
         executable = command.strip().split(None, 1)[0].strip('"')
         executable = os.path.basename(executable).lower()
         allowed = {
-            "python", "python3", "py", "pytest", "git", "echo", "dir", "ls",
-            "type", "where", "find", "findstr", "rg", "grep", "cat", "head",
-            "tail", "sort", "wc", "pip", "uv", "node", "npm", "ruff", "copy",
+            "python", "python3", "pytest", "git", "echo", "printf", "pwd", "uname", "ls", "find", "rg",
+            "grep", "cat", "head", "tail", "sort", "wc", "pip", "uv", "node",
+            "npm", "npx", "pnpm", "yarn", "ruff", "mypy", "make", "cargo", "go",
         }
         if executable.endswith(".exe"):
             executable = executable[:-4]
@@ -612,43 +597,13 @@ class BashTool(AsyncTool):
         cwd = cwd if cwd is not None else (self._cwd or None)
         return await self._run_command_cancellable(command, cwd)
 
-        def _run():
-            # 同步 subprocess，在线程池执行：不依赖事件循环类型。
-            # 直接 await asyncio.create_subprocess_shell 在 SelectorEventLoop
-            # （uvicorn 在 Windows 上的默认 loop）下会抛 NotImplementedError。
-            return subprocess.run(
-                command, shell=True, cwd=cwd,
-                capture_output=True, timeout=BASH_TIMEOUT,
-            )
-
-        try:
-            proc = await asyncio.to_thread(_run)
-        except subprocess.TimeoutExpired:
-            return f"Error: command timed out after {BASH_TIMEOUT}s"
-        except OSError as e:
-            return f"Error: {type(e).__name__}: {e}"
-
-        out = (_decode_output(proc.stdout) + _decode_output(proc.stderr)).strip()
-        out = out[:BASH_OUTPUT_CAP] if len(out) > BASH_OUTPUT_CAP else out
-        return out or "(no output)"
-
     async def _run_command_cancellable(self, command: str, cwd: str | None) -> str:
         def _start():
-            kwargs = {
-                "shell": True,
-                "cwd": cwd,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-            }
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                kwargs["start_new_session"] = True
-            return subprocess.Popen(command, **kwargs)
+            return self._command_executor.start(command, cwd)
 
         try:
             proc = await asyncio.to_thread(_start)
-        except OSError as e:
+        except (OSError, ExecutionEnvironmentError) as e:
             return f"Error: {type(e).__name__}: {e}"
 
         communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
@@ -656,17 +611,17 @@ class BashTool(AsyncTool):
         try:
             while not communicate.done():
                 if get_runtime().stop_check():
-                    self._terminate_process(proc)
+                    self._command_executor.terminate(proc)
                     await asyncio.shield(communicate)
                     return "Error: command canceled"
                 if asyncio.get_running_loop().time() >= deadline:
-                    self._terminate_process(proc)
+                    self._command_executor.terminate(proc)
                     await asyncio.shield(communicate)
                     return f"Error: command timed out after {self._timeout:g}s"
                 await asyncio.sleep(0.05)
             stdout, stderr = await communicate
         except asyncio.CancelledError:
-            self._terminate_process(proc)
+            self._command_executor.terminate(proc)
             await asyncio.shield(communicate)
             raise
         except OSError as e:
@@ -677,25 +632,6 @@ class BashTool(AsyncTool):
         if proc.returncode:
             return f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
         return out or "(no output)"
-
-    @staticmethod
-    def _terminate_process(proc: subprocess.Popen) -> None:
-        """Terminate the command process group, including child processes."""
-        if proc.poll() is not None:
-            return
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    capture_output=True, timeout=5, check=False,
-                )
-            else:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (OSError, subprocess.SubprocessError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
 
     def to_openai_schema(self) -> dict:
         return {
@@ -834,7 +770,8 @@ class DeletePathTool(Tool):
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
                              review_manager=None, progress=None, change_set=None,
                              bash_timeout: float = BASH_TIMEOUT,
-                             bash_output_cap: int = BASH_OUTPUT_CAP) -> list[Tool]:
+                             bash_output_cap: int = BASH_OUTPUT_CAP,
+                             command_executor: CommandExecutor | None = None) -> list[Tool]:
     """创建 A 层文件系统原语工具列表。
 
     review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
@@ -849,5 +786,6 @@ def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_di
         DeletePathTool(source_dir, test_dir, design_dir, change_set=change_set),
         BashTool(source_dir, test_dir, design_dir,
                  review_manager=review_manager, progress=progress,
-                 timeout=bash_timeout, output_cap=bash_output_cap),
+                 timeout=bash_timeout, output_cap=bash_output_cap,
+                 command_executor=command_executor),
     ]

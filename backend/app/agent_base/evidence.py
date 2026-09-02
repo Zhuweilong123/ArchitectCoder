@@ -13,6 +13,7 @@ LLM, so using it does not introduce another latency or token-cost path.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -45,6 +46,15 @@ def _line_range(arguments: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         return f"lines {offset + 1}+"
     return f"lines {offset + 1}-{offset + count}"
+
+
+def _json_mapping(value: str) -> dict[str, Any]:
+    """Best-effort structured extraction without preserving a raw payload."""
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _is_verification_command(command: str) -> bool:
@@ -155,6 +165,47 @@ class EvidenceLedger:
                 record.facts.append(f"after_sha={after.group(1)[:12]}")
             record.pending_edit = status == "success"
             self._link_edit_to_reads(path, record)
+        elif tool_name == "get_project_map":
+            payload = _json_mapping(observation)
+            stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+            files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+            if payload.get("project_id"):
+                record.facts.append(f"project_id={payload['project_id']}")
+            for key in ("total_nodes", "total_edges"):
+                if key in stats:
+                    record.facts.append(f"{key}={stats[key]}")
+            diagrams = payload.get("diagrams")
+            if isinstance(diagrams, list):
+                record.facts.append(f"diagrams={len(diagrams)}")
+            for key in ("source_count", "test_count"):
+                if key in files:
+                    record.facts.append(f"{key}={files[key]}")
+            if not record.facts:
+                record.detail = f"result_sha={_sha256(observation)}"
+        elif tool_name == "compare_design_code":
+            payload = _json_mapping(observation)
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            for key in (
+                "coverage_rate", "mismatches", "missing_implementations",
+                "extra_code", "total_design_classes", "total_code_classes",
+            ):
+                if key in summary:
+                    record.facts.append(f"{key}={summary[key]}")
+            if not record.facts:
+                record.detail = f"result_sha={_sha256(observation)}"
+        elif tool_name == "todo_write":
+            todos = arguments.get("todos")
+            if isinstance(todos, list):
+                counts: dict[str, int] = {}
+                for todo in todos:
+                    if isinstance(todo, dict):
+                        state = str(todo.get("status") or "unknown")
+                        counts[state] = counts.get(state, 0) + 1
+                record.facts.append(
+                    "todos=" + ",".join(f"{state}:{count}" for state, count in sorted(counts.items()))
+                )
+            if not record.facts:
+                record.detail = f"result_sha={_sha256(observation)}"
         elif tool_name == "bash":
             command = str(arguments.get("command") or "")
             if command:
@@ -178,7 +229,7 @@ class EvidenceLedger:
         else:
             if error_code:
                 record.facts.append(f"error_code={error_code}")
-            record.detail = f"result={_short(observation, 220)!r}"
+            record.detail = f"result={_short(observation, 120)!r}"
 
         if status != "success" and error_code and not any(
             fact.startswith("error_code=") for fact in record.facts

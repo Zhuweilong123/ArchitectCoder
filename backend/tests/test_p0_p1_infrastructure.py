@@ -42,13 +42,41 @@ def test_trace_close_writes_session_end(tmp_path, monkeypatch):
     assert events[-1]["event_type"] == EVT_SESSION_END
 
 
+def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    tracer = ChatTraceLogger("strict-json-test")
+    tracer.llm_request(
+        provider="test", model="test",
+        messages=[
+            {"role": "system", "content": "stable prompt"},
+            {"role": "system", "content": "## Budget finalization\nDo not call tools."},
+            {"role": "user", "content": "finish"},
+        ],
+        temperature=0.3, max_tokens=None,
+    )
+    tracer.event("numeric", value=float("nan"))
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "trace_strict-json-test.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert events[0]["system_prompt"] == "stable prompt"
+    assert events[0]["messages"][0]["content"].startswith("## Budget finalization")
+    assert events[1]["value"] is None
+
+
 def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("checkpoint-test")
     tracer.start()
     tracer.user_message("old question")
-    tracer.context_compacted(summary="keep the SQLite decision", dropped_messages=2)
+    tracer.context_compacted(
+        summary="keep the SQLite decision", dropped_messages=2,
+        reason="convergence", triggered_by=["tool_call_count"],
+        tool_call_count=25, token_budget_used=96000, keep_recent_steps=3,
+    )
     tracer.done(answer="old answer")
     tracer.close()
 
@@ -58,6 +86,10 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
         "content": "keep the SQLite decision",
     }
     assert history[-1] == {"role": "assistant", "content": "old answer"}
+    events = [json.loads(line) for line in (tmp_path / "trace_checkpoint-test.jsonl").read_text(encoding="utf-8").splitlines()]
+    checkpoint = next(event for event in events if event["event_type"] == "context_compacted")
+    assert checkpoint["reason"] == "convergence"
+    assert checkpoint["triggered_by"] == ["tool_call_count"]
 
 
 def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tmp_path, monkeypatch):

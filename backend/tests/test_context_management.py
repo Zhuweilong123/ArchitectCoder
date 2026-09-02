@@ -8,6 +8,16 @@ from app.services.context_manager import (
 )
 
 
+def test_default_working_context_is_128k_with_bounded_history_and_react_steps():
+    budget = ContextBudget()
+
+    assert budget.max_context_tokens == 131072
+    assert budget.output_reserve_tokens == 8192
+    assert budget.max_history_tokens == 88000
+    assert budget.max_history_turns == 48
+    assert budget.max_react_steps == 24
+
+
 def test_context_budget_preserves_current_input_and_caps_history():
     manager = ContextBudgetManager(
         ContextBudget(
@@ -157,6 +167,27 @@ def test_react_step_compaction_prefers_structured_evidence_over_raw_prefix():
     assert "RAW PREFIX MUST NOT BE USED" not in checkpoint
 
 
+def test_react_step_compaction_never_falls_back_to_raw_when_evidence_is_missing():
+    manager = ContextBudgetManager()
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current task"},
+    ]
+    for index in range(3):
+        messages.extend([
+            {"role": "assistant", "content": f"step {index}", "tool_calls": [{"id": f"call-{index}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": f"call-{index}", "content": "RAW SECRETLY LARGE OBSERVATION"},
+        ])
+
+    compacted, _, _, _ = manager.compact_react_steps(
+        messages, current_user_index=1, max_steps=2, evidence_by_call={},
+    )
+
+    checkpoint = next(message["content"] for message in compacted if message.get("role") == "system" and "Tool execution checkpoint" in message.get("content", ""))
+    assert "structured evidence unavailable" in checkpoint
+    assert "RAW SECRETLY LARGE OBSERVATION" not in checkpoint
+
+
 def test_react_step_compaction_replaces_prior_checkpoint_instead_of_accumulating():
     manager = ContextBudgetManager()
     messages = [
@@ -176,3 +207,5 @@ def test_react_step_compaction_replaces_prior_checkpoint_instead_of_accumulating
         message.get("role") == "system" and message.get("content", "").startswith("## Tool execution checkpoint")
         for message in compacted
     ) == 1
+    checkpoint = next(message["content"] for message in compacted if message.get("content", "").startswith("## Tool execution checkpoint"))
+    assert checkpoint.count("## Tool execution checkpoint") == 1

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -53,15 +54,33 @@ def _split_system_prompt(messages: list) -> tuple[str, list]:
     """
     if not messages:
         return "", []
-    stripped = [m for m in messages
-                if not (isinstance(m, dict) and m.get("role") == "system")]
     system_prompt = ""
-    for msg in messages:
+    system_index = None
+    for index, msg in enumerate(messages):
         if isinstance(msg, dict) and msg.get("role") == "system":
             content = msg.get("content")
             system_prompt = content if isinstance(content, str) else ""
+            system_index = index
             break
+    # The first system message is the stable prompt.  Later system messages
+    # are runtime constraints/checkpoints and must remain replayable in the
+    # conversation stream (for example budget finalization instructions).
+    stripped = [
+        msg for index, msg in enumerate(messages)
+        if index != system_index
+    ]
     return system_prompt, stripped
+
+
+def _json_safe(value):
+    """Normalize trace payloads so every physical line is strict JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 # ── 事件类型常量 ─────────────────────────────────────
@@ -141,7 +160,13 @@ class ChatTraceLogger:
         if self._closed:
             return
         try:
-            line = json.dumps(evt, ensure_ascii=False, default=str)
+            line = json.dumps(
+                _json_safe(evt), ensure_ascii=False, default=str,
+                allow_nan=False,
+            )
+            # Keep the JSONL promise explicit: one strict JSON object per
+            # physical line, including tool observations with newlines.
+            json.loads(line)
             with self._lock:
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
@@ -216,6 +241,11 @@ class ChatTraceLogger:
         summary: str,
         dropped_messages: int = 0,
         dropped_tokens: int = 0,
+        reason: str = "",
+        triggered_by: list[str] | None = None,
+        tool_call_count: int = 0,
+        token_budget_used: int = 0,
+        keep_recent_steps: int = 0,
     ) -> None:
         """Persist the checkpoint used to restore a compacted session."""
         self.event(
@@ -223,6 +253,11 @@ class ChatTraceLogger:
             summary=summary,
             dropped_messages=dropped_messages,
             dropped_tokens=dropped_tokens,
+            reason=reason,
+            triggered_by=triggered_by or [],
+            tool_call_count=tool_call_count,
+            token_budget_used=token_budget_used,
+            keep_recent_steps=keep_recent_steps,
         )
 
     def llm_request(self, *, provider: str, model: str, messages: list,
@@ -333,8 +368,8 @@ class ChatTraceLogger:
     def review_response(self, *, review_id: int, response: str) -> None:
         self.event(EVT_REVIEW_RESPONSE, review_id=review_id, response=response)
 
-    def done(self, *, answer: str) -> None:
-        self.event(EVT_DONE, answer=answer)
+    def done(self, *, answer: str, runtime: dict | None = None) -> None:
+        self.event(EVT_DONE, answer=answer, runtime=runtime or {})
 
     def error(self, *, event_type: str, message: str) -> None:
         self.event(EVT_ERROR, source=event_type, message=message)

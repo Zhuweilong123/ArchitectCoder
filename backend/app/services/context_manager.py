@@ -96,24 +96,38 @@ def truncate_text(text: str, max_tokens: int, counter: TokenCounter = estimate_t
     return text[:head] + marker + text[-(best - head):]
 
 
+def _checkpoint_evidence_lines(checkpoint: str) -> list[str]:
+    """Extract evidence lines from one prior checkpoint without nesting it."""
+    ignored = {
+        "## Tool execution checkpoint",
+        "Older tool steps were compacted; use this as reference and do not repeat identical exploration.",
+        "Prior retained evidence:",
+    }
+    return [
+        line for line in str(checkpoint or "").splitlines()
+        if line.strip() and line.strip() not in ignored
+    ]
+
+
 @dataclass(frozen=True)
 class ContextBudget:
     """Token allocation for one LLM request."""
 
-    max_context_tokens: int = 32768
-    output_reserve_tokens: int = 4096
+    max_context_tokens: int = 131072
+    output_reserve_tokens: int = 8192
     max_system_tokens: int = 5000
-    max_history_tokens: int = 12000
-    max_summary_tokens: int = 1500
+    max_history_tokens: int = 88000
+    max_summary_tokens: int = 4000
     max_current_task_tokens: int = 5000
     max_tool_tokens: int = 6000
-    max_history_turns: int = 12
+    max_history_turns: int = 48
+    max_react_steps: int = 24
 
     def __post_init__(self) -> None:
         for name in (
             "max_context_tokens", "output_reserve_tokens", "max_system_tokens",
             "max_history_tokens", "max_summary_tokens", "max_current_task_tokens",
-            "max_tool_tokens", "max_history_turns",
+            "max_tool_tokens", "max_history_turns", "max_react_steps",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
@@ -382,24 +396,26 @@ class ContextBudgetManager:
 
         old_groups = groups[:-max_steps]
         old_indices = {item for group in old_groups for item in group}
-        # Repeated compaction used to accumulate immutable system checkpoints.
-        # Fold any previous checkpoint into the replacement so the evidence
-        # reference itself remains bounded across a long tool run.
+        # Keep one evolving checkpoint.  Do not embed the previous checkpoint
+        # verbatim: that creates nested headers and repeats already-compacted
+        # prose on every later pass.
         checkpoint_indices = {
             pos for pos, message in enumerate(messages)
             if message.get("role") == "system"
             and str(message.get("content") or "").startswith("## Tool execution checkpoint")
         }
-        previous_checkpoints = [
-            str(messages[pos].get("content") or "") for pos in sorted(checkpoint_indices)
-        ]
+        previous_evidence_lines: list[str] = []
+        for pos in sorted(checkpoint_indices):
+            previous_evidence_lines.extend(_checkpoint_evidence_lines(
+                str(messages[pos].get("content") or "")
+            ))
         lines = [
             "## Tool execution checkpoint",
             "Older tool steps were compacted; use this as reference and do not repeat identical exploration.",
         ]
-        if previous_checkpoints:
+        if previous_evidence_lines:
             lines.append("Prior retained evidence:")
-            lines.extend(previous_checkpoints)
+            lines.extend(previous_evidence_lines)
         for group in old_groups:
             assistant = messages[group[0]]
             calls = assistant.get("tool_calls") or []
@@ -414,10 +430,15 @@ class ContextBudgetManager:
                 evidence = (evidence_by_call or {}).get(call_id, "").strip()
                 if evidence:
                     observations.append(evidence)
-                elif _content(tool_message).strip():
+                # When an evidence map is supplied, never fall back to a raw
+                # observation.  Missing ledger entries must not turn a
+                # compact checkpoint back into a multi-kilobyte tool dump.
+                elif evidence_by_call is None and _content(tool_message).strip():
                     observations.append(
                         truncate_text(_content(tool_message).strip(), 180, self.token_counter)
                     )
+                else:
+                    observations.append("[structured evidence unavailable]")
             detail = ", ".join(names) or "tool"
             if observations:
                 detail += ": " + " | ".join(observations)

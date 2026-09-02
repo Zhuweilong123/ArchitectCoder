@@ -42,6 +42,7 @@ from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
+from app.agent_base.execution import build_linux_command_executor
 from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
@@ -385,9 +386,13 @@ class DevPromptBuilder:
         ]
         provided = [(label, d) for label, d in workspace_entries if d]
         if provided:
-            lines = ["## Workspace (Windows environment, absolute paths)"]
+            lines = ["## Workspace (host paths; bash executes in WSL Linux)"]
             for label, d in provided:
                 lines.append(f"- {label}: {d}")
+            lines.append(
+                "- Use the cwd aliases supplied by the bash schema. Do not convert these "
+                "host paths or invoke WSL yourself."
+            )
             add_section("workspace", "\n".join(lines))
 
         # ── 项目上下文 ──
@@ -463,6 +468,8 @@ async def _create_dev_agent(
     from app.core.config import get_settings
 
     change_set = ChangeSet(project_file=project_file)
+    settings = get_settings()
+    command_executor = build_linux_command_executor(settings)
 
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
@@ -472,6 +479,7 @@ async def _create_dev_agent(
         review_session_id=task_scope or "",
         review_project_id=os.path.splitext(os.path.basename(project_file))[0] if project_file else "",
         auto_approve_reviews=auto_approve_reviews,
+        command_executor=command_executor,
         # The default chat path stays single-agent.  Dedicated orchestration
         # can opt into subagents explicitly without adding a task classifier.
         include_subagent=False,
@@ -486,7 +494,6 @@ async def _create_dev_agent(
 
     prompt_builder = DevPromptBuilder()
 
-    settings = get_settings()
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
@@ -497,6 +504,13 @@ async def _create_dev_agent(
         max_repeated_tool_calls=settings.agent_max_repeated_tool_calls,
         max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
         max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
+        token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
+        convergence_tool_steps=settings.agent_convergence_tool_steps,
+        convergence_budget_ratio=settings.agent_convergence_budget_ratio,
+        convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
+        evidence_max_records=settings.agent_evidence_max_records,
+        force_final_summary_on_step_limit=settings.agent_force_final_summary_on_step_limit,
+        final_summary_max_tokens=settings.agent_final_summary_max_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
         context_budget=ContextBudgetManager(budget=ContextBudget(
@@ -504,6 +518,8 @@ async def _create_dev_agent(
             output_reserve_tokens=settings.agent_context_output_reserve_tokens,
             max_history_tokens=settings.agent_context_max_history_tokens,
             max_history_turns=settings.agent_context_max_history_turns,
+            max_summary_tokens=settings.agent_context_max_summary_tokens,
+            max_react_steps=settings.agent_context_max_react_steps,
         )),
     )
     agent.change_set = change_set
@@ -825,9 +841,14 @@ async def _handle_dev(
                 summary=report.get("summary", ""),
                 dropped_messages=report.get("dropped_messages", 0),
                 dropped_tokens=report.get("dropped_tokens", 0),
+                reason=report.get("reason", ""),
+                triggered_by=report.get("triggered_by", []),
+                tool_call_count=report.get("tool_call_count", 0),
+                token_budget_used=report.get("token_budget_used", 0),
+                keep_recent_steps=report.get("keep_recent_steps", 0),
             )
         async for step_progress in agent.arun_stream(
-            user_message, context=context, allowed_tools=allowed_tools,
+            user_message, context=context,
         ):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
@@ -1028,7 +1049,18 @@ async def _handle_dev(
 
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
                 if trace_log:
-                    trace_log.done(answer=d["final_answer"])
+                    report = getattr(agent, "last_context_report", {})
+                    trace_log.done(answer=d["final_answer"], runtime={
+                        "token_budget_used": report.get("token_budget_used", 0),
+                        "token_budget_stop_reason": report.get("token_budget_stop_reason", "model_answer"),
+                        "convergence_policy": report.get("convergence_policy", {}),
+                        "convergence_evidence_compaction": report.get(
+                            "convergence_evidence_compaction", {}
+                        ),
+                        "finalization_textual_tool_markup_blocked": report.get(
+                            "finalization_textual_tool_markup_blocked", False
+                        ),
+                    })
                 ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],

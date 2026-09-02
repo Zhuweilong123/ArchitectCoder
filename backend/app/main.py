@@ -66,6 +66,16 @@ app.include_router(audit_router, dependencies=[Depends(require_auth)])          
 if settings.strict_production and (settings.debug or not settings.internal_api_token):
     raise RuntimeError("strict_production requires debug=false and internal_api_token")
 
+if settings.strict_production:
+    from app.agent_base.execution import ExecutionEnvironmentError, build_linux_command_executor
+
+    try:
+        build_linux_command_executor(settings).preflight()
+    except ExecutionEnvironmentError as exc:
+        raise RuntimeError(
+            f"strict_production requires a ready Linux command environment: {exc}"
+        ) from exc
+
 # Ensure required directories exist
 os.makedirs(settings.uml_dir, exist_ok=True)
 
