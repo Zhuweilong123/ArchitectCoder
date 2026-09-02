@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from .models import EvalCase
+from .paths import cases_dir
 from .projects import load_projects
-
-
-def cases_dir() -> Path:
-    return Path(__file__).resolve().parent / "cases"
 
 
 def load_cases() -> dict[str, EvalCase]:

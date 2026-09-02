@@ -17,9 +17,10 @@ from app.evals.batches import (
 )
 from app.evals.registry import load_cases
 from app.evals.runner import EvalRunner
+from app.evals.paths import baseline_path
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
-BASELINE_PATH = Path(__file__).resolve().parents[1] / "evals" / "baseline.json"
+BASELINE_PATH = baseline_path()
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 

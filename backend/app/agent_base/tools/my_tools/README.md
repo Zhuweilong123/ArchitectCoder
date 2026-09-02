@@ -43,7 +43,7 @@
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
 | `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
 | `knowledge_graph_v2_tools.py` | 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
-| `project_info_tools.py` | `project_info` / `read_file` / `grep` | ⚠️ 当前未接线 |
+| `file_search_tools.py` | `grep` 基类（由 `search_text` 适配） | 文件内容搜索实现 |
 
 ## 会话工具清单（`create_conversation_tools()` 装配）
 

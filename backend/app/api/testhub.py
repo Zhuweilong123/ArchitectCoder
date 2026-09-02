@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.services.llm_service import chat
-from app.services.tools import clean_llm_json_response
+from app.core.json_utils import clean_llm_json_response
 
 try:
     import openpyxl

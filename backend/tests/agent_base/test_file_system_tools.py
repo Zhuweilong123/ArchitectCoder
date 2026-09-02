@@ -1,7 +1,6 @@
 """文件系统原语工具测试（safe_path + read/write/edit/glob/bash）。"""
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -11,10 +10,9 @@ from app.agent_base.tools.my_tools.file_system_tools import (
     BashTool, DeletePathTool, SearchTextTool, safe_path,
     create_file_system_tools, _decode_output,
 )
+from tests.support.tool_helpers import run_tool, tool_by_name
 
-
-def _run(tool, params):
-    return asyncio.run(tool._execute(params))
+_run = run_tool
 
 
 @pytest.fixture
@@ -33,8 +31,7 @@ def _tools(workspace):
     return create_file_system_tools(str(src), str(test))
 
 
-def _tool_by_name(tools, name):
-    return next(t for t in tools if t.name == name)
+_tool_by_name = tool_by_name
 
 
 # ── safe_path ──────────────────────────────────────────

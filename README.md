@@ -57,7 +57,7 @@ The bottom-right robot button opens the floating chat panel. The production **De
 
 The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
 
-- **Case catalog**: `backend/app/evals/cases/`, currently 16 cases organized into the `baseline`, `p0`, `p1`, `p2`, and `diagnostic` suites.
+- **Case catalog**: `backend/evals/cases/`, currently 18 cases organized into the `baseline`, `p0`, `p1`, `p2`, `diagnostic`, and `trace-3.1` suites.
 - **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
 - **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
 - **Runtime limits**: every case can configure maximum seconds, Tool Calls, and Total Tokens; results retain status, score, duration, model, token/tool usage, Trace ID, and checker details.
@@ -151,17 +151,20 @@ ArchitectCoder/
 │   │   ├── core/                   # Config / auth / security
 │   │   ├── models/                 # Pydantic data models
 │   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
-│   │   ├── evals/                  # DevAgent cases, runner, baseline, and archives
+│   │   ├── evals/                  # DevAgent evaluation runtime
 │   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
 │   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py
+│   ├── evals/                      # Versioned evaluation cases and fixtures
+│   ├── examples/                   # Optional BaseAgent examples
 │   ├── knowledge_graph/            # Knowledge Graph system (SQLite + FTS5)
 │   ├── memory_system/              # Cross-session memory system (SQLite + FTS5 + jieba)
+│   ├── tests/                      # Unit and integration tests
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # Design docs, evaluation baseline, and system archives
 ├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
-├── generated/                      # Generated code output (src/ + test/)
+├── project/                        # Project code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
 ├── .claude/                        # Claude Code configuration
 ├── README.md                       # English project documentation (default)

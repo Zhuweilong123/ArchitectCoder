@@ -53,7 +53,8 @@ const Toolbar: React.FC = () => {
     undo, redo, setProject, newProject, setActiveDiagram, addDiagram,
     removeDiagram,
     toggleGrid, setGridSize, setGridColor, setGridThickness,
-    setCurrentFilepath, currentFilepath,
+    setCurrentFilepath, currentFilepath, currentWorkspacePath,
+    currentWorkspaceSafe, setCurrentWorkspacePath,
   } = useDiagramStore();
 
   const {
@@ -92,6 +93,31 @@ const Toolbar: React.FC = () => {
     { label: '💾 D盘', path: 'D:/' },
   ];
 
+  // Keep the toolbar compact while still showing where the active design is
+  // located.  Paths are displayed relative to the workspace's parent; the
+  // full host path remains available in the tooltip.
+  const normalizePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const pathBaseName = (value: string) => normalizePath(value).split('/').pop() || value;
+  const fileStem = (value: string) =>
+    (pathBaseName(value).replace(/[^\w.-]/g, '_').replace(/^\.+|\.+$/g, '') || 'Untitled');
+  const pathDirName = (value: string) => {
+    const normalized = normalizePath(value);
+    const index = normalized.lastIndexOf('/');
+    return index > 0 ? normalized.slice(0, index) : normalized;
+  };
+  const relativePath = (value: string, root: string) => {
+    const target = normalizePath(value);
+    const base = normalizePath(root);
+    if (target === base) return '.';
+    const prefix = `${base}/`;
+    return target.startsWith(prefix) ? target.slice(prefix.length) : pathBaseName(target);
+  };
+  const activePath = currentFilepath || currentWorkspacePath;
+  const activePathRoot = activePath ? pathDirName(currentWorkspacePath || activePath) : '';
+  const activePathLabel = activePath && activePathRoot
+    ? relativePath(activePath, activePathRoot)
+    : (activePath ? pathBaseName(activePath) : '');
+
   // ── Save As dialog ──────────────────────────────────
   const [saveAsVisible, setSaveAsVisible] = useState(false);
   const [saveFilename, setSaveFilename] = useState('');
@@ -120,9 +146,13 @@ const Toolbar: React.FC = () => {
     if (!projectFile) {
       try {
         const projName = useDiagramStore.getState().project?.name || 'Untitled';
+        const targetPath = currentWorkspacePath
+          ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
+          : `${projName}.umlproj`;
         const result = await saveProject(
           { ...useDiagramStore.getState().project, name: projName },
-          `${projName}.umlproj`,
+          targetPath,
+          currentWorkspacePath ? currentWorkspaceSafe : true,
         );
         projectFile = result.filepath;
         setCurrentFilepath(result.filepath);
@@ -385,6 +415,72 @@ const Toolbar: React.FC = () => {
     }
   };
 
+  const handleSelectCurrentFolder = async () => {
+    const folder = browseData?.current;
+    if (!folder) return;
+    const safe = !browseUnsafe.current;
+    const projectFiles = (browseData.files || []).filter((item) => item.type === 'project');
+    const diagramFiles = (browseData.files || []).filter((item) =>
+      item.type !== 'project' && item.name.toLowerCase().endsWith('.uml'),
+    );
+    const designFiles = [...projectFiles, ...diagramFiles];
+
+    // Selecting a folder changes the save target.  An existing open file is
+    // therefore detached until the folder's design is loaded below.
+    setCurrentWorkspacePath(folder, safe);
+    currentFileSafe.current = safe;
+    setCurrentFilepath(null);
+
+    if (projectFiles.length > 0) {
+      // A .umlproj is already the canonical multi-diagram container. Open the
+      // first one deterministically; any additional project files remain
+      // available from the folder browser.
+      await handleOpenFile(projectFiles[0].path, true);
+      if (projectFiles.length > 1) {
+        message.info(`\u5df2\u81ea\u52a8\u6253\u5f00 ${projectFiles[0].name}\uff0c\u76ee\u5f55\u4e2d\u8fd8\u6709 ${projectFiles.length - 1} \u4e2a\u9879\u76ee\u6587\u4ef6`);
+      }
+      return;
+    }
+
+    if (diagramFiles.length === 1) {
+      await handleOpenFile(diagramFiles[0].path, false);
+      return;
+    }
+
+    if (diagramFiles.length > 1) {
+      try {
+        const diagrams = await Promise.all(
+          diagramFiles.map((item) => openDiagram(item.path, safe)),
+        );
+        setProject({
+          version: '1.0',
+          name: pathBaseName(folder) || 'Untitled',
+          diagrams,
+          active_diagram_index: 0,
+        });
+        // There is no single source file for an aggregated project; save it as
+        // a new .umlproj in the selected folder on the next save.
+        setCurrentFilepath(null);
+        setCurrentWorkspacePath(folder, safe);
+        setFileDialogVisible(false);
+        message.success(`\u5df2\u81ea\u52a8\u52a0\u8f7d ${diagrams.length} \u4e2a UML \u6587\u4ef6`);
+      } catch {
+        message.error('\u52a0\u8f7d\u6587\u4ef6\u5939\u4e2d\u7684 UML \u6587\u4ef6\u5931\u8d25');
+      }
+      return;
+    }
+
+    // An empty directory is a valid new-design workspace.
+    if (designFiles.length === 0) {
+      newProject(pathBaseName(folder) || 'Untitled');
+      setCurrentWorkspacePath(folder, safe);
+      setFileDialogVisible(false);
+      message.success(`\u5df2\u6253\u5f00\u7a7a\u8bbe\u8ba1\u6587\u4ef6\u5939: ${relativePath(folder, pathDirName(folder))}`);
+      return;
+    }
+
+  };
+
   const handleOpenFile = async (path: string, isProject: boolean) => {
     try {
       if (isProject) {
@@ -392,6 +488,7 @@ const Toolbar: React.FC = () => {
         const proj = await openProject(path, safe);
         setProject(proj);
         setCurrentFilepath(path);
+        setCurrentWorkspacePath(pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
@@ -408,6 +505,7 @@ const Toolbar: React.FC = () => {
         };
         setProject(proj);
         setCurrentFilepath(path);
+        setCurrentWorkspacePath(pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         message.success('文件已打开');
@@ -419,21 +517,25 @@ const Toolbar: React.FC = () => {
 
   // Quick save (always saves as .umlproj project)
   const handleSave = async () => {
-    if (!currentFilepath) {
+    if (!currentFilepath && !currentWorkspacePath) {
       openSaveAs();
       return;
     }
     try {
       // 若工程名仍是默认值，则用当前文件路径的文件名同步工程名
       let proj = project;
-      const curName = currentFilepath.replace(/[\\/]+/g, '/').split('/').pop() || '';
+      const curName = (currentFilepath || '').replace(/[\\/]+/g, '/').split('/').pop() || '';
       const curBase = curName.replace(/\.umlproj$/i, '').replace(/\.uml$/i, '');
-      if (!proj.name || proj.name === 'Untitled') {
+      if ((!proj.name || proj.name === 'Untitled') && curBase) {
         proj = { ...proj, name: curBase };
         setProject(proj);
       }
-      const result = await saveProject(proj, currentFilepath, currentFileSafe.current);
+      const targetPath = currentFilepath ||
+        `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
+      const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
+      const result = await saveProject(proj, targetPath, targetSafe);
       setCurrentFilepath(result.filepath);
+      setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
     } catch {
       message.error('保存失败');
@@ -444,7 +546,10 @@ const Toolbar: React.FC = () => {
   const openSaveAs = async () => {
     setSaveFilename(project.name || 'Untitled');
     try {
-      const result = await browseDirectory('');
+      const result = await browseDirectory(
+        currentWorkspacePath || '',
+        currentWorkspacePath ? currentWorkspaceSafe : true,
+      );
       setBrowseData(result);
       setFileList(result.files || []);
     } catch { /* ignore */ }
@@ -460,9 +565,19 @@ const Toolbar: React.FC = () => {
       if (projName !== project.name) {
         setProject({ ...project, name: projName });
       }
-      // Always save as project (.umlproj)
-      const result = await saveProject({ ...project, name: projName }, fname);
+      // Save in the active workspace when one was selected; otherwise retain
+      // the historical default uml_dir behavior.
+      const filename = fname.toLowerCase().endsWith('.umlproj') ? fname : `${fname}.umlproj`;
+      const targetPath = currentWorkspacePath
+        ? `${normalizePath(currentWorkspacePath)}/${filename}`
+        : filename;
+      const result = await saveProject(
+        { ...project, name: projName },
+        targetPath,
+        currentWorkspacePath ? currentWorkspaceSafe : true,
+      );
       setCurrentFilepath(result.filepath);
+      setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);
     } catch {
@@ -515,6 +630,17 @@ const Toolbar: React.FC = () => {
             {isModified ? '● ' : ''}保存 <DownOutlined />
           </Button>
         </Dropdown>
+        {activePath && (
+          <Tooltip title={activePath}>
+            <Tag
+              icon={<FolderOpenOutlined />}
+              color="blue"
+              style={{ maxWidth: 260, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {activePathLabel}
+            </Tag>
+          </Tooltip>
+        )}
 
         <Divider type="vertical" />
 
@@ -784,6 +910,16 @@ const Toolbar: React.FC = () => {
           <span style={{ fontSize: 12, color: '#666', wordBreak: 'break-all', flex: 1 }}>
             {browseData?.current || ''}
           </span>
+        </div>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            size="small"
+            type="primary"
+            icon={<FolderOpenOutlined />}
+            onClick={handleSelectCurrentFolder}
+          >
+            {'\u5728\u6b64\u6587\u4ef6\u5939\u4e2d\u5de5\u4f5c'}
+          </Button>
         </div>
 
         {/* Path input + Go button */}

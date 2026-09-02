@@ -40,7 +40,7 @@ from app.services.uml_common import (
     JsonElementExtractor,
 )
 from app.services.layout_engine import auto_layout
-from app.services.tools import clean_llm_json_response
+from app.core.json_utils import clean_llm_json_response
 from app.services.file_service import load_project
 from app.services.chat_trace import trace_span, TraceSession, get_trace_hook
 
@@ -197,8 +197,9 @@ async def optimize_v2(
             {"role": "user", "content": user_prompt},
         ]
         with trace_span("optimize_v2"):
-            raw = await _llm.ainvoke(messages, temperature=0.5, max_tokens=32768,
-                                     model="deepseek-v4-pro")
+            raw = await _llm.ainvoke(
+                messages, temperature=0.5, max_tokens=32768,
+            )
         logger.info("[optimize_v2] LLM 返回 %d 字符", len(raw))
 
         # 5. 处理结果
@@ -271,8 +272,9 @@ async def optimize_v2_stream(
             {"role": "user", "content": user_prompt},
         ]
         with trace_span("optimize_v2_stream"):
-            async for chunk in _llm.athink(messages, temperature=0.5, max_tokens=32768,
-                                           model="deepseek-v4-pro"):
+            async for chunk in _llm.athink(
+                messages, temperature=0.5, max_tokens=32768,
+            ):
                 full_response += chunk
                 for elem_type, elem_json in extractor.feed(chunk):
                     yield _sse_data(f"{elem_type}:{elem_json}")

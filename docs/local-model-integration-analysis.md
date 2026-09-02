@@ -103,6 +103,9 @@ checkpoint，避免长会话和工具循环依赖模型侧隐式截断。该机�
 
 ## 4. 结构性障碍：当前无法混用云端与本地
 
+> **状态更新（2026-09-02）**：模型路由方案已下线。DevAgent、子代理和 UML 优化流程统一使用
+> `.env` 中的 `DEEPSEEK_MODEL`；本节关于按角色路由和显式 `flash/pro` 覆盖的内容仅保留为历史分析。
+
 这是必须先解决的前置条件。
 
 `sub_agent_model` 看起来像分层旋钮，但它只换**模型名**——底层复用同一个 `BaseAgentsLLM` 客户端实例，`api_key` 和 `base_url` 是全局单例（`config.py:23`）。所以「pro 走 DeepSeek、flash 走本地 Qwen」这个最自然的方案，**当前配置结构表达不出来**。

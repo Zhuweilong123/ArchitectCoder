@@ -27,8 +27,8 @@ backend/.env
 # Temp files (not checked in)
 /tmp/
 
-# Generated code (large, regenerated on each pipeline run)
-/generated/
+# Project workspaces (large, regenerated on each pipeline run)
+/project/
 
 # Backend generated temp files (not checked in)
 /temp/

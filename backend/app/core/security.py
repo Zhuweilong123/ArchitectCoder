@@ -86,7 +86,7 @@ def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, st
         configured = [p.strip() for p in settings.workspace_roots.split(",") if p.strip()]
         # The application repository is always a trusted workspace baseline.
         # Configured roots extend that baseline for external projects; they must
-        # not accidentally make in-repository artifacts such as generated/ or
+        # not accidentally make in-repository artifacts such as project/ or
         # temp/ inaccessible.
         roots = [repo_root, Path(settings.uml_dir).resolve(),
                  Path(settings.uml_dir).resolve().parent]

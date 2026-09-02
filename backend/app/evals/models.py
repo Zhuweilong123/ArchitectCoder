@@ -66,13 +66,16 @@ class ProjectManifest(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     version: str = "1.0.0"
     fixture: str = Field(min_length=1)
+    # Optional complete fixture to materialize before applying this fixture's
+    # sparse overlay. Empty means ``fixture`` is a standalone snapshot.
+    base_fixture: str = ""
     entry_file: str = ""
     source_dir: str = "."
     test_dir: str = "test"
     protected_paths: list[str] = Field(default_factory=list)
     allowed_write_paths: list[str] = Field(default_factory=list)
 
-    @field_validator("fixture", "entry_file", "source_dir", "test_dir", "protected_paths", "allowed_write_paths")
+    @field_validator("fixture", "base_fixture", "entry_file", "source_dir", "test_dir", "protected_paths", "allowed_write_paths")
     @classmethod
     def validate_relative_paths(cls, value):
         values = value if isinstance(value, list) else [value]

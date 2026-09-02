@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 from pathlib import Path as _Path
-from app.services.tools import clean_llm_json_response
+from app.core.json_utils import clean_llm_json_response
 
 def _build_reference_index(diagrams: list[dict]) -> dict:
     """Build a structured cross-diagram reference index for prompt injection and post-validation.
@@ -449,11 +449,11 @@ Rules:
 Only output the JSON object."""
 
     try:
-        # Phase 1 scope analysis — 轻量任务使用 flash 模型，快速低成本
+        # Phase 1 scope analysis uses the same configured model as the main
+        # optimization call so model selection remains stable and cacheable.
         raw_scope = await llm.ainvoke(
             [{"role": "user", "content": scope_prompt}],
             temperature=0.1, max_tokens=1000,
-            model="deepseek-v4-flash",  # flash for fast/cheap scope analysis
         )
         raw = raw_scope
         _logger.info("[scope_analysis] raw (%d chars): %.200s", len(raw), raw)

@@ -6,14 +6,7 @@ import json
 from pathlib import Path
 
 from .models import EvalCase, ProjectManifest
-
-
-def projects_dir() -> Path:
-    return Path(__file__).resolve().parent / "projects"
-
-
-def fixtures_dir() -> Path:
-    return Path(__file__).resolve().parent / "fixtures"
+from .paths import fixtures_dir, projects_dir
 
 
 def load_projects() -> dict[str, ProjectManifest]:

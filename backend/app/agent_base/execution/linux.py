@@ -81,6 +81,19 @@ class HostShellExecutor:
         }
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # Windows command resolution may pick an inaccessible Python
+            # installation earlier on PATH (for example a stale Anaconda
+            # entry).  Prefer the interpreter running the backend so commands
+            # such as ``python -m pytest`` remain executable and reproducible.
+            interpreter_dir = os.path.dirname(sys.executable)
+            inherited_path = os.environ.get("PATH", "")
+            if interpreter_dir:
+                kwargs["env"] = {
+                    **os.environ,
+                    "PATH": os.pathsep.join(
+                        part for part in (interpreter_dir, inherited_path) if part
+                    ),
+                }
         else:
             kwargs["start_new_session"] = True
         return subprocess.Popen(command, **kwargs)
