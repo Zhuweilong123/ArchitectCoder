@@ -28,7 +28,7 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.auth import require_ws_auth
 from app.core.security import validate_agent_workspace_path
@@ -439,6 +439,82 @@ def _latest_persisted_checkpoint(session_id: str) -> dict:
     return {}
 
 
+_RESUME_REQUESTS = frozenset({
+    "\u7ee7\u7eed", "\u7ee7\u7eed\u6267\u884c", "\u6062\u590d", "\u6062\u590d\u4efb\u52a1", "continue", "resume",
+})
+
+
+def _is_resume_request(message: str) -> bool:
+    """Recognize an explicit reconnect/resume command."""
+    return (message or "").strip().lower() in _RESUME_REQUESTS
+
+
+def _latest_resumable_run(session_id: str):
+    """Return the newest non-terminal run that has a resumable checkpoint."""
+    if not session_id:
+        return None
+    resumable_statuses = {
+        RunStatus.RUNNING.value,
+        RunStatus.PAUSED.value,
+        RunStatus.ORPHANED.value,
+    }
+    try:
+        for record in get_run_store().list(limit=50, session_id=session_id):
+            if record.status not in resumable_statuses:
+                continue
+            checkpoint = record.metadata.get("checkpoint")
+            if not isinstance(checkpoint, dict) or not checkpoint:
+                continue
+            if record.status == RunStatus.RUNNING.value and not checkpoint.get("resume_available"):
+                continue
+            if checkpoint.get("resume_consumed"):
+                continue
+            return record, checkpoint
+    except Exception:
+        logger.warning("[RunState] Could not find resumable run for %s", session_id, exc_info=True)
+    return None
+
+
+def _resume_prompt(checkpoint: dict) -> str:
+    """Turn a persisted checkpoint into an explicit continuation request."""
+    original = str(checkpoint.get("request_summary") or checkpoint.get("message") or "")[:500]
+    completed = checkpoint.get("completed_items") or []
+    pending = checkpoint.get("pending_items") or []
+    verification = checkpoint.get("verification") or []
+    last_step = checkpoint.get("last_step") or ""
+    return (
+        "continue the previous unfinished task. Original request: " + original
+        + ". Read the current files and existing changes first, skip completed steps, "
+        "and continue from the pending step; do not treat this as a new task."
+        + (" Completed: " + "; ".join(map(str, completed[-16:])) + "." if completed else "")
+        + (" Pending: " + "; ".join(map(str, pending[-16:])) + "." if pending else "")
+        + (" Last step: " + str(last_step) + "." if last_step else "")
+        + (" Verification: " + "; ".join(map(str, verification[-16:])) + "." if verification else "")
+    )[:1800]
+
+
+def _persist_run_checkpoint(
+    run_id: str,
+    owner_id: str,
+    checkpoint: dict,
+    status: str | RunStatus = RunStatus.RUNNING,
+    error: str = "",
+) -> None:
+    """Persist progress frequently enough that a transport loss is recoverable."""
+    if not run_id:
+        return
+    try:
+        get_run_store().transition(
+            run_id,
+            status,
+            expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED},
+            owner_id=owner_id,
+            error=error,
+            metadata_patch={"checkpoint": dict(checkpoint)},
+        )
+    except RunStateError:
+        logger.warning("[RunState] Could not persist checkpoint for run %s", run_id, exc_info=True)
+
 def _should_archive_task_memory(
     checkpoint_status: str, tool_calls_detail: list[dict],
 ) -> bool:
@@ -537,6 +613,8 @@ async def _handle_dev(
     run_id: str = "",
     run_owner: str = "",
     session_id: str = "",
+    resume_checkpoint: dict | None = None,
+    disconnect_check: Callable[[], bool] | None = None,
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -549,17 +627,27 @@ async def _handle_dev(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     uml_review_seen = False
+    resume_checkpoint = dict(resume_checkpoint or {})
+    checkpoint_request_summary = str(
+        resume_checkpoint.get("request_summary") or user_message
+    )[:500]
     agent.last_run_checkpoint = {
         "run_id": run_id,
         "status": "running",
-        "request_summary": user_message[:500],
-        "completed_items": [],
-        "pending_items": [],
-        "changed_files": [],
-        "verification": [],
+        "request_summary": checkpoint_request_summary,
+        "completed_items": list(resume_checkpoint.get("completed_items") or []),
+        "pending_items": list(resume_checkpoint.get("pending_items") or []),
+        "changed_files": list(resume_checkpoint.get("changed_files") or []),
+        "verification": list(resume_checkpoint.get("verification") or []),
         "last_error": None,
         "stop_reason": None,
+        "resume_available": False,
+        "resume_of": resume_checkpoint.get("run_id", ""),
+        "project_file": project_file,
+        "source_dir": source_dir,
+        "test_dir": test_dir,
     }
+    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
 
     async def _on_progress(ev: dict):
         """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
@@ -650,7 +738,7 @@ async def _handle_dev(
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
-            previous_checkpoint=agent.last_run_checkpoint,
+            previous_checkpoint=resume_checkpoint,
             available_tools=tuple(agent.tool_registry.list_tools()),
         ))
         if trace_log:
@@ -695,6 +783,37 @@ async def _handle_dev(
         ):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
+            todo_state = _todo_progress_state()
+            todos = todo_state.get("todos", [])
+            agent.last_run_checkpoint.update({
+                "last_step": d.get("step", 0),
+                "completed_items": [
+                    item.get("content", "")
+                    for item in todos
+                    if isinstance(item, dict) and item.get("status") == "completed"
+                ],
+                "pending_items": [
+                    item.get("content", "")
+                    for item in todos
+                    if isinstance(item, dict) and item.get("status") != "completed"
+                ],
+                "verification": [
+                    detail.get("name", "")
+                    for detail in d.get("tool_calls_detail", [])
+                    if isinstance(detail, dict)
+                    and detail.get("name", "").lower() in {"pytest", "run_tests", "test"}
+                ],
+                "tool_calls": [
+                    {
+                        "name": detail.get("name", ""),
+                        "status": detail.get("status", ""),
+                        "error_code": detail.get("error_code", ""),
+                    }
+                    for detail in task_tool_calls[-32:]
+                    if isinstance(detail, dict)
+                ],
+            })
+            _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
 
             # 记录完整工具调用与返回（在截断发给前端之前）
             if trace_log:
@@ -740,6 +859,20 @@ async def _handle_dev(
                 **_todo_progress_state(),
             })
             if not ok:
+                agent.last_run_checkpoint.update({
+                    "status": "paused",
+                    "resume_available": True,
+                    "stop_reason": "websocket disconnected",
+                })
+                _persist_run_checkpoint(
+                    run_id, run_owner, agent.last_run_checkpoint,
+                    status=RunStatus.PAUSED,
+                )
+                if run_id:
+                    _record_audit(
+                        "run_paused", run_id=run_id, session_id=session_id,
+                        reason="websocket disconnected",
+                    )
                 return
 
             if d["is_final"]:
@@ -915,25 +1048,28 @@ async def _handle_dev(
                 return
 
     except asyncio.CancelledError:
+        disconnected = bool(disconnect_check and disconnect_check())
+        is_paused = disconnected
         agent.last_run_checkpoint = {
             **getattr(agent, "last_run_checkpoint", {}),
             "run_id": run_id,
-            "status": "stopped",
-            "stop_reason": "agent task was canceled",
+            "status": "paused" if is_paused else "stopped",
+            "resume_available": is_paused,
+            "stop_reason": (
+                "websocket disconnected; send continue to resume"
+                if is_paused else "agent task was canceled"
+            ),
         }
         if run_id:
-            try:
-                get_run_store().transition(
-                    run_id, RunStatus.CANCELED,
-                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
-                    owner_id=run_owner, error="agent task was canceled",
-                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                )
-            except RunStateError:
-                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+            _persist_run_checkpoint(
+                run_id, run_owner, agent.last_run_checkpoint,
+                status=RunStatus.PAUSED if is_paused else RunStatus.CANCELED,
+                error="websocket disconnected" if is_paused else "agent task was canceled",
+            )
             _record_audit(
-                "run_canceled", run_id=run_id, session_id=session_id,
-                reason="agent task was canceled",
+                "run_paused" if is_paused else "run_canceled",
+                run_id=run_id, session_id=session_id,
+                reason="websocket disconnected" if is_paused else "agent task was canceled",
             )
         raise
     except AgentInterrupted:
@@ -1033,6 +1169,7 @@ async def agent_chat_ws(websocket: WebSocket):
     run_task: asyncio.Task | None = None
     active_run = None
     connection_owner = uuid.uuid4().hex
+    transport_disconnected = False
     # 兜底审核（run 结束后补推的 uml_review）与其原始 run 的映射。
     # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
     fallback_review_runs: dict[int, str] = {}
@@ -1073,9 +1210,27 @@ async def agent_chat_ws(websocket: WebSocket):
             # ── 开始对话 ──
             if msg_type == "chat":
                 user_message = msg.get("message", "")
-                requested_source = msg.get("source_dir", source_dir)
-                requested_test = msg.get("test_dir", test_dir)
-                requested_project = msg.get("project_file", project_file)
+                resume_record = None
+                resume_checkpoint = {}
+                if _is_resume_request(user_message):
+                    resumable = _latest_resumable_run(session_id)
+                    if resumable is not None:
+                        resume_record, resume_checkpoint = resumable
+                    else:
+                        await _ws_send(websocket, {
+                            "event": "done",
+                            "result": "当前会话没有可恢复的未完成任务。",
+                        })
+                        continue
+                requested_source = msg.get("source_dir") or (
+                    resume_checkpoint.get("source_dir") or source_dir
+                )
+                requested_test = msg.get("test_dir") or (
+                    resume_checkpoint.get("test_dir") or test_dir
+                )
+                requested_project = msg.get("project_file") or (
+                    resume_checkpoint.get("project_file") or project_file
+                )
 
                 if not user_message:
                     await websocket.send_json({"event": "error", "message": "Empty message"})
@@ -1102,6 +1257,10 @@ async def agent_chat_ws(websocket: WebSocket):
                     })
                     continue
                 source_dir, test_dir, project_file = validated
+                effective_user_message = (
+                    _resume_prompt(resume_checkpoint)
+                    if resume_checkpoint else user_message
+                )
 
                 # 记录用户消息（trace）
                 trace_log.user_message(
@@ -1131,7 +1290,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 if dev_agent is None:
                     progress = ProgressRelay()
                     dev_agent, review_mgr, prompt_builder = await _create_dev_agent(
-                        llm, source_dir, test_dir, project_file, user_message,
+                        llm, source_dir, test_dir, project_file, effective_user_message,
                         progress=progress, restore_history=restore_history,
                         task_scope=session_id,
                     )
@@ -1146,7 +1305,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 context = ""
                 if prompt_builder is not None:
                     context = await prompt_builder.build_context(
-                        project_file, source_dir, test_dir, user_message,
+                        project_file, source_dir, test_dir, effective_user_message,
                     )
                     trace_log.event(
                         "prompt_context",
@@ -1184,7 +1343,8 @@ async def agent_chat_ws(websocket: WebSocket):
                     kind="agent_chat",
                     session_id=session_id,
                     metadata={
-                        "message": user_message[:500],
+                        "message": effective_user_message[:500],
+                        "resume_of": resume_record.run_id if resume_record else "",
                         "source_dir": source_dir,
                         "test_dir": test_dir,
                         "project_file": project_file,
@@ -1203,6 +1363,28 @@ async def agent_chat_ws(websocket: WebSocket):
                     })
                     continue
                 get_run_store().claim(run.run_id, connection_owner)
+                if resume_record is not None:
+                    old_status = resume_record.status
+                    old_target = (
+                        RunStatus.PAUSED.value
+                        if old_status == RunStatus.RUNNING.value else old_status
+                    )
+                    consumed_checkpoint = dict(resume_checkpoint)
+                    consumed_checkpoint.update({
+                        "resume_consumed": True,
+                        "resumed_by": run.run_id,
+                    })
+                    try:
+                        get_run_store().transition(
+                            resume_record.run_id, old_target,
+                            expected={old_status},
+                            metadata_patch={"checkpoint": consumed_checkpoint},
+                        )
+                    except RunStateError:
+                        logger.warning(
+                            "[RunState] Could not mark resumed run %s consumed",
+                            resume_record.run_id, exc_info=True,
+                        )
                 active_run = run
                 trace_log.set_run_id(run.run_id)
                 _record_audit(
@@ -1215,12 +1397,14 @@ async def agent_chat_ws(websocket: WebSocket):
                     "status": RunStatus.RUNNING.value,
                 })
                 run_task = asyncio.create_task(_handle_dev(
-                    dev_agent, review_mgr, user_message, websocket, _stop_check,
+                    dev_agent, review_mgr, effective_user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                     progress=progress, context=context,
                     fallback_review_runs=fallback_review_runs,
                     run_id=run.run_id, run_owner=connection_owner,
+                    resume_checkpoint=resume_checkpoint,
+                    disconnect_check=lambda: transport_disconnected,
                     session_id=session_id,
                 ))
                 run_task.add_done_callback(_consume_task_exception)
@@ -1383,6 +1567,7 @@ async def agent_chat_ws(websocket: WebSocket):
                                 progress=progress, context=followup_context,
                                 fallback_review_runs=fallback_review_runs,
                                 run_id=followup_run.run_id, run_owner=connection_owner,
+                                disconnect_check=lambda: transport_disconnected,
                                 session_id=session_id,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
@@ -1400,12 +1585,14 @@ async def agent_chat_ws(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
+        transport_disconnected = True
         stop_requested = True
         logger.info("[AgentChat] WebSocket disconnected")
     except RuntimeError as e:
         # 前端断开时 Starlette 会在 receive_text()/send_json() 抛这个错误；
         # 识别为正常断开，优雅收尾，不当作服务端错误处理。
         if "WebSocket is not connected" in str(e) or "not connected" in str(e):
+            transport_disconnected = True
             stop_requested = True
             logger.info("[AgentChat] WebSocket closed (client disconnected)")
         else:

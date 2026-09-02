@@ -282,7 +282,6 @@ class RunStore:
             next_owner = current.owner_id if target in {
                 RunStatus.RUNNING.value,
                 RunStatus.WAITING_APPROVAL.value,
-                RunStatus.PAUSED.value,
             } else ""
             heartbeat_at = current.heartbeat_at if target == RunStatus.RUNNING.value else None
             lease_expires_at = current.lease_expires_at if target == RunStatus.RUNNING.value else None

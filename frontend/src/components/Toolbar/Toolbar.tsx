@@ -28,6 +28,8 @@ import {
 } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
 import './Toolbar.css';
+import { t, type TranslationKey } from '../../i18n';
+import SettingsPopover from '../Settings/SettingsPopover';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
 // (reserved for future use)
@@ -63,9 +65,10 @@ const Toolbar: React.FC = () => {
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    sourceDir, testDir,
+    sourceDir, testDir, interfaceLanguage,
     setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
+  const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
   const [fileList, setFileList] = useState<Array<{
     name: string; path: string; size: number; modified: string;
@@ -92,6 +95,10 @@ const Toolbar: React.FC = () => {
     { label: '💾 C盘', path: 'C:/' },
     { label: '💾 D盘', path: 'D:/' },
   ];
+
+  const localizedQuickPath = (label: string) => interfaceLanguage === 'en'
+    ? label.replace('桌面', 'Desktop').replace('文档', 'Documents').replace('用户', 'User').replace('盘', ' Drive')
+    : label;
 
   // Keep the toolbar compact while still showing where the active design is
   // located.  Paths are displayed relative to the workspace's parent; the
@@ -608,8 +615,8 @@ const Toolbar: React.FC = () => {
   const handleZoomReset = () => useDiagramStore.getState().setZoom(1.0);
 
   const saveMenuItems = [
-    { key: 'save', label: `保存${isModified ? ' ●' : ''}`, onClick: handleSave },
-    { key: 'saveas', label: '另存为...', onClick: openSaveAs },
+    { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), onClick: handleSave },
+    { key: 'saveas', label: copy('saveAs'), onClick: openSaveAs },
   ];
 
   return (
@@ -618,16 +625,16 @@ const Toolbar: React.FC = () => {
       <div className="toolbar-row">
       <div className="toolbar-left">
         {/* File Ops */}
-        <Tooltip title="新建">
+        <Tooltip title={copy('newProject')}>
           <Button icon={<FileAddOutlined />} onClick={handleNew} />
         </Tooltip>
-        <Tooltip title="打开">
+        <Tooltip title={copy('open')}>
           <Button icon={<FolderOpenOutlined />} onClick={() => handleOpen()} />
         </Tooltip>
 
         <Dropdown menu={{ items: saveMenuItems }} trigger={['click']}>
           <Button icon={<SaveOutlined />}>
-            {isModified ? '● ' : ''}保存 <DownOutlined />
+            {isModified ? '● ' : ''}{copy('save')} <DownOutlined />
           </Button>
         </Dropdown>
         {activePath && (
@@ -647,9 +654,9 @@ const Toolbar: React.FC = () => {
         {/* Diagram dropdowns — grouped by type */}
         {(() => {
           const TYPE_SPECS = [
-            { key: 'component', label: '组件图', icon: <BlockOutlined />, color: '#d48806' },
-            { key: 'class', label: '类图', icon: <ApartmentOutlined />, color: '#1677ff' },
-            { key: 'sequence', label: '时序图', icon: <ClockCircleOutlined />, color: '#52c41a' },
+            { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />, color: '#d48806' },
+            { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />, color: '#1677ff' },
+            { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />, color: '#52c41a' },
           ] as const;
 
           const compDiag = project.diagrams.find((dd) => dd.diagram_type === 'component');
@@ -739,14 +746,14 @@ const Toolbar: React.FC = () => {
           });
         })()}
 
-        <Tooltip title="添加新图">
+        <Tooltip title={copy('addDiagram')}>
           <Dropdown menu={{
             items: [
-              { key: 'class', label: '添加类图', icon: <ApartmentOutlined />,
+              { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />,
                 onClick: () => addDiagram('class') },
-              { key: 'sequence', label: '添加时序图', icon: <ClockCircleOutlined />,
+              { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />,
                 onClick: () => addDiagram('sequence') },
-              { key: 'component', label: '添加组件图', icon: <BlockOutlined />,
+              { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />,
                 onClick: () => addDiagram('component') },
             ],
           }} trigger={['click']}>
@@ -757,46 +764,50 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         {/* Undo/Redo */}
-        <Tooltip title="撤销 Ctrl+Z">
+        <Tooltip title={copy('undo') + ' Ctrl+Z'}>
           <Button icon={<UndoOutlined />} disabled={undoStack.length === 0} onClick={undo} />
         </Tooltip>
-        <Tooltip title="重做 Ctrl+Y">
+        <Tooltip title={copy('redo') + ' Ctrl+Y'}>
           <Button icon={<RedoOutlined />} disabled={redoStack.length === 0} onClick={redo} />
         </Tooltip>
       </div>
-      <div className="toolbar-right" />
+      <div className="toolbar-right"><SettingsPopover /></div>
       </div>
 
-      {/* Row 2: Project directories (global — shared by Agent, etc.) */}
+      {/* Row 2: Project directories shared by Agent and other tools */}
       <div className="toolbar-row" style={{ padding: '2px 0' }}>
         <div className="toolbar-left" style={{ gap: 10, flexWrap: 'wrap', width: '100%' }}>
-          <Tooltip title="选择已有项目源码目录后，AI 助手将基于已有代码进行增量开发。留空则从 UML 设计全新生成代码。">
+          <Tooltip title={interfaceLanguage === 'en'
+            ? 'Select a source directory for incremental AI-assisted development.'
+            : '选择源码目录，用于基于已有代码进行增量开发。'}>
             <Tag
               icon={<FolderOpenOutlined />}
               color={sourceDir ? 'blue' : 'default'}
               style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               onClick={() => handleBrowseDirFor('source')}
             >
-              源码目录{sourceDir ? `: ${sourceDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+              {copy('sourceDirectory')}{sourceDir ? ': ' + sourceDir.split(/[/\\]/).slice(-2).join('/') : ''}
             </Tag>
           </Tooltip>
           {sourceDir && (
-            <Tooltip title="清除源码目录">
+            <Tooltip title={interfaceLanguage === 'en' ? 'Clear source directory' : '清除源码目录'}>
               <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setSourceDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
             </Tooltip>
           )}
-          <Tooltip title="选择已有测试代码目录后，AI 助手将运行已有测试而非从零生成。留空则自动生成 pytest 测试。">
+          <Tooltip title={interfaceLanguage === 'en'
+            ? 'Select an existing test directory for verification.'
+            : '选择测试目录，用于运行已有测试。'}>
             <Tag
               icon={<FolderOpenOutlined />}
               color={testDir ? 'green' : 'default'}
               style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               onClick={() => handleBrowseDirFor('test')}
             >
-              测试目录{testDir ? `: ${testDir.split(/[/\\]/).slice(-2).join('/')}` : ''}
+              {copy('testDirectory')}{testDir ? ': ' + testDir.split(/[/\\]/).slice(-2).join('/') : ''}
             </Tag>
           </Tooltip>
           {testDir && (
-            <Tooltip title="清除测试目录">
+            <Tooltip title={interfaceLanguage === 'en' ? 'Clear test directory' : '清除测试目录'}>
               <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setTestDir('')} style={{ padding: 0, minWidth: 18, height: 18 }} />
             </Tooltip>
           )}
@@ -814,19 +825,19 @@ const Toolbar: React.FC = () => {
           options={LANGUAGES}
           size="small"
         />
-        <Tooltip title="全局综合优化（类图+时序图+组件图交叉验证，也支持从需求描述直接生成全部图）">
+        <Tooltip title={copy('globalOptimize')}>
           <Button icon={<RobotOutlined />} onClick={() => setGlobalOptimizeVisible(true)} style={{ color: '#722ed1' }}>
-            全局优化
+            {copy('globalOptimize')}
           </Button>
         </Tooltip>
-        <Tooltip title="AI 开发助手（对话驱动开发）">
+        <Tooltip title={copy('assistant')}>
           <Button
             icon={<MessageOutlined />}
             onClick={() => setAgentChatVisible(true)}
             type={agentChatVisible ? 'primary' : 'default'}
             style={agentChatVisible ? { color: '#fff', borderColor: '#1677ff', background: '#1677ff' } : {}}
           >
-            AI 助手
+            {copy('assistant')}
           </Button>
         </Tooltip>
         <Tooltip title="Trace 回放（查看会话 LLM / 工具调用记录）">
@@ -837,29 +848,29 @@ const Toolbar: React.FC = () => {
 
         <Divider type="vertical" />
 
-        <Tooltip title="ArchitectCoder 能力基准中心：运行 DevAgent 基准、查看版本趋势并归档结果">
+        <Tooltip title={copy('evaluation')}>
           <Button icon={<LineChartOutlined />} onClick={() => setEvaluationVisible(true)}>
-            能力基准
+            {copy('evaluation')}
           </Button>
         </Tooltip>
 
         {/* Export */}
-        <Tooltip title="导出 Markdown 设计文档">
+        <Tooltip title={copy('exportMarkdown')}>
           <Button icon={<FileMarkdownOutlined />} onClick={handleExportMd}>
-            导出MD
+            {copy('exportMarkdown')}
           </Button>
         </Tooltip>
       </div>
 
       <div className="toolbar-right">
-        <Tooltip title="显示/隐藏网格">
+        <Tooltip title={copy('grid')}>
           <Button
             icon={diagram.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
             onClick={toggleGrid}
           />
         </Tooltip>
 
-        <Tooltip title="网格设置">
+        <Tooltip title={copy('gridSettings')}>
           <Button
             icon={<SettingOutlined />}
             onClick={() => setGridSettingsVisible(true)}
@@ -870,24 +881,24 @@ const Toolbar: React.FC = () => {
 
         <Divider type="vertical" />
 
-        <Tooltip title={showTestCaseInCanvas ? '返回UML画布' : '用例检视'}>
+        <Tooltip title={showTestCaseInCanvas ? (interfaceLanguage === 'en' ? 'Return to UML canvas' : '返回 UML 画布') : copy('testCases')}>
           <Button
             icon={<TableOutlined />}
             type={showTestCaseInCanvas ? 'primary' : 'default'}
             onClick={toggleTestCaseInCanvas}
           >
-            用例
+            {copy('testCases')}
           </Button>
         </Tooltip>
 
-        <Tooltip title="缩小">
+        <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>
         <span className="zoom-label">{Math.round(diagram.zoom * 100)}%</span>
-        <Tooltip title="放大">
+        <Tooltip title={copy('zoomIn')}>
           <Button icon={<ZoomInOutlined />} onClick={handleZoomIn} />
         </Tooltip>
-        <Tooltip title="重置缩放">
+        <Tooltip title={copy('resetZoom')}>
           <Button icon={<ExpandOutlined />} onClick={handleZoomReset} />
         </Tooltip>
       </div>
@@ -895,7 +906,7 @@ const Toolbar: React.FC = () => {
 
       {/* ── File Open Dialog with folder browsing ────── */}
       <Modal
-        title="打开 UML 文件"
+        title={interfaceLanguage === 'en' ? 'Open UML file' : '打开 UML 文件'}
         open={fileDialogVisible}
         onCancel={() => { setFileDialogVisible(false); browseUnsafe.current = false; }}
         footer={null}
@@ -905,7 +916,7 @@ const Toolbar: React.FC = () => {
         <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
           <Button size="small" onClick={handleBrowseParent}
             disabled={!browseData?.parent}>
-            上级目录
+            {interfaceLanguage === 'en' ? 'Parent directory' : '上级目录'}
           </Button>
           <span style={{ fontSize: 12, color: '#666', wordBreak: 'break-all', flex: 1 }}>
             {browseData?.current || ''}
@@ -918,7 +929,7 @@ const Toolbar: React.FC = () => {
             icon={<FolderOpenOutlined />}
             onClick={handleSelectCurrentFolder}
           >
-            {'\u5728\u6b64\u6587\u4ef6\u5939\u4e2d\u5de5\u4f5c'}
+            {interfaceLanguage === 'en' ? 'Use this folder as workspace' : '在此文件夹中工作'}
           </Button>
         </div>
 
@@ -929,7 +940,7 @@ const Toolbar: React.FC = () => {
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
             onPressEnter={() => handleNavigateTo(pathInput)}
-            placeholder="输入或粘贴目录路径，按回车跳转..."
+            placeholder={interfaceLanguage === 'en' ? 'Enter or paste a directory path, then press Enter...' : '输入或粘贴目录路径，按回车跳转...'}
             style={{ flex: 1 }}
             allowClear
           />
@@ -938,7 +949,7 @@ const Toolbar: React.FC = () => {
             type="primary"
             onClick={() => handleNavigateTo(pathInput)}
           >
-            跳转
+            {interfaceLanguage === 'en' ? 'Go' : '跳转'}
           </Button>
         </div>
 
@@ -951,14 +962,14 @@ const Toolbar: React.FC = () => {
               onClick={() => handleNavigateTo(qp.path)}
               style={{ fontSize: 11 }}
             >
-              {qp.label}
+              {localizedQuickPath(qp.label)}
             </Button>
           ))}
         </div>
 
         <List
           loading={false}
-          locale={{ emptyText: '暂无保存的文件' }}
+          locale={{ emptyText: interfaceLanguage === 'en' ? 'No saved files' : '暂无保存的文件' }}
           size="small"
           style={{ maxHeight: 400, overflow: 'auto' }}
         >
@@ -1065,7 +1076,7 @@ const Toolbar: React.FC = () => {
 
       {/* ── Grid Settings Modal ──────────────────────── */}
       <Modal
-        title="网格设置"
+        title={copy('gridSettings')}
         open={gridSettingsVisible}
         onCancel={() => setGridSettingsVisible(false)}
         onOk={() => setGridSettingsVisible(false)}

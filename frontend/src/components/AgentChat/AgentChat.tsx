@@ -22,6 +22,7 @@ import {
   PlusOutlined, HistoryOutlined, SwapOutlined, DownOutlined, RightOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
+import { t, type TranslationKey } from '../../i18n';
 import { useDiagramStore } from '../../stores/diagramStore';
 import {
   connectAgentChat, sendAgentMessage, sendStopMessage,
@@ -126,8 +127,9 @@ const AgentChat: React.FC = () => {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
     agentChatPosition, setAgentChatPosition,
-    sourceDir, testDir,
+    sourceDir, testDir, interfaceLanguage,
   } = useUiStore();
+  const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
 
@@ -821,7 +823,7 @@ const AgentChat: React.FC = () => {
   return (
     <>
       {/* 聊天按钮 */}
-      <Tooltip title="AI 开发助手">
+      <Tooltip title={copy('assistant')}>
         <Button
           type="primary"
           shape="circle"
@@ -856,7 +858,7 @@ const AgentChat: React.FC = () => {
           >
             <div className="agent-chat-header-left">
               <RobotOutlined style={{ marginRight: 8 }} />
-              <span>AI 开发助手</span>
+              <span>{copy('assistant')}</span>
               {busy && <LoadingOutlined style={{ marginLeft: 8 }} spin />}
             </div>
             <div className="agent-chat-header-right">
@@ -888,10 +890,10 @@ const AgentChat: React.FC = () => {
                   icon={<HistoryOutlined />}
                   disabled={busy || sessionsLoading}
                 >
-                  历史会话
+                  {copy('history')}
                 </Button>
               </Dropdown>
-              <Tooltip title="新对话（新 session）">
+              <Tooltip title={copy('newChat')}>
                 <Button
                   type="text"
                   size="small"
@@ -899,10 +901,10 @@ const AgentChat: React.FC = () => {
                   onClick={handleNewSession}
                   disabled={busy}
                 >
-                  新对话
+                  {copy('newChat')}
                 </Button>
               </Tooltip>
-              <Tooltip title={agentChatExpanded ? '缩小' : '放大'}>
+              <Tooltip title={agentChatExpanded ? (interfaceLanguage === 'en' ? 'Collapse' : '缩小') : (interfaceLanguage === 'en' ? 'Expand' : '放大')}>
                 <Button
                   type="text"
                   size="small"
@@ -910,7 +912,7 @@ const AgentChat: React.FC = () => {
                   onClick={toggleExpand}
                 />
               </Tooltip>
-              <Tooltip title="关闭">
+              <Tooltip title={copy('close')}>
                 <Button
                   type="text"
                   size="small"
@@ -928,13 +930,13 @@ const AgentChat: React.FC = () => {
             {messages.length === 0 && !busy && (
               <div className="agent-chat-empty">
                 <RobotOutlined style={{ fontSize: 32, color: '#bbb', marginBottom: 12 }} />
-                <p>👋 我是 AI 开发助手</p>
+                <p>👋 {copy('welcome')}</p>
                 <p className="agent-chat-hint">
-                  我可以帮你：设计 UML、生成代码、验证代码、编写测试、修复 bug
+                  {copy('chatHint')}
                 </p>
                 <div className="agent-chat-examples">
                   <Button size="small" onClick={() => setInputValue('创建一个计算器系统，支持加减乘除')}>
-                    创建计算器
+                    {interfaceLanguage === 'en' ? 'Calculator system' : '创建计算器'}
                   </Button>
                   <Button size="small" onClick={() => setInputValue('设计一个用户认证系统，包含注册、登录、密码重置')}>
                     用户认证系统
@@ -969,7 +971,7 @@ const AgentChat: React.FC = () => {
                 </div>
                 <div className="agent-message-body">
                   <Spin size="small" style={{ marginRight: 8 }} />
-                  <span style={{ color: '#888' }}>正在执行...</span>
+                  <span style={{ color: '#888' }}>{copy('running')}</span>
                   {renderSteps(currentSteps, false)}
                 </div>
               </div>
@@ -1103,7 +1105,7 @@ const AgentChat: React.FC = () => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入开发需求..."
+              placeholder={copy('inputPlaceholder')}
               autoSize={{ minRows: 1, maxRows: 4 }}
               disabled={busy}
               style={{ resize: 'none' }}
@@ -1116,7 +1118,7 @@ const AgentChat: React.FC = () => {
                   onClick={handleStop}
                   size="small"
                 >
-                  停止
+                  {copy('stop')}
                 </Button>
               ) : (
                 <Button
@@ -1126,7 +1128,7 @@ const AgentChat: React.FC = () => {
                   disabled={!inputValue.trim()}
                   size="small"
                 >
-                  发送
+                  {copy('send')}
                 </Button>
               )}
             </div>
