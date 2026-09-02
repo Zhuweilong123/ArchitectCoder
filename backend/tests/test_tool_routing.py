@@ -2,8 +2,9 @@ from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _latest_persisted_checkpoint,
     _should_archive_task_memory, _terminal_checkpoint_status,
-    _todo_progress_state, DevPromptBuilder,
+    _todo_progress_state, DevPromptBuilder, _archive_task_to_memory,
 )
+from app.agent_base.core.memory import MemoryArchiveResult, MemoryRecallResult
 
 
 def test_todo_progress_state_uses_runtime_as_the_authoritative_snapshot():
@@ -86,6 +87,55 @@ def test_prompt_builder_always_includes_project_workspace():
     assert "Source directory: src" in context
     assert "Test directory: tests" in context
     assert "Current project file: project.umlproj" in context
+
+
+def test_prompt_builder_uses_injected_memory_port_without_manager_dependency():
+    class FakeMemory:
+        def __init__(self):
+            self.recalled = []
+            self.reinforced = []
+
+        async def recall(self, request):
+            self.recalled.append(request)
+            return MemoryRecallResult(
+                context_block="## Memory\n- verified design decision",
+                memory_ids=("memory-1",),
+            )
+
+        async def reinforce(self, memory_ids, project_id=""):
+            self.reinforced.append((memory_ids, project_id))
+
+    import asyncio
+    memory = FakeMemory()
+    builder = DevPromptBuilder(memory=memory)
+    context = asyncio.run(builder.build_context("project.umlproj", "src", "tests", "continue"))
+
+    assert "verified design decision" in context
+    assert memory.recalled[0].project_id == "project"
+    assert memory.reinforced == [(("memory-1",), "project")]
+
+
+def test_memory_archive_helper_only_depends_on_memory_port():
+    class FakeMemory:
+        def __init__(self):
+            self.request = None
+
+        async def archive(self, request):
+            self.request = request
+            return MemoryArchiveResult(stored_count=1)
+
+    import asyncio
+    memory = FakeMemory()
+    asyncio.run(_archive_task_to_memory(
+        memory=memory,
+        project_id="project",
+        user_message="repair",
+        final_answer="done",
+        tool_calls_detail=[{"name": "edit_file", "status": "success"}],
+    ))
+
+    assert memory.request.project_id == "project"
+    assert memory.request.tool_steps[0]["name"] == "edit_file"
 
 
 def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():

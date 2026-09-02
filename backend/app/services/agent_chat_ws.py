@@ -48,6 +48,13 @@ from app.agent_base.core.orchestration import (
     exclude_tools,
     load_orchestrator,
 )
+from app.agent_base.core.memory import (
+    MemoryArchiveRequest,
+    MemoryPort,
+    MemoryRecallRequest,
+    NoOpMemory,
+    load_memory,
+)
 from app.agent_base.execution import build_linux_command_executor
 from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
@@ -318,12 +325,21 @@ class DevPromptBuilder:
       recall 跟随当前查询，避免同项目内沿用首轮的过期记忆块。
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        memory: MemoryPort | None = None,
+        *,
+        memory_recall_top_k: int = 3,
+        memory_recall_max_tokens: int = 500,
+    ):
         # One production prompt keeps the system prefix byte-stable across
         # sessions. Prompt experiments belong to isolated eval runs, not an
         # environment flag that can split cache cohorts in production.
         self.prompt_version = "3.1"
         self.system_prompt = self._build_static_prompt()
+        self.memory = memory if memory is not None else NoOpMemory()
+        self.memory_recall_top_k = max(1, int(memory_recall_top_k))
+        self.memory_recall_max_tokens = max(1, int(memory_recall_max_tokens))
         self.static_prompt_report = {
             "chars": len(self.system_prompt),
             "estimated_tokens": estimate_tokens(self.system_prompt),
@@ -436,16 +452,15 @@ class DevPromptBuilder:
         if not project_id:
             return ""
         try:
-            from memory_system.manager import MemoryManager
-            mgr = MemoryManager(db_path=_memory_db_path())
-            try:
-                results = await mgr.recall(project_id, user_message, top_k=3, max_tokens=500)
-                block = mgr.inject_memories("", results).strip()
-                if block and results:
-                    mgr.reinforce(results, project_id=project_id)
-                return block
-            finally:
-                mgr.close()
+            result = await self.memory.recall(MemoryRecallRequest(
+                project_id=project_id,
+                query=user_message,
+                top_k=self.memory_recall_top_k,
+                max_tokens=self.memory_recall_max_tokens,
+            ))
+            if result.context_block and result.memory_ids:
+                await self.memory.reinforce(result.memory_ids, project_id=project_id)
+            return result.context_block
         except Exception:
             logger.warning("[Memory] Recall failed (non-fatal)", exc_info=True)
             return ""
@@ -498,7 +513,12 @@ async def _create_dev_agent(
     for t in tools:
         registry.register_tool(t)
 
-    prompt_builder = DevPromptBuilder()
+    memory_provider = load_memory(llm=llm, settings=settings)
+    prompt_builder = DevPromptBuilder(
+        memory=memory_provider,
+        memory_recall_top_k=settings.agent_memory_recall_top_k,
+        memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
+    )
 
     agent = ReActAgent(
         name="DevAgent",
@@ -529,40 +549,15 @@ async def _create_dev_agent(
         )),
     )
     agent.change_set = change_set
+    agent.memory_provider = memory_provider
     if restore_history:
         agent.restore_history(restore_history)
     return agent, review_mgr, prompt_builder
 
 
 # ── 记忆系统（跨任务归档 + 注入） ───────────────────────────
-# 复用 memory_system.MemoryManager：任务结束 (done) 后异步归档工具过程 + 结论，
-# 新任务开始时 recall 相关记忆注入 system prompt。
-
-def _memory_db_path() -> str:
-    """记忆数据库路径：与 knowledge_graph.db 同目录。"""
-    try:
-        from app.core.config import get_settings as _get
-        _settings = _get()
-        return os.path.normpath(os.path.abspath(
-            os.path.join(os.path.dirname(_settings.uml_dir), "data", "memories.db"),
-        ))
-    except Exception:
-        return os.path.normpath(os.path.abspath(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "memories.db"),
-        ))
-
-
-def _tool_steps_summary(tool_calls_detail: list[dict], max_steps: int = 8) -> str:
-    """把一次任务的工具调用序列整理成结构化摘要文本（喂给记忆提取）。"""
-    lines: list[str] = []
-    for td in (tool_calls_detail or [])[:max_steps]:
-        name = td.get("name", "?")
-        args = td.get("arguments", {})
-        obs = str(td.get("observation", ""))[:300]
-        args_str = json.dumps(args, ensure_ascii=False)[:150] if isinstance(args, dict) else str(args)[:150]
-        lines.append(f"[{name}] 参数:{args_str}\n返回:{obs}")
-    return "\n".join(lines)
-
+# 主流程只依赖 MemoryPort；具体存储和提取策略由可插拔 provider 提供。
+# 任务结束 (done) 后异步归档工具过程 + 结论，新任务开始时 recall 相关记忆。
 
 def _todo_progress_state() -> dict:
     """Return the frontend-safe, authoritative TODO snapshot for this run."""
@@ -617,26 +612,6 @@ def _latest_persisted_checkpoint(session_id: str) -> dict:
     return {}
 
 
-def _extract_fn_for(llm: BaseAgentsLLM):
-    """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。
-
-    max_tokens 只是失控保护，必须高于模型的 reasoning 开销：deepseek
-    思考链计入 max_tokens，上限过低会把预算耗尽在想上、正文为空，
-    导致该次归档解析失败被跳过（manager 已按非致命处理）。历史正常
-    输出（含思考）约 1400-1900 tokens。
-    """
-    async def _extract(prompt: str) -> str:
-        # Background archival must be distinguishable from foreground Agent
-        # calls in the same trace/run.  This also keeps it out of per-turn
-        # interactive latency accounting.
-        from app.services.chat_trace import trace_span
-        with trace_span("MemoryArchive"):
-            return await llm.ainvoke(
-                [{"role": "user", "content": prompt}], max_tokens=3000
-            )
-    return _extract
-
-
 def _should_archive_task_memory(
     checkpoint_status: str, tool_calls_detail: list[dict],
 ) -> bool:
@@ -668,39 +643,29 @@ def _terminal_checkpoint_status(final_answer: str, todos: list[dict]) -> tuple[s
 
 
 async def _archive_task_to_memory(
+    memory: MemoryPort,
     project_id: str,
     user_message: str,
     final_answer: str,
     tool_calls_detail: list[dict],
-    llm: BaseAgentsLLM,
     run_id: str = "",
     trace_id: str = "",
 ) -> None:
-    """任务结束后异步归档：工具过程摘要 + 结论 → 记忆系统。
-
-    在后台任务中调用（不阻塞主对话返回）。失败不影响主流程。
-    """
+    """通过可选 MemoryPort 异步归档任务摘要；失败不影响主流程。"""
     try:
-        from memory_system.manager import MemoryManager
-        mgr = MemoryManager(db_path=_memory_db_path())
-
-        # 方案 B：把工具过程组装进 llm_output，让提取器捕捉关键事实
-        steps_text = _tool_steps_summary(tool_calls_detail)
-        combined = f"## 工具执行过程\n{steps_text}\n\n## 最终结论\n{final_answer}"
-        try:
-            await mgr.remember(
-                project_id=project_id,
-                context=f"对话 Agent 任务: {user_message[:100]}",
-                llm_call_type="agent_task",
-                user_input=user_message,
-                llm_output=combined[:2000],
-                extract_fn=_extract_fn_for(llm),
-                source_run_id=run_id,
-                source_trace_id=trace_id,
-            )
-        finally:
-            mgr.close()
-        logger.info("[Memory] Archived task to memory (project=%s)", project_id)
+        result = await memory.archive(MemoryArchiveRequest(
+            project_id=project_id,
+            user_message=user_message,
+            final_answer=final_answer,
+            tool_steps=tuple(tool_calls_detail or ()),
+            run_id=run_id,
+            trace_id=trace_id,
+        ))
+        logger.info(
+            "[Memory] Archived task to memory (project=%s, stored=%d)",
+            project_id,
+            result.stored_count,
+        )
     except Exception:
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
 
@@ -1088,15 +1053,17 @@ async def _handle_dev(
                 if project_id and _should_archive_task_memory(
                     terminal_status, task_tool_calls,
                 ):
-                    asyncio.create_task(_archive_task_to_memory(
-                        project_id=project_id,
-                        user_message=user_message,
-                        final_answer=d["final_answer"] or "",
-                        tool_calls_detail=task_tool_calls,
-                        llm=getattr(agent, "llm", None),
-                        run_id=run_id,
-                        trace_id=trace_log.trace_id if trace_log else "",
-                    ))
+                    memory = getattr(agent, "memory_provider", None)
+                    if memory is not None:
+                        asyncio.create_task(_archive_task_to_memory(
+                            memory=memory,
+                            project_id=project_id,
+                            user_message=user_message,
+                            final_answer=d["final_answer"] or "",
+                            tool_calls_detail=task_tool_calls,
+                            run_id=run_id,
+                            trace_id=trace_log.trace_id if trace_log else "",
+                        ))
 
                 # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
                 if trace_log:

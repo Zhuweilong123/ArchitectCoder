@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = "app.agent_base.orchestration.provider:create"
 
+    # Optional cross-task memory.  The core only depends on MemoryPort; the
+    # concrete SQLite adapter is loaded dynamically so it can be disabled or
+    # replaced without changing the Agent main loop.
+    agent_memory_enabled: bool = True
+    agent_memory_provider: str = "memory_system.provider:create"
+    agent_memory_db_path: str = ""
+    agent_memory_recall_top_k: int = 3
+    agent_memory_recall_max_tokens: int = 500
+    agent_memory_archive_max_tokens: int = 3000
+
     # Command tools expose one Linux/POSIX contract.  Windows deployments use
     # the configured WSL distribution instead of asking the model to choose a
     # cmd/PowerShell/Linux dialect per command.

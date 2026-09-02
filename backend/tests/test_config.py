@@ -14,3 +14,12 @@ def test_settings_default_task_budget_is_200k():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
     assert settings.agent_max_total_tokens == 200000
+
+
+def test_settings_exposes_pluggable_memory_defaults():
+    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+
+    assert settings.agent_memory_enabled is True
+    assert settings.agent_memory_provider == "memory_system.provider:create"
+    assert settings.agent_memory_recall_top_k == 3
+    assert settings.agent_memory_recall_max_tokens == 500

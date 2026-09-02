@@ -1080,3 +1080,27 @@ analysis and runtime tuning.
 - `agent_chat_ws.py` 只负责生命周期和 trace 事件，编排策略、契约和 worker 工具集分别位于独立模块，删除 provider 包无需修改主流程代码。
 
 该实现刻意不引入模型路由、正则意图分类、持久化 teammate 总线或 worktree 隔离；这些机制会增加链路和缓存变体，和当前“单主 Agent + 可选短生命周期只读 worker”的简洁架构不一致。
+
+### 15.8 可插拔记忆模块实现（2026-09-02）
+
+记忆能力已按与编排器相同的端口/适配器模式落地，主流程不再直接依赖
+`MemoryManager`：
+
+- `agent_base/core/memory.py` 定义稳定的 `MemoryPort`、召回/归档请求与结果、动态 provider loader，以及异常隔离的 `NoOpMemory`/resilient wrapper；禁用、缺失或初始化失败时自动降级为空记忆。
+- `memory_system/provider.py` 将现有 SQLite/BM25 `MemoryManager` 封装为 `SQLiteMemoryProvider`，保留原有提取、去重、召回和强化策略；工具步骤在进入异步归档前进行有界摘要，避免把完整工具输出带入记忆提取上下文。
+- `DevPromptBuilder` 只依赖 `MemoryPort`。新任务召回通过端口返回有界 context 和不透明 memory id，主流程按原语义强化已注入条目；任务完成后的归档通过同一端口异步执行，失败不影响用户响应。
+- `_create_dev_agent` 在会话创建时动态加载 provider，并将其同时注入 PromptBuilder 和 Agent；移除后续 provider 无需修改 WebSocket 主循环。
+
+新增配置（均可由 `backend/.env` 覆盖）：
+
+| Environment variable | Default | Purpose |
+|---|---:|---|
+| `AGENT_MEMORY_ENABLED` | `true` | 总开关；关闭后使用零开销 NoOp。 |
+| `AGENT_MEMORY_PROVIDER` | `memory_system.provider:create` | `module:factory` provider 路径；`none`/`noop` 禁用。 |
+| `AGENT_MEMORY_DB_PATH` | 空 | SQLite 路径；为空时按 `uml_dir` 推导 `data/memories.db`。 |
+| `AGENT_MEMORY_RECALL_TOP_K` | `3` | 默认召回条数上限。 |
+| `AGENT_MEMORY_RECALL_MAX_TOKENS` | `500` | 召回注入的 token 上限。 |
+| `AGENT_MEMORY_ARCHIVE_MAX_TOKENS` | `3000` | 后台记忆提取调用的输出上限。 |
+
+该边界支持后续替换为远程、向量或租户隔离存储，而不改变 Agent、Prompt
+或工具流程；provider 的存储/LLM 异常均 fail-open，不增加任务主链路失败面。
