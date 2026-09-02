@@ -51,9 +51,8 @@ agent_base/
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
         ├── uml_tools.py                 # UmlValidationTool（跨图一致性校验）
-        ├── explore_project_tools.py     # 项目探索（summary/locate，当前未接线）
-        ├── knowledge_graph_tools.py     # 知识图谱工具（当前未接线）
-        └── project_info_tools.py        # project_info / read_file / grep（当前未接线）
+        ├── file_search_tools.py         # 有界文本搜索（grep 基类 / search_text）
+        └── knowledge_graph_v2_tools.py  # 项目结构与设计-代码关系查询
 ```
 
 ## 3. 快速开始
@@ -192,8 +191,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 - **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
   供 demo / 测试 / 未来按需接入使用。
-- **`explore_project_tools.py` / `knowledge_graph_tools.py` / `project_info_tools.py`**：
-  项目探索 / 知识图谱 / 项目信息工具，当前未接线（`conversation_tools.py` 中注释）。
+- **`file_search_tools.py` / `knowledge_graph_v2_tools.py`**：
+  文件搜索与知识图谱工具，已由 `conversation_tools.py` 统一接入生产工具工厂。
 
 ## 7. 运行时架构
 
