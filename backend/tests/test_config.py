@@ -23,3 +23,9 @@ def test_settings_exposes_pluggable_memory_defaults():
     assert settings.agent_memory_provider == "memory_system.provider:create"
     assert settings.agent_memory_recall_top_k == 3
     assert settings.agent_memory_recall_max_tokens == 500
+
+
+def test_settings_planner_budget_has_reasoning_headroom():
+    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+
+    assert settings.agent_planner_max_tokens == 3000

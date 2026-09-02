@@ -1046,7 +1046,7 @@ the uppercase variable name below and takes effect after the backend restarts.
 | `AGENT_FINAL_SUMMARY_MAX_TOKENS` | `3000` | Output cap for that final summary request. |
 | `AGENT_ORCHESTRATION_ENABLED` | `true` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
 | `AGENT_ORCHESTRATOR_PROVIDER` | `app.agent_base.orchestration.provider:create` | `module:factory` provider path; `none`/`noop` disables it. |
-| `AGENT_PLANNER_MAX_TOKENS` | `1200` | Planner output cap for the default LLM provider. |
+| `AGENT_PLANNER_MAX_TOKENS` | `3000` | Planner completion cap, including reasoning headroom for JSON output. |
 | `AGENT_PLANNER_TIMEOUT_SECONDS` | `30` | Planner request timeout. |
 | `AGENT_EXPLORER_MAX_STEPS` | `6` | Maximum read-only strategy-worker steps. |
 

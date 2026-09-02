@@ -69,7 +69,9 @@ class Settings(BaseSettings):
     # Main-flow orchestration knobs. The planner is deliberately small and the
     # optional strategy worker is bounded so orchestration cannot consume the
     # task budget before the main agent starts.
-    agent_planner_max_tokens: int = 1200
+    # Reasoning models may spend part of completion_tokens before emitting
+    # their JSON plan. Keep enough headroom to avoid empty/truncated plans.
+    agent_planner_max_tokens: int = 3000
     agent_planner_timeout_seconds: float = 30.0
     agent_explorer_max_steps: int = 6
     agent_orchestration_enabled: bool = True

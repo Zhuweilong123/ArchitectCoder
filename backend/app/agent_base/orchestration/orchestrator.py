@@ -152,6 +152,7 @@ class TaskOrchestrator:
             f"Verification available: {contract.verification_available}\n"
             f"Previous checkpoint: {json.dumps(checkpoint, ensure_ascii=False)[:1200]}"
         )
+        planner_tokens = 0
         try:
             response = await self.llm.ainvoke_with_metadata(
                 [{"role": "system", "content": PLANNER_SYSTEM},
@@ -163,19 +164,42 @@ class TaskOrchestrator:
             )
             content = str(response.get("content") or "")
             usage = response.get("usage") or {}
-            tokens = int(usage.get("total_tokens") or 0) if isinstance(usage, dict) else 0
-            return self._parse_plan(content, contract), tokens
+            planner_tokens = int(usage.get("total_tokens") or 0) if isinstance(usage, dict) else 0
+            try:
+                return self._parse_plan(content, contract), planner_tokens
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                # An empty/truncated planner completion is an expected model
+                # formatting failure, not a backend exception. Keep the usage
+                # so the shared task budget and trace remain truthful.
+                logger.warning(
+                    "[Orchestrator] planner returned invalid JSON (%s, chars=%d); "
+                    "using deterministic fallback",
+                    type(exc).__name__, len(content),
+                )
+                return self._fallback_plan(contract), planner_tokens
         except Exception as exc:
             logger.warning("[Orchestrator] planner failed; using deterministic fallback", exc_info=True)
-            return self._fallback_plan(contract), 0
+            return self._fallback_plan(contract), planner_tokens
 
     def _parse_plan(self, content: str, contract: TaskContract) -> TaskPlan:
         raw = content.strip()
+        if not raw:
+            raise ValueError("planner response was empty")
         if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.startswith("json"):
-                raw = raw[4:].lstrip()
-        data = json.loads(raw)
+            raw = raw[3:]
+            if raw.lstrip().lower().startswith("json"):
+                raw = raw.lstrip()[4:]
+            raw = raw.rsplit("```", 1)[0].strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            # Some providers prepend a short explanation despite the JSON
+            # contract. Decode the first complete object and ignore trailing
+            # prose, while still rejecting responses with no JSON object.
+            start = raw.find("{")
+            if start < 0:
+                raise
+            data, _ = json.JSONDecoder().raw_decode(raw[start:])
         if not isinstance(data, dict):
             raise ValueError("planner response must be an object")
         needs_execution = bool(data.get("needs_execution", True))

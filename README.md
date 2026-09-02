@@ -10,6 +10,8 @@
 
 ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams**, connecting design, code generation, testing, repair, and replay into one traceable workflow. It includes the **DevAgent development assistant**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
+![ArchitectCoder workspace](workSpace.PNG)
+
 ## Why ArchitectCoder?
 
 - **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.

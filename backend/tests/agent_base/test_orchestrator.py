@@ -33,6 +33,15 @@ class _PlannerLLM:
         }
 
 
+class _EmptyPlannerLLM:
+    async def ainvoke_with_metadata(self, messages, **kwargs):
+        return {
+            "content": "",
+            "usage": {"total_tokens": 1597},
+            "model": "test-model",
+        }
+
+
 def test_orchestrator_noop_plan_does_not_install_task_gate(tmp_path):
     llm = _PlannerLLM({
         "needs_execution": False,
@@ -66,6 +75,32 @@ def test_orchestrator_falls_back_to_bounded_plan(tmp_path):
         assert len(result.runtime_directives["todos"]) == 3
     finally:
         reset_runtime(token)
+
+
+def test_planner_empty_completion_falls_back_without_losing_usage(tmp_path):
+    orchestrator = TaskOrchestrator(
+        _EmptyPlannerLLM(),
+        source_dir=str(tmp_path),
+    )
+
+    result = asyncio.run(orchestrator.prepare("list the design diagrams"))
+
+    assert result.plan.source == "deterministic"
+    assert result.planner_tokens == 1597
+
+
+def test_planner_parser_accepts_fenced_json_with_trailing_prose(tmp_path):
+    orchestrator = TaskOrchestrator(_PlannerLLM(), source_dir=str(tmp_path))
+    contract = orchestrator.build_contract("inspect source")
+
+    plan = orchestrator._parse_plan(
+        '```json\n{"needs_execution": false, "needs_exploration": false, '
+        '"goal": "answer"}\n```\nDone.',
+        contract,
+    )
+
+    assert not plan.needs_execution
+    assert plan.goal == "answer"
 
 
 class _FakeExplorer:
