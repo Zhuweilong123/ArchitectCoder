@@ -2,6 +2,8 @@
 
 from typing import Dict, Any, Callable, Optional
 from .base import Tool
+from .result import ToolResult
+from app.core.capabilities import CapabilityPolicy
 
 
 class ToolRegistry:
@@ -18,9 +20,20 @@ class ToolRegistry:
         result = registry.execute_tool("calculator", "2+3")
     """
 
-    def __init__(self):
+    def __init__(self, policy: CapabilityPolicy | None = None):
         self._tools: dict[str, Tool] = {}
         self._functions: dict[str, dict[str, Any]] = {}
+        self.policy = policy or CapabilityPolicy()
+
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        """Set the current run's tool capability allowlist."""
+        self.policy.set_allowed_tools(names)
+
+    def _policy_error(self, name: str, parameters: Dict[str, Any]) -> ToolResult | None:
+        message = self.policy.check(name, parameters)
+        if message is None:
+            return None
+        return ToolResult(status="blocked", data=f"Error: {message}", error_code="POLICY_BLOCKED")
 
     # ── 注册 ──────────────────────────────────────────
 
@@ -83,9 +96,13 @@ class ToolRegistry:
         """
         specs = []
         for tool in self._tools.values():
-            specs.append(tool.to_openai_schema())
+            schema = tool.to_openai_schema()
+            params = schema.get("function", {}).get("parameters", {})
+            if params.get("type") == "object":
+                params.setdefault("additionalProperties", False)
+            specs.append(schema)
         for name, info in self._functions.items():
-            specs.append({
+            schema = {
                 "type": "function",
                 "function": {
                     "name": name,
@@ -101,13 +118,20 @@ class ToolRegistry:
                         "required": ["input"],
                     },
                 },
-            })
+            }
+            schema["function"]["parameters"]["additionalProperties"] = False
+            specs.append(schema)
         return specs
 
     def get_openai_specs_for(self, names: list[str]) -> list[dict]:
         """根据名称列表筛选 spec（用于限制本轮可用的工具）"""
         all_specs = {s["function"]["name"]: s for s in self.get_openai_specs()}
         return [all_specs[n] for n in names if n in all_specs]
+
+    def can_parallel(self, name: str) -> bool:
+        """返回工具是否明确声明可与同轮调用并行。"""
+        tool = self._tools.get(name)
+        return bool(tool and tool.read_only and tool.can_parallel)
 
     def list_tools(self) -> list[str]:
         """列出所有工具名称"""
@@ -123,6 +147,11 @@ class ToolRegistry:
         - 函数工具：input_data 直接传给函数
         """
         # 先查 Tool 对象
+        policy_input = {"command": input_data} if name == "bash" else {"input": input_data}
+        policy_error = self._policy_error(name, policy_input)
+        if policy_error is not None:
+            return policy_error.text
+
         tool = self._tools.get(name)
         if tool:
             try:
@@ -146,6 +175,10 @@ class ToolRegistry:
         Tool 对象直接接收参数字典，函数工具忽略额外参数。
         """
         import asyncio
+
+        policy_error = self._policy_error(name, parameters)
+        if policy_error is not None:
+            return policy_error.text
 
         tool = self._tools.get(name)
         if tool:
@@ -185,7 +218,17 @@ class ToolRegistry:
         当工具 run() 返回 coroutine 时，此方法会 await 它。
         ReActAgent FC 循环应优先使用此方法。
         """
+        return (await self.aexecute_tool_result_with_params(name, parameters)).text
+
+    async def aexecute_tool_result_with_params(
+        self, name: str, parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """异步执行工具并返回结构化结果；旧 API 继续返回 result.text。"""
         import asyncio
+
+        policy_error = self._policy_error(name, parameters)
+        if policy_error is not None:
+            return policy_error
 
         tool = self._tools.get(name)
         if tool:
@@ -193,9 +236,18 @@ class ToolRegistry:
                 result = tool.run(parameters)
                 if asyncio.coroutines.iscoroutine(result):
                     result = await result
-                return str(result) if not isinstance(result, str) else result
+                if isinstance(result, ToolResult):
+                    return result
+                # Legacy tools still return plain strings.  Preserve their
+                # text API, but do not silently turn a conventional error
+                # string into a successful structured result.  ReAct retry
+                # guards, metrics and chat traces depend on this distinction.
+                text = str(result)
+                if text.lstrip().lower().startswith(("error:", "❌")):
+                    return ToolResult.error(text, "TOOL_REPORTED_ERROR")
+                return ToolResult.success(result)
             except Exception as e:
-                return f"❌ 工具 '{name}' 执行失败: {e}"
+                return ToolResult.error(f"❌ 工具 '{name}' 执行失败: {e}", "TOOL_EXECUTION_ERROR")
 
         func_info = self._functions.get(name)
         if func_info:
@@ -203,11 +255,11 @@ class ToolRegistry:
                 result = func_info["func"](parameters.get("input", ""))
                 if asyncio.coroutines.iscoroutine(result):
                     result = await result
-                return str(result) if not isinstance(result, str) else result
+                return result if isinstance(result, ToolResult) else ToolResult.success(result)
             except Exception as e:
-                return f"❌ 工具 '{name}' 执行失败: {e}"
+                return ToolResult.error(f"❌ 工具 '{name}' 执行失败: {e}", "TOOL_EXECUTION_ERROR")
 
-        return f"❌ 未找到工具: '{name}'"
+        return ToolResult.error(f"❌ 未找到工具: '{name}'", "TOOL_NOT_FOUND")
 
     def __len__(self) -> int:
         return len(self._tools) + len(self._functions)

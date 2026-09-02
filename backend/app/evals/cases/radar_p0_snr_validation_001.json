@@ -1,0 +1,16 @@
+{
+  "id": "radar-p0-snr-validation-001",
+  "name": "SNR 有限值校验",
+  "prompt": "只处理 NoiseAdder 的 SNR 有限值校验：NaN、正无穷和负无穷都应抛出 ValueError；保持正常 SNR 行为不变，补充并运行相关测试。",
+  "project_id": "radar_sim_validation_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test/test_eval_validation.py", "args": ["-k", "noise_adder"], "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "file_exists", "path": "src/radar_sim/echo.py"}
+  ],
+  "max_seconds": 150,
+  "max_tool_calls": 35,
+  "max_total_tokens": 45000,
+  "metadata": {"suite": "diagnostic", "parent": "radar-p0-validation-001", "capability": "snr_validation", "risk": "high"}
+}

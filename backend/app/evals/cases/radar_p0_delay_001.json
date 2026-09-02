@@ -1,0 +1,17 @@
+{
+  "id": "radar-p0-delay-001",
+  "name": "修复回波延迟方向",
+  "prompt": "修复 DelayProcessor 的时延实现。整数采样延迟应把单位冲激向后移动，不能产生反向移动；完成后运行全部测试并补充必要的回归测试。",
+  "project_id": "radar_sim_delay_bug_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
+    {"type": "file_contains", "path": "src/radar_sim/echo.py", "text": "applyDelay"}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 40,
+  "max_total_tokens": 50000,
+  "metadata": {"suite": "p0", "capability": "echo_simulation", "risk": "high", "seeded_defect": "delay_direction"}
+}

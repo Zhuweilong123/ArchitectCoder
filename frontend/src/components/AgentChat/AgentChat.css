@@ -67,6 +67,133 @@
   background: rgba(255, 255, 255, 0.12) !important;
 }
 
+/* ── Current task / todo card ───────────────────────── */
+
+.agent-todo-card {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #e8edf5;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(31, 45, 61, 0.05);
+  z-index: 1;
+}
+
+.agent-todo-summary {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: #1f2937;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-todo-summary:hover {
+  background: #f7faff;
+}
+
+.agent-todo-summary-title,
+.agent-todo-summary-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-todo-summary-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-todo-summary-meta {
+  justify-content: flex-end;
+}
+
+.agent-todo-summary-meta .ant-tag {
+  margin-inline-end: 0;
+  white-space: nowrap;
+}
+
+.agent-todo-list {
+  max-height: 142px;
+  overflow-y: auto;
+  padding: 2px 12px 8px;
+}
+
+.agent-todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.agent-todo-status {
+  width: 16px;
+  padding-top: 1px;
+  display: inline-flex;
+  justify-content: center;
+  color: #8c8c8c;
+}
+
+.agent-todo-item.completed .agent-todo-status {
+  color: #52c41a;
+}
+
+.agent-todo-item.in_progress .agent-todo-status {
+  color: #1677ff;
+}
+
+.agent-todo-pending-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border: 1.5px solid #bfbfbf;
+  border-radius: 50%;
+}
+
+.agent-todo-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-todo-content-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 18px;
+}
+
+.agent-todo-item.completed .agent-todo-content-line > span:first-child {
+  color: #8c8c8c;
+  text-decoration: line-through;
+}
+
+.agent-todo-kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #f0f5ff;
+  color: #597ef7;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.agent-todo-acceptance {
+  margin-top: 1px;
+  color: #8c8c8c;
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Messages container ────────────────────────────── */
 
 .agent-chat-messages {

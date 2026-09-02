@@ -1,0 +1,18 @@
+{
+  "id": "radar-p1-uml-contract-001",
+  "name": "组件与时序设计契约",
+  "prompt": "检查并修复主 UML 设计，使组件依赖和完整时序与当前 Python 实现一致：ModeControl、TransmitWaveformGen、EchoSimulation、PulseCompression 四个组件及其处理顺序不能缺失。",
+  "project_id": "radar_sim_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_relation", "path": "design/radar_sim_design.umlproj", "diagram": "Radar System Architecture", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency"},
+    {"type": "uml_sequence", "path": "design/radar_sim_design.umlproj", "diagram": "Full Radar Signal Processing Flow", "labels": ["setMode", "generateTransmitSignal", "setTargets", "generateEcho", "compress", "detect"]}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 50,
+  "max_total_tokens": 60000,
+  "metadata": {"suite": "p1", "capability": "uml_code_consistency", "risk": "high"}
+}

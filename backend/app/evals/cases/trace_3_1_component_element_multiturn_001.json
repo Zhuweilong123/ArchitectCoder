@@ -1,0 +1,90 @@
+{
+  "id": "trace-3-1-component-element-multiturn-001",
+  "name": "组件图 Element 标识增删与审核连续性",
+  "project_id": "radar_sim_v1",
+  "turns": [
+    {
+      "prompt": "请将 Radar System Architecture 组件图中的 4 个组件名称统一增加 Element 后缀：ModeControl、TransmitWaveformGen、EchoSimulation、PulseCompression。只修改组件图，提交 UML 审核并在审核通过后验证项目。",
+      "hard_checkers": [
+        {
+          "type": "uml_valid",
+          "path": "design/radar_sim_design.umlproj"
+        },
+        {
+          "type": "uml_component_names",
+          "path": "design/radar_sim_design.umlproj",
+          "diagram": "Radar System Architecture",
+          "names": [
+            "ModeControlElement",
+            "TransmitWaveformGenElement",
+            "EchoSimulationElement",
+            "PulseCompressionElement"
+          ]
+        }
+      ]
+    },
+    {
+      "prompt": "需求变更：现在去掉刚才增加的 Element 标识，恢复这 4 个组件的原始名称：ModeControl、TransmitWaveformGen、EchoSimulation、PulseCompression。仍然只修改组件图，提交 UML 审核；评测环境会自动同意所有审核，请完成后验证。",
+      "hard_checkers": [
+        {
+          "type": "uml_valid",
+          "path": "design/radar_sim_design.umlproj"
+        },
+        {
+          "type": "uml_component_names",
+          "path": "design/radar_sim_design.umlproj",
+          "diagram": "Radar System Architecture",
+          "names": [
+            "ModeControl",
+            "TransmitWaveformGen",
+            "EchoSimulation",
+            "PulseCompression"
+          ]
+        }
+      ]
+    },
+    {
+      "prompt": "上面的任务执行完成了吗？"
+    }
+  ],
+  "hard_checkers": [
+    {
+      "type": "uml_valid",
+      "path": "design/radar_sim_design.umlproj"
+    },
+    {
+      "type": "uml_component_names",
+      "path": "design/radar_sim_design.umlproj",
+      "diagram": "Radar System Architecture",
+      "names": [
+        "ModeControl",
+        "TransmitWaveformGen",
+        "EchoSimulation",
+        "PulseCompression"
+      ]
+    },
+    {
+      "type": "paths_unchanged",
+      "paths": [
+        "src/main.py",
+        "src/radar_sim/__init__.py",
+        "src/radar_sim/common.py",
+        "src/radar_sim/echo.py",
+        "src/radar_sim/mode_control.py",
+        "src/radar_sim/pulse_compression.py",
+        "src/radar_sim/transmit.py"
+      ]
+    }
+  ],
+  "max_seconds": 300,
+  "max_tool_calls": 100,
+  "max_total_tokens": 100000,
+  "metadata": {
+    "suite": "trace-3.1",
+    "capability": "multiturn_prompt_optimization",
+    "risk": "high",
+    "source_trace": "20260901_181159_uq2m",
+    "require_auto_approval": true,
+    "expected_status_fast_path": true
+  }
+}

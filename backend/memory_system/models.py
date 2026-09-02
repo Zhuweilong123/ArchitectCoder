@@ -204,6 +204,10 @@ class MemoryConfig:
     # ── 存储 ──
     db_path: str = "./data/memories.db"
     max_entries_per_project: int = 100
+    min_write_confidence: float = 0.55
+    recall_min_score: float = 0.0
+    recall_max_per_type: int = 2
+    recall_duplicate_threshold: float = 0.8
 
     # ── 检索 ──
     enable_bm25: bool = True

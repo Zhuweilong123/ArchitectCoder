@@ -1,11 +1,11 @@
 ---
 name: uml-design-guide
-description: Data-model schemas, enum values, naming conventions and cross-diagram consistency rules for authoring UML class / sequence / component diagrams as UML Designer JSON. Use whenever generating or modifying diagram JSON in a .umlproj file, or when a change in one diagram must stay consistent with the others.
+description: Data-model schemas, enum values, naming conventions and cross-diagram consistency rules for authoring UML class / sequence / component diagrams as ArchitectCoder JSON. Use whenever generating or modifying diagram JSON in a .umlproj file, or when a change in one diagram must stay consistent with the others.
 ---
 
 # UML Design Guide
 
-Reference pack for producing JSON that UML Designer can load directly. Load only
+Reference pack for producing JSON that ArchitectCoder can load directly. Load only
 the file you need — each is 4-11 KB.
 
 ## Which file to load
@@ -36,3 +36,16 @@ concrete full-diagram JSON to pattern-match against.
   the full enum lists are in §2 of each guide.
 - When editing one diagram, check `cross_diagram_guide.md` §4 (常见跨图错误)
   before assuming the change is local.
+
+## Existing-project migration and recovery
+
+- For a request to fully synchronize one existing `.umlproj` with another,
+  treat the current valid project as the canonical source. Copy or transform
+  that complete project first; do not reconstruct a large design
+  diagram-by-diagram unless the request explicitly asks for a partial merge.
+- A syntactically valid JSON object is not necessarily a usable UML project.
+  A repaired project must contain a non-empty `diagrams` collection whose
+  entries follow the relevant diagram schema.
+- Do not create helper scripts merely to inspect a UML file. Use targeted
+  reads, the design tools, or a direct workspace-local file operation, then
+  validate the resulting project.

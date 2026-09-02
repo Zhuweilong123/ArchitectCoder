@@ -1,0 +1,19 @@
+{
+  "id": "radar-p1-uml-stale-001",
+  "name": "旧版 UML 向当前设计迁移",
+  "prompt": "将 legacy/radar_design_0730.umlproj 同步到当前 radar_sim 代码和主 UML 设计。保留原有布局信息，同时补齐当前 6 张图、Target、PeakDetector.detect 以及完整信号处理时序。",
+  "project_id": "radar_sim_stale_uml_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "legacy/radar_design_0730.umlproj"}
+  ],
+  "checkers": [
+    {"type": "uml_contains", "path": "legacy/radar_design_0730.umlproj", "kind": "diagram", "name": "Radar System Architecture"},
+    {"type": "uml_contains", "path": "legacy/radar_design_0730.umlproj", "kind": "class", "name": "Target", "diagram": "Echo Simulation"},
+    {"type": "uml_method", "path": "legacy/radar_design_0730.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "Pulse Compression"},
+    {"type": "uml_sequence", "path": "legacy/radar_design_0730.umlproj", "diagram": "Full Radar Signal Processing Flow", "labels": ["generateTransmitSignal", "generateEcho", "compress", "detect"]}
+  ],
+  "max_seconds": 240,
+  "max_tool_calls": 60,
+  "max_total_tokens": 80000,
+  "metadata": {"suite": "p1", "capability": "uml_migration", "risk": "high"}
+}

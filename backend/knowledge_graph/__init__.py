@@ -1,5 +1,5 @@
 """
-Knowledge Graph — UML Designer 项目知识图谱系统.
+Knowledge Graph — ArchitectCoder 项目知识图谱系统.
 
 为 AI 助手提供结构化的项目理解能力:
   - 从 UML 设计文件 (.uml / .umlproj) 自动构建设计层图谱

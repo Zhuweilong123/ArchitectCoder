@@ -1,0 +1,1242 @@
+{
+  "version": "1.0",
+  "name": "radar_sim_design",
+  "diagrams": [
+    {
+      "version": "1.0",
+      "name": "Radar System Architecture",
+      "diagram_type": "component",
+      "component_id": "",
+      "classes": [],
+      "relations": [],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [
+        {
+          "id": "comp_mode_control",
+          "name": "ModeControl",
+          "x": -300.0,
+          "y": 0.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "IModeControl"
+          ],
+          "required_interfaces": []
+        },
+        {
+          "id": "comp_transmit",
+          "name": "TransmitWaveformGen",
+          "x": 0.0,
+          "y": 0.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "ITransmitSignal"
+          ],
+          "required_interfaces": [
+            "IModeControl"
+          ]
+        },
+        {
+          "id": "comp_echo",
+          "name": "EchoSimulation",
+          "x": 300.0,
+          "y": -160.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "IEchoSignal"
+          ],
+          "required_interfaces": [
+            "ITransmitSignal"
+          ]
+        },
+        {
+          "id": "comp_pulse",
+          "name": "PulseCompression",
+          "x": 620.0,
+          "y": 0.0,
+          "width": 220.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "IRangeProfile"
+          ],
+          "required_interfaces": [
+            "ITransmitSignal",
+            "IEchoSignal"
+          ]
+        }
+      ],
+      "comp_relations": [
+        {
+          "id": "crel_tx_mode",
+          "source": "comp_transmit",
+          "target": "comp_mode_control",
+          "type": "dependency"
+        },
+        {
+          "id": "crel_echo_tx",
+          "source": "comp_echo",
+          "target": "comp_transmit",
+          "type": "dependency"
+        },
+        {
+          "id": "crel_pulse_tx",
+          "source": "comp_pulse",
+          "target": "comp_transmit",
+          "type": "dependency"
+        },
+        {
+          "id": "crel_pulse_echo",
+          "source": "comp_pulse",
+          "target": "comp_echo",
+          "type": "dependency"
+        }
+      ],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Mode Control Domain",
+      "diagram_type": "class",
+      "component_id": "comp_mode_control",
+      "classes": [
+        {
+          "id": "class_mc_controller",
+          "name": "ModeController",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "currentMode",
+              "type": "ModeEnum",
+              "visibility": "+",
+              "default_value": "ModeEnum.SHORT_RANGE",
+              "is_static": false
+            },
+            {
+              "name": "paramsTable",
+              "type": "ModeParamTable",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "ModeController",
+              "return_type": "void",
+              "params": "paramsTable: ModeParamTable",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "setMode",
+              "return_type": "void",
+              "params": "mode: ModeEnum",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "getCurrentParams",
+              "return_type": "ModeParams",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 80.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 180.0
+          },
+          "note": "模式切换入口（IModeControl）：持有当前模式与参数表，默认模式为 SHORT_RANGE，未注入时自建 ModeParamTable。",
+          "provided_interfaces": [
+            "IModeControl"
+          ],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_mc_table",
+          "name": "ModeParamTable",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "getParams",
+              "return_type": "ModeParams",
+              "params": "mode: ModeEnum",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 440.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 140.0
+          },
+          "note": "参数查找表：按模式枚举返回 PRT 与脉宽组成的 ModeParams，非法模式抛出 ValueError。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_mc_enum",
+          "name": "ModeEnum",
+          "stereotype": "enum",
+          "attributes": [
+            {
+              "name": "SHORT_RANGE",
+              "type": "enum",
+              "visibility": "+",
+              "default_value": "(500e-6, 10e-6)",
+              "is_static": true
+            },
+            {
+              "name": "MEDIUM_RANGE",
+              "type": "enum",
+              "visibility": "+",
+              "default_value": "(1e-3, 50e-6)",
+              "is_static": true
+            },
+            {
+              "name": "LONG_RANGE",
+              "type": "enum",
+              "visibility": "+",
+              "default_value": "(3e-3, 100e-6)",
+              "is_static": true
+            },
+            {
+              "name": "prt",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "pulse_width",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [],
+          "position": {
+            "x": 80.0,
+            "y": 380.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 190.0
+          },
+          "note": "雷达工作模式枚举：(PRT, 脉宽) 二元组；prt/pulse_width 为只读属性。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_mc_params",
+          "name": "ModeParams",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "prt",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "pulse_width",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "ModeParams",
+              "return_type": "void",
+              "params": "prt: float, pulse_width: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 440.0,
+            "y": 380.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 160.0
+          },
+          "note": "波形时序参数值对象：构造时校验 prt > 0 且 0 < pulse_width < prt。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_mc_agg_table",
+          "source": "class_mc_controller",
+          "target": "class_mc_table",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "paramsTable",
+          "note": "ModeController 聚合参数表执行 lookup"
+        },
+        {
+          "id": "rel_mc_dep_enum",
+          "source": "class_mc_controller",
+          "target": "class_mc_enum",
+          "type": "dependency",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "setMode/currentMode 使用模式枚举"
+        },
+        {
+          "id": "rel_mc_dep_params",
+          "source": "class_mc_controller",
+          "target": "class_mc_params",
+          "type": "dependency",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "getCurrentParams 返回 ModeParams"
+        },
+        {
+          "id": "rel_table_dep_enum",
+          "source": "class_mc_table",
+          "target": "class_mc_enum",
+          "type": "dependency",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "getParams 按枚举查询时序参数"
+        },
+        {
+          "id": "rel_table_dep_params",
+          "source": "class_mc_table",
+          "target": "class_mc_params",
+          "type": "dependency",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "getParams 构造 ModeParams 返回"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Transmit Signal Generation",
+      "diagram_type": "class",
+      "component_id": "comp_transmit",
+      "classes": [
+        {
+          "id": "class_tx_coordinator",
+          "name": "TransmitCoordinator",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "waveformGenerator",
+              "type": "WaveformGenerator",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "pulseSequencer",
+              "type": "PulseSequencer",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "TransmitCoordinator",
+              "return_type": "void",
+              "params": "waveformGenerator: WaveformGenerator, pulseSequencer: PulseSequencer",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateTransmitSignal",
+              "return_type": "ComplexSignal",
+              "params": "prt: float, pulseWidth: float, sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "range_resolution",
+              "return_type": "float",
+              "params": "prt: float, pulseWidth: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 80.0,
+            "y": 160.0
+          },
+          "size": {
+            "width": 240.0,
+            "height": 190.0
+          },
+          "note": "组件门面（ITransmitSignal）：接收时序参数，协调 LFM 脉冲生成与 PRT 组装；校验 prt > pulseWidth > 0。",
+          "provided_interfaces": [
+            "ITransmitSignal"
+          ],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_tx_waveform",
+          "name": "WaveformGenerator",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "generateLFMPulse",
+              "return_type": "ComplexSignal",
+              "params": "pulseWidth: float, sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 60.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 140.0
+          },
+          "note": "生成单个线性调频(LFM)脉冲的复 I/Q 数据；带宽 LFM_BANDWIDTH=2e6 Hz，中心频率 FC=1e9 Hz。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_tx_sequencer",
+          "name": "PulseSequencer",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "assemblePulseSequence",
+              "return_type": "ComplexSignal",
+              "params": "pulse: ComplexSignal, PRT: float, sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 300.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 140.0
+          },
+          "note": "将单个脉冲零填充为完整 PRT 周期脉冲串，保证发射信号周期性。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_tx_agg_waveform",
+          "source": "class_tx_coordinator",
+          "target": "class_tx_waveform",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "waveformGenerator",
+          "note": "门面聚合波形生成器"
+        },
+        {
+          "id": "rel_tx_agg_sequencer",
+          "source": "class_tx_coordinator",
+          "target": "class_tx_sequencer",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "pulseSequencer",
+          "note": "门面聚合脉冲序列器"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Echo Simulation",
+      "diagram_type": "class",
+      "component_id": "comp_echo",
+      "classes": [
+        {
+          "id": "class_echo_simulator",
+          "name": "EchoSimulator",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "sceneManager",
+              "type": "TargetSceneManager",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "delayProcessor",
+              "type": "DelayProcessor",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "noiseAdder",
+              "type": "NoiseAdder",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "EchoSimulator",
+              "return_type": "void",
+              "params": "sceneManager: TargetSceneManager, delayProcessor: DelayProcessor, noiseAdder: NoiseAdder",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "setTargets",
+              "return_type": "void",
+              "params": "targets: list[Target]",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateEcho",
+              "return_type": "ComplexSignal",
+              "params": "txSignal: ComplexSignal, SNR: float, sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 80.0,
+            "y": 200.0
+          },
+          "size": {
+            "width": 240.0,
+            "height": 190.0
+          },
+          "note": "回波生成协调器（IEchoSignal）：按场景目标叠加延迟与噪声，生成含噪回波。",
+          "provided_interfaces": [
+            "IEchoSignal"
+          ],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_echo_scene",
+          "name": "TargetSceneManager",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "targets",
+              "type": "list[Target]",
+              "visibility": "+",
+              "default_value": "[]",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "addTarget",
+              "return_type": "void",
+              "params": "distance: float, rcs: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "getTargetDelays",
+              "return_type": "NDArray[float64]",
+              "params": "sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": -40.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 170.0
+          },
+          "note": "维护目标距离/RCS 列表，计算双程时延（样本数）：delay = distance * 2 / c * sampleRate。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_echo_delay",
+          "name": "DelayProcessor",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "applyDelay",
+              "return_type": "ComplexSignal",
+              "params": "signal: ComplexSignal, delay: float, sampleRate: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 200.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 140.0
+          },
+          "note": "频域相移实现分数样本延迟（FFT 相位旋转）。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_echo_noise",
+          "name": "NoiseAdder",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "addNoise",
+              "return_type": "ComplexSignal",
+              "params": "signal: ComplexSignal, SNR: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 440.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 140.0
+          },
+          "note": "按指定 SNR 叠加复高斯白噪声。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_echo_target",
+          "name": "Target",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "distance",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "rcs",
+              "type": "float",
+              "visibility": "+",
+              "default_value": "1.0",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "Target",
+              "return_type": "void",
+              "params": "distance: float, rcs: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 860.0,
+            "y": -40.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 160.0
+          },
+          "note": "模拟点目标：距离（米）与雷达截面积（平方米），构造时校验 distance >= 0 且 rcs > 0。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_echo_agg_scene",
+          "source": "class_echo_simulator",
+          "target": "class_echo_scene",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "sceneManager",
+          "note": "回波生成器聚合场景管理器"
+        },
+        {
+          "id": "rel_echo_agg_delay",
+          "source": "class_echo_simulator",
+          "target": "class_echo_delay",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "delayProcessor",
+          "note": "回波生成器聚合延迟处理器"
+        },
+        {
+          "id": "rel_echo_agg_noise",
+          "source": "class_echo_simulator",
+          "target": "class_echo_noise",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "noiseAdder",
+          "note": "回波生成器聚合噪声叠加器"
+        },
+        {
+          "id": "rel_scene_agg_target",
+          "source": "class_echo_scene",
+          "target": "class_echo_target",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "0..*",
+          "role_name": "targets",
+          "note": "场景管理器持有目标列表"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Pulse Compression",
+      "diagram_type": "class",
+      "component_id": "comp_pulse",
+      "classes": [
+        {
+          "id": "class_pc_compressor",
+          "name": "PulseCompressor",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "filterCoefficients",
+              "type": "ComplexSignal",
+              "visibility": "+",
+              "default_value": "null",
+              "is_static": false
+            },
+            {
+              "name": "builder",
+              "type": "MatchedFilterBuilder",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "detector",
+              "type": "PeakDetector",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "PulseCompressor",
+              "return_type": "void",
+              "params": "builder: MatchedFilterBuilder, detector: PeakDetector",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "buildFilter",
+              "return_type": "void",
+              "params": "refSignal: ComplexSignal",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "compress",
+              "return_type": "NDArray[float64]",
+              "params": "echoSignal: ComplexSignal",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 80.0,
+            "y": 200.0
+          },
+          "size": {
+            "width": 240.0,
+            "height": 190.0
+          },
+          "note": "脉冲压缩协调器（IRangeProfile）：先以发射信号构建匹配滤波器，再对回波压缩输出距离像；compress 前必须先 buildFilter。",
+          "provided_interfaces": [
+            "IRangeProfile"
+          ],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_pc_builder",
+          "name": "MatchedFilterBuilder",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "buildFilter",
+              "return_type": "ComplexSignal",
+              "params": "refSignal: ComplexSignal",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 60.0
+          },
+          "size": {
+            "width": 220.0,
+            "height": 140.0
+          },
+          "note": "对参考信号做 FFT 后取共轭，得到频域匹配系数。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_pc_detector",
+          "name": "PeakDetector",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "detect",
+              "return_type": "list[Peak]",
+              "params": "rangeProfile: NDArray[float64], sampleRate: float, rangeOffset: float, snrThreshold: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 480.0,
+            "y": 300.0
+          },
+          "size": {
+            "width": 260.0,
+            "height": 140.0
+          },
+          "note": "在距离像上搜索局部极大值，按 SNR 门限（默认 6 dB）过滤旁瓣，并换算为物理距离 range_m = rangeOffset + index * c / (2 * sampleRate)。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_pc_peak",
+          "name": "Peak",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "index",
+              "type": "int",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "range_m",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            },
+            {
+              "name": "amplitude",
+              "type": "float",
+              "visibility": "+",
+              "default_value": null,
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "Peak",
+              "return_type": "void",
+              "params": "index: int, range_m: float, amplitude: float",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 900.0,
+            "y": 300.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 160.0
+          },
+          "note": "检测到的目标峰值：样本索引、物理距离（米）与幅度。",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_pc_agg_builder",
+          "source": "class_pc_compressor",
+          "target": "class_pc_builder",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "builder",
+          "note": "压缩器聚合匹配滤波器构建器"
+        },
+        {
+          "id": "rel_pc_agg_detector",
+          "source": "class_pc_compressor",
+          "target": "class_pc_detector",
+          "type": "aggregation",
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "detector",
+          "note": "压缩器聚合峰值检测器"
+        },
+        {
+          "id": "rel_detector_dep_peak",
+          "source": "class_pc_detector",
+          "target": "class_pc_peak",
+          "type": "dependency",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "检测器构造 Peak 对象返回"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Full Radar Signal Processing Flow",
+      "diagram_type": "sequence",
+      "component_id": "",
+      "classes": [],
+      "relations": [],
+      "lifelines": [
+        {
+          "id": "life_main",
+          "name": "main: DemoRunner",
+          "class_ref": "",
+          "x": 80.0,
+          "activations": []
+        },
+        {
+          "id": "life_mode",
+          "name": "modeController: ModeController",
+          "class_ref": "class_mc_controller",
+          "x": 300.0,
+          "activations": []
+        },
+        {
+          "id": "life_tx",
+          "name": "txCoordinator: TransmitCoordinator",
+          "class_ref": "class_tx_coordinator",
+          "x": 520.0,
+          "activations": []
+        },
+        {
+          "id": "life_pc",
+          "name": "pulseCompressor: PulseCompressor",
+          "class_ref": "class_pc_compressor",
+          "x": 740.0,
+          "activations": []
+        },
+        {
+          "id": "life_echo",
+          "name": "echoSimulator: EchoSimulator",
+          "class_ref": "class_echo_simulator",
+          "x": 960.0,
+          "activations": []
+        },
+        {
+          "id": "life_det",
+          "name": "detector: PeakDetector",
+          "class_ref": "class_pc_detector",
+          "x": 1180.0,
+          "activations": []
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_flow_001",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_mode",
+          "label": "setMode(mode: LONG_RANGE)",
+          "type": "sync",
+          "order": 1,
+          "y": 190.0,
+          "note": "切换到远程模式并记录当前模式"
+        },
+        {
+          "id": "msg_flow_002",
+          "from_lifeline": "life_mode",
+          "to_lifeline": "life_main",
+          "label": "return",
+          "type": "return",
+          "order": 2,
+          "y": 230.0,
+          "note": "确认模式切换完成"
+        },
+        {
+          "id": "msg_flow_003",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_mode",
+          "label": "getCurrentParams()",
+          "type": "sync",
+          "order": 3,
+          "y": 270.0,
+          "note": "查询当前模式对应的 PRT 与脉宽"
+        },
+        {
+          "id": "msg_flow_004",
+          "from_lifeline": "life_mode",
+          "to_lifeline": "life_main",
+          "label": "return params: ModeParams",
+          "type": "return",
+          "order": 4,
+          "y": 310.0,
+          "note": "返回波形时序参数"
+        },
+        {
+          "id": "msg_flow_005",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_tx",
+          "label": "generateTransmitSignal(prt, pulseWidth, sampleRate)",
+          "type": "sync",
+          "order": 5,
+          "y": 350.0,
+          "note": "生成发射脉冲串：LFM 脉冲生成 + PRT 周期零填充"
+        },
+        {
+          "id": "msg_flow_006",
+          "from_lifeline": "life_tx",
+          "to_lifeline": "life_main",
+          "label": "return txSignal: ComplexSignal",
+          "type": "return",
+          "order": 6,
+          "y": 390.0,
+          "note": "返回发射信号"
+        },
+        {
+          "id": "msg_flow_007",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_pc",
+          "label": "buildFilter(txSignal)",
+          "type": "sync",
+          "order": 7,
+          "y": 430.0,
+          "note": "以发射信号为参考构建频域匹配滤波器系数"
+        },
+        {
+          "id": "msg_flow_008",
+          "from_lifeline": "life_pc",
+          "to_lifeline": "life_main",
+          "label": "return",
+          "type": "return",
+          "order": 8,
+          "y": 470.0,
+          "note": "确认匹配滤波器构建完成"
+        },
+        {
+          "id": "msg_flow_009",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_echo",
+          "label": "setTargets(targets: list[Target])",
+          "type": "sync",
+          "order": 9,
+          "y": 510.0,
+          "note": "注入三个点目标：5 km、25 km、150 km"
+        },
+        {
+          "id": "msg_flow_010",
+          "from_lifeline": "life_echo",
+          "to_lifeline": "life_main",
+          "label": "return",
+          "type": "return",
+          "order": 10,
+          "y": 550.0,
+          "note": "确认场景目标就绪"
+        },
+        {
+          "id": "msg_flow_011",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_echo",
+          "label": "generateEcho(txSignal, SNR=20.0, sampleRate)",
+          "type": "sync",
+          "order": 11,
+          "y": 590.0,
+          "note": "按目标双程时延叠加延迟回波，并以 20 dB SNR 叠加复高斯白噪声"
+        },
+        {
+          "id": "msg_flow_012",
+          "from_lifeline": "life_echo",
+          "to_lifeline": "life_main",
+          "label": "return echoSignal: ComplexSignal",
+          "type": "return",
+          "order": 12,
+          "y": 630.0,
+          "note": "返回含噪回波信号"
+        },
+        {
+          "id": "msg_flow_013",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_pc",
+          "label": "compress(echoSignal)",
+          "type": "sync",
+          "order": 13,
+          "y": 670.0,
+          "note": "匹配滤波压缩回波，输出距离像（幅度谱）"
+        },
+        {
+          "id": "msg_flow_014",
+          "from_lifeline": "life_pc",
+          "to_lifeline": "life_main",
+          "label": "return rangeProfile: NDArray[float64]",
+          "type": "return",
+          "order": 14,
+          "y": 710.0,
+          "note": "返回距离像"
+        },
+        {
+          "id": "msg_flow_015",
+          "from_lifeline": "life_main",
+          "to_lifeline": "life_det",
+          "label": "detect(rangeProfile, sampleRate)",
+          "type": "sync",
+          "order": 15,
+          "y": 750.0,
+          "note": "在距离像上检测峰值并按 SNR 门限过滤，换算为物理距离"
+        },
+        {
+          "id": "msg_flow_016",
+          "from_lifeline": "life_det",
+          "to_lifeline": "life_main",
+          "label": "return peaks: list[Peak]",
+          "type": "return",
+          "order": 16,
+          "y": 790.0,
+          "note": "返回检测到的目标峰值列表"
+        }
+      ],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    }
+  ]
+}

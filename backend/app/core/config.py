@@ -10,6 +10,7 @@ import logging
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationInfo, field_validator
 from functools import lru_cache
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -22,19 +23,81 @@ class Settings(BaseSettings):
     )
     deepseek_base_url: str = "https://api.deepseek.com"
 
-    # Default model — also used as the "pro" tier (powerful, expensive)
-    # Override via DEEPSEEK_MODEL in .env
+    # Fixed coding model for every agent in a session. Override via
+    # DEEPSEEK_MODEL in .env; application code must not route per message.
     deepseek_model: str = "deepseek-v4-pro"
 
-    # Lightweight / fast model (cheap, suitable for simple tasks)
-    deepseek_model_flash: str = "deepseek-v4-flash"
-
-    # Sub-agent model — used by tool-calling sub-agents (ReAct, pipeline stages, etc.)
-    sub_agent_model: str = "deepseek-v4-flash"
+    # Compatibility only: releases before the fixed-model policy accepted
+    # SUB_AGENT_MODEL. Consume a stale deployment setting without using it so
+    # upgrading does not prevent the backend from starting.
+    legacy_sub_agent_model: str | None = Field(
+        default=None,
+        validation_alias="SUB_AGENT_MODEL",
+        repr=False,
+        description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
+    )
 
     # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
     # consistency checks) need more than the old 12-round cap
     agent_max_steps: int = 50
+    agent_max_tool_calls: int = 100
+    agent_max_repeated_tool_calls: int = 3
+    agent_max_run_seconds: int = 600
+    agent_max_total_tokens: int = 200000
+    # Reserve enough room to turn completed evidence into a final user-facing
+    # answer.  This is a convergence guard, separate from the context limit.
+    agent_token_finalization_reserve_tokens: int = 12000
+    agent_convergence_tool_steps: int = 25
+    agent_convergence_budget_ratio: float = 0.8
+    agent_convergence_keep_recent_steps: int = 3
+    # Keep structured evidence for all tool calls in a normal run so context
+    # compaction never falls back to raw, high-volume tool observations.
+    agent_evidence_max_records: int = 128
+    agent_force_final_summary_on_step_limit: bool = True
+    agent_final_summary_max_tokens: int = 3000
+    agent_llm_timeout_seconds: int = 120
+    # The configured model supports a 1M window.  Keep 128K as the default
+    # active working set so the agent can retain substantially more evidence
+    # without blindly injecting an entire long-lived session.
+    agent_context_max_tokens: int = 131072
+    agent_context_output_reserve_tokens: int = 8192
+    agent_context_max_history_tokens: int = 88000
+    agent_context_max_history_turns: int = 48
+    agent_context_max_summary_tokens: int = 4000
+    agent_context_max_react_steps: int = 24
+
+    # Main-flow orchestration knobs. The planner is deliberately small and the
+    # optional strategy worker is bounded so orchestration cannot consume the
+    # task budget before the main agent starts.
+    # Reasoning models may spend part of completion_tokens before emitting
+    # their JSON plan. Keep enough headroom to avoid empty/truncated plans.
+    agent_planner_max_tokens: int = 3000
+    agent_planner_timeout_seconds: float = 30.0
+    agent_explorer_max_steps: int = 6
+    agent_orchestration_enabled: bool = True
+    agent_orchestrator_provider: str = "app.agent_base.orchestration.provider:create"
+
+    # Optional cross-task memory.  The core only depends on MemoryPort; the
+    # concrete SQLite adapter is loaded dynamically so it can be disabled or
+    # replaced without changing the Agent main loop.
+    agent_memory_enabled: bool = True
+    agent_memory_provider: str = "memory_system.provider:create"
+    agent_memory_db_path: str = ""
+    agent_memory_recall_top_k: int = 3
+    agent_memory_recall_max_tokens: int = 500
+    agent_memory_archive_max_tokens: int = 3000
+
+    # Command tools expose one Linux/POSIX contract.  Windows deployments use
+    # the configured WSL distribution instead of asking the model to choose a
+    # cmd/PowerShell/Linux dialect per command.
+    agent_command_environment: Literal["auto", "wsl", "native_linux"] = "auto"
+    agent_wsl_distribution: str = ""
+    agent_wsl_executable: str = "wsl.exe"
+    # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
+    # this separate from the much longer per-command timeout used by BashTool.
+    agent_wsl_preflight_timeout_seconds: float = 20.0
+
+    strict_production: bool = False
 
     @field_validator("deepseek_api_key")
     @classmethod
@@ -58,12 +121,16 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = "UML Designer API"
+    app_name: str = "ArchitectCoder API"
     app_version: str = "1.0.0"
     debug: bool = True
 
     # File storage
     uml_dir: str = "../temp/uml_files"
+
+    # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
+    # 仓库目录和 uml_dir；需要访问外部源码时显式配置此项。
+    workspace_roots: str = ""
 
     # CORS
     cors_origins: list[str] = [

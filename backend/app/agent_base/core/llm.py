@@ -120,16 +120,23 @@ def _usage_dict(usage) -> Optional[dict]:
     if usage is None:
         return None
     try:
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+            total_tokens = int(prompt_tokens) + int(completion_tokens)
         usage_dict = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "total_tokens": getattr(usage, "total_tokens", None),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
         }
         # DeepSeek 上下文缓存命中统计（其他厂商无此字段，getattr 得 None）
         for field in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
             value = getattr(usage, field, None)
             if value is not None:
                 usage_dict[field] = value
+        if "prompt_cache_hit_tokens" in usage_dict:
+            usage_dict["cached_tokens"] = usage_dict["prompt_cache_hit_tokens"]
         return usage_dict
     except Exception:
         return None
@@ -250,7 +257,7 @@ class BaseAgentsLLM:
     # ── 工厂方法 ─────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, settings=None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
+    def from_settings(cls, settings=None, model: Optional[str] = None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
         """从项目的 ``Settings`` 对象创建实例（零配置对接现有体系）。
 
         自动读取 settings 中的 deepseek_api_key / deepseek_base_url / deepseek_model，
@@ -271,7 +278,7 @@ class BaseAgentsLLM:
         return cls(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            model=model or settings.deepseek_model,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -366,12 +373,13 @@ class BaseAgentsLLM:
         try:
             response = self._client.chat.completions.create(**call_kwargs)
             content = response.choices[0].message.content or ""
+            usage = _usage_dict(getattr(response, "usage", None))
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=usage,
                     duration_ms=(time.monotonic() - _t0) * 1000)
         return content
 
@@ -398,7 +406,14 @@ class BaseAgentsLLM:
     # ── 异步调用 ───────────────────────────────────────────
 
     async def ainvoke(self, messages: list[dict], **kwargs) -> str:
+        result = await self.ainvoke_with_metadata(messages, **kwargs)
+        return str(result.get("content") or "")
+
+    async def ainvoke_with_metadata(self, messages: list[dict], **kwargs) -> dict:
         """异步调用 LLM，返回文本响应
+
+        The returned mapping includes the text plus provider usage metadata so
+        orchestration calls can share the same per-task budget as the main loop.
 
         支持 ``model=`` 参数覆盖实例默认模型。
         """
@@ -428,14 +443,15 @@ class BaseAgentsLLM:
                 lambda: self._async_client.chat.completions.create(**call_kwargs),
             )
             content = response.choices[0].message.content or ""
+            usage = _usage_dict(getattr(response, "usage", None))
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=usage,
                     duration_ms=(time.monotonic() - _t0) * 1000)
-        return content
+        return {"content": content, "usage": usage, "model": call_kwargs["model"]}
 
     async def athink(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
         """异步流式调用，逐块产出文本
@@ -494,17 +510,20 @@ class BaseAgentsLLM:
         call_kwargs = dict(
             model=kwargs.pop("model", self.model),
             messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
             temperature=kwargs.get("temperature", self.temperature),
         )
+        # A budget-finalization response must not carry the full tool schema
+        # payload or give the provider an opportunity to issue new actions.
+        if tools:
+            call_kwargs["tools"] = tools
+            call_kwargs["tool_choice"] = tool_choice
         if kwargs.get("max_tokens", self.max_tokens):
             call_kwargs["max_tokens"] = kwargs.get("max_tokens", self.max_tokens)
 
         span_id = _trace_hook("llm_request", model=call_kwargs["model"],
                               messages=messages, temperature=call_kwargs.get("temperature"),
                               max_tokens=call_kwargs.get("max_tokens"),
-                              tools=tools, tool_choice=tool_choice) or ""
+                              tools=tools or None, tool_choice=tool_choice if tools else None) or ""
         _t0 = time.monotonic()
         try:
             response = await _await_with_retry(
@@ -515,7 +534,13 @@ class BaseAgentsLLM:
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         msg = response.choices[0].message
-        result: dict = {"content": msg.content, "tool_calls": None}
+        # Return usage to the ReAct loop as well as recording it in trace.
+        # Without this field the configured token budget cannot accumulate.
+        result: dict = {
+            "content": msg.content,
+            "tool_calls": None,
+            "usage": _usage_dict(getattr(response, "usage", None)),
+        }
         if msg.tool_calls:
             result["tool_calls"] = [
                 {
@@ -530,7 +555,7 @@ class BaseAgentsLLM:
             ]
         _trace_hook("llm_response", span_id=span_id, content=result["content"] or "",
                     tool_calls=result["tool_calls"],
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=result["usage"],
                     duration_ms=(time.monotonic() - _t0) * 1000)
         return result
 

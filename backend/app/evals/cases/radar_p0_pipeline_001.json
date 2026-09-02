@@ -1,0 +1,16 @@
+{
+  "id": "radar-p0-pipeline-001",
+  "name": "完整雷达处理链路回归",
+  "prompt": "验证并修复完整雷达信号处理流程，使 Long Range 模式下生成发射信号、模拟 5/25/150 km 目标回波、脉冲压缩并正确检测三个目标。",
+  "project_id": "radar_sim_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_sequence", "path": "design/radar_sim_design.umlproj", "diagram": "Full Radar Signal Processing Flow", "labels": ["setMode", "getCurrentParams", "generateTransmitSignal", "buildFilter", "setTargets", "generateEcho", "compress", "detect"]}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 40,
+  "max_total_tokens": 50000,
+  "metadata": {"suite": "p0", "capability": "end_to_end_flow", "risk": "high"}
+}

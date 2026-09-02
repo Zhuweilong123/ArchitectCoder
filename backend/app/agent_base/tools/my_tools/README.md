@@ -40,7 +40,7 @@
 | `file_system_tools.py` | `ReadFileTool` / `WriteFileTool` / `EditFileTool` / `GlobTool` / `BashTool` | A 层文件系统原语（读/写/改/查/跑命令），bash 两级防护 |
 | `todo_tools.py` | `TodoWriteTool` | 会话级任务列表（`todo_write`） |
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
-| `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集 + `sub_agent_model`） |
+| `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
 | `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
 | `knowledge_graph_v2_tools.py` | 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
 | `project_info_tools.py` | `project_info` / `read_file` / `grep` | ⚠️ 当前未接线 |
@@ -115,7 +115,7 @@ L3 必须由本工具投递而非走 `read_file` —— `safe_path()` 把路径�
 
 ### 子代理（`subagent_tool.py`）
 
-`spawn_subagent` 按 `toolkit` 参数选择受限子工具集 + `sub_agent_model` 独立跑
+`spawn_subagent` 按 `toolkit` 参数选择受限子工具集，复用主代理模型独立跑
 简化 FC 循环，避免主上下文膨胀。三个工具包：
 
 - `standard`：文件系统原语 + skill（可读写，默认）

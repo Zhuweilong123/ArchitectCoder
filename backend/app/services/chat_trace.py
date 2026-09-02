@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -52,15 +54,33 @@ def _split_system_prompt(messages: list) -> tuple[str, list]:
     """
     if not messages:
         return "", []
-    stripped = [m for m in messages
-                if not (isinstance(m, dict) and m.get("role") == "system")]
     system_prompt = ""
-    for msg in messages:
+    system_index = None
+    for index, msg in enumerate(messages):
         if isinstance(msg, dict) and msg.get("role") == "system":
             content = msg.get("content")
             system_prompt = content if isinstance(content, str) else ""
+            system_index = index
             break
+    # The first system message is the stable prompt.  Later system messages
+    # are runtime constraints/checkpoints and must remain replayable in the
+    # conversation stream (for example budget finalization instructions).
+    stripped = [
+        msg for index, msg in enumerate(messages)
+        if index != system_index
+    ]
     return system_prompt, stripped
+
+
+def _json_safe(value):
+    """Normalize trace payloads so every physical line is strict JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 # ── 事件类型常量 ─────────────────────────────────────
@@ -78,6 +98,7 @@ EVT_REVIEW_RESPONSE = "review_response"
 EVT_DONE = "done"
 EVT_ERROR = "error"
 EVT_KG_INJECT = "kg_inject"
+EVT_CONTEXT_COMPACTED = "context_compacted"
 
 
 def _event(
@@ -110,11 +131,16 @@ class ChatTraceLogger:
 
     def __init__(self, session_id: str = ""):
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_id = ""
         self._trace_id = new_trace_id()
         self._lock = threading.Lock()
         self._path: str | None = None
         self._closed = False
         self._n = 0
+
+    def set_run_id(self, run_id: str) -> None:
+        """Associate subsequent events with one durable harness Run."""
+        self.run_id = run_id or ""
 
     @property
     def trace_id(self) -> str:
@@ -134,7 +160,13 @@ class ChatTraceLogger:
         if self._closed:
             return
         try:
-            line = json.dumps(evt, ensure_ascii=False, default=str)
+            line = json.dumps(
+                _json_safe(evt), ensure_ascii=False, default=str,
+                allow_nan=False,
+            )
+            # Keep the JSONL promise explicit: one strict JSON object per
+            # physical line, including tool observations with newlines.
+            json.loads(line)
             with self._lock:
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
@@ -147,6 +179,7 @@ class ChatTraceLogger:
         evt = _event(
             self.session_id, event_type,
             trace_id=self._trace_id,
+            run_id=self.run_id,
             **payload,
         )
         self._write(evt)
@@ -171,12 +204,15 @@ class ChatTraceLogger:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
         try:
+            # 先写结束事件，再标记 closed。旧实现先置位，导致 event() 内部
+            # 被 _write() 直接短路，trace 永远没有 session_end。
             self.event(EVT_SESSION_END, total_events=self._n)
             logger.info("[Trace] Session trace → %s (%d events)", self.path, self._n)
         except Exception:
             logger.exception("[Trace] Failed to finalize %s", self.path)
+        finally:
+            self._closed = True
 
     # ── 事件记录方法 ─────────────────────────────────
 
@@ -199,6 +235,31 @@ class ChatTraceLogger:
         """记录注入给模型的知识图谱上下文（去隐私/去敏感后）。"""
         self.event(EVT_KG_INJECT, query=query, context_length=len(context))
 
+    def context_compacted(
+        self,
+        *,
+        summary: str,
+        dropped_messages: int = 0,
+        dropped_tokens: int = 0,
+        reason: str = "",
+        triggered_by: list[str] | None = None,
+        tool_call_count: int = 0,
+        token_budget_used: int = 0,
+        keep_recent_steps: int = 0,
+    ) -> None:
+        """Persist the checkpoint used to restore a compacted session."""
+        self.event(
+            EVT_CONTEXT_COMPACTED,
+            summary=summary,
+            dropped_messages=dropped_messages,
+            dropped_tokens=dropped_tokens,
+            reason=reason,
+            triggered_by=triggered_by or [],
+            tool_call_count=tool_call_count,
+            token_budget_used=token_budget_used,
+            keep_recent_steps=keep_recent_steps,
+        )
+
     def llm_request(self, *, provider: str, model: str, messages: list,
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
@@ -217,7 +278,7 @@ class ChatTraceLogger:
         system_prompt, stripped = _split_system_prompt(messages)
         self._write({
             **_event(self.session_id, EVT_LLM_REQUEST,
-                     trace_id=self._trace_id, span_id=sid),
+                     trace_id=self._trace_id, span_id=sid, run_id=self.run_id),
             "system_prompt": system_prompt,
             "provider": provider,
             "model": model,
@@ -244,7 +305,7 @@ class ChatTraceLogger:
         self._write({
             **_event(self.session_id, EVT_LLM_RESPONSE,
                      trace_id=self._trace_id, span_id=span_id,
-                     parent_span_id=span_id),
+                     parent_span_id=span_id, run_id=self.run_id),
             "content": content,
             "tool_calls": tool_calls,
             "usage": usage,
@@ -268,7 +329,7 @@ class ChatTraceLogger:
         self._write({
             **_event(self.session_id, EVT_TOOL_CALL,
                      trace_id=self._trace_id, span_id=sid,
-                     parent_span_id=parent_span_id),
+                     parent_span_id=parent_span_id, run_id=self.run_id),
             "step": step,
             "tool_name": tool_name,
             "arguments": arguments,
@@ -277,20 +338,23 @@ class ChatTraceLogger:
 
     def tool_result(self, *, span_id: str, tool_name: str, observation: str,
                     duration_ms: float = 0.0, error: str = "",
-                    fed_truncated: bool = False, fed_length: int = 0) -> None:
+                    fed_truncated: bool = False, fed_length: int = 0,
+                    evidence: dict | None = None) -> None:
         """记录工具返回（完整 observation，不截断）。
 
         fed_truncated / fed_length 标记该返回喂回模型前是否被截断，
-        用于区分「模型实际看到的口径」与「工具完整返回的口径」。
+        用于区分「模型实际看到的口径」与「工具完整返回的口径」。``evidence``
+        是运行时从原文提取的有界结构化事实，供评估压缩质量使用。
         """
         self._write({
             **_event(self.session_id, EVT_TOOL_RESULT,
                      trace_id=self._trace_id, span_id=span_id,
-                     parent_span_id=span_id),
+                     parent_span_id=span_id, run_id=self.run_id),
             "tool_name": tool_name,
             "observation": observation,
             "fed_truncated": fed_truncated,
             "fed_length": fed_length,
+            "evidence": evidence or {},
             "duration_ms": round(duration_ms, 1),
             "error": error,
         })
@@ -304,8 +368,8 @@ class ChatTraceLogger:
     def review_response(self, *, review_id: int, response: str) -> None:
         self.event(EVT_REVIEW_RESPONSE, review_id=review_id, response=response)
 
-    def done(self, *, answer: str) -> None:
-        self.event(EVT_DONE, answer=answer)
+    def done(self, *, answer: str, runtime: dict | None = None) -> None:
+        self.event(EVT_DONE, answer=answer, runtime=runtime or {})
 
     def error(self, *, event_type: str, message: str) -> None:
         self.event(EVT_ERROR, source=event_type, message=message)
@@ -377,40 +441,41 @@ def current_trace_spans() -> list[str]:
 # 内层 TraceSession push 自己的 bridge，外层不受影响。
 # LLM 调用总是路由到栈顶 handler。
 
-_TRACE_HOOK_STACK: list = []
-_TRACE_HOOK_LOCK = threading.Lock()
+# 钩子必须按协程隔离。进程级 list 会让并发 WebSocket 互相覆盖/清理 hook，
+# 也会把一个会话的 LLM trace 写入另一个会话。
+_TRACE_HOOK_STACK: ContextVar[tuple] = ContextVar(
+    "trace_hook_stack", default=()
+)
 
 
 def push_trace_hook(handler) -> None:
     """注册 LLM trace 处理器到栈顶。"""
-    with _TRACE_HOOK_LOCK:
-        _TRACE_HOOK_STACK.append(handler)
+    _TRACE_HOOK_STACK.set((*_TRACE_HOOK_STACK.get(), handler))
 
 
 def pop_trace_hook(handler) -> None:
     """注销栈顶 LLM trace 处理器（调用者应传入与 push 相同的 handler 对象）。"""
-    with _TRACE_HOOK_LOCK:
-        if _TRACE_HOOK_STACK and _TRACE_HOOK_STACK[-1] is handler:
-            _TRACE_HOOK_STACK.pop()
+    stack = _TRACE_HOOK_STACK.get()
+    if stack and stack[-1] is handler:
+        _TRACE_HOOK_STACK.set(stack[:-1])
 
 
 # 保留旧 API 兼容性（agent_chat_ws 等旧调用方仍在用，逐步迁移）
 def set_trace_hook(handler=None):
     """已废弃 — 请使用 push_trace_hook / pop_trace_hook 或 TraceSession。
 
-    为避免旧代码 push(None) 注入空 handler，传入 None 时清空整个栈（过渡期）。
+    传入 None 时仅清空当前协程上下文的栈，不影响其他会话。
     """
     if handler is None:
-        with _TRACE_HOOK_LOCK:
-            _TRACE_HOOK_STACK.clear()
+        _TRACE_HOOK_STACK.set(())
     else:
         push_trace_hook(handler)
 
 
 def get_trace_hook():
     """返回栈顶 handler（栈空则 None）。"""
-    with _TRACE_HOOK_LOCK:
-        return _TRACE_HOOK_STACK[-1] if _TRACE_HOOK_STACK else None
+    stack = _TRACE_HOOK_STACK.get()
+    return stack[-1] if stack else None
 
 
 def _safe_hook(kind: str, *args, **kwargs):

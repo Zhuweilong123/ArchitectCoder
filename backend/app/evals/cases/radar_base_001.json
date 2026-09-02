@@ -1,0 +1,19 @@
+{
+  "id": "radar-base-001",
+  "name": "雷达仿真项目基线完整性",
+  "prompt": "检查当前雷达仿真项目的结构和 UML 设计，确认项目可以作为后续修改的基线，不要修改文件。",
+  "project_id": "radar_sim_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "component", "name": "ModeControl", "diagram": "Radar System Architecture"},
+    {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "class", "name": "EchoSimulator", "diagram": "Echo Simulation"},
+    {"type": "uml_method", "path": "design/radar_sim_design.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "Pulse Compression"}
+  ],
+  "max_seconds": 120,
+  "max_tool_calls": 25,
+  "max_total_tokens": 30000,
+  "metadata": {"suite": "baseline", "capability": "project_understanding", "risk": "low"}
+}

@@ -15,6 +15,21 @@ export function parseDesignElement(data: string): any | null {
   }
 }
 
+/** Focus the canvas on a DiffViewer key such as "component:Gateway". */
+export function activateDiagramForDiffKey(key: string): void {
+  const colonIndex = key.indexOf(':');
+  const dtype = colonIndex > 0 ? key.substring(0, colonIndex) : key;
+  const name = colonIndex > 0 ? key.substring(colonIndex + 1) : '';
+  const store = useDiagramStore.getState();
+  const index = store.project.diagrams.findIndex(
+    (diagram: any) => (diagram.diagram_type || 'class') === dtype
+      && (!name || (diagram.name || '') === name),
+  );
+  if (index >= 0 && index !== store.project.active_diagram_index) {
+    store.setActiveDiagram(index);
+  }
+}
+
 /**
  * 处理单个 design_element 事件，将元素渲染到画布。
  *
@@ -242,12 +257,31 @@ export function processDesignUpdated(
   uiStore: any,
   diagramStore: any,
   originalsSnapshot?: Record<string, any>,
+  changedDiagrams?: Array<{ type: string; name: string; component_id: string; data: any }>,
 ): void {
   const originals: Record<string, any> = {};
   const optimizeds: Record<string, any> = {};
   const diffs: Record<string, string> = {};
 
-  for (const spec of diagrams) {
+  const canonicalize = (value: any): any => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === 'object') {
+      return Object.keys(value).sort().reduce((result, key) => {
+        result[key] = canonicalize(value[key]);
+        return result;
+      }, {} as Record<string, any>);
+    }
+    return value;
+  };
+  const sameDiagram = (before: any, after: any): boolean => (
+    JSON.stringify(canonicalize(before)) === JSON.stringify(canonicalize(after))
+  );
+
+  // The complete snapshot is still applied to the canvas below. Only changed
+  // diagrams should be converted into review tabs and diff content.
+  const candidates = Array.isArray(changedDiagrams) ? changedDiagrams : diagrams;
+
+  for (const spec of candidates) {
     const dtype = spec.type || 'class';
     const dkey = `${dtype}:${spec.name || ''}`;
     const opt = spec.data ? { ...spec.data } : {};
@@ -260,6 +294,9 @@ export function processDesignUpdated(
     const orig = existing && Object.keys(existing).length > 1  // >1 排除仅含 name/type 的默认空图
       ? { ...existing }
       : null;
+
+    // Legacy callers may still pass the full snapshot; filter unchanged items.
+    if (orig && sameDiagram(orig, opt)) continue;
 
     // 空工程时原始版也指向优化版，diff 文案标注为新建设计
     originals[dkey] = orig || opt;
@@ -281,6 +318,19 @@ export function processDesignUpdated(
   }));
   diagramStore.addDiagramsFromSpec(specs);
 
+  // addDiagramsFromSpec selects the last diagram for historical reasons.
+  // Review should instead focus the first diagram that actually changed.
+  const firstChanged = candidates[0];
+  if (firstChanged) {
+    const changedIndex = diagramStore.project.diagrams.findIndex(
+      (d: any) => (d.diagram_type || 'class') === (firstChanged.type || 'class')
+        && (d.name || '') === (firstChanged.name || ''),
+    );
+    if (changedIndex >= 0 && typeof diagramStore.setActiveDiagram === 'function') {
+      diagramStore.setActiveDiagram(changedIndex);
+    }
+  }
+
   uiStore.setGlobalOptimizationResult(
     originals, optimizeds, diffs, consistencyReport || [], ''
   );
@@ -294,9 +344,9 @@ export function processDesignUpdated(
  * 只恢复审核结果中已存在的图；Agent 本轮新建的图（originals 里没有对应
  * 原始版本）无法"恢复"，保留现状——删除新图属于破坏性操作，交给用户手动处理。
  */
-export function restoreOriginalsToCanvas(originals: Record<string, any>): void {
+export function restoreOriginalsToCanvas(originals: Record<string, any>): any | null {
   const project = useDiagramStore.getState().project;
-  if (!project || !Array.isArray(project.diagrams) || !originals) return;
+  if (!project || !Array.isArray(project.diagrams) || !originals) return null;
 
   const diagrams = [...project.diagrams];
   let changed = false;
@@ -313,11 +363,13 @@ export function restoreOriginalsToCanvas(originals: Record<string, any>): void {
       changed = true;
     }
   }
-  if (!changed) return;
+  if (!changed) return null;
 
+  const restoredProject = { ...project, diagrams };
   useDiagramStore.setState({
-    project: { ...project, diagrams },
-    diagram: diagrams[project.active_diagram_index],
+    project: restoredProject,
+    diagram: diagrams[restoredProject.active_diagram_index],
     isModified: true,
   });
+  return restoredProject;
 }

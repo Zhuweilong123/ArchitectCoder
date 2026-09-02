@@ -1,6 +1,6 @@
 # BaseAgents 框架设计
 
-> 本文归档 UML Designer 的 Agent 框架（`backend/app/agent_base/`）设计，
+> 本文归档 ArchitectCoder 的 Agent 框架（`backend/app/agent_base/`）设计，
 > 反映最新代码（UML 优化已迁移 V2 引擎、文件系统原语工具集、记忆系统改造）。
 > 作为后续扩展工具、接入新 Agent 范式、调整运行时的参考基线。
 
@@ -180,7 +180,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 |------|------|
 | `todo_write` | 会话任务列表，跟踪长任务子步骤 |
 | `skill` | 按需加载 `skills/` 领域知识包（L1 目录 / L2 正文 / L3 引用文件） |
-| `spawn_subagent` | 通用子代理（受限工具集 + `sub_agent_model`），防递归子代理 |
+| `spawn_subagent` | 通用子代理（受限工具集，复用主代理模型），防递归子代理 |
 | `submit_uml_review` | UML diff 人工审核（暂停等待 accept/reject） |
 
 ### 6.3 任务系统（`task_system.py`）
@@ -240,25 +240,47 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
 ├── todo_write → 会话任务列表
 ├── skill → L1/L2/L3 知识包加载
-├── spawn_subagent → 受限子代理（文件系统原语 + skill + sub_agent_model）
+├── spawn_subagent → 受限子代理（文件系统原语 + skill，复用主代理模型）
 ├── create_task / update_task / ... → 持久化任务 DAG
 └── submit_uml_review → UML diff 人工审核（暂停等待 accept/reject）
 ```
 
-## 8. 记忆系统集成
+## 8. 上下文管理
+
+DevAgent 通过 `backend/app/services/context_manager.py` 管理请求级上下文，不把上下文策略
+耦合进工具或记忆数据库。`ContextBudgetManager` 为 system prompt、工具 schema、历史、
+当前任务和输出预留分配预算；`HistoryCompactor` 在长会话中保留最近轮次，并将旧消息生成
+checkpoint。工具循环每次调用 LLM 前还会执行一次最旧非关键消息裁剪。
+
+默认配置：`agent_context_max_tokens=32768`、`agent_context_output_reserve_tokens=4096`、
+`agent_context_max_history_tokens=12000`、`agent_context_max_history_turns=12`。压缩摘要通过
+`ChatTraceLogger` 的 `context_compacted` 事件持久化，服务重启时由 `trace_reader` 恢复。
+
+上下文分为三层：
+
+```text
+Run Context       当前任务的计划、工具结果、审批和临时状态
+Session Context   最近对话与历史 checkpoint
+Project Memory    跨任务的偏好、决策、约定、拒绝和洞察
+```
+
+当前用户指令优先于历史摘要和项目记忆；摘要和记忆都是参考数据，不自动升级为系统指令。
+详细设计见 [`context-management-design.md`](context-management-design.md)。
+
+## 9. 记忆系统集成
 
 每次 Agent 任务完成后自动归档，下次任务开始时检索注入：
 
 ```
-任务开始 → recall(project_id, user_message) → 相关记忆注入 system_prompt
+任务开始 → recall(project_id, user_message) → 相关记忆注入当前任务上下文
 任务结束 → 工具过程摘要 + 最终结论 → MemoryManager.remember() → 异步归档
 ```
 
 记忆存储于 `data/memories.db`（SQLite + FTS5 + jieba）。记忆系统已引入
-**subject 后写覆盖 + recency 检索 + 类型化衰退 + 检索别名**，详见
+**subject 后写覆盖 + recency 检索 + 类型化衰退 + 检索别名 + 写入门禁 + 召回治理**，详见
 `docs/memory-system-design.md`。
 
-## 9. 会话日志（trace）
+## 10. 会话日志（trace）
 
 每次 WebSocket 连接生成结构化 trace 日志，落盘 `temp/chat_log/`：
 
@@ -268,7 +290,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 支持 TraceViewer 可视化与确定性回放，详见 `docs/trace-replay-design.md`。
 
-## 10. 创建对话 Agent 工具
+## 11. 创建对话 Agent 工具
 
 ### 10.1 继承 AsyncTool
 
@@ -307,7 +329,7 @@ class MyNewTool(AsyncTool):
 
 工具内部运行子 Agent 时，通过 `ProgressRelay` 推送 `sub_agent` 事件到前端。
 
-## 11. UML 全局优化（V2）
+## 12. UML 全局优化（V2）
 
 V1 的 `UmlOptimizer`（ReflectionAgent 三阶段反射）已下线，现由 **V2 直连优化引擎**
 （`backend/app/services/uml_optimizer_v2.py` 的 `run_optimize_v2`）取代：
@@ -327,7 +349,7 @@ result = await run_optimize_v2(
 
 `code_generator.py` 保留 `optimize_project()` / `optimize_project_stream()` 作为 V1 优化入口的兼容委托。
 
-## 12. 设计参考
+## 13. 设计参考
 
 - **架构模式**：Simple / ReAct / Reflection / Plan-and-Solve 四种经典 Agent 范式。
 - **工具系统**：万物皆为工具（Tool ABC → Registry → Chain → AsyncExecutor）。
@@ -335,10 +357,10 @@ result = await run_optimize_v2(
 - **流式进度**：ReActProgress 逐轮推送 → 前端实时渲染。
 - **人工介入**：ReviewManager → asyncio.Future 阻塞 → 人工响应（UML diff 审核 + bash 敏感命令批准）。
 - **可中断**：InterruptibleAgent 包装器 + should_stop 回调。
-- **记忆系统**：跨任务知识归档与检索（subject 后写覆盖 + recency + 别名 + 类型化衰退）。
+- **记忆系统**：跨任务知识归档与检索（subject 后写覆盖 + recency + 别名 + 类型化衰退 + 写入门禁 + 召回治理）。
 - **结构化 trace**：机读 JSONL trace，支持 TraceViewer 与确定性回放。
 
-## 13. 文件索引
+## 14. 文件索引
 
 | 文件 | 职责 |
 |---|---|

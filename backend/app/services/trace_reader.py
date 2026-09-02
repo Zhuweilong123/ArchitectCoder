@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from datetime import datetime
 
-from app.services.chat_trace import _chat_log_dir
+from app.services.chat_trace import EVT_CONTEXT_COMPACTED, _chat_log_dir
 
 
 def _trace_dir() -> str:
@@ -115,6 +116,67 @@ def read_trace(session_id: str) -> dict | None:
     return {"session_id": safe_id, "events": events}
 
 
+def summarize_trace(session_id: str) -> dict | None:
+    """Return privacy-preserving counters for Prompt and runtime comparison.
+
+    The summary intentionally excludes messages, tool arguments, observations,
+    and answers.  It is suitable for release gates and prompt-size dashboards
+    without duplicating trace payloads in an API response.
+    """
+    data = read_trace(session_id)
+    if data is None:
+        return None
+
+    events = data["events"]
+    event_counts = Counter(str(event.get("event_type", "unknown")) for event in events)
+    usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    prompt_versions: Counter[str] = Counter()
+    prompt_builds = 0
+    prompt_chars = 0
+    prompt_tokens = 0
+
+    for event in events:
+        if event.get("event_type") == "llm_response":
+            usage = event.get("usage") or {}
+            for key in usage_totals:
+                fallback = "input_tokens" if key == "prompt_tokens" else key
+                usage_totals[key] += int(usage.get(key, usage.get(fallback, 0)) or 0)
+        if event.get("event_type") != "prompt_context":
+            continue
+        prompt_builds += 1
+        version = str(event.get("prompt_version") or "unknown")
+        prompt_versions[version] += 1
+        static_report = event.get("static_prompt") or {}
+        if isinstance(static_report, dict):
+            prompt_chars += int(static_report.get("chars", 0) or 0)
+            prompt_tokens += int(static_report.get("estimated_tokens", 0) or 0)
+        prompt_chars += int(event.get("total_chars", 0) or 0)
+        prompt_tokens += int(event.get("estimated_tokens", 0) or 0)
+
+    return {
+        "session_id": data["session_id"],
+        "events": len(events),
+        "event_counts": dict(event_counts),
+        "turns": event_counts.get("user_message", 0),
+        "llm_requests": event_counts.get("llm_request", 0),
+        "llm_responses": event_counts.get("llm_response", 0),
+        "llm_usage": usage_totals,
+        "tool_calls": event_counts.get("tool_call", 0),
+        "tool_results": event_counts.get("tool_result", 0),
+        "tool_errors": sum(
+            bool(event.get("error"))
+            for event in events if event.get("event_type") == "tool_result"
+        ),
+        "context_compactions": event_counts.get("context_compacted", 0),
+        "prompt": {
+            "builds": prompt_builds,
+            "versions": dict(prompt_versions),
+            "chars": prompt_chars,
+            "estimated_tokens": prompt_tokens,
+        },
+    }
+
+
 def reconstruct_history(session_id: str) -> list[dict] | None:
     """从 trace 重建会话历史（结论级：user_message + done 交错）。
 
@@ -130,6 +192,7 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
 
     history: list[dict] = []
     pending_user: str | None = None
+    checkpoint: str = ""
     for e in data["events"]:
         et = e.get("event_type")
         if et == "user_message":
@@ -141,6 +204,10 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
                 history.append({"role": "user", "content": pending_user})
                 pending_user = None
             history.append({"role": "assistant", "content": e.get("answer", "")})
+        elif et == EVT_CONTEXT_COMPACTED:
+            checkpoint = str(e.get("summary") or "")
     if pending_user is not None:
         history.append({"role": "user", "content": pending_user})
+    if checkpoint:
+        history.insert(0, {"role": "summary", "content": checkpoint})
     return history

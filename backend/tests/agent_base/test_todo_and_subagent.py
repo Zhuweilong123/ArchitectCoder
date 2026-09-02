@@ -33,6 +33,45 @@ def test_todo_write_rejects_invalid_status():
         reset_runtime(token)
 
 
+def test_acceptance_todo_requires_criteria_and_verification():
+    runtime = AgentRuntime(requires_acceptance_todos=True)
+    token = set_runtime(runtime)
+    try:
+        tool = TodoWriteTool()
+        assert "3 to 5" in tool.run({"todos": [{"content": "only", "status": "pending"}]})
+        missing_verification = [
+            {"content": "inspect", "status": "completed", "kind": "analysis", "acceptance": "scope known"},
+            {"content": "edit", "status": "pending", "kind": "execution", "acceptance": "change applied"},
+            {"content": "review", "status": "pending", "kind": "analysis", "acceptance": "risks listed"},
+        ]
+        assert "verification" in tool.run({"todos": missing_verification})
+        valid = [
+            {"content": "inspect", "status": "completed", "kind": "analysis", "acceptance": "scope known"},
+            {"content": "edit", "status": "in_progress", "kind": "execution", "acceptance": "change applied"},
+            {"content": "test", "status": "pending", "kind": "verification", "acceptance": "focused test passes"},
+        ]
+        assert "Updated 3" in tool.run({"todos": valid})
+        assert runtime.todos == valid
+    finally:
+        reset_runtime(token)
+
+
+def test_lightweight_task_plan_requires_one_to_three_items():
+    runtime = AgentRuntime(requires_todo_plan=True)
+    token = set_runtime(runtime)
+    try:
+        tool = TodoWriteTool()
+        assert "1 to 3" in tool.run({"todos": []})
+        assert "Updated 1" in tool.run({"todos": [{"content": "rename components", "status": "pending"}]})
+        too_many = [
+            {"content": f"item {index}", "status": "pending"}
+            for index in range(4)
+        ]
+        assert "1 to 3" in tool.run({"todos": too_many})
+    finally:
+        reset_runtime(token)
+
+
 def test_todo_reminder_hook_injects_after_three_rounds():
     runtime = AgentRuntime()
     runtime.todos = [{"content": "step 1", "status": "pending"}]
@@ -86,24 +125,22 @@ class _MockLLM:
         return {"content": "summary text", "tool_calls": None}
 
 
-def test_spawn_subagent_returns_summary_and_uses_sub_model(tmp_path):
+def test_spawn_subagent_returns_summary_without_overriding_parent_model(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("x", encoding="utf-8")
 
     llm = _MockLLM()
-    tool = SpawnSubagentTool(
-        llm=llm, sub_agent_model="sub-model", source_dir=str(src),
-    )
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
 
     result = asyncio.run(tool._execute({"description": "find files"}))
     assert "summary text" in result
-    assert llm.last_model == "sub-model"
+    assert llm.last_model is None
 
 
 def test_spawn_subagent_requires_description(tmp_path):
     llm = _MockLLM()
-    tool = SpawnSubagentTool(llm=llm, sub_agent_model="sub-model", source_dir=str(tmp_path))
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(tmp_path))
 
     result = asyncio.run(tool._execute({"description": ""}))
     assert "description is required" in result
@@ -114,15 +151,14 @@ def test_spawn_subagent_requires_description(tmp_path):
 def _build_spawn(tmp_path):
     src = tmp_path / "src"
     src.mkdir(exist_ok=True)
-    return SpawnSubagentTool(
-        llm=_MockLLM(), sub_agent_model="sub-model", source_dir=str(src),
-    )
+    return SpawnSubagentTool(llm=_MockLLM(), source_dir=str(src))
 
 
-def test_spawn_subagent_builds_three_toolkits(tmp_path):
+def test_spawn_subagent_builds_all_supported_toolkits(tmp_path):
     tool = _build_spawn(tmp_path)
-    assert set(tool.sub_registries.keys()) == {"standard", "read_only", "kg_analysis"}
-    assert set(tool.system_prompts.keys()) == {"standard", "read_only", "kg_analysis"}
+    expected = {"standard", "read_only", "kg_analysis", "strategy"}
+    assert set(tool.sub_registries.keys()) == expected
+    assert set(tool.system_prompts.keys()) == expected
 
 
 def test_standard_toolkit_full_editing(tmp_path):
@@ -149,14 +185,34 @@ def test_kg_analysis_toolkit_no_writes(tmp_path):
     assert not ({"write_file", "edit_file", "bash", "expand_neighbors"} & set(names))
 
 
+def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    tool = SpawnSubagentTool(
+        llm=_MockLLM(), source_dir=str(src),
+        toolkits=("strategy",), max_steps=6, single_use=True,
+    )
+    names = tool.sub_registries["strategy"].list_tools()
+    assert {"read_file", "find_nodes", "get_project_map", "compare_design_code", "skill"} <= set(names)
+    assert not ({"write_file", "edit_file", "bash", "glob"} & set(names))
+    schema = tool.to_openai_schema()
+    assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]
+
+    runtime_token = set_runtime(AgentRuntime())
+    try:
+        assert "summary text" in asyncio.run(tool._execute({"description": "plan"}))
+        assert "only once" in asyncio.run(tool._execute({"description": "plan again"}))
+    finally:
+        reset_runtime(runtime_token)
+
+
 def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     """_execute 默认 standard；未知 toolkit 回退 standard；合法 toolkit 走对应 registry。"""
     src = tmp_path / "src"
     src.mkdir()
     llm = _MockLLM()
-    tool = SpawnSubagentTool(llm=llm, sub_agent_model="sub-model", source_dir=str(src))
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
     # _MockLLM 第一轮调 glob → 只有 standard 有 glob；kg_analysis 没有，会直接收尾
     result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
     assert "summary text" in result
-    assert llm.last_model == "sub-model"
-
+    assert llm.last_model is None

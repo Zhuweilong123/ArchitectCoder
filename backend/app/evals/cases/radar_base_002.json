@@ -1,0 +1,16 @@
+{
+  "id": "radar-base-002",
+  "name": "端到端雷达信号处理基线",
+  "prompt": "运行当前项目测试并检查完整雷达信号处理链路：模式控制、发射波形、回波仿真、脉冲压缩和峰值检测。不要修改文件。",
+  "project_id": "radar_sim_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "uml_sequence", "path": "design/radar_sim_design.umlproj", "diagram": "Full Radar Signal Processing Flow", "labels": ["setMode", "generateTransmitSignal", "buildFilter", "setTargets", "generateEcho", "compress", "detect"]}
+  ],
+  "max_seconds": 120,
+  "max_tool_calls": 20,
+  "max_total_tokens": 25000,
+  "metadata": {"suite": "baseline", "capability": "end_to_end_flow", "risk": "low"}
+}

@@ -227,6 +227,178 @@ export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEn
   return data.history;
 }
 
+// ── Evaluation center ───────────────────────────────────────────────────────
+
+export interface EvalCaseInfo {
+  id: string;
+  agent: string;
+  name: string;
+  prompt: string;
+  project_id: string;
+  checkers: Array<Record<string, any>>;
+  hard_checkers: Array<Record<string, any>>;
+  metadata: Record<string, any>;
+}
+
+export interface EvalSummary {
+  total: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  timeout: number;
+  errors: number;
+  pass_rate: number;
+  average_score: number;
+  average_duration_ms: number;
+  total_tokens: number;
+  total_tool_calls: number;
+}
+
+export interface EvalBaselineGroup {
+  name: string;
+  total: number;
+  passed: number;
+  failed: number;
+  timeout: number;
+  pass_rate: number;
+  average_score: number;
+}
+
+export interface EvalBaseline {
+  agent: string;
+  label: string;
+  version: string;
+  model: string;
+  captured_at: string;
+  case_count: number;
+  passed: number;
+  failed: number;
+  timeout: number;
+  pass_rate: number;
+  average_score: number;
+  total_duration_ms: number;
+  total_tokens: number;
+  total_tool_calls: number;
+  groups: EvalBaselineGroup[];
+}
+
+export interface EvalRepositoryInfo {
+  branch: string;
+  commit: string;
+  version: string;
+  dirty: boolean;
+}
+
+export interface EvalResult {
+  run_id: string;
+  case_id: string;
+  agent: string;
+  status: string;
+  passed: boolean;
+  score: number;
+  started_at: string;
+  duration_ms: number;
+  model: string;
+  tool_calls: number;
+  total_tokens: number;
+  trace_id?: string;
+  checker_results: Array<Record<string, any>>;
+  error: string;
+}
+
+export interface EvalBatch {
+  batch_id: string;
+  agent: string;
+  suite: string;
+  version: string;
+  label: string;
+  case_ids: string[];
+  status: string;
+  started_at: string;
+  finished_at: string;
+  current_case_id: string;
+  results: EvalResult[];
+  summary: EvalSummary;
+  error: string;
+}
+
+export interface EvalTrend {
+  batch_id: string;
+  agent: string;
+  version: string;
+  label: string;
+  suite: string;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  summary: EvalSummary;
+}
+
+export interface EvalArchive {
+  archive_id: string;
+  created_at: string;
+  note: string;
+  batch_id: string;
+  agent: string;
+  version: string;
+  suite: string;
+  summary: EvalSummary;
+}
+
+export async function listEvalCases(): Promise<EvalCaseInfo[]> {
+  const { data } = await api.get('/evals/cases');
+  return data.cases;
+}
+
+export async function getEvalBaseline(): Promise<EvalBaseline> {
+  const { data } = await api.get('/evals/baseline');
+  return data;
+}
+
+export async function getEvalRepository(): Promise<EvalRepositoryInfo> {
+  const { data } = await api.get('/evals/repository');
+  return data;
+}
+
+export async function archiveEvalBaseline(note = ''): Promise<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}> {
+  const { data } = await api.post('/evals/baseline/archive', { note }, { timeout: 15000 });
+  return data;
+}
+
+export async function startEvalBatch(req: {
+  suite?: string;
+  case_ids?: string[];
+  version: string;
+  label?: string;
+}): Promise<EvalBatch> {
+  const { data } = await api.post('/evals/runs', req, { timeout: 15000 });
+  return data;
+}
+
+export async function getEvalBatch(batchId: string): Promise<EvalBatch> {
+  const { data } = await api.get(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
+  return data;
+}
+
+export async function listEvalTrends(limit = 20): Promise<EvalTrend[]> {
+  const { data } = await api.get('/evals/trends', { params: { limit } });
+  return data.trends;
+}
+
+export async function archiveEvalBatch(batchId: string, note = ''): Promise<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}> {
+  const { data } = await api.post('/evals/archives', { batch_id: batchId, note }, { timeout: 15000 });
+  return data;
+}
+
+export async function listEvalArchives(limit = 20): Promise<EvalArchive[]> {
+  const { data } = await api.get('/evals/archives', { params: { limit } });
+  return data.archives;
+}
+
 export interface TraceReplayStepToolCall {
   name: string;
   arguments: Record<string, any> | string;

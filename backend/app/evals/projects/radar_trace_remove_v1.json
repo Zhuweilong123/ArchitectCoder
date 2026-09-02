@@ -1,0 +1,10 @@
+{
+  "id": "radar_trace_remove_v1",
+  "version": "1.0.0",
+  "fixture": "radar_trace_remove_v1",
+  "entry_file": "radar_design_0730.umlproj",
+  "source_dir": "src",
+  "test_dir": "test",
+  "protected_paths": ["DESIGN.md"],
+  "allowed_write_paths": ["src", "test"]
+}

@@ -1,0 +1,228 @@
+"""Governance policy for candidate memories before persistence."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+import re
+from typing import Any
+
+from .models import MemoryType
+
+
+@dataclass(frozen=True)
+class MemoryWriteDecision:
+    allowed: bool
+    reason: str
+    confidence: float
+
+
+class MemoryWritePolicy:
+    """Deterministic gate between LLM extraction and memory storage."""
+
+    _DURABLE_TYPES = {
+        MemoryType.PREFERENCE,
+        MemoryType.DECISION,
+        MemoryType.REJECTION,
+        MemoryType.CONVENTION,
+    }
+
+    def __init__(self, min_confidence: float = 0.55, max_summary_length: int = 500):
+        self.min_confidence = max(0.0, min(1.0, min_confidence))
+        self.max_summary_length = max(1, max_summary_length)
+
+    def evaluate(
+        self,
+        item: dict[str, Any],
+        *,
+        user_feedback: str | None = None,
+    ) -> MemoryWriteDecision:
+        raw_type = item.get("memory_type", MemoryType.INSIGHT)
+        try:
+            memory_type = MemoryType(raw_type)
+        except (TypeError, ValueError):
+            return MemoryWriteDecision(False, "unsupported_memory_type", 0.0)
+
+        summary = str(item.get("summary", item.get("content", "")) or "").strip()
+        if not summary:
+            return MemoryWriteDecision(False, "empty_summary", 0.0)
+        if len(summary) > self.max_summary_length:
+            return MemoryWriteDecision(False, "summary_too_long", 0.0)
+
+        temporary = item.get("temporary", item.get("is_temporary", False))
+        if temporary is True or str(item.get("status", "")).lower() in {
+            "temporary", "transient", "candidate_rejected", "rejected",
+        }:
+            return MemoryWriteDecision(False, "temporary_or_rejected", 0.0)
+
+        try:
+            confidence = float(item.get("confidence", 0.7))
+        except (TypeError, ValueError):
+            return MemoryWriteDecision(False, "invalid_confidence", 0.0)
+        if not 0.0 <= confidence <= 1.0:
+            return MemoryWriteDecision(False, "confidence_out_of_range", confidence)
+
+        feedback_validated = user_feedback in {"accepted", "modified"}
+        threshold = self.min_confidence
+        if memory_type in self._DURABLE_TYPES and feedback_validated:
+            threshold = min(threshold, 0.35)
+        if confidence < threshold:
+            return MemoryWriteDecision(False, "confidence_below_threshold", confidence)
+
+        return MemoryWriteDecision(True, "accepted", confidence)
+
+
+class MemoryRecallPolicy:
+    """Select relevant, diverse memories within the injection budget."""
+
+    _TYPE_PRIORITY = {
+        MemoryType.DECISION: 5,
+        MemoryType.REJECTION: 4,
+        MemoryType.CONVENTION: 3,
+        MemoryType.PREFERENCE: 2,
+        MemoryType.INSIGHT: 1,
+    }
+
+    def __init__(
+        self,
+        min_score: float = 0.0,
+        max_per_type: int = 2,
+        duplicate_threshold: float = 0.8,
+    ):
+        self.min_score = min_score
+        self.max_per_type = max(1, max_per_type)
+        self.duplicate_threshold = max(0.0, min(1.0, duplicate_threshold))
+
+    @staticmethod
+    def _tokens(text: str) -> set[str]:
+        return {token for token in str(text).lower().split() if token}
+
+    @staticmethod
+    def _normalize_subject(subject: str) -> str:
+        """Use the same stable key for conflict suppression as persistence."""
+        return re.sub(r"\s+", " ", str(subject or "").strip().lower())
+
+    @staticmethod
+    def _is_confirmed(entry: Any) -> bool:
+        """Return whether a memory has explicit user/system confirmation.
+
+        ``governance.status=active`` is deliberately not treated as confirmed:
+        it only means the candidate passed the write policy.  Older rows may
+        not have the boolean, so user feedback remains a compatible fallback.
+        """
+        if getattr(entry, "user_feedback", None) in {"accepted", "modified"}:
+            return True
+        metadata = getattr(entry, "metadata", {}) or {}
+        governance = metadata.get("governance", {}) if isinstance(metadata, dict) else {}
+        return bool(
+            isinstance(governance, dict)
+            and (
+                governance.get("confirmed") is True
+                or str(governance.get("status", "")).lower()
+                in {"confirmed", "validated"}
+            )
+        )
+
+    @staticmethod
+    def _updated_timestamp(entry: Any) -> float:
+        """Parse update time for deterministic latest-wins conflict handling."""
+        for raw in (
+            getattr(entry, "updated_at", ""),
+            getattr(entry, "created_at", ""),
+        ):
+            if not raw:
+                continue
+            try:
+                return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return 0.0
+
+    @classmethod
+    def _subject_rank(cls, result: Any) -> tuple:
+        entry = result.entry
+        # Entries assembled directly by callers often have only the automatic
+        # ``created_at`` timestamp.  Treat that timestamp as unspecified for
+        # conflict ordering; otherwise two candidates created in the same test
+        # or request can win merely because one was instantiated microseconds
+        # later. Persisted/updated entries still use explicit ``updated_at``
+        # for latest-wins semantics.
+        updated_at = str(getattr(entry, "updated_at", "") or "").strip()
+        return (
+            int(cls._is_confirmed(entry)),
+            int(bool(updated_at)),
+            cls._updated_timestamp(entry) if updated_at else 0.0,
+            float(getattr(result, "score", 0.0) or 0.0),
+            float(getattr(entry, "importance_score", 0.0) or 0.0),
+        )
+
+    def select(self, results: list, *, top_k: int, max_tokens: int) -> list:
+        selected = []
+        type_counts: dict[MemoryType, int] = {}
+        seen_subjects: set[str] = set()
+        used_tokens = 0
+
+        # Resolve same-subject conflicts before global score ordering.  This
+        # prevents a stale high-score candidate from hiding a newer confirmed
+        # decision while keeping the normal relevance ordering across subjects.
+        subject_winners: dict[str, Any] = {}
+        for result in results:
+            if result.score <= self.min_score or not str(result.entry.summary or "").strip():
+                continue
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            if not subject:
+                continue
+            previous = subject_winners.get(subject)
+            if previous is None or self._subject_rank(result) > self._subject_rank(previous):
+                subject_winners[subject] = result
+
+        eligible = []
+        for result in results:
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            if subject and subject_winners.get(subject) is not result:
+                continue
+            eligible.append(result)
+        ordered = sorted(
+            eligible,
+            key=lambda result: (
+                result.score,
+                self._TYPE_PRIORITY.get(result.entry.memory_type, 0),
+            ),
+            reverse=True,
+        )
+        for result in ordered:
+            if len(selected) >= max(0, top_k) or result.score <= self.min_score:
+                continue
+            memory_type = result.entry.memory_type
+            if type_counts.get(memory_type, 0) >= self.max_per_type:
+                continue
+            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            if subject and subject in seen_subjects:
+                continue
+            summary = str(result.entry.summary or "").strip()
+            if not summary:
+                continue
+            candidate_tokens = self._tokens(summary)
+            if any(
+                self._similarity(candidate_tokens, self._tokens(item.entry.summary))
+                >= self.duplicate_threshold
+                for item in selected
+            ):
+                continue
+            cost = max(1, len(summary + " " + " ".join(result.entry.tags)) // 2)
+            if selected and used_tokens + cost > max(0, max_tokens):
+                continue
+            if not selected and cost > max(0, max_tokens):
+                continue
+            selected.append(result)
+            type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
+            if subject:
+                seen_subjects.add(subject)
+            used_tokens += cost
+        return selected
+
+    @staticmethod
+    def _similarity(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)

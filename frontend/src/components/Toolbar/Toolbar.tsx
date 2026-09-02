@@ -15,7 +15,7 @@ import {
   AppstoreOutlined, EyeInvisibleOutlined,
   PlusSquareOutlined, DownOutlined, TableOutlined,
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
-  BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined,
+  BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -63,7 +63,7 @@ const Toolbar: React.FC = () => {
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
     sourceDir, testDir,
-    setSourceDir, setTestDir, setTraceVisible,
+    setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
 
   const [fileList, setFileList] = useState<Array<{
@@ -710,6 +710,12 @@ const Toolbar: React.FC = () => {
         </Tooltip>
 
         <Divider type="vertical" />
+
+        <Tooltip title="ArchitectCoder 能力基准中心：运行 DevAgent 基准、查看版本趋势并归档结果">
+          <Button icon={<LineChartOutlined />} onClick={() => setEvaluationVisible(true)}>
+            能力基准
+          </Button>
+        </Tooltip>
 
         {/* Export */}
         <Tooltip title="导出 Markdown 设计文档">

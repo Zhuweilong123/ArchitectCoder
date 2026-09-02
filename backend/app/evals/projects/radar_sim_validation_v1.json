@@ -1,0 +1,10 @@
+{
+  "id": "radar_sim_validation_v1",
+  "version": "1.0.0",
+  "fixture": "radar_sim_validation_v1",
+  "entry_file": "design/radar_sim_design.umlproj",
+  "source_dir": "src",
+  "test_dir": "test",
+  "protected_paths": ["design/radar_sim_design.umlproj", "DESIGN.md"],
+  "allowed_write_paths": ["src", "test"]
+}

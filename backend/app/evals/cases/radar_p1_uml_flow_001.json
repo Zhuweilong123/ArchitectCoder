@@ -1,0 +1,17 @@
+{
+  "id": "radar-p1-uml-flow-001",
+  "name": "旧版 UML 方法与时序迁移",
+  "prompt": "只修复 legacy/radar_design_0730.umlproj 的 API 和时序信息：Pulse Compression 中补齐 PeakDetector.detect，完整时序按 generateTransmitSignal、generateEcho、compress、detect 顺序表达。",
+  "project_id": "radar_sim_stale_uml_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "design/legacy/radar_design_0730.umlproj"}
+  ],
+  "checkers": [
+    {"type": "uml_method", "path": "design/legacy/radar_design_0730.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "Pulse Compression"},
+    {"type": "uml_sequence", "path": "design/legacy/radar_design_0730.umlproj", "diagram": "Full Radar Signal Processing Flow", "labels": ["generateTransmitSignal", "generateEcho", "compress", "detect"]}
+  ],
+  "max_seconds": 300,
+  "max_tool_calls": 75,
+  "max_total_tokens": 100000,
+  "metadata": {"suite": "diagnostic", "parent": "radar-p1-uml-stale-001", "capability": "uml_api_flow_migration", "risk": "high"}
+}

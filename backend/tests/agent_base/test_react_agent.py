@@ -12,6 +12,8 @@ from app.agent_base.core.hooks import (
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
+from app.agent_base.tools.my_tools.todo_tools import TodoWriteTool
+from app.services.context_manager import ContextBudget, ContextBudgetManager
 
 
 class EchoTool(Tool):
@@ -54,6 +56,58 @@ def _registry():
     return reg
 
 
+class BatchTodoLLM:
+    """First response creates a plan and uses a business tool in one batch."""
+
+    def __init__(self):
+        self.count = 0
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        if self.count == 1:
+            return {
+                "content": "working",
+                "tool_calls": [
+                    {"id": "todo", "type": "function", "function": {
+                        "name": "todo_write",
+                        "arguments": json.dumps({"todos": [{"content": "echo", "status": "in_progress"}]}),
+                    }},
+                    {"id": "echo", "type": "function", "function": {
+                        "name": "echo", "arguments": json.dumps({"text": "x"}),
+                    }},
+                ],
+            }
+        return {"content": "完成", "tool_calls": None}
+
+
+class BudgetLLM:
+    def __init__(self):
+        self.count = 0
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        return {"content": "not finished", "tool_calls": None,
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+
+
+class SoftBudgetLLM:
+    def __init__(self):
+        self.count = 0
+        self.requests = []
+
+    async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+        self.count += 1
+        self.requests.append(messages)
+        return {
+            "content": "continue",
+            "tool_calls": [{
+                "id": f"soft-{self.count}", "type": "function",
+                "function": {"name": "echo", "arguments": json.dumps({"text": "x"})},
+            }],
+            "usage": {"prompt_tokens": 35, "completion_tokens": 5, "total_tokens": 40},
+        }
+
+
 async def _collect(agent):
     events = []
     async for p in agent.arun_stream("echo test"):
@@ -78,6 +132,310 @@ def test_react_agent_fc_loop_executes_tools():
     assert llm.count == 3  # 2 次工具调用 + 1 次最终
     assert events[-1].is_final is True
     assert events[-1].final_answer == "完成"
+
+
+def test_react_progress_exposes_structured_tool_evidence():
+    agent = ReActAgent("Test", MockLLM(rounds=1), _registry(), max_steps=3)
+
+    events = asyncio.run(_collect(agent))
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert detail["evidence"]["id"] == "E1"
+    assert detail["evidence"]["tool_name"] == "echo"
+
+
+def test_usage_budget_keeps_a_text_final_answer_from_the_current_response():
+    llm = BudgetLLM()
+    agent = ReActAgent("Test", llm, _registry(), max_steps=10, max_total_tokens=10)
+
+    events = asyncio.run(_collect(agent))
+
+    assert llm.count == 1
+    assert events[-1].is_final is True
+    assert events[-1].final_answer == "not finished"
+
+
+def test_usage_budget_executes_current_tool_calls_before_stopping():
+    class ToolAtLimitLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "at-limit", "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "kept"})},
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+            }
+
+    agent = ReActAgent("Test", ToolAtLimitLLM(), _registry(), max_steps=10, max_total_tokens=10)
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].is_final is True
+    assert events[-1].actions == ["echo"]
+    assert "已执行本轮已返回的工具调用" in events[-1].final_answer
+
+
+def test_budget_reserve_requests_a_tool_free_final_answer():
+    class ReserveLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append((tools, tool_choice))
+            if len(self.requests) == 1:
+                return {
+                    "content": "working",
+                    "tool_calls": [{
+                        "id": "work", "type": "function",
+                        "function": {"name": "echo", "arguments": json.dumps({"text": "done"})},
+                    }],
+                    "usage": {"prompt_tokens": 70, "completion_tokens": 20, "total_tokens": 90},
+                }
+            return {
+                "content": "任务已完成，已执行 echo。",
+                "tool_calls": None,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+            }
+
+    llm = ReserveLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=10, max_total_tokens=100,
+        token_finalization_reserve_tokens=20,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].final_answer == "任务已完成，已执行 echo。"
+    assert llm.requests[1] == ([], "none")
+
+
+def test_budget_finalization_blocks_textual_tool_markup():
+    class MarkupLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append((tools, tool_choice))
+            if len(self.requests) == 1:
+                return {
+                    "content": "working",
+                    "tool_calls": [{
+                        "id": "work", "type": "function",
+                        "function": {"name": "echo", "arguments": json.dumps({"text": "done"})},
+                    }],
+                    "usage": {"total_tokens": 90},
+                }
+            return {
+                "content": (
+                    "Need one more read.\n"
+                    "<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"read_file\">"
+                    "ignored</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>"
+                ),
+                "tool_calls": None,
+                "usage": {"total_tokens": 1},
+            }
+
+    agent = ReActAgent(
+        "Test", MarkupLLM(), _registry(), max_steps=5, max_total_tokens=100,
+        token_finalization_reserve_tokens=20,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert "DSML" not in events[-1].final_answer
+    assert "未执行" in events[-1].final_answer
+    assert agent.last_context_report["token_budget_stop_reason"] == "reserve_finalization"
+    assert agent.last_context_report["finalization_textual_tool_markup_blocked"] is True
+
+
+def test_convergence_compacts_to_evidence_before_the_next_tool_turn():
+    class CompactionLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append(messages)
+            count = len(self.requests)
+            if count <= 2:
+                return {
+                    "content": "working",
+                    "tool_calls": [{
+                        "id": f"work-{count}", "type": "function",
+                        "function": {"name": "echo", "arguments": json.dumps({"text": str(count)})},
+                    }],
+                }
+            return {"content": "done", "tool_calls": None}
+
+    llm = CompactionLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=4,
+        convergence_tool_steps=2, convergence_keep_recent_steps=1,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    third_request = llm.requests[2]
+    assert events[-1].final_answer == "done"
+    assert any(
+        message.get("role") == "system"
+        and message.get("content", "").startswith("## Tool execution checkpoint")
+        for message in third_request
+    )
+    assert sum(bool(message.get("tool_calls")) for message in third_request) == 1
+
+
+def test_convergence_threshold_counts_parallel_tool_calls_individually():
+    class ParallelCallsLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append(messages)
+            count = len(self.requests)
+            if count == 1:
+                return {
+                    "content": "working",
+                    "tool_calls": [
+                        {"id": "first-a", "type": "function", "function": {"name": "echo", "arguments": json.dumps({"text": "a"})}},
+                        {"id": "first-b", "type": "function", "function": {"name": "echo", "arguments": json.dumps({"text": "b"})}},
+                    ],
+                }
+            if count == 2:
+                return {
+                    "content": "working",
+                    "tool_calls": [{
+                        "id": "second", "type": "function",
+                        "function": {"name": "echo", "arguments": json.dumps({"text": "c"})},
+                    }],
+                }
+            return {"content": "done", "tool_calls": None}
+
+    llm = ParallelCallsLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=4,
+        convergence_tool_steps=3, convergence_keep_recent_steps=1,
+    )
+
+    asyncio.run(_collect(agent))
+
+    assert any(
+        message.get("role") == "system"
+        and message.get("content", "").startswith("## Tool execution checkpoint")
+        for message in llm.requests[2]
+    )
+    report = agent.last_context_report["convergence_evidence_compaction"]
+    assert "tool_call_count" in report["triggered_by"]
+    assert report["triggered_at_tool_calls"] == 3
+
+
+def test_step_limit_runs_one_tool_free_final_summary():
+    class StepLimitLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append((tools, tool_choice, kwargs.get("max_tokens")))
+            count = len(self.requests)
+            if count <= 2:
+                return {
+                    "content": "working",
+                    "tool_calls": [{
+                        "id": f"work-{count}", "type": "function",
+                        "function": {"name": "echo", "arguments": json.dumps({"text": str(count)})},
+                    }],
+                }
+            return {"content": "completed two work steps", "tool_calls": None}
+
+    llm = StepLimitLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=2,
+        force_final_summary_on_step_limit=True, final_summary_max_tokens=321,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert len(llm.requests) == 3
+    assert llm.requests[-1] == ([], "none", 321)
+    assert events[-1].step == 3
+    assert events[-1].final_answer == "completed two work steps"
+
+
+def test_soft_budget_instructs_the_next_step_to_converge():
+    llm = SoftBudgetLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=10, max_total_tokens=100,
+        token_finalization_reserve_tokens=1,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert llm.count == 3
+    assert "token" in events[-1].final_answer
+    assert any(
+        message.get("role") == "system" and "Token budget warning" in message.get("content", "")
+        for message in llm.requests[2]
+    )
+
+
+def test_react_step_compaction_is_reported_to_observers():
+    llm = MockLLM(rounds=9)
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=12,
+        context_budget=ContextBudgetManager(ContextBudget(max_react_steps=8)),
+    )
+    reports = []
+    agent.on_context_compacted = reports.append
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].final_answer == "完成"
+    assert any(report["dropped_messages"] > 0 for report in reports)
+
+
+def test_todo_then_business_tool_in_same_batch_is_not_false_blocked():
+    llm = BatchTodoLLM()
+    registry = _registry()
+    registry.register_tool(TodoWriteTool())
+    agent = ReActAgent("Test", llm, registry, max_steps=5)
+    runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    details = [d for event in events for d in event.tool_calls_detail]
+    assert any(d["name"] == "echo" and d["status"] == "success" for d in details)
+
+
+def test_acceptance_contract_blocks_premature_final_answer():
+    llm = MockLLM(rounds=0)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    runtime_token = set_runtime(AgentRuntime(requires_acceptance_todos=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    assert llm.count == 3
+    assert events[0].is_final is False
+    assert events[-1].is_final is True
+    assert "required todo plan" in events[-1].final_answer
+
+
+def test_task_plan_blocks_other_tools_until_todo_exists():
+    llm = MockLLM(rounds=1)
+    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(runtime_token)
+
+    detail = _first_tool_detail(events)
+    assert detail is not None
+    assert "Call todo_write first" in detail["observation"]
 
 
 def test_interrupt_hook_stops():

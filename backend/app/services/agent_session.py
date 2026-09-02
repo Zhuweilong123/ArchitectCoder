@@ -35,9 +35,37 @@ class AgentSession:
     prompt_builder: Any = None     # DevPromptBuilder（静态 system prompt + 易变上下文 memo）
     trace_log: Any = None          # ChatTraceLogger，跨连接复用
     last_active: float = field(default_factory=time.time)
+    run_owner: str | None = None  # 当前执行中的 WebSocket/请求所有者
 
     def touch(self) -> None:
         self.last_active = time.time()
+
+    def try_claim_run(self, owner: str) -> bool:
+        """为一个 session 获取单写者执行租约。"""
+        with _lock:
+            if self.run_owner is not None and self.run_owner != owner:
+                return False
+            self.run_owner = owner
+            self.touch()
+            return True
+
+    def release_run(self, owner: str) -> None:
+        """释放执行租约；旧 owner 不能释放新 owner 的租约。"""
+        with _lock:
+            if self.run_owner == owner:
+                self.run_owner = None
+                self.touch()
+
+
+def try_claim_run(session_id: str, owner: str) -> bool:
+    session = get(session_id)
+    return session.try_claim_run(owner) if session is not None else False
+
+
+def release_run(session_id: str, owner: str) -> None:
+    session = get(session_id)
+    if session is not None:
+        session.release_run(owner)
 
 
 _sessions: dict[str, AgentSession] = {}

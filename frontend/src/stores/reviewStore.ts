@@ -15,9 +15,10 @@
 import { create } from 'zustand';
 import { message } from 'antd';
 import { sendReviewResponse, setPendingUmlReviewId } from '../services/agentChat';
-import { saveReview } from '../services/api';
+import { saveProject, saveReview } from '../services/api';
 import { restoreOriginalsToCanvas } from '../services/designElementHandler';
 import { useUiStore } from './uiStore';
+import { useDiagramStore } from './diagramStore';
 
 export type ReviewStatus = 'idle' | 'pending' | 'accepted' | 'rejected' | 'expired';
 export type ReviewFrom = 'chat' | 'diff';
@@ -43,7 +44,7 @@ interface ReviewState {
 
   showReview: (r: ShowReviewInput) => void;
   accept: (from: ReviewFrom, comment?: string) => void;
-  reject: (from: ReviewFrom, feedback?: string) => void;
+  reject: (from: ReviewFrom, feedback?: string) => Promise<boolean>;
   defer: () => void;
   undefer: () => void;
   expire: (reason: string) => void;
@@ -102,15 +103,28 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     }
   },
 
-  reject: (from, feedback) => {
+  reject: async (from, feedback) => {
     const s = get();
-    if (s.status !== 'pending' || s.reviewId === null) return;
+    if (s.status !== 'pending' || s.reviewId === null) return false;
+
+    // Agent edits are already written to disk before the review request is
+    // emitted. Restore and persist the original project before unblocking it.
+    if (s.reviewType === 'uml_diff') {
+      const restoredProject = restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
+      const filepath = useDiagramStore.getState().currentFilepath;
+      if (restoredProject && filepath) {
+        try {
+          await saveProject(restoredProject, filepath, false);
+        } catch (error) {
+          console.error('[ReviewStore] failed to persist rejected UML changes:', error);
+          message.error('拒绝优化后恢复项目失败，未通知 Agent 继续执行');
+          return false;
+        }
+      }
+    }
     set({ status: 'rejected', actedFrom: from, deferred: false });
 
     // 拒绝 = 回滚画布到审核前 + 意见喂回 agent 修订（修订后会推新审核）
-    if (s.reviewType === 'uml_diff') {
-      restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
-    }
     const text = feedback || '拒绝，请修改';
     const result = sendReviewResponse(s.reviewId, text, 'reject');
 
@@ -130,6 +144,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     } else if (result === 'failed') {
       message.warning('反馈发送失败；画布已回滚，可重新发起优化。');
     }
+    return result !== 'failed';
   },
 
   defer: () => {

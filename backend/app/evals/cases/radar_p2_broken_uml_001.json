@@ -1,0 +1,17 @@
+{
+  "id": "radar-p2-broken-uml-001",
+  "name": "损坏 UML 文件恢复",
+  "prompt": "修复 src/broken.umlproj 的损坏 JSON，使其成为可解析的 UML 项目；不要覆盖主项目 design/radar_sim_design.umlproj。",
+  "project_id": "radar_sim_broken_uml_v1",
+  "hard_checkers": [
+    {"type": "uml_valid", "path": "src/broken.umlproj"},
+    {"type": "paths_unchanged", "paths": ["design/radar_sim_design.umlproj"]}
+  ],
+  "checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 45,
+  "max_total_tokens": 60000,
+  "metadata": {"suite": "p2", "capability": "error_recovery", "risk": "high"}
+}

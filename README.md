@@ -2,173 +2,211 @@
 
 # ArchitectCoder
 
-**让想法成为架构，让架构驱动开发**
+**Turn Ideas into Architecture, Let Architecture Drive Development**
 
-[English](README_EN.md) | **中文**
+**English** | [中文](README_ZH.md)
 
 </div>
 
-支持类图、时序图、组件图，从设计到代码生成、测试、修复的全流程闭环；内置 **AI 协同开发助手（对话 Agent）**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱** 与 **BaseAgents 框架**。
+ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams**, connecting design, code generation, testing, repair, and replay into one traceable workflow. It includes the **DevAgent development assistant**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
-## 为什么选择 ArchitectCoder？
+![ArchitectCoder workspace](workSpace.PNG)
 
-- **设计即源码**：架构图是驱动代码生成、验证、测试的唯一真相源。
-- **AI 自动验证**：跨图一致性检查 + 模糊匹配自动修复，引用关系不再靠人眼核对。
-- **自然语言到可运行代码**：描述需求 → 自动生成全套 UML → Agent 自主生成代码并真跑 pytest → 失败自动回修。
+## Why ArchitectCoder?
 
-## 核心能力
+- **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.
+- **AI-powered validation**: cross-diagram consistency checks with fuzzy-match auto-repair — machines catch what humans miss.
+- **Natural language to running code**: Describe requirements → auto-generate UML → the Agent writes code and runs real pytest → auto-repair on failure.
 
-### 多图编辑器
+## Core Capabilities
 
-| 图类型 | 核心元素 | 交互 |
-|--------|---------|------|
-| **类图** | 类 + 6 种关系 | 双击添加类 / 拖拽端口创建关系 |
-| **时序图** | 生命线 + 5 种消息 | 双击添加生命线 / 点击 A→B 创建消息 |
-| **组件图** | 组件 + 依赖 + 子组件 | 双击添加 / 双击内部创建子组件 |
+### Multi-Diagram Editor
 
-- 撤销/重做（50 步）、缩放（工具栏 + Ctrl+滚轮）、网格吸附
-- Ctrl+C/V 复制粘贴、Ctrl+S 保存
-- 属性面板右侧编辑、空格+拖拽平移
+| Diagram Type | Core Elements | Interaction |
+|-------------|--------------|-------------|
+| **Class Diagram** | Classes + 6 relationship types | Double-click to add / drag ports for relationships |
+| **Sequence Diagram** | Lifelines + 5 message types | Double-click to add lifeline / click A→B for messages |
+| **Component Diagram** | Components + dependencies + sub-components | Double-click to add / double-click inside for sub-components |
 
-### 项目管理
+- Undo/Redo (50 steps), Zoom (toolbar + Ctrl+Scroll), Grid snapping
+- Ctrl+C/V copy-paste, Ctrl+S save
+- Property panel, Space+Drag to pan
 
-- `.umlproj` 工程文件：一个工程包含多张不同类型的设计图
-- **组件-图层级**：`项目 → 组件 → 类图/时序图` 三层组织，右键组件新建/切换关联图
-- 工具栏按类型分组下拉切换（颜色编码：橙/蓝/绿）
-- 打开旧 `.uml` 文件自动包装为工程
+### Project Management
 
-### AI 开发助手
+- `.umlproj` project file: one project, multiple diagrams of different types
+- **Component-Diagram hierarchy**: `Project → Component → Class/Sequence Diagram` three-tier organization. Right-click a component to create/switch linked diagrams
+- Toolbar groups diagrams by type with color-coded dropdowns (orange/blue/green)
+- Legacy `.uml` files auto-wrapped into projects
 
-右下角机器人按钮打开浮动对话面板，一个 ReActAgent（**设计 + 代码协同演进**：在现有代码上演进，不推倒重设计）承接全部消息。v2.0 起移除固定流水线编排，Agent 直接持有原生文件系统工具，自主规划开发步骤：
+### AI Development Assistant
 
-- **文件系统原语**：`read_file` / `write_file` / `edit_file` / `glob` / `bash` —— 读写代码、跑 pytest、修复失败，全由 Agent 自主编排
-- **任务规划**：`todo_write` 维护会话任务清单，多步任务先规划、边做边更新状态
-- **通用子代理** `spawn_subagent`：把探索、摘要、独立改动等自包含子任务委托给 flash 模型子代理（仅持受限文件系统工具集），只回传结论，避免主上下文膨胀；审核通道一并透传，委托子代理也无法绕过人工审核
-- **持久化任务系统**：任务 DAG（创建 / 依赖 / 认领 / 完成）落盘保存 + git worktree 隔离工作区，支持长任务拆解与跨会话续做
-- **人工审核**：UML 设计修改经 `submit_uml_review` 推送 diff 对比审批；`bash` 敏感命令（强制删除、进程终止、`git reset --hard` 等）执行前弹出批准/拒绝审核卡，高危命令（格式化、分区、写引导等）直接拒绝 —— 把 AI 开发关进护栏
-- **流式进度**：每步工具调用、参数与返回实时推送，开发过程全程可见
-- **中断控制**：随时停止 Agent 执行
-- **多会话持久化**：新建 / 切换会话，对话历史刷新不丢失；会话日志落盘（Markdown + JSONL trace）
-- **记忆系统**：跨会话记忆，任务结束自动归档、新任务按相关性召回注入，BM25 全文检索 + jieba 分词
+The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.1, the main loop remains a direct ReAct workflow, with optional task orchestration and a bounded read-only strategy worker available through a pluggable provider:
 
-### 全局优化
+- **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
+- **Task planning**: `todo_write` maintains a session task list — plan before multi-step work, update status as you go
+- **Optional task orchestration**: a planner can create a bounded plan, delegate read-only cross-artifact exploration, and hand structured evidence back to the main Agent; disabling the provider falls back to the direct ReAct path
+- **Controlled sub-agent** `spawn_subagent`: only explicitly enabled strategy work is delegated with a separate context and restricted read-only tools; the main Agent remains responsible for edits and verification
+- **Human review**: UML design changes go through `submit_uml_review` diff approval; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
+- **Streaming progress**: every tool call, arguments, and results pushed in real time
+- **Interrupt control**: stop the Agent at any time
+- **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
+- **Pluggable memory system**: cross-session memory is archived on completion and recalled by relevance into new tasks; the default SQLite/BM25 provider can be disabled or replaced without changing the Agent loop
 
-点击工具栏"全局优化"按钮，输入需求描述即可：
+### DevAgent Capability Benchmark
 
-- **从零生成**：无需预设空白图，LLM 自动生成全部所需图及标签页
-- **V2 直连引擎**：scope 分析（轻量模型）→ 单次 LLM 生成（pro 模型）→ 程序化跨图验证 + 自动修复 + 自动布局
-- **流式绘图**：边生成边显示到画布，支持中途取消
-- **多图 Diff**：结果按图切换对比，可逐图接受或继续优化
+The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
 
-### TestHub 测试中心
+- **Case catalog**: `backend/app/evals/cases/`, currently 16 cases organized into the `baseline`, `p0`, `p1`, `p2`, and `diagnostic` suites.
+- **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
+- **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
+- **Runtime limits**: every case can configure maximum seconds, Tool Calls, and Total Tokens; results retain status, score, duration, model, token/tool usage, Trace ID, and checker details.
+- **Baseline snapshot**: the current baseline is version `a1122e8`: 10 of 16 cases passed, 1 failed, and 5 timed out; pass rate 62.5%, average score 66.67%, with 6,639,458 total tokens and 602 tool calls. Full metrics are recorded in `docs/devagent-evaluation-baseline-2026-09-01.md`.
+- **Version identity**: the Evaluation Center automatically reads the current Git branch and HEAD commit and uses `branch@commit` as the version. An uncommitted working tree is marked `dirty`.
+- **Run and archive**: the Evaluation Center supports one-click suite runs, live batch/result inspection, and one-click archiving for completed batches or the baseline snapshot under `temp/evals/archives/`. The CLI can run all cases or a selected suite:
 
-Excel 用例驱动的测试代码生成：
+  ```bash
+  cd backend
+  python -m app.evals.cli
+  python -m app.evals.cli --suite p0
+  ```
 
-- **用例管理**：加载 testHub 目录下的 Excel 用例表，在线编辑并回写保存
-- **测试代码生成**：全量 / 增量（仅变更用例）两种模式生成测试代码，右侧"用例代码"页签查看、复制、下载
-- **评审留痕**：查看、编辑、生成、接受 / 拒绝等操作统一记录到 `dev_review.txt`
+  The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
 
-### Trace 追踪与回放
+### Global Optimization
 
-- **全程记录**：Agent 会话自动落盘 JSONL trace（LLM 请求/响应 + 工具调用逐步事件）
-- **TraceViewer**：前端抽屉式浏览历史会话，步骤级展开每次工具调用的参数与返回
-- **确定性回放**：`mock` 模式零网络按记录重放（含游标一致性校验）；`rerun` 模式真实 LLM 重跑、工具仍按记录 mock —— 用于调试 prompt 与回归对比
+Click "Global Optimization" in the toolbar, describe your needs:
 
-### 知识图谱
+- **Generate from scratch**: no blank diagrams needed — LLM auto-creates all required diagrams and tabs
+- **V2 direct engine**: scope analysis (lightweight model) → single LLM pass (pro model) → programmatic cross-diagram validation + auto-repair + auto-layout
+- **Streaming render**: elements appear on canvas in real time, cancelable mid-stream
+- **Multi-diagram Diff**: per-diagram tab comparison, accept or iterate independently
 
-SQLite 图数据库 + FTS5 全文索引，工程保存时自动重建，为 AI 助手提供结构化项目理解：
+### TestHub Test Center
 
-- **三层知识**：项目层 → 实体层 → 关系层（继承/组合/依赖 + 设计-代码映射 + 测试覆盖）
-- **双源构建**：设计层（UML JSON 自动同步）+ 代码层（AST 解析源码目录）
+Excel test-case-driven test code generation:
 
-### 自动布局引擎
+- **Case management**: load Excel test case sheets from the testHub directory, edit inline, and save back
+- **Test code generation**: full or incremental (changed cases only) modes; generated test code is viewable, copyable, and downloadable in the "Test Code" tab
+- **Review audit trail**: view / edit / generate / accept / reject operations are uniformly logged to `dev_review.txt`
 
-LLM 返回的设计元素坐标自动计算，仅影响新生成元素，手动拖拽位置完全保留：
-- 类图：继承链分层 + 网格布局
-- 时序图：生命线等距水平排列 + 消息垂直递增
-- 组件图：流式排列自动换行
+### Trace Viewer & Replay
 
-## 技术栈
+- **Full recording**: every Agent session is persisted as a JSONL trace (LLM requests/responses + step-by-step tool call events)
+- **TraceViewer**: a drawer-style UI for browsing historical sessions, expanding each tool call's arguments and results
+- **Deterministic replay**: `mock` mode replays from the recording with zero network access (with cursor-consistency checks); `rerun` mode re-runs the real LLM while tools stay mocked from the recording — for prompt debugging and regression comparison
 
-| 层 | 技术 |
-|---|------|
-| 前端 | React 18 + TypeScript + AntV X6 + Zustand + Ant Design 5 |
-| 后端 | FastAPI (Python) + WebSocket |
-| Agent | BaseAgents（ReActAgent，native function calling） |
-| LLM | DeepSeek API（v4-pro + v4-flash） |
-| 知识图谱 | SQLite + FTS5 |
-| 记忆系统 | SQLite + FTS5 + jieba |
-| 测试 | pytest（真实子进程执行）+ openpyxl（Excel 用例） |
-| 构建 | Vite |
+### Knowledge Graph
 
-## 项目结构
+SQLite graph database + FTS5 full-text index, automatically rebuilt on project save, giving the AI assistant structured project understanding:
+
+- **Three knowledge layers**: Project → Entity → Relationship (inheritance/composition/dependency + design-code mapping + test coverage)
+- **Dual-source build**: design layer (UML JSON auto-sync) + code layer (AST parsing of source directories)
+
+### Auto-Layout Engine
+
+LLM-generated element positions auto-computed; manually positioned elements fully preserved:
+- Class Diagram: inheritance layering + grid layout
+- Sequence Diagram: lifelines evenly spaced + messages ordered vertically
+- Component Diagram: flow layout with auto-wrap
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18 + TypeScript + AntV X6 + Zustand + Ant Design 5 |
+| Backend | FastAPI (Python) + WebSocket |
+| Agent | BaseAgents (ReActAgent, native function calling) |
+| LLM | DeepSeek API (one fixed model per session, configured by `DEEPSEEK_MODEL`) |
+| Knowledge Graph | SQLite + FTS5 |
+| Memory System | SQLite + FTS5 + jieba |
+| Testing | pytest (real subprocess execution) + openpyxl (Excel cases) |
+| Build | Vite |
+
+## Project Structure
 
 ```
-uml_designer/
-├── frontend/                       # React 前端
+ArchitectCoder/
+├── frontend/                       # React frontend
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── Canvas/             # 三类图编辑器（类图/时序图/组件图）
-│   │   │   ├── AgentChat/          # AI 开发助手浮动面板 (WebSocket)
-│   │   │   ├── PropertyPanel/      # 属性编辑面板
-│   │   │   ├── Toolbar/            # 工具栏
-│   │   │   ├── CodeViewer/         # 代码查看器 (Monaco)
-│   │   │   ├── DiffViewer/         # UML Diff 对比视图
-│   │   │   ├── TestCaseViewer/     # TestHub Excel 用例管理
-│   │   │   ├── TestCodeViewer/     # 生成的测试代码查看器
-│   │   │   └── TraceViewer/        # 会话 trace 可视化 + 回放
-│   │   ├── stores/                 # Zustand 状态管理
-│   │   ├── services/               # API 服务层 (含 agentChat WebSocket)
-│   │   ├── types/                  # TypeScript 类型定义
+│   │   │   ├── Canvas/             # Three diagram editors (Class/Sequence/Component)
+│   │   │   ├── AgentChat/          # AI Assistant floating panel (WebSocket)
+│   │   │   ├── PropertyPanel/      # Property editing panel
+│   │   │   ├── Toolbar/            # Toolbar
+│   │   │   ├── CodeViewer/         # Code viewer (Monaco)
+│   │   │   ├── DiffViewer/         # UML diff comparison view
+│   │   │   ├── TestCaseViewer/     # TestHub Excel case management
+│   │   │   ├── TestCodeViewer/     # Generated test code viewer
+│   │   │   └── TraceViewer/        # Session trace visualization + replay
+│   │   ├── stores/                 # Zustand state management
+│   │   ├── services/               # API service layer (incl. agentChat WebSocket)
+│   │   ├── types/                  # TypeScript type definitions
 │   │   └── App.tsx
 │   ├── package.json
 │   └── vite.config.ts
-├── backend/                        # FastAPI 后端
+├── backend/                        # FastAPI backend
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket 路由 (files/llm/optimize_v2/testhub/trace)
-│   │   ├── core/                   # 配置 / 鉴权 / 安全
-│   │   ├── models/                 # Pydantic 数据模型
-│   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
-│   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
-│   │   │   └── tools/my_tools/     # 文件系统原语 / todo / 子代理 / 审核
+│   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace/metrics/evals)
+│   │   ├── core/                   # Config / auth / security
+│   │   ├── models/                 # Pydantic data models
+│   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
+│   │   ├── evals/                  # DevAgent cases, runner, baseline, and archives
+│   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
+│   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py
-│   ├── knowledge_graph/            # 知识图谱系统 (SQLite + FTS5)
-│   ├── memory_system/              # 跨会话记忆系统 (SQLite + FTS5 + jieba)
+│   ├── knowledge_graph/            # Knowledge Graph system (SQLite + FTS5)
+│   ├── memory_system/              # Cross-session memory system (SQLite + FTS5 + jieba)
 │   ├── requirements.txt
 │   └── .env
-├── docs/                           # 设计文档 (BaseAgents / KG / 记忆 / trace)
-├── skills/uml-design-guide/         # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
-├── generated/                      # 生成的代码输出 (src/ + test/)
-├── temp/                           # 运行时临时文件（不上库）
-├── .claude/                        # Claude Code 配置
-└── README.md
+├── docs/                           # Design docs, evaluation baseline, and system archives
+├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
+├── generated/                      # Generated code output (src/ + test/)
+├── temp/                           # Runtime temp files (not committed)
+├── .claude/                        # Claude Code configuration
+├── README.md                       # English project documentation (default)
+└── README_ZH.md                    # Chinese project documentation
 ```
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 后端
-cd backend && pip install -r requirements.txt
-# 编辑 .env：设置 DEEPSEEK_API_KEY
-python -m app.main          # http://localhost:8001
+# Backend
+cd backend
+python -m pip install -r requirements.txt
+# Create backend/.env and set at least: DEEPSEEK_API_KEY=your-key
+python -X utf8 -m app.main          # http://localhost:8001
 
-# 前端
-cd frontend && npm install && npm run dev   # http://localhost:3000
+# Frontend
+cd frontend
+npm install
+npm run dev                           # http://localhost:3000
 ```
 
-Windows 下也可直接运行 `start.bat` 一键启动前后端。
+Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), `AGENT_ORCHESTRATION_ENABLED`, `AGENT_ORCHESTRATOR_PROVIDER`, and the `AGENT_MEMORY_*` provider settings. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
 
-## 快捷键
+## API and Development Checks
 
-| 快捷键 | 功能 |
-|--------|------|
-| Ctrl+Z / Ctrl+Y | 撤销 / 重做 |
-| Ctrl+C / Ctrl+V | 复制 / 粘贴 |
-| Ctrl+S | 保存工程 |
-| Delete | 删除选中 |
-| Ctrl+滚轮 | 缩放 |
-| 空格+拖拽 | 平移 |
+- Backend REST APIs use the `/api` prefix and cover file operations, LLM access, global optimization, TestHub, Trace, Agent metrics, and DevAgent evaluations.
+- The conversational Agent uses WebSocket: `/api/ws/chat`.
+- API docs: open `http://localhost:8001/api/docs` after starting the backend.
+- Unit tests: `cd backend && python -m pytest -q`.
+- Run the full DevAgent evaluation catalog: `cd backend && python -m app.evals.cli`.
+- Production frontend build: `cd frontend && npm run build`.
 
-## 支持的编程语言
+Evaluation and runtime logs are written to `temp/`. Generated code and databases are runtime artifacts and are not committed.
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+Z / Ctrl+Y | Undo / Redo |
+| Ctrl+C / Ctrl+V | Copy / Paste |
+| Ctrl+S | Save project |
+| Delete | Delete selected |
+| Ctrl+Scroll | Zoom |
+| Space+Drag | Pan |
+
+## Supported Programming Languages
 
 Python, Java, TypeScript, JavaScript, C#, C++, Go, Rust, Ruby, Swift, Kotlin, PHP

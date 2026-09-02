@@ -15,14 +15,21 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob
+import hashlib
 import json as _json
 import logging
-import subprocess
+import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 from app.agent_base.tools.base import Tool
+from app.agent_base.execution import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.my_tools.project_info_tools import GrepFileTool
+from app.core.risk_policy import RiskDecision, RiskPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -132,10 +139,32 @@ def _resolve_roots(source_dir: str, test_dir: str, design_dir: str = "") -> list
     return [d for d in (source_dir, test_dir, design_dir) if d]
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """在目标文件同目录完成原子替换，避免半写文件被并发读到。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp",
+                                     dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="read_file",
             description=(
@@ -144,6 +173,8 @@ class ReadFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self.read_only = True
+        self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -188,7 +219,7 @@ class ReadFileTool(AsyncTool):
 class WriteFileTool(AsyncTool):
     """写文件到 workspace（覆盖或新建，自动建父目录）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="write_file",
             description=(
@@ -197,6 +228,7 @@ class WriteFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -206,11 +238,20 @@ class WriteFileTool(AsyncTool):
         except ValueError as e:
             return f"Error: {e}"
         try:
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            fp.write_text(content, encoding="utf-8")
+            before_exists = fp.exists()
+            current = fp.read_text(encoding="utf-8") if before_exists else ""
+            if before_exists and params.get("expected_sha256"):
+                expected = str(params["expected_sha256"]).lower()
+                actual = _sha256_text(current)
+                if actual != expected:
+                    return (f"Conflict: {path} changed since it was read; "
+                            f"expected sha256 {expected}, actual {actual}")
+            _atomic_write_text(fp, content)
+            if self._change_set is not None:
+                self._change_set.record(str(fp), before_exists, current, content)
         except Exception as e:
             return f"Error: {e}"
-        return f"Wrote {len(content)} bytes to {path}"
+        return f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})"
 
     def to_openai_schema(self) -> dict:
         return {
@@ -223,6 +264,7 @@ class WriteFileTool(AsyncTool):
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "content": {"type": "string", "description": "Full text content to write."},
+                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents overwriting a concurrent edit."},
                     },
                     "required": ["path", "content"],
                 },
@@ -233,7 +275,7 @@ class WriteFileTool(AsyncTool):
 class EditFileTool(AsyncTool):
     """精确文本替换（只替换首次出现）。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
         super().__init__(
             name="edit_file",
             description=(
@@ -242,6 +284,7 @@ class EditFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
@@ -258,10 +301,21 @@ class EditFileTool(AsyncTool):
         except Exception as e:
             return f"Error: {e}"
 
+        expected = params.get("expected_sha256")
+        actual = _sha256_text(text)
+        if expected and actual.lower() != str(expected).lower():
+            return (f"Conflict: {path} changed since it was read; "
+                    f"expected sha256 {expected}, actual {actual}")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        fp.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
-        return f"Edited {path}"
+        updated = text.replace(old_text, new_text, 1)
+        try:
+            _atomic_write_text(fp, updated)
+        except Exception as e:
+            return f"Error: {e}"
+        if self._change_set is not None:
+            self._change_set.record(str(fp), True, text, updated)
+        return f"Edited {path} (sha256={_sha256_text(updated)})"
 
     def to_openai_schema(self) -> dict:
         return {
@@ -275,6 +329,7 @@ class EditFileTool(AsyncTool):
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "old_text": {"type": "string", "description": "Exact text to replace."},
                         "new_text": {"type": "string", "description": "Replacement text."},
+                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents lost updates."},
                     },
                     "required": ["path", "old_text", "new_text"],
                 },
@@ -294,6 +349,8 @@ class GlobTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self.read_only = True
+        self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
         pattern = params.get("pattern", "")
@@ -335,27 +392,52 @@ class BashTool(AsyncTool):
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  review_manager=None, progress=None,
-                 review_timeout: float = BASH_REVIEW_TIMEOUT):
+                 review_timeout: float = BASH_REVIEW_TIMEOUT,
+                 timeout: float = BASH_TIMEOUT,
+                 output_cap: int = BASH_OUTPUT_CAP,
+                 risk_policy: RiskPolicy | None = None,
+                 command_executor: CommandExecutor | None = None):
+        self._command_executor = command_executor or HostShellExecutor()
         super().__init__(
             name="bash",
-            description=(
-                "Run a shell command in the workspace (e.g. git status, pytest, lint). "
-                "Returns combined stdout/stderr. High-risk commands are denied outright; "
-                "sensitive commands pause for human approval before running."
-            ),
+            description=self._command_executor.profile.tool_description,
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
         self._cwd = self._roots[0] if self._roots else ""
+        self._cwd_aliases = {
+            "source": os.path.abspath(source_dir) if source_dir else "",
+            "test": os.path.abspath(test_dir) if test_dir else "",
+            "design": os.path.abspath(design_dir) if design_dir else "",
+            "workspace": self._cwd,
+        }
         self._review_manager = review_manager
         self._progress = progress
         self._review_timeout = review_timeout
+        self._timeout = max(0.1, min(float(timeout), 3600.0))
+        self._output_cap = max(1024, min(int(output_cap), 1_000_000))
+        self._risk_policy = risk_policy or RiskPolicy(
+            deny_patterns=DENY_LIST,
+            approval_patterns=REVIEW_LIST,
+        )
 
     async def _execute(self, params: dict) -> str:
         command = params.get("command", "")
         if not isinstance(command, str) or not command.strip():
             return "Error: command must be a non-empty string"
+        cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
+        if cwd_error:
+            return f"Error: {cwd_error}"
 
         lowered = command.lower()
+        risk = self._risk_policy.evaluate("bash", {"command": command})
+        if risk.action == "deny":
+            logger.info("High-risk command denied: %s (matches %s)", command[:100], risk.pattern)
+            return f"Error: command denied (high-risk, matches deny list: {risk.pattern})"
+        approval_scope = self._risk_policy.approval_scope("bash", {"command": command})
+        if risk.action == "ask":
+            verdict = await self._request_approval(command, risk, approval_scope)
+            if verdict is not None:
+                return verdict
 
         # ── 高危：直接拒绝，不执行、不审核 ──
         for pattern in _DENY_LIST_LOWER:
@@ -365,22 +447,92 @@ class BashTool(AsyncTool):
 
         # ── 敏感：请求人工审核，批准才执行 ──
         for pattern in _REVIEW_LIST_LOWER:
-            if pattern in lowered:
+            if pattern in lowered and risk.action != "ask":
                 verdict = await self._request_approval(command, pattern)
                 if verdict is not None:
                     return verdict  # 拒绝/超时/无通道 → 不执行
                 break  # 批准 → 继续执行
 
-        return await self._run_command(command)
+        syntax_error = self._validate_shell_command(command)
+        if syntax_error:
+            return f"Error: {syntax_error}"
 
-    async def _request_approval(self, command: str, pattern: str) -> Optional[str]:
+        environment_error = self._command_executor.validate_command(command)
+        if environment_error:
+            return f"Error: {environment_error}"
+
+        return await self._run_command(command, cwd)
+
+    def _resolve_cwd(self, raw_cwd) -> tuple[str | None, str | None]:
+        """Resolve a labelled or workspace-relative cwd without shell cd."""
+        if raw_cwd in (None, ""):
+            return self._cwd or None, None
+        if not isinstance(raw_cwd, str):
+            return None, "cwd must be a string"
+        value = raw_cwd.strip()
+        alias = self._cwd_aliases.get(value.lower())
+        if alias:
+            if not os.path.isdir(alias):
+                return None, f"cwd directory does not exist: {value}"
+            return alias, None
+        try:
+            candidate = safe_path(value, self._roots, require_exist=True)
+        except ValueError as exc:
+            return None, str(exc)
+        if not candidate.is_dir():
+            return None, f"cwd is not a directory: {value}"
+        return str(candidate), None
+
+    @staticmethod
+    def _validate_shell_command(command: str) -> str | None:
+        """限制 shell=True 的逃逸面。
+
+        The production command contract is POSIX bash.  The host adapter owns
+        WSL/native process launch; this validator only enforces the stable
+        agent-facing command subset.
+        """
+        if len(command) > 4000:
+            return "command is too long (maximum 4000 characters)"
+        if any(token in command for token in ("\n", "\r", ";", "&&", "||", "|", ">", "<", "`", "$(")):
+            return "shell operators and command substitution are not allowed"
+        lowered = command.lower()
+        if re.search(r"\b(powershell|pwsh|cmd|wsl|bash|sh)\s*(\.exe)?\s*(/c|/k|-command|-c)\b", lowered):
+            return "nested shell invocation is not allowed"
+        if re.search(r"\b(python|python3|py)\s+(-\w+\s+)*-c\b", lowered):
+            return "inline interpreter code is not allowed"
+        executable = command.strip().split(None, 1)[0].strip('"')
+        executable = os.path.basename(executable).lower()
+        allowed = {
+            "python", "python3", "pytest", "git", "echo", "printf", "pwd", "uname", "ls", "find", "rg",
+            "grep", "cat", "head", "tail", "sort", "wc", "pip", "uv", "node",
+            "npm", "npx", "pnpm", "yarn", "ruff", "mypy", "make", "cargo", "go",
+        }
+        if executable.endswith(".exe"):
+            executable = executable[:-4]
+        if executable not in allowed:
+            return f"executable '{executable}' is not allowed"
+        return None
+
+    async def _request_approval(
+        self,
+        command: str,
+        pattern: str | RiskDecision,
+        approval_scope: dict[str, str] | None = None,
+    ) -> Optional[str]:
         """敏感命令走 ReviewManager 人工审核。返回 None 表示批准可执行，
         否则返回拒绝原因文本（fail closed：拒绝/超时/无审核通道都不执行）。"""
+        decision = pattern if isinstance(pattern, RiskDecision) else RiskDecision(
+            "ask", "high", "sensitive command", pattern,
+        )
+        matched_pattern = decision.pattern
+        scope = approval_scope or self._risk_policy.approval_scope(
+            "bash", {"command": command},
+        )
         if self._review_manager is None or self._progress is None:
             logger.warning("🚫 敏感命令无审核通道，拒绝执行: %s", command[:100])
             return (
                 f"Error: command requires human approval (matches sensitive list: "
-                f"{pattern}), but no review channel is available. Command NOT executed."
+                f"{matched_pattern}), but no review channel is available. Command NOT executed."
             )
 
         title = "敏感命令请求审核"
@@ -388,6 +540,11 @@ class BashTool(AsyncTool):
             review_type="bash_command",
             title=title,
             content=command,
+            metadata={
+                "risk_level": decision.level,
+                "risk_reason": decision.reason,
+                "approval_scope": scope,
+            },
             question=f"命令命中敏感规则「{pattern}」，是否允许执行？",
         )
 
@@ -427,32 +584,53 @@ class BashTool(AsyncTool):
             decision, feedback = "", str(result)
 
         if decision == "accept":
+            if not self._risk_policy.approval_is_valid(
+                "bash", {"command": command}, scope,
+            ):
+                return "Error: approval scope mismatch. Command NOT executed."
             logger.info("✅ 敏感命令已批准: %s", command[:100])
             return None
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
         return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
 
-    async def _run_command(self, command: str) -> str:
-        cwd = self._cwd or None
+    async def _run_command(self, command: str, cwd: str | None = None) -> str:
+        cwd = cwd if cwd is not None else (self._cwd or None)
+        return await self._run_command_cancellable(command, cwd)
 
-        def _run():
-            # 同步 subprocess，在线程池执行：不依赖事件循环类型。
-            # 直接 await asyncio.create_subprocess_shell 在 SelectorEventLoop
-            # （uvicorn 在 Windows 上的默认 loop）下会抛 NotImplementedError。
-            return subprocess.run(
-                command, shell=True, cwd=cwd,
-                capture_output=True, timeout=BASH_TIMEOUT,
-            )
+    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str:
+        def _start():
+            return self._command_executor.start(command, cwd)
 
         try:
-            proc = await asyncio.to_thread(_run)
-        except subprocess.TimeoutExpired:
-            return f"Error: command timed out after {BASH_TIMEOUT}s"
+            proc = await asyncio.to_thread(_start)
+        except (OSError, ExecutionEnvironmentError) as e:
+            return f"Error: {type(e).__name__}: {e}"
+
+        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
+        deadline = asyncio.get_running_loop().time() + self._timeout
+        try:
+            while not communicate.done():
+                if get_runtime().stop_check():
+                    self._command_executor.terminate(proc)
+                    await asyncio.shield(communicate)
+                    return "Error: command canceled"
+                if asyncio.get_running_loop().time() >= deadline:
+                    self._command_executor.terminate(proc)
+                    await asyncio.shield(communicate)
+                    return f"Error: command timed out after {self._timeout:g}s"
+                await asyncio.sleep(0.05)
+            stdout, stderr = await communicate
+        except asyncio.CancelledError:
+            self._command_executor.terminate(proc)
+            await asyncio.shield(communicate)
+            raise
         except OSError as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        out = (_decode_output(proc.stdout) + _decode_output(proc.stderr)).strip()
-        out = out[:BASH_OUTPUT_CAP] if len(out) > BASH_OUTPUT_CAP else out
+        out = (_decode_output(stdout) + _decode_output(stderr)).strip()
+        out = out[:self._output_cap] if len(out) > self._output_cap else out
+        if proc.returncode:
+            return f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
         return out or "(no output)"
 
     def to_openai_schema(self) -> dict:
@@ -464,7 +642,14 @@ class BashTool(AsyncTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "Shell command to run."},
+                        "command": {
+                            "type": "string",
+                            "description": "One command only; no cd, chaining, pipes, redirection, nested shells, or inline code.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional directory alias: source, test, design, workspace; or a relative directory inside the workspace.",
+                        },
                     },
                     "required": ["command"],
                 },
@@ -472,18 +657,135 @@ class BashTool(AsyncTool):
         }
 
 
+class SearchTextTool(GrepFileTool):
+    """Structured project search exposed under the stable ``search_text`` name."""
+
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+        # ``create_file_system_tools`` receives the design directory rather
+        # than the project file. Keep the inherited bounded scanner and add
+        # the design root explicitly, without widening its path boundary.
+        project_file = design_dir if os.path.isfile(design_dir) else ""
+        super().__init__(source_dir, test_dir, project_file)
+        self.design_dir = design_dir
+        self.name = "search_text"
+        self.description = (
+            "Search project source, tests, and design files by text or regular expression. "
+            "Returns file names, line numbers, and short matching snippets."
+        )
+        self.read_only = True
+        self.can_parallel = True
+
+    async def _execute(self, parameters):
+        # Keep the same async testing/dispatch shape as the other filesystem
+        # tools while retaining GrepFileTool's bounded synchronous scanner.
+        return self.run(parameters)
+
+    def _candidate_files(self) -> list[str]:
+        files = super()._candidate_files()
+        root = self.design_dir
+        if root and os.path.isdir(root):
+            for dirpath, _dirs, names in os.walk(root):
+                files.extend(
+                    os.path.join(dirpath, name) for name in names
+                    if name.endswith((".umlproj", ".uml", ".json"))
+                )
+        return list(dict.fromkeys(files))
+
+    def _resolve_allowed_path(self, raw_path: str) -> str | None:
+        resolved = super()._resolve_allowed_path(raw_path)
+        if resolved:
+            return resolved
+        root = self.design_dir
+        if not root:
+            return None
+        candidate = os.path.abspath(raw_path) if os.path.isabs(raw_path) else os.path.abspath(os.path.join(root, raw_path))
+        if not os.path.isfile(candidate):
+            return None
+        try:
+            if os.path.commonpath([candidate, os.path.abspath(root)]) != os.path.abspath(root):
+                return None
+        except ValueError:
+            return None
+        return candidate
+
+
+class DeletePathTool(Tool):
+    """Delete an explicit workspace file, with opt-in safe directory removal."""
+
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 change_set=None):
+        super().__init__(
+            name="delete_path",
+            description=(
+                "Delete one explicit file inside the workspace. Directories are refused unless "
+                "recursive=true; protected and workspace-root paths are always refused."
+            ),
+        )
+        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._change_set = change_set
+
+    def get_parameters(self):
+        from app.agent_base.tools.base import ToolParameter
+        return [
+            ToolParameter(name="path", type="string", description="Explicit workspace-relative or absolute path.", required=True),
+            ToolParameter(name="recursive", type="boolean", description="Allow deleting a directory tree; default false.", required=False, default=False),
+        ]
+
+    def run(self, parameters):
+        raw_path = str(parameters.get("path", "")).strip()
+        if not raw_path:
+            return "Error: path must be a non-empty string"
+        try:
+            target = safe_path(raw_path, self._roots, require_exist=True)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if not target.exists():
+            return f"Error: path not found: {raw_path}"
+        if target in {Path(root).resolve() for root in self._roots}:
+            return "Error: deleting a workspace root is not allowed"
+        if any(part in {".git", ".ssh"} or part.startswith(".env") for part in target.parts):
+            return "Error: deleting protected paths is not allowed"
+        recursive = bool(parameters.get("recursive", False))
+        if target.is_dir() and not recursive:
+            return "Error: target is a directory; set recursive=true explicitly"
+        before = ""
+        if target.is_file():
+            try:
+                before = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                before = ""
+        try:
+            if self._change_set is not None and target.is_file():
+                self._change_set.record(str(target), True, before, "")
+            if target.is_dir():
+                import shutil
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except OSError as exc:
+            return f"Error: delete failed: {exc}"
+        return f"Deleted: {raw_path}"
+
+
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
-                             review_manager=None, progress=None) -> list[Tool]:
+                             review_manager=None, progress=None, change_set=None,
+                             bash_timeout: float = BASH_TIMEOUT,
+                             bash_output_cap: int = BASH_OUTPUT_CAP,
+                             command_executor: CommandExecutor | None = None) -> list[Tool]:
     """创建 A 层文件系统原语工具列表。
 
     review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
     不传则敏感命令 fail closed（拒绝执行），高危命令仍直接拒绝。
     """
     return [
-        ReadFileTool(source_dir, test_dir, design_dir),
-        WriteFileTool(source_dir, test_dir, design_dir),
-        EditFileTool(source_dir, test_dir, design_dir),
+        ReadFileTool(source_dir, test_dir, design_dir, change_set=change_set),
+        WriteFileTool(source_dir, test_dir, design_dir, change_set=change_set),
+        EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         GlobTool(source_dir, test_dir, design_dir),
+        SearchTextTool(source_dir, test_dir, design_dir),
+        DeletePathTool(source_dir, test_dir, design_dir, change_set=change_set),
         BashTool(source_dir, test_dir, design_dir,
-                 review_manager=review_manager, progress=progress),
+                 review_manager=review_manager, progress=progress,
+                 timeout=bash_timeout, output_cap=bash_output_cap,
+                 command_executor=command_executor),
     ]

@@ -19,7 +19,7 @@ import {
   CheckCircleOutlined, CloseCircleOutlined,
   ToolOutlined, UserOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
-  PlusOutlined, HistoryOutlined, SwapOutlined,
+  PlusOutlined, HistoryOutlined, SwapOutlined, DownOutlined, RightOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
@@ -27,10 +27,12 @@ import {
   connectAgentChat, sendAgentMessage, sendStopMessage,
   isAgentConnected, onAgentMessage, startNewSession,
   getCurrentSessionId, switchSession,
-  type AgentEvent, type AgentProgressEvent, type AgentReviewEvent,
+  type AgentEvent, type AgentProgressEvent, type AgentReviewEvent, type AgentTodoItem,
 } from '../../services/agentChat';
 import { listTraces, getTraceHistory, type TraceMeta } from '../../services/api';
-import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
+import {
+  activateDiagramForDiffKey, handleDesignElement, processDesignUpdated,
+} from '../../services/designElementHandler';
 import { useReviewStore } from '../../stores/reviewStore';
 import './AgentChat.css';
 
@@ -57,6 +59,25 @@ const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] 
       observation: String(td.observation).slice(0, OBS_LIMIT),
     })),
   }));
+
+function latestTodoState(messages: ChatMessage[]): {
+  todos: AgentTodoItem[];
+  planningMode: boolean;
+  strategyAdvised: boolean;
+} {
+  for (const message of [...messages].reverse()) {
+    for (const step of [...(message.steps || [])].reverse()) {
+      if (Array.isArray(step.todos) && step.todos.length > 0) {
+        return {
+          todos: step.todos,
+          planningMode: Boolean(step.planning_mode),
+          strategyAdvised: Boolean(step.strategy_advised),
+        };
+      }
+    }
+  }
+  return { todos: [], planningMode: false, strategyAdvised: false };
+}
 
 // ── 会话标识 ──────────────────────────────────────────
 
@@ -121,6 +142,12 @@ const AgentChat: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [currentSteps, setCurrentSteps] = useState<AgentProgressEvent[]>([]);
+  const [currentTodos, setCurrentTodos] = useState<AgentTodoItem[]>([]);
+  const [todoPlanningMode, setTodoPlanningMode] = useState(false);
+  const [strategyAdvised, setStrategyAdvised] = useState(false);
+  const [todoExpanded, setTodoExpanded] = useState(false);
+  const todoStateRestoredRef = useRef(false);
+  const todoSeenInTaskRef = useRef(false);
   // 审核状态来自共享 reviewStore（与 DiffViewer 联动，单一事实源）
   const review = useReviewStore();
   // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
@@ -137,6 +164,17 @@ const AgentChat: React.FC = () => {
   const panelRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (todoStateRestoredRef.current) return;
+    const previous = latestTodoState(messages);
+    if (previous.todos.length) {
+      setCurrentTodos(previous.todos);
+      setTodoPlanningMode(previous.planningMode);
+      setStrategyAdvised(previous.strategyAdvised);
+    }
+    todoStateRestoredRef.current = true;
+  }, [messages]);
 
   // ── 拖拽（header 拖动整个面板） ──
   const handleHeaderMouseDown = useCallback((e: React.MouseEvent) => {
@@ -186,10 +224,10 @@ const AgentChat: React.FC = () => {
     const el = messagesEndRef.current;
     if (!el) return;
     el.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' });
-  }, [messages, currentSteps, busy]);
+  }, [messages, currentSteps, busy, agentChatVisible, agentChatExpanded]);
 
   // ── 连接 WebSocket ──
-  const connect = useCallback(() => {
+  const connect = useCallback((open = true) => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat((event: AgentEvent) => {
       switch (event.event) {
@@ -221,6 +259,15 @@ const AgentChat: React.FC = () => {
           ].sort((a, b) => a.step - b.step);
           // 只同步最新一步触发渲染，避免每步全量 setState
           setCurrentSteps([...liveStepsRef.current]);
+          if (Array.isArray(event.todos) && event.todos.length > 0) {
+            setCurrentTodos(event.todos);
+            setTodoPlanningMode(Boolean(event.planning_mode));
+            setStrategyAdvised(Boolean(event.strategy_advised));
+            if (!todoSeenInTaskRef.current) {
+              todoSeenInTaskRef.current = true;
+              setTodoExpanded(true);
+            }
+          }
           break;
         }
 
@@ -252,6 +299,12 @@ const AgentChat: React.FC = () => {
         // ── UML diff 审核（submit_uml_review / 框架兜底补推）──
         case 'uml_review': {
           const diagrams = normalizeReviewDiagrams(event.diagrams);
+          // Backend sends changed_diagrams in the raw UML project shape
+          // (diagram_type/classes/components...). Normalize it before the
+          // diff builder, while preserving legacy-event fallback behavior.
+          const changedDiagrams = event.changed_diagrams === undefined
+            ? undefined
+            : normalizeReviewDiagrams(event.changed_diagrams);
           // 用原始图列表构造快照，DiffViewer 据此生成 before/after 对比
           const snapshot: Record<string, any> = {};
           for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
@@ -259,6 +312,7 @@ const AgentChat: React.FC = () => {
           }
           processDesignUpdated(
             diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
+            changedDiagrams,
           );
           // 登记共享审核状态，DiffViewer 与聊天审核卡据此联动
           useReviewStore.getState().showReview({
@@ -410,7 +464,7 @@ const AgentChat: React.FC = () => {
           break;
         }
       }
-    }, token);
+    }, token, open);
 
     return ws;
   }, []);
@@ -441,6 +495,11 @@ const AgentChat: React.FC = () => {
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
+    setCurrentTodos([]);
+    setTodoPlanningMode(false);
+    setStrategyAdvised(false);
+    setTodoExpanded(false);
+    todoSeenInTaskRef.current = false;
   }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath]);
 
   // ── 中断 ──
@@ -494,6 +553,11 @@ const AgentChat: React.FC = () => {
     setMessages([]);
     liveStepsRef.current = [];
     setCurrentSteps([]);
+    setCurrentTodos([]);
+    setTodoPlanningMode(false);
+    setStrategyAdvised(false);
+    setTodoExpanded(false);
+    todoSeenInTaskRef.current = false;
     useReviewStore.getState().clear();
     setInputValue('');
     setBusy(false);
@@ -529,6 +593,11 @@ const AgentChat: React.FC = () => {
       })));
       liveStepsRef.current = [];
       setCurrentSteps([]);
+      setCurrentTodos([]);
+      setTodoPlanningMode(false);
+      setStrategyAdvised(false);
+      setTodoExpanded(false);
+      todoSeenInTaskRef.current = false;
       useReviewStore.getState().clear();
       setInputValue('');
       setBusy(false);
@@ -544,8 +613,13 @@ const AgentChat: React.FC = () => {
   // AgentChat 在 App 中常驻挂载（App.tsx），面板只是显示/隐藏；
   // 连接一旦建立就不因关面板而断开，agent 在后台持续运行。
   useEffect(() => {
-    connect();
+    // AgentChat 常驻挂载但默认隐藏：先绑定事件处理器，不要立即创建连接。
+    connect(false);
   }, [connect]);
+
+  useEffect(() => {
+    if (agentChatVisible) connect();
+  }, [agentChatVisible, connect]);
 
   // ── 监听外部消息（Toolbar 等通过 sendAgentMessage 发送）──
   useEffect(() => {
@@ -563,6 +637,11 @@ const AgentChat: React.FC = () => {
         setBusy(true);
         liveStepsRef.current = [];
         setCurrentSteps([]);
+        setCurrentTodos([]);
+        setTodoPlanningMode(false);
+        setStrategyAdvised(false);
+        setTodoExpanded(false);
+        todoSeenInTaskRef.current = false;
       } else if (ev.event === 'review_delivery_failed') {
         // 重连补发失败（如后端不可达）：审核置为失效并提示
         useReviewStore.getState().expire('审核回复未能送达后端');
@@ -681,6 +760,57 @@ const AgentChat: React.FC = () => {
     );
   };
 
+  const renderTodoCard = () => {
+    if (!currentTodos.length) return null;
+    const completed = currentTodos.filter((item) => item.status === 'completed').length;
+    const allCompleted = completed === currentTodos.length;
+    const stateLabel = allCompleted ? '已完成' : busy ? '执行中' : '未完成';
+
+    return (
+      <section className={`agent-todo-card${todoExpanded ? ' expanded' : ''}`}>
+        <button
+          type="button"
+          className="agent-todo-summary"
+          onClick={() => setTodoExpanded((value) => !value)}
+          aria-expanded={todoExpanded}
+        >
+          <span className="agent-todo-summary-title">
+            {todoExpanded ? <DownOutlined /> : <RightOutlined />}
+            {todoPlanningMode ? '任务计划' : '任务清单'}
+          </span>
+          <span className="agent-todo-summary-meta">
+            {strategyAdvised && <Tag color="purple">已获取策略建议</Tag>}
+            <Tag color={allCompleted ? 'success' : busy ? 'processing' : 'default'}>
+              {stateLabel} · {completed}/{currentTodos.length}
+            </Tag>
+          </span>
+        </button>
+        {todoExpanded && (
+          <div className="agent-todo-list">
+            {currentTodos.map((item, index) => (
+              <div key={`${index}_${item.content}`} className={`agent-todo-item ${item.status}`}>
+                <span className="agent-todo-status" aria-label={item.status}>
+                  {item.status === 'completed' ? <CheckCircleOutlined />
+                    : item.status === 'in_progress' ? <LoadingOutlined spin />
+                      : <span className="agent-todo-pending-dot" />}
+                </span>
+                <div className="agent-todo-content">
+                  <div className="agent-todo-content-line">
+                    <span>{item.content}</span>
+                    {item.kind && <span className="agent-todo-kind">{item.kind}</span>}
+                  </div>
+                  {item.acceptance && (item.status === 'in_progress' || item.kind === 'verification') && (
+                    <div className="agent-todo-acceptance">验收：{item.acceptance}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  };
+
   // ── 当前会话标识（底部状态栏）──
   const currentSessionId = getCurrentSessionId();
   const firstUserMsg = messages.find((m) => m.role === 'user');
@@ -790,6 +920,8 @@ const AgentChat: React.FC = () => {
               </Tooltip>
             </div>
           </div>
+
+          {renderTodoCard()}
 
           {/* Messages */}
           <div className="agent-chat-messages">
@@ -946,6 +1078,7 @@ const AgentChat: React.FC = () => {
                 type="link"
                 onClick={() => {
                   const ui = useUiStore.getState();
+                  activateDiagramForDiffKey(ui.activeDiffDiagramType);
                   ui.setRightPanelTab('diff');
                   ui.setRightPanelVisible(true);
                   setAgentChatVisible(false); // 收起聊天面板，让出审核视野

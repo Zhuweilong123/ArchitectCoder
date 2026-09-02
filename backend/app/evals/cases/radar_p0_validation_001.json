@@ -1,0 +1,17 @@
+{
+  "id": "radar-p0-validation-001",
+  "name": "增强领域参数校验",
+  "prompt": "增强雷达仿真领域模型的输入校验：ModeParams、Target、采样率、PRT、脉冲宽度和 SNR 不应接受 NaN、无穷或非法边界值；补充回归测试且不得破坏现有行为。",
+  "project_id": "radar_sim_validation_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "file_exists", "path": "src/radar_sim/common.py"},
+    {"type": "file_exists", "path": "src/radar_sim/echo.py"}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 50,
+  "max_total_tokens": 60000,
+  "metadata": {"suite": "p0", "capability": "domain_validation", "risk": "high"}
+}

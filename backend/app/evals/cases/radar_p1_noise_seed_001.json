@@ -1,0 +1,17 @@
+{
+  "id": "radar-p1-noise-seed-001",
+  "name": "增加可复现噪声能力",
+  "prompt": "为 NoiseAdder 增加可选的随机种子或随机数生成器注入能力，使相同输入、SNR 和 seed 产生可复现结果，同时保持现有调用方式兼容，并补充测试。",
+  "project_id": "radar_sim_noise_seed_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "file_contains", "path": "src/radar_sim/echo.py", "text": "class NoiseAdder"},
+    {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "class", "name": "NoiseAdder", "diagram": "Echo Simulation"}
+  ],
+  "max_seconds": 240,
+  "max_tool_calls": 60,
+  "max_total_tokens": 80000,
+  "metadata": {"suite": "p1", "capability": "reproducibility", "risk": "medium"}
+}

@@ -1,0 +1,139 @@
+{
+  "id": "trace-3-1-component-element-continuous-remove-001",
+  "name": "组件图 Element 标识移除连续对话",
+  "project_id": "radar_trace_remove_v1",
+  "turns": [
+    {
+      "prompt": "你好"
+    },
+    {
+      "prompt": "我们的项目中有几个组件，列出他们的名字",
+      "hard_checkers": [
+        {
+          "type": "uml_component_names",
+          "path": "radar_design_0730.umlproj",
+          "diagram": "Radar Signal Processing Architecture",
+          "names": [
+            "ModeControlCompElement",
+            "TransmitWaveformGenCompElement",
+            "EchoSimulationCompElement",
+            "PulseCompressionCompElement"
+          ]
+        }
+      ]
+    },
+    {
+      "prompt": "将uml组件图中的组件名都去掉一个Element后缀",
+      "hard_checkers": [
+        {
+          "type": "uml_valid",
+          "path": "radar_design_0730.umlproj"
+        },
+        {
+          "type": "uml_component_names",
+          "path": "radar_design_0730.umlproj",
+          "diagram": "Radar Signal Processing Architecture",
+          "names": [
+            "ModeControlComp",
+            "TransmitWaveformGenComp",
+            "EchoSimulationComp",
+            "PulseCompressionComp"
+          ]
+        }
+      ]
+    },
+    {
+      "prompt": "源代码按照设计同步修改",
+      "hard_checkers": [
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/mode_control.py",
+          "text": "ModeControlComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/transmit.py",
+          "text": "TransmitWaveformGenComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/echo.py",
+          "text": "EchoSimulationComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/pulse_compression.py",
+          "text": "PulseCompressionComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "ModeControlComp component"
+        }
+      ]
+    },
+    {
+      "prompt": "上面的任务执行完了吗"
+    },
+    {
+      "prompt": "删除源代码下面的其他无关文件",
+      "hard_checkers": [
+        {"type": "file_absent", "path": "src/radar_design_current.umlproj"},
+        {"type": "file_absent", "path": "src/radar_sim_design.umlproj"},
+        {"type": "file_absent", "path": "src/_cleanup_tmp.py"}
+      ]
+    },
+    {
+      "prompt": "跑一下测试用例",
+      "hard_checkers": [
+        {"type": "pytest", "path": "test", "timeout": 60}
+      ]
+    }
+  ],
+  "hard_checkers": [
+    {
+      "type": "uml_valid",
+      "path": "radar_design_0730.umlproj"
+    },
+    {
+      "type": "uml_component_names",
+      "path": "radar_design_0730.umlproj",
+      "diagram": "Radar Signal Processing Architecture",
+      "names": [
+        "ModeControlComp",
+        "TransmitWaveformGenComp",
+        "EchoSimulationComp",
+        "PulseCompressionComp"
+      ]
+    },
+    {
+      "type": "pytest",
+      "path": "test",
+      "timeout": 60
+    }
+  ],
+  "max_seconds": 300,
+  "max_tool_calls": 100,
+  "max_total_tokens": 100000,
+  "metadata": {
+    "suite": "trace-3.1",
+    "capability": "continuous_conversation_prompt_optimization",
+    "risk": "high",
+    "source_trace": "20260901_181159_uq2m",
+    "reference_turn_count": 7,
+    "reference_turns": [
+      "greeting",
+      "list_components",
+      "rename_components",
+      "sync_source",
+      "status_query",
+      "delete_unrelated_source_files",
+      "run_tests"
+    ],
+    "mutation": "rename_components: add Element -> remove Element",
+    "conversation_mode": "continuous",
+    "require_auto_approval": true,
+    "expected_status_fast_path": true,
+    "baseline_comparable": true
+  }
+}

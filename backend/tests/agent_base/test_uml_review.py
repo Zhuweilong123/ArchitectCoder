@@ -67,3 +67,31 @@ def test_submit_uml_review_metadata():
     assert pending[0]["review_type"] == "uml_diff"
     assert pending[0]["metadata"]["diagrams"] == [{"name": "new"}]
     assert pending[0]["metadata"]["original_diagrams"] == [{"name": "old"}]
+
+
+def test_review_id_is_not_reused_after_reset():
+    mgr = ReviewManager()
+    first = mgr.submit("code", title="first")
+    mgr.reset()
+    second = mgr.submit("code", title="second")
+
+    assert second.id != first.id
+    assert mgr.resolve(first.id, "stale") is False
+    assert mgr.resolve(second.token, "fresh") is True
+
+
+def test_uml_review_auto_approval_stub_keeps_tool_continuous():
+    mgr = ReviewManager(auto_approve_reviews=True)
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=1)
+
+    result = asyncio.run(tool._execute({
+        "diagrams_json": json.dumps([{"name": "accepted"}]),
+        "summary": "evaluation UML change",
+    }))
+
+    assert json.loads(result)["decision"] == "accept"
+    assert not mgr.has_pending()
+    assert [event["event"] for event in mgr.approval_events] == [
+        "review_requested", "review_response",
+    ]
+    assert mgr.approval_events[-1]["approval_mode"] == "auto_stub"

@@ -7,6 +7,7 @@ Agent 对话 WebSocket 端点 — 前端对话框驱动开发的后端服务
 WebSocket 协议:
     客户端 → 服务端: JSON
         {"type": "chat", "message": "创建一个计算器系统"}
+        {"type": "task_status"}                  # 读取当前会话断点
         {"type": "stop"}                          # 中断当前 Agent
         {"type": "review_response", "review_id": 0, "response": "批准"}  # 人工审核回复
         {"type": "ping"}                          # 心跳，服务端回 {"event": "pong"}
@@ -21,26 +22,59 @@ WebSocket 协议:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.core.auth import require_ws_auth
+from app.core.security import validate_agent_workspace_path
+from app.core.config import get_settings
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+from app.agent_base.core.hooks import AgentRuntime, get_runtime, set_runtime, reset_runtime
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
-from app.services.chat_trace import ChatTraceLogger, set_trace_hook
+from app.agent_base.core.orchestration import (
+    OrchestrationRequest,
+    apply_runtime_directives,
+    exclude_tools,
+    load_orchestrator,
+)
+from app.agent_base.core.memory import (
+    MemoryArchiveRequest,
+    MemoryPort,
+    MemoryRecallRequest,
+    NoOpMemory,
+    load_memory,
+)
+from app.agent_base.execution import build_linux_command_executor
+from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
+from app.services.change_set import ChangeSet
+from app.services.run_state import RunStateError, RunStatus, get_run_store
+from app.core.capabilities import CapabilityPolicy
+from app.services.audit_log import get_audit_logger
+from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
+    """Keep audit failures observable without breaking the Agent response."""
+    try:
+        get_audit_logger().record(
+            event_type, run_id=run_id, session_id=session_id, **payload,
+        )
+    except Exception:
+        logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
 
 router = APIRouter(prefix="/agent", tags=["agent-chat"])
 
@@ -53,7 +87,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     """
     from app.services.chat_trace import current_trace_spans
 
-    tracer = _TRACE_BRIDGE.get("tracer")
+    tracer = _TRACE_BRIDGE.get()
     if tracer is None:
         return None
     spans = current_trace_spans()
@@ -88,11 +122,18 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     return None
 
 
-_TRACE_BRIDGE: dict = {"tracer": None}
+def _enabled_tools_context() -> str:
+    """Describe the stable core tool surface without interpreting user intent."""
+    return "## Tool policy\nUse only the supplied tool schemas; do not invent tools."
+
+
+_TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
+    "agent_chat_trace_bridge", default=None,
+)
 
 
 def _set_trace_bridge(tracer: ChatTraceLogger | None):
-    _TRACE_BRIDGE["tracer"] = tracer
+    _TRACE_BRIDGE.set(tracer)
 
 
 # ── 对话 Agent — ReActAgent + 工具 ──────────────────────
@@ -284,35 +325,56 @@ class DevPromptBuilder:
       recall 跟随当前查询，避免同项目内沿用首轮的过期记忆块。
     """
 
-    def __init__(self, registry: ToolRegistry):
-        self.system_prompt = self._build_static_prompt(registry)
+    def __init__(
+        self,
+        memory: MemoryPort | None = None,
+        *,
+        memory_recall_top_k: int = 3,
+        memory_recall_max_tokens: int = 500,
+    ):
+        # One production prompt keeps the system prefix byte-stable across
+        # sessions. Prompt experiments belong to isolated eval runs, not an
+        # environment flag that can split cache cohorts in production.
+        self.prompt_version = "3.1"
+        self.system_prompt = self._build_static_prompt()
+        self.memory = memory if memory is not None else NoOpMemory()
+        self.memory_recall_top_k = max(1, int(memory_recall_top_k))
+        self.memory_recall_max_tokens = max(1, int(memory_recall_max_tokens))
+        self.static_prompt_report = {
+            "chars": len(self.system_prompt),
+            "estimated_tokens": estimate_tokens(self.system_prompt),
+        }
         self._ctx_key: tuple | None = None
         self._ctx_value: str = ""
+        self.last_context_report: dict = {
+            "sections": {},
+            "total_chars": 0,
+            "estimated_tokens": 0,
+        }
 
     @staticmethod
-    def _build_static_prompt(registry: ToolRegistry) -> str:
-        from app.agent_base.tools.my_tools.skill_loader import build_skills_section
-
-        parts = [
-            "You are a UML design + code co-evolution agent. Evolve existing "
-            "code — don't redesign. Act, don't explain.",
+    def _build_static_prompt() -> str:
+        """The single production system prompt for DevAgent 3.1."""
+        return "\n".join([
+            "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
+            "Complete the user's request end to end: inspect relevant state, evolve existing artifacts instead of redesigning them unless requested, make scoped changes, verify results, and report what was done and what remains.",
             "",
-            "## Rules",
-            "- Do only what was asked.",
-            "- No comments or emojis in code.",
-            "- Pure chat/greeting: reply briefly without calling tools.",
-            "- Before starting any multi-step task, use todo_write to plan your steps; Update status as you go."
+            "## Execution rules",
+            "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
+            "- Read the smallest useful context before editing. Preserve unrelated user changes; do not add comments or emojis to code unless requested; do not invent files, tool results, tests, or completion.",
+            "- Make the minimal correct edit. For a repair, run the focused existing test early, fix its exact failure before broadening scope, then rerun it. Do not claim success until required verification passes.",
+            "- Do not duplicate discovery, inspect a directory merely to find the supplied workspace, or create a helper script solely to inspect or summarize an existing file.",
+            "- Treat the supplied Source directory as the working root for relative paths and shell commands.",
+            "- Use only tools exposed for the current task and their supplied schemas. Prefer direct domain tools over shell workarounds; treat tool errors as capability facts and change approach instead of repeating them.",
             "",
-            _build_tool_policy(registry.list_tools()),
-        ]
-        # skill 目录（name + description）属于静态段：工具集在 session 内不变，
-        # SKILL.md 也是静态文件，字节恒定随 system 前缀一并命中缓存。
-        # 正文不进 prompt —— 由 agent 调 skill(name) 按需拉取。
-        if "skill" in registry.list_tools():
-            skills = build_skills_section()
-            if skills:
-                parts.extend(["", skills])
-        return "\n".join(parts)
+            "## UML and verification",
+            "- Do not modify UML unless requested or required by an externally visible code-contract change. For UML work, prefer graph and targeted file tools; load a skill only when its guidance is necessary.",
+            "- For a full migration from a known canonical .umlproj to a stale peer, reuse the canonical file instead of reconstructing diagrams. Use one workspace-local copy operation, then validate the target.",
+            "- JSON parsing alone does not verify a UML repair: verify the project loads with a non-empty diagram set, using a valid project as structural reference rather than creating an empty placeholder.",
+            "- Follow the current task policy for planning and verification; do not create plans or worktrees when they are not required. Report modified, verified, partial, blocked, and failed states distinctly.",
+            "",
+            "If a safety rule, missing authority, or hard budget prevents completion, stop safely and report completed work, remaining work, and the exact reason.",
+        ])
 
     async def build_context(
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
@@ -329,9 +391,16 @@ class DevPromptBuilder:
         if key == self._ctx_key:
             return self._ctx_value
 
-        parts: list[str] = []
+        sections: list[tuple[str, str]] = []
 
-        # ── workspace 目录（非空才写，帮助 agent 直接定位，减少试探）──
+        def add_section(name: str, value: str) -> None:
+            if value:
+                sections.append((name, value))
+
+        # ── workspace 目录（每轮固定注入）──
+        # Workspace and open-project facts are session invariants.  They are
+        # never conditional on a natural-language task classifier: a wording
+        # miss must not make the agent rediscover its own project boundary.
         workspace_entries = [
             ("Source directory", source_dir),
             ("Test directory", test_dir),
@@ -339,14 +408,18 @@ class DevPromptBuilder:
         ]
         provided = [(label, d) for label, d in workspace_entries if d]
         if provided:
-            lines = ["## Workspace (Windows environment, absolute paths)"]
+            lines = ["## Workspace (host paths; bash executes in WSL Linux)"]
             for label, d in provided:
                 lines.append(f"- {label}: {d}")
-            parts.append("\n".join(lines))
+            lines.append(
+                "- Use the cwd aliases supplied by the bash schema. Do not convert these "
+                "host paths or invoke WSL yourself."
+            )
+            add_section("workspace", "\n".join(lines))
 
         # ── 项目上下文 ──
         if project_file:
-            parts.append(
+            add_section("project_context",
                 "## Project Context\n"
                 f"- Current project file: {project_file}\n"
                 "  (use this exact path as project_file parameter; "
@@ -358,13 +431,20 @@ class DevPromptBuilder:
                       if project_file else "")
         memory_block = await self._recall_memory_block(project_id, user_message)
         if memory_block:
-            parts.append(memory_block)
+            add_section("memory", memory_block)
 
-        # ── 日期（量化到「日」，避免秒级时间戳破坏缓存稳定性）──
-        parts.append(f"Current date: {today}")
+        add_section("date", f"Current date: {today}")
 
         self._ctx_key = key
-        self._ctx_value = "\n\n".join(parts)
+        self._ctx_value = "\n\n".join(value for _, value in sections)
+        self.last_context_report = {
+            "sections": {
+                name: {"chars": len(value), "estimated_tokens": estimate_tokens(value)}
+                for name, value in sections
+            },
+            "total_chars": len(self._ctx_value),
+            "estimated_tokens": estimate_tokens(self._ctx_value),
+        }
         return self._ctx_value
 
     async def _recall_memory_block(self, project_id: str, user_message: str) -> str:
@@ -372,10 +452,15 @@ class DevPromptBuilder:
         if not project_id:
             return ""
         try:
-            from memory_system.manager import MemoryManager
-            mgr = MemoryManager(db_path=_memory_db_path())
-            results = await mgr.recall(project_id, user_message, top_k=5)
-            return mgr.inject_memories("", results).strip()
+            result = await self.memory.recall(MemoryRecallRequest(
+                project_id=project_id,
+                query=user_message,
+                top_k=self.memory_recall_top_k,
+                max_tokens=self.memory_recall_max_tokens,
+            ))
+            if result.context_block and result.memory_ids:
+                await self.memory.reinforce(result.memory_ids, project_id=project_id)
+            return result.context_block
         except Exception:
             logger.warning("[Memory] Recall failed (non-fatal)", exc_info=True)
             return ""
@@ -389,6 +474,12 @@ async def _create_dev_agent(
     user_message: str = "",
     progress: ProgressRelay | None = None,
     restore_history: list[dict] | None = None,
+    task_scope: str = "",
+    auto_approve_reviews: bool = False,
+    max_steps: int | None = None,
+    max_tool_calls: int | None = None,
+    max_run_seconds: float | None = None,
+    max_total_tokens: int | None = None,
 ):
     """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
@@ -397,102 +488,184 @@ async def _create_dev_agent(
     """
     from app.core.config import get_settings
 
+    change_set = ChangeSet(project_file=project_file)
+    settings = get_settings()
+    command_executor = build_linux_command_executor(settings)
+
     tools, review_mgr = create_conversation_tools(
         llm, source_dir=source_dir, test_dir=test_dir, project_file=project_file,
         include_review=True, progress=progress,
+        task_scope=task_scope or project_file,
+        change_set=change_set,
+        review_session_id=task_scope or "",
+        review_project_id=os.path.splitext(os.path.basename(project_file))[0] if project_file else "",
+        auto_approve_reviews=auto_approve_reviews,
+        command_executor=command_executor,
+        # The default chat path stays single-agent.  Dedicated orchestration
+        # can opt into subagents explicitly without adding a task classifier.
+        include_subagent=False,
     )
 
-    registry = ToolRegistry()
+    workspace_roots = [source_dir, test_dir]
+    if project_file:
+        workspace_roots.append(os.path.dirname(project_file))
+    registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
     for t in tools:
         registry.register_tool(t)
 
-    prompt_builder = DevPromptBuilder(registry)
+    memory_provider = load_memory(llm=llm, settings=settings)
+    prompt_builder = DevPromptBuilder(
+        memory=memory_provider,
+        memory_recall_top_k=settings.agent_memory_recall_top_k,
+        memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
+    )
 
     agent = ReActAgent(
         name="DevAgent",
         llm=llm,
         tool_registry=registry,
         system_prompt=prompt_builder.system_prompt,
-        max_steps=get_settings().agent_max_steps,
+        max_steps=max_steps or settings.agent_max_steps,
+        max_tool_calls=max_tool_calls or settings.agent_max_tool_calls,
+        max_repeated_tool_calls=settings.agent_max_repeated_tool_calls,
+        max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
+        max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
+        token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
+        convergence_tool_steps=settings.agent_convergence_tool_steps,
+        convergence_budget_ratio=settings.agent_convergence_budget_ratio,
+        convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
+        evidence_max_records=settings.agent_evidence_max_records,
+        force_final_summary_on_step_limit=settings.agent_force_final_summary_on_step_limit,
+        final_summary_max_tokens=settings.agent_final_summary_max_tokens,
+        llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
+        context_budget=ContextBudgetManager(budget=ContextBudget(
+            max_context_tokens=settings.agent_context_max_tokens,
+            output_reserve_tokens=settings.agent_context_output_reserve_tokens,
+            max_history_tokens=settings.agent_context_max_history_tokens,
+            max_history_turns=settings.agent_context_max_history_turns,
+            max_summary_tokens=settings.agent_context_max_summary_tokens,
+            max_react_steps=settings.agent_context_max_react_steps,
+        )),
     )
+    agent.change_set = change_set
+    agent.memory_provider = memory_provider
     if restore_history:
         agent.restore_history(restore_history)
     return agent, review_mgr, prompt_builder
 
 
 # ── 记忆系统（跨任务归档 + 注入） ───────────────────────────
-# 复用 memory_system.MemoryManager：任务结束 (done) 后异步归档工具过程 + 结论，
-# 新任务开始时 recall 相关记忆注入 system prompt。
+# 主流程只依赖 MemoryPort；具体存储和提取策略由可插拔 provider 提供。
+# 任务结束 (done) 后异步归档工具过程 + 结论，新任务开始时 recall 相关记忆。
 
-def _memory_db_path() -> str:
-    """记忆数据库路径：与 knowledge_graph.db 同目录。"""
-    try:
-        from app.core.config import get_settings as _get
-        _settings = _get()
-        return os.path.normpath(os.path.abspath(
-            os.path.join(os.path.dirname(_settings.uml_dir), "data", "memories.db"),
-        ))
-    except Exception:
-        return os.path.normpath(os.path.abspath(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "memories.db"),
-        ))
+def _todo_progress_state() -> dict:
+    """Return the frontend-safe, authoritative TODO snapshot for this run."""
+    runtime = get_runtime()
+    todos: list[dict] = []
+    for item in runtime.todos:
+        if not isinstance(item, dict):
+            continue
+        snapshot = {
+            key: item[key]
+            for key in ("content", "status", "kind", "acceptance")
+            if key in item
+        }
+        if snapshot:
+            todos.append(snapshot)
+    return {
+        "todos": todos,
+        "planning_mode": runtime.requires_acceptance_todos,
+        "strategy_advised": runtime.strategy_subagent_used,
+    }
 
 
-def _tool_steps_summary(tool_calls_detail: list[dict], max_steps: int = 8) -> str:
-    """把一次任务的工具调用序列整理成结构化摘要文本（喂给记忆提取）。"""
-    lines: list[str] = []
-    for td in (tool_calls_detail or [])[:max_steps]:
-        name = td.get("name", "?")
-        args = td.get("arguments", {})
-        obs = str(td.get("observation", ""))[:300]
-        args_str = json.dumps(args, ensure_ascii=False)[:150] if isinstance(args, dict) else str(args)[:150]
-        lines.append(f"[{name}] 参数:{args_str}\n返回:{obs}")
+def _checkpoint_answer(checkpoint: dict) -> str:
+    if not checkpoint:
+        return "当前会话没有可用的任务执行记录。"
+    lines = [f"任务状态：{checkpoint.get('status', 'unknown')}"]
+    for label, key in (
+        ("已完成", "completed_items"), ("未完成", "pending_items"),
+        ("已修改文件", "changed_files"), ("验证", "verification"),
+    ):
+        values = checkpoint.get(key) or []
+        if values:
+            lines.append(f"{label}：" + "；".join(map(str, values)))
+    if checkpoint.get("stop_reason"):
+        lines.append("停止原因：" + str(checkpoint["stop_reason"]))
+    if checkpoint.get("last_error"):
+        lines.append("最后错误：" + str(checkpoint["last_error"]))
     return "\n".join(lines)
 
 
-def _extract_fn_for(llm: BaseAgentsLLM):
-    """构造 MemoryManager.remember 的 extract_fn：用当前 LLM 提取记忆。
+def _latest_persisted_checkpoint(session_id: str) -> dict:
+    """Read the newest run checkpoint for reconnects without invoking an LLM."""
+    if not session_id:
+        return {}
+    try:
+        for record in get_run_store().list(limit=20, session_id=session_id):
+            checkpoint = record.metadata.get("checkpoint")
+            if isinstance(checkpoint, dict) and checkpoint:
+                return checkpoint
+    except Exception:
+        logger.warning("[RunState] Could not read checkpoint for %s", session_id, exc_info=True)
+    return {}
 
-    max_tokens 只是失控保护，必须高于模型的 reasoning 开销：deepseek
-    思考链计入 max_tokens，上限过低会把预算耗尽在想上、正文为空，
-    导致该次归档解析失败被跳过（manager 已按非致命处理）。历史正常
-    输出（含思考）约 1400-1900 tokens。
-    """
-    async def _extract(prompt: str) -> str:
-        return await llm.ainvoke(
-            [{"role": "user", "content": prompt}], max_tokens=3000
+
+def _should_archive_task_memory(
+    checkpoint_status: str, tool_calls_detail: list[dict],
+) -> bool:
+    """Archive successful mutations based on observed tool facts, not wording."""
+    mutating_tools = {"write_file", "edit_file", "delete_path"}
+    return bool(
+        checkpoint_status == "completed"
+        and any(
+            detail.get("name") in mutating_tools
+            and detail.get("status") in {"success", "completed"}
+            for detail in tool_calls_detail
+            if isinstance(detail, dict)
         )
-    return _extract
+    )
+
+
+def _terminal_checkpoint_status(final_answer: str, todos: list[dict]) -> tuple[str, str | None]:
+    """Map an Agent terminal answer to an honest checkpoint state."""
+    answer = (final_answer or "").lower()
+    if "token 预算" in answer:
+        return "budget_exceeded", "token budget exceeded"
+    if "时间预算" in answer or "llm 调用超过时间" in answer:
+        return "timed_out", "time budget exceeded"
+    if "task is not complete" in answer:
+        return "partial", "required task plan is incomplete"
+    if any(isinstance(todo, dict) and todo.get("status") != "completed" for todo in todos):
+        return "partial", "task checklist has pending items"
+    return "completed", None
 
 
 async def _archive_task_to_memory(
+    memory: MemoryPort,
     project_id: str,
     user_message: str,
     final_answer: str,
     tool_calls_detail: list[dict],
-    llm: BaseAgentsLLM,
+    run_id: str = "",
+    trace_id: str = "",
 ) -> None:
-    """任务结束后异步归档：工具过程摘要 + 结论 → 记忆系统。
-
-    在后台任务中调用（不阻塞主对话返回）。失败不影响主流程。
-    """
+    """通过可选 MemoryPort 异步归档任务摘要；失败不影响主流程。"""
     try:
-        from memory_system.manager import MemoryManager
-        mgr = MemoryManager(db_path=_memory_db_path())
-
-        # 方案 B：把工具过程组装进 llm_output，让提取器捕捉关键事实
-        steps_text = _tool_steps_summary(tool_calls_detail)
-        combined = f"## 工具执行过程\n{steps_text}\n\n## 最终结论\n{final_answer}"
-        await mgr.remember(
+        result = await memory.archive(MemoryArchiveRequest(
             project_id=project_id,
-            context=f"对话 Agent 任务: {user_message[:100]}",
-            llm_call_type="agent_task",
-            user_input=user_message,
-            llm_output=combined[:2000],
-            extract_fn=_extract_fn_for(llm),
+            user_message=user_message,
+            final_answer=final_answer,
+            tool_steps=tuple(tool_calls_detail or ()),
+            run_id=run_id,
+            trace_id=trace_id,
+        ))
+        logger.info(
+            "[Memory] Archived task to memory (project=%s, stored=%d)",
+            project_id,
+            result.stored_count,
         )
-        logger.info("[Memory] Archived task to memory (project=%s)", project_id)
     except Exception:
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
 
@@ -529,9 +702,14 @@ async def _handle_dev(
     stop_check,
     trace_log: ChatTraceLogger | None = None,
     project_file: str = "",
+    source_dir: str = "",
+    test_dir: str = "",
     progress: ProgressRelay | None = None,
     context: str = "",
-    fallback_review_ids: set[int] | None = None,
+    fallback_review_runs: dict[int, str] | None = None,
+    run_id: str = "",
+    run_owner: str = "",
+    session_id: str = "",
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -544,6 +722,17 @@ async def _handle_dev(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     uml_review_seen = False
+    agent.last_run_checkpoint = {
+        "run_id": run_id,
+        "status": "running",
+        "request_summary": user_message[:500],
+        "completed_items": [],
+        "pending_items": [],
+        "changed_files": [],
+        "verification": [],
+        "last_error": None,
+        "stop_reason": None,
+    }
 
     async def _on_progress(ev: dict):
         """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
@@ -581,6 +770,7 @@ async def _handle_dev(
                     "review_id": ev.get("review_id", 0),
                     "title": ev.get("title", ""),
                     "diagrams": metadata.get("diagrams", []),
+                    "changed_diagrams": metadata.get("changed_diagrams"),
                     "original_diagrams": metadata.get("original_diagrams"),
                 })
             else:
@@ -605,10 +795,77 @@ async def _handle_dev(
         except Exception:
             review_mgr.baseline = None
 
-    _runtime_token = set_runtime(AgentRuntime(stop_check=stop_check))
+    _runtime_token = set_runtime(AgentRuntime(
+        stop_check=stop_check,
+    ))
     try:
+        change_set = getattr(agent, "change_set", None)
+        if change_set is not None:
+            change_set.project_file = project_file or change_set.project_file
+            change_set.begin()
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
-        async for step_progress in agent.arun_stream(user_message, context=context):
+        agent.tool_registry.set_allowed_tools(None)
+        context = "\n\n".join(filter(None, [
+            context, _enabled_tools_context(),
+        ]))
+        orchestration_settings = get_settings()
+        orchestrator = load_orchestrator(
+            llm=agent.llm,
+            settings=orchestration_settings,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+        )
+        if trace_log:
+            trace_log.event("orchestrator_phase", phase="plan", status="started")
+        orchestration_result = await orchestrator.prepare(OrchestrationRequest(
+            user_message=user_message,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+            previous_checkpoint=agent.last_run_checkpoint,
+            available_tools=tuple(agent.tool_registry.list_tools()),
+        ))
+        if trace_log:
+            trace_log.event(
+                "orchestrator_plan",
+                **orchestration_result.metadata,
+                phase=orchestration_result.phase,
+                token_overhead=orchestration_result.token_overhead,
+            )
+            if orchestration_result.phase == "explore":
+                trace_log.event(
+                    "orchestrator_phase",
+                    phase="explore",
+                    status="completed",
+                    worker_tokens=orchestration_result.metadata.get("worker_tokens", 0),
+                )
+        apply_runtime_directives(orchestration_result.runtime_directives)
+        if orchestration_result.context:
+            context = "\n\n".join(filter(None, [context, orchestration_result.context]))
+        main_allowed_tools = None
+        if orchestration_result.excluded_tools:
+            main_allowed_tools = exclude_tools(
+                agent.tool_registry.list_tools(), orchestration_result.excluded_tools,
+            )
+        previous_compaction_callback = getattr(agent, "on_context_compacted", None)
+        if trace_log:
+            agent.on_context_compacted = lambda report: trace_log.context_compacted(
+                summary=report.get("summary", ""),
+                dropped_messages=report.get("dropped_messages", 0),
+                dropped_tokens=report.get("dropped_tokens", 0),
+                reason=report.get("reason", ""),
+                triggered_by=report.get("triggered_by", []),
+                tool_call_count=report.get("tool_call_count", 0),
+                token_budget_used=report.get("token_budget_used", 0),
+                keep_recent_steps=report.get("keep_recent_steps", 0),
+            )
+        async for step_progress in agent.arun_stream(
+            user_message,
+            context=context,
+            initial_token_usage=orchestration_result.token_overhead,
+            **({"allowed_tools": main_allowed_tools} if main_allowed_tools is not None else {}),
+        ):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
 
@@ -628,8 +885,14 @@ async def _handle_dev(
                         span_id=tool_span,
                         tool_name=td.get("name", ""),
                         observation=str(td.get("observation", "")),
+                        error=(
+                            str(td.get("error_code", ""))
+                            if td.get("status") not in {"", "success", "completed"}
+                            else ""
+                        ),
                         fed_truncated=bool(td.get("fed_truncated", False)),
                         fed_length=int(td.get("fed_length") or 0),
+                        evidence=td.get("evidence") if isinstance(td.get("evidence"), dict) else None,
                     )
 
             ok = await _ws_send(websocket, {
@@ -647,11 +910,13 @@ async def _handle_dev(
                 ],
                 "is_final": d["is_final"],
                 "final_answer": d["final_answer"] if d["is_final"] else "",
+                **_todo_progress_state(),
             })
             if not ok:
                 return
 
             if d["is_final"]:
+                fallback_review_requested = False
                 # ── 兜底审核：本轮改了 .umlproj 但没调 submit_uml_review ──
                 # 审核靠 prompt 自觉，模型可能漏调；这里对比本轮前后磁盘状态，
                 # 有变更则补推一次 uml_review（接受/拒绝语义与正常审核一致：
@@ -665,9 +930,9 @@ async def _handle_dev(
                 ):
                     try:
                         from app.services.file_service import load_project
+                        from app.services.diagram_diff import changed_diagrams
                         after = [d.model_dump() for d in load_project(project_file).diagrams]
-                        changed = json.dumps(after, ensure_ascii=False, sort_keys=True) != \
-                            json.dumps(review_mgr.baseline, ensure_ascii=False, sort_keys=True)
+                        changed = changed_diagrams(after, review_mgr.baseline)
                         if changed:
                             req = review_mgr.submit(
                                 review_type="uml_diff",
@@ -676,11 +941,13 @@ async def _handle_dev(
                                 question="设计文件已被修改但未经审核，请确认是否接受此变更。",
                                 metadata={
                                     "diagrams": after,
+                                    "changed_diagrams": changed,
                                     "original_diagrams": review_mgr.baseline,
                                 },
                             )
-                            if fallback_review_ids is not None:
-                                fallback_review_ids.add(req.id)
+                            if fallback_review_runs is not None:
+                                fallback_review_runs[req.id] = run_id
+                            fallback_review_requested = True
                             if trace_log:
                                 trace_log.review_request(
                                     review_id=req.id,
@@ -695,27 +962,123 @@ async def _handle_dev(
                                 "review_id": req.id,
                                 "title": req.title,
                                 "diagrams": after,
+                                "changed_diagrams": changed,
                                 "original_diagrams": review_mgr.baseline,
                                 "auto": True,
                             })
                     except Exception:
                         logger.exception("[AgentChat] Fallback review check failed")
 
-                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
-                if trace_log:
-                    trace_log.done(answer=d["final_answer"])
+                if change_set is not None and change_set.has_changes:
+                    manifest = change_set.commit()
+                    logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                else:
+                    manifest = []
+                todos = get_runtime().todos or []
+                terminal_status, stop_reason = _terminal_checkpoint_status(
+                    d["final_answer"], todos,
+                )
+                agent.last_run_checkpoint = {
+                    "run_id": run_id,
+                    "status": "waiting_approval" if fallback_review_requested else terminal_status,
+                    "request_summary": user_message[:500],
+                    "completed_items": [
+                        t.get("content", "") for t in todos
+                        if isinstance(t, dict) and t.get("status") == "completed"
+                    ],
+                    "pending_items": [
+                        t.get("content", "") for t in todos
+                        if isinstance(t, dict) and t.get("status") != "completed"
+                    ],
+                    "changed_files": [m.get("path", "") for m in manifest],
+                    "verification": [
+                        td.get("name", "") for td in task_tool_calls
+                        if td.get("name", "") in {"bash", "test", "pytest"}
+                    ],
+                    "last_error": None,
+                    "stop_reason": stop_reason,
+                }
+                if fallback_review_requested:
+                    agent.last_run_checkpoint.update({
+                        "review_status": "pending",
+                        "post_review_status": terminal_status,
+                    })
+
+                # A fallback review has no Agent future waiting on it.  Do
+                # not announce success before the human has resolved it.
+                if fallback_review_requested:
+                    if run_id:
+                        try:
+                            get_run_store().transition(
+                                run_id, RunStatus.WAITING_APPROVAL,
+                                expected={RunStatus.RUNNING}, owner_id=run_owner,
+                                metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                            )
+                        except RunStateError:
+                            logger.warning("[RunState] Could not mark run %s awaiting review", run_id, exc_info=True)
+                    await _ws_send(websocket, {
+                        "event": "awaiting_review",
+                        "run_id": run_id,
+                        "checkpoint": agent.last_run_checkpoint,
+                    })
+                    return
+
+                run_status = (
+                    RunStatus.SUCCEEDED if terminal_status == "completed" else RunStatus.FAILED
+                )
+                try:
+                    from app.services.agent_metrics import get_agent_metrics
+                    get_agent_metrics().record_run(
+                        "success" if terminal_status == "completed" else terminal_status,
+                    )
+                except Exception:
+                    pass
+                if run_id:
+                    try:
+                        get_run_store().transition(
+                            run_id, run_status,
+                            expected={RunStatus.RUNNING}, owner_id=run_owner,
+                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                        )
+                    except RunStateError:
+                        logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
+                    _record_audit(
+                        "run_succeeded" if terminal_status == "completed" else "run_partial",
+                        run_id=run_id, session_id=session_id,
+                        tool_call_count=len(task_tool_calls),
+                    )
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
-                if project_id and task_tool_calls:
-                    asyncio.create_task(_archive_task_to_memory(
-                        project_id=project_id,
-                        user_message=user_message,
-                        final_answer=d["final_answer"] or "",
-                        tool_calls_detail=task_tool_calls,
-                        llm=getattr(agent, "llm", None),
-                    ))
+                if project_id and _should_archive_task_memory(
+                    terminal_status, task_tool_calls,
+                ):
+                    memory = getattr(agent, "memory_provider", None)
+                    if memory is not None:
+                        asyncio.create_task(_archive_task_to_memory(
+                            memory=memory,
+                            project_id=project_id,
+                            user_message=user_message,
+                            final_answer=d["final_answer"] or "",
+                            tool_calls_detail=task_tool_calls,
+                            run_id=run_id,
+                            trace_id=trace_log.trace_id if trace_log else "",
+                        ))
 
+                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
+                if trace_log:
+                    report = getattr(agent, "last_context_report", {})
+                    trace_log.done(answer=d["final_answer"], runtime={
+                        "token_budget_used": report.get("token_budget_used", 0),
+                        "token_budget_stop_reason": report.get("token_budget_stop_reason", "model_answer"),
+                        "convergence_policy": report.get("convergence_policy", {}),
+                        "convergence_evidence_compaction": report.get(
+                            "convergence_evidence_compaction", {}
+                        ),
+                        "finalization_textual_tool_markup_blocked": report.get(
+                            "finalization_textual_tool_markup_blocked", False
+                        ),
+                    })
                 ok = await _ws_send(websocket, {
                     "event": "done",
                     "result": d["final_answer"],
@@ -724,18 +1087,87 @@ async def _handle_dev(
                     return
                 return
 
+    except asyncio.CancelledError:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "stopped",
+            "stop_reason": "agent task was canceled",
+        }
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.CANCELED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error="agent task was canceled",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+            _record_audit(
+                "run_canceled", run_id=run_id, session_id=session_id,
+                reason="agent task was canceled",
+            )
+        raise
     except AgentInterrupted:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "stopped",
+            "stop_reason": "user requested stop",
+        }
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.CANCELED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error="user requested stop",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+            _record_audit(
+                "run_canceled", run_id=run_id, session_id=session_id,
+                reason="user requested stop",
+            )
         await _ws_send(websocket, {
             "event": "stopped", "reason": "User requested stop",
         })
     except Exception as e:
+        agent.last_run_checkpoint = {
+            **getattr(agent, "last_run_checkpoint", {}),
+            "run_id": run_id,
+            "status": "failed",
+            "last_error": f"{type(e).__name__}: {e}",
+        }
         logger.exception("[AgentChat] Dev agent execution error")
+        try:
+            from app.services.agent_metrics import get_agent_metrics
+            get_agent_metrics().record_run("error")
+        except Exception:
+            pass
+        if run_id:
+            try:
+                get_run_store().transition(
+                    run_id, RunStatus.FAILED,
+                    expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
+                    owner_id=run_owner, error=f"{type(e).__name__}: {e}",
+                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                )
+            except RunStateError:
+                logger.warning("[RunState] Could not mark run %s failed", run_id, exc_info=True)
+            _record_audit(
+                "run_failed", run_id=run_id, session_id=session_id,
+                error=f"{type(e).__name__}: {e}",
+            )
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
         await _ws_send(websocket, {
             "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
         })
     finally:
+        if 'previous_compaction_callback' in locals():
+            agent.on_context_compacted = previous_compaction_callback
         reset_runtime(_runtime_token)
 
 
@@ -745,6 +1177,8 @@ async def _handle_dev(
 async def agent_chat_ws(websocket: WebSocket):
     """Agent 对话 WebSocket — 流式双向通信。"""
     await websocket.accept()
+    if not await require_ws_auth(websocket):
+        return
     logger.info("[AgentChat] WebSocket connected")
 
     # 会话 id 来自前端（localStorage 持久化），跨连接复用 agent 历史与日志文件；
@@ -770,14 +1204,17 @@ async def agent_chat_ws(websocket: WebSocket):
     prompt_builder = session.prompt_builder
     stop_requested = False
     run_task: asyncio.Task | None = None
-    # 兜底审核（run 结束后补推的 uml_review）的 review_id 集合。
+    active_run = None
+    connection_owner = uuid.uuid4().hex
+    # 兜底审核（run 结束后补推的 uml_review）与其原始 run 的映射。
     # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
-    fallback_review_ids: set[int] = set()
+    fallback_review_runs: dict[int, str] = {}
     source_dir = ""
     test_dir = ""
     project_file = ""
     _set_trace_bridge(trace_log)
-    set_trace_hook(_trace_hook_bridge)
+    trace_hook_handler = _trace_hook_bridge
+    push_trace_hook(trace_hook_handler)
 
     def _stop_check():
         return stop_requested
@@ -793,27 +1230,75 @@ async def agent_chat_ws(websocket: WebSocket):
 
             msg_type = msg.get("type", "")
 
+            # Status is an explicit transport command, not a natural-language
+            # shortcut in the execution path.
+            if msg_type == "task_status":
+                checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                checkpoint = checkpoint or _latest_persisted_checkpoint(session_id)
+                answer = _checkpoint_answer(checkpoint)
+                await _ws_send(websocket, {
+                    "event": "done",
+                    "result": answer,
+                    "checkpoint": checkpoint,
+                })
+                continue
+
             # ── 开始对话 ──
             if msg_type == "chat":
                 user_message = msg.get("message", "")
-                source_dir = msg.get("source_dir", source_dir)
-                test_dir = msg.get("test_dir", test_dir)
-                project_file = msg.get("project_file", project_file)
+                requested_source = msg.get("source_dir", source_dir)
+                requested_test = msg.get("test_dir", test_dir)
+                requested_project = msg.get("project_file", project_file)
 
                 if not user_message:
                     await websocket.send_json({"event": "error", "message": "Empty message"})
                     continue
 
-                if llm is None:
-                    llm = BaseAgentsLLM.from_settings(temperature=0.3)
-
-                stop_requested = False
+                validated = []
+                for value, kind, label in (
+                    (requested_source, "directory", "source_dir"),
+                    (requested_test, "directory", "test_dir"),
+                    (requested_project, "file", "project_file"),
+                ):
+                    normalized, error = validate_agent_workspace_path(value, kind=kind)
+                    if error:
+                        validated.append(f"{label}: {error}")
+                    else:
+                        validated.append(normalized)
+                if any(item.startswith(("source_dir:", "test_dir:", "project_file:"))
+                       for item in validated):
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "Invalid workspace path: " + "; ".join(
+                            item for item in validated if ": " in item
+                        ),
+                    })
+                    continue
+                source_dir, test_dir, project_file = validated
 
                 # 记录用户消息（trace）
                 trace_log.user_message(
                     user_message, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                 )
+                trace_log.event(
+                    "agent_model",
+                    model=get_settings().deepseek_model,
+                    policy="fixed_session_model",
+                )
+
+                # One session uses one configured coding model.  Do not infer
+                # model changes from a short follow-up: that makes behaviour
+                # less predictable and breaks provider prompt-cache prefixes.
+                if llm is None:
+                    llm = BaseAgentsLLM.from_settings(temperature=0.3)
+                    if dev_agent is not None:
+                        dev_agent.llm = llm
+                        subagent = dev_agent.tool_registry.get_tool("spawn_subagent")
+                        if subagent is not None and hasattr(subagent, "llm"):
+                            subagent.llm = llm
+
+                stop_requested = False
 
                 # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                 if dev_agent is None:
@@ -821,6 +1306,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     dev_agent, review_mgr, prompt_builder = await _create_dev_agent(
                         llm, source_dir, test_dir, project_file, user_message,
                         progress=progress, restore_history=restore_history,
+                        task_scope=session_id,
                     )
                     session.agent, session.review_mgr, session.progress = \
                         dev_agent, review_mgr, progress
@@ -835,6 +1321,23 @@ async def agent_chat_ws(websocket: WebSocket):
                     context = await prompt_builder.build_context(
                         project_file, source_dir, test_dir, user_message,
                     )
+                    trace_log.event(
+                        "prompt_context",
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                        static_prompt=prompt_builder.static_prompt_report,
+                        **prompt_builder.last_context_report,
+                    )
+                    from app.services.agent_metrics import get_agent_metrics
+                    static_tokens = int(
+                        (prompt_builder.static_prompt_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    dynamic_tokens = int(
+                        (prompt_builder.last_context_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    get_agent_metrics().record_prompt(
+                        static_tokens + dynamic_tokens,
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                    )
 
                 # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，
                 # 收消息循环必须并发处理 review_response / stop 才能解阻塞。
@@ -844,13 +1347,59 @@ async def agent_chat_ws(websocket: WebSocket):
                         "message": "Agent is still processing the previous request",
                     })
                     continue
+                if not session.try_claim_run(connection_owner):
+                    await websocket.send_json({
+                        "event": "error",
+                        "message": "This session is already running on another connection",
+                    })
+                    continue
+                run = get_run_store().create(
+                    kind="agent_chat",
+                    session_id=session_id,
+                    metadata={
+                        "message": user_message[:500],
+                        "source_dir": source_dir,
+                        "test_dir": test_dir,
+                        "project_file": project_file,
+                    },
+                    idempotency_key=(
+                        f"{session_id}:{msg['request_id']}"
+                        if msg.get("request_id") else ""
+                    ),
+                )
+                if run.status != RunStatus.QUEUED.value:
+                    session.release_run(connection_owner)
+                    await _ws_send(websocket, {
+                        "event": "error",
+                        "message": "This request has already been accepted",
+                        "run_id": run.run_id,
+                    })
+                    continue
+                get_run_store().claim(run.run_id, connection_owner)
+                active_run = run
+                trace_log.set_run_id(run.run_id)
+                _record_audit(
+                    "run_started", run_id=run.run_id, session_id=session_id,
+                    kind="agent_chat", project_file=project_file,
+                )
+                await _ws_send(websocket, {
+                    "event": "run_started",
+                    "run_id": run.run_id,
+                    "status": RunStatus.RUNNING.value,
+                })
                 run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
+                    source_dir=source_dir, test_dir=test_dir,
                     progress=progress, context=context,
-                    fallback_review_ids=fallback_review_ids,
+                    fallback_review_runs=fallback_review_runs,
+                    run_id=run.run_id, run_owner=connection_owner,
+                    session_id=session_id,
                 ))
                 run_task.add_done_callback(_consume_task_exception)
+                run_task.add_done_callback(
+                    lambda _task: session.release_run(connection_owner)
+                )
 
             # ── 停止对话 ──
             elif msg_type == "stop":
@@ -872,7 +1421,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 else:
                     response = msg.get("response", "")
                 if review_mgr:
-                    resolved = review_mgr.resolve(review_id, response)
+                    resolved = review_mgr.resolve(review_id, response, session_id=session_id)
                     if not resolved:
                         # 待审核请求不存在（连接断开被清理/会话回收/重复回复）：
                         # 明确告知前端，避免用户以为审核已生效而 agent 实际没收到
@@ -893,13 +1442,69 @@ async def agent_chat_ws(websocket: WebSocket):
                     trace_log.review_response(review_id=review_id, response=response)
                     logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
 
-                    # ── 兜底审核的 reject：agent 已跑完，future 无人消费 ──
-                    # 把用户反馈作为新一轮任务发给 agent，让它修订后重新提交审核。
-                    if review_id in fallback_review_ids:
-                        fallback_review_ids.discard(review_id)
+                    # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──
+                    # accept 才把 waiting_approval 变为最终状态；reject 则把
+                    # 用户反馈作为新一轮修订任务。此前绝不能宣称 completed。
+                    if review_id in fallback_review_runs:
+                        reviewed_run_id = fallback_review_runs.pop(review_id)
+                        checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                        post_review_status = str(checkpoint.pop("post_review_status", "completed"))
+                        checkpoint["review_status"] = "accepted" if decision == "accept" else "rejected"
+                        if decision == "accept":
+                            checkpoint["status"] = post_review_status
+                            if dev_agent is not None:
+                                dev_agent.last_run_checkpoint = checkpoint
+                            resolved_run_status = (
+                                RunStatus.SUCCEEDED
+                                if post_review_status == "completed"
+                                else RunStatus.FAILED
+                            )
+                            if reviewed_run_id:
+                                try:
+                                    get_run_store().transition(
+                                        reviewed_run_id, resolved_run_status,
+                                        expected={RunStatus.WAITING_APPROVAL},
+                                        owner_id=connection_owner,
+                                        metadata_patch={"checkpoint": checkpoint},
+                                    )
+                                except RunStateError:
+                                    logger.warning(
+                                        "[RunState] Could not finalize reviewed run %s",
+                                        reviewed_run_id, exc_info=True,
+                                    )
+                            if post_review_status == "completed":
+                                answer = "设计变更已通过审核，任务已完成。"
+                            else:
+                                answer = (
+                                    "设计变更已通过审核；原任务未完整完成。"
+                                    + (f"停止原因：{checkpoint.get('stop_reason')}" if checkpoint.get("stop_reason") else "")
+                                )
+                            trace_log.done(answer=answer)
+                            await _ws_send(websocket, {
+                                "event": "done",
+                                "result": answer,
+                                "checkpoint": checkpoint,
+                            })
+                            continue
+
+                        checkpoint["status"] = "partial"
+                        if dev_agent is not None:
+                            dev_agent.last_run_checkpoint = checkpoint
+                        if reviewed_run_id:
+                            try:
+                                get_run_store().transition(
+                                    reviewed_run_id, RunStatus.FAILED,
+                                    expected={RunStatus.WAITING_APPROVAL},
+                                    owner_id=connection_owner,
+                                    metadata_patch={"checkpoint": checkpoint},
+                                )
+                            except RunStateError:
+                                logger.warning(
+                                    "[RunState] Could not mark rejected review run %s partial",
+                                    reviewed_run_id, exc_info=True,
+                                )
                         if (
-                            decision == "reject"
-                            and dev_agent is not None
+                            dev_agent is not None
                             and (run_task is None or run_task.done())
                         ):
                             feedback_text = msg.get("feedback", "") or msg.get("response", "")
@@ -919,13 +1524,44 @@ async def agent_chat_ws(websocket: WebSocket):
                                 followup_context = await prompt_builder.build_context(
                                     project_file, source_dir, test_dir, followup,
                                 )
+                            parent_run_id = reviewed_run_id
+                            followup_run = get_run_store().create(
+                                kind="agent_chat",
+                                session_id=session_id,
+                                metadata={
+                                    "message": followup[:500],
+                                    "source_dir": source_dir,
+                                    "test_dir": test_dir,
+                                    "project_file": project_file,
+                                    "parent_run_id": parent_run_id,
+                                },
+                            )
+                            get_run_store().claim(followup_run.run_id, connection_owner)
+                            active_run = followup_run
+                            trace_log.set_run_id(followup_run.run_id)
+                            _record_audit(
+                                "run_started", run_id=followup_run.run_id, session_id=session_id,
+                                kind="agent_chat", project_file=project_file,
+                                parent_run_id=parent_run_id,
+                            )
+                            await _ws_send(websocket, {
+                                "event": "run_started",
+                                "run_id": followup_run.run_id,
+                                "status": RunStatus.RUNNING.value,
+                            })
                             run_task = asyncio.create_task(_handle_dev(
                                 dev_agent, review_mgr, followup, websocket, _stop_check,
                                 trace_log=trace_log, project_file=project_file,
+                                source_dir=source_dir, test_dir=test_dir,
                                 progress=progress, context=followup_context,
-                                fallback_review_ids=fallback_review_ids,
+                                fallback_review_runs=fallback_review_runs,
+                                run_id=followup_run.run_id, run_owner=connection_owner,
+                                session_id=session_id,
                             ))
                             run_task.add_done_callback(_consume_task_exception)
+                            run_task.add_done_callback(
+                                lambda _task: session.release_run(connection_owner)
+                            )
 
             # ── 心跳 ──
             elif msg_type == "ping":
@@ -959,6 +1595,10 @@ async def agent_chat_ws(websocket: WebSocket):
         # 取消未完成的 agent 后台任务，避免泄漏并确保 trace bridge 清理前任务已停。
         if run_task is not None and not run_task.done():
             run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
         # 连接断开 → 该连接产生的待审核请求一并作废：被 cancel 的工具协程
         # 不会消费 future，若不清理，重连后补发的 review_response 会 resolve
         # 到无主 future 上（用户以为生效，实际无人继续）。
@@ -969,5 +1609,6 @@ async def agent_chat_ws(websocket: WebSocket):
         # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
         # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
         session.touch()
-        set_trace_hook(None)
+        session.release_run(connection_owner)
+        pop_trace_hook(trace_hook_handler)
         _set_trace_bridge(None)

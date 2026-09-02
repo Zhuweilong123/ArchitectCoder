@@ -16,6 +16,7 @@ import re
 import secrets
 import subprocess
 import threading
+import hashlib
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
@@ -499,15 +500,21 @@ class CreateWorktreeTool(Tool):
 # 工厂
 # ═══════════════════════════════════════════════════════
 
-def _default_dirs():
+def _default_dirs(scope: str = ""):
     """从 settings.uml_dir 推导 temp/ 下的 .tasks 与 .worktrees。"""
     from app.core.config import get_settings
     base = Path(get_settings().uml_dir).resolve().parent  # temp/
+    if scope:
+        # 项目路径可能包含中文、空格或盘符；用可读前缀 + hash 组成稳定目录名。
+        raw = str(Path(scope).resolve())
+        prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(scope).stem or "session")[:32]
+        scope_dir = f"{prefix}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
+        return base / ".tasks" / scope_dir, base / ".worktrees" / scope_dir, base.parent
     return base / ".tasks", base / ".worktrees", base.parent  # workdir = 项目根
 
 
-def create_task_system_tools() -> list[Tool]:
-    tasks_dir, worktrees_dir, workdir = _default_dirs()
+def create_task_system_tools(scope: str = "") -> list[Tool]:
+    tasks_dir, worktrees_dir, workdir = _default_dirs(scope)
     store = TaskStore(tasks_dir)
     worktrees = WorktreeStore(str(workdir), str(worktrees_dir), str(tasks_dir))
     return [

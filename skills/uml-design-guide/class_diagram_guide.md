@@ -1,6 +1,6 @@
 # UML 类图设计指导 (Class Diagram Design Guide)
 
-> 面向 LLM 的类图设计生成指南。遵循本文档的全部规范，生成的 JSON 可被 UML Designer 工具直接加载。
+> 面向 LLM 的类图设计生成指南。遵循本文档的全部规范，生成的 JSON 可被 ArchitectCoder 工具直接加载。
 
 ---
 

@@ -250,7 +250,11 @@ const DiffViewer: React.FC = () => {
     // ── 联动模式：拒绝 + 意见喂回 Agent ──
     // 回滚画布 / 落盘评审 / 回复阻塞中的 agent 由共享 store 统一处理
     if (reviewPending) {
-      useReviewStore.getState().reject('diff', rejectInstructions);
+      const rejected = await useReviewStore.getState().reject('diff', rejectInstructions);
+      if (!rejected) {
+        setReoptimizing(false);
+        return;
+      }
       setRejectModalVisible(false);
       setReviewComment('');
       message.success({ content: '已拒绝并反馈给 AI 助手，Agent 将带着反馈继续修改', key: 'reoptimize' });
@@ -291,7 +295,8 @@ const DiffViewer: React.FC = () => {
   const handleCancelOptimize = async () => {
     // ── 联动模式：拒绝但不附意见（回滚/落盘/回复 agent 由 store 统一处理）──
     if (reviewPending) {
-      useReviewStore.getState().reject('diff', reviewComment || '用户拒绝了此次变更');
+      const rejected = await useReviewStore.getState().reject('diff', reviewComment || '用户拒绝了此次变更');
+      if (!rejected) return;
       message.info('已拒绝优化结果，评审已保存到 dev_review.txt');
       setRejectModalVisible(false);
       setRightPanelTab('properties');

@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from fastapi import HTTPException
 
 from app.core.config import get_settings
@@ -67,3 +68,41 @@ def safe_path(user_path: str) -> str:
         raise HTTPException(status_code=403, detail="Access denied: path outside project")
 
     return real_candidate
+
+
+def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, str | None]:
+    """校验 Agent/WS 提供的文件或目录，返回规范路径与错误信息。
+
+    Agent 的底层 safe_path 会把传入目录当作根，因此这里必须在更外层
+    先限制这些根本身，避免客户端通过 ``source_dir`` 扩大访问范围。
+    """
+    if not user_path:
+        return "", None
+    try:
+        settings = get_settings()
+        # security.py lives at backend/app/core/.  Agent workspaces are scoped
+        # to the repository root (one level above backend), not backend/ alone.
+        repo_root = Path(__file__).resolve().parents[3]
+        configured = [p.strip() for p in settings.workspace_roots.split(",") if p.strip()]
+        # The application repository is always a trusted workspace baseline.
+        # Configured roots extend that baseline for external projects; they must
+        # not accidentally make in-repository artifacts such as generated/ or
+        # temp/ inaccessible.
+        roots = [repo_root, Path(settings.uml_dir).resolve(),
+                 Path(settings.uml_dir).resolve().parent]
+        roots.extend(Path(p).resolve() for p in configured)
+
+        candidate = Path(user_path)
+        if not candidate.is_absolute():
+            candidate = repo_root / candidate
+        candidate = candidate.resolve()
+        if not any(candidate == root or candidate.is_relative_to(root) for root in roots):
+            return str(candidate), "path is outside configured workspace roots"
+
+        if kind == "directory" and not candidate.is_dir():
+            return str(candidate), "workspace path must be an existing directory"
+        if kind == "file" and not candidate.is_file():
+            return str(candidate), "project_file must be an existing file"
+        return str(candidate), None
+    except (OSError, ValueError, TypeError) as exc:
+        return str(user_path), f"invalid workspace path: {exc}"

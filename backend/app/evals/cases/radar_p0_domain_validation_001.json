@@ -1,0 +1,16 @@
+{
+  "id": "radar-p0-domain-validation-001",
+  "name": "领域对象有限值校验",
+  "prompt": "只处理领域对象的有限值校验：ModeParams 和 Target 不应接受 NaN 或无穷值；保持现有正常输入行为不变，补充并运行相关测试。",
+  "project_id": "radar_sim_validation_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test/test_eval_validation.py", "args": ["-k", "domain_objects"], "timeout": 60}
+  ],
+  "checkers": [
+    {"type": "file_exists", "path": "src/radar_sim/common.py"}
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 50,
+  "max_total_tokens": 60000,
+  "metadata": {"suite": "diagnostic", "parent": "radar-p0-validation-001", "capability": "domain_validation", "risk": "high"}
+}

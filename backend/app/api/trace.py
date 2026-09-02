@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.services.trace_reader import list_traces, read_trace, reconstruct_history
+from app.services.trace_reader import list_traces, read_trace, reconstruct_history, summarize_trace
 from app.services.replay import replay_agent_session, ReplayExhausted
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,15 @@ async def trace_history_endpoint(session_id: str):
     if history is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return {"session_id": session_id, "history": history}
+
+
+@router.get("/{session_id}/summary")
+async def trace_summary_endpoint(session_id: str):
+    """Return aggregate Prompt/runtime counters without trace payloads."""
+    summary = summarize_trace(session_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return summary
 
 
 @router.post("/{session_id}/replay")

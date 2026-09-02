@@ -1,6 +1,6 @@
 # Trace 回放机制设计
 
-> 本文归档 UML Designer 的 trace（会话结构化日志）回放机制的设计与实现，
+> 本文归档 ArchitectCoder 的 trace（会话结构化日志）回放机制的设计与实现，
 > 作为后续迭代（L3 混合回放、回归测试接入等）的参考基线。
 
 ## 1. 背景与目标
@@ -49,6 +49,7 @@ ReActAgent 循环
 | `agent_step` | ReAct 单步 |
 | `tool_call` / `tool_result` | 工具调用与返回，按 `span_id` 配对 |
 | `review_request` / `review_response` | 人工审核回路 |
+| `context_compacted` | 会话历史压缩 checkpoint（摘要及淘汰统计） |
 | `done` / `error` | 最终答案 / 错误 |
 
 每条事件含 `trace_id / span_id / parent_span_id / ts_ms / monotonic_ns` 因果链。
@@ -130,6 +131,11 @@ llm_request.messages（工具返回为 [:2000] 截断版）+ tools + tool_choice
 - `tool_result` 补 `fed_truncated`（bool）/ `fed_length`（int），标记喂回模型前是否被截断（截断长度常量 `OBSERVATION_FEED_LIMIT = 2000`，位于 `react_agent.py`）。
 
 Viewer 据此展示：LLM 卡头部参数徽标 + 「工具 schema」折叠项；工具卡在截断时标注「模型仅收到前 N 字」。
+
+上下文管理还会在请求前执行预算和历史压缩。`ContextBudgetManager` 的裁剪结果不会改变
+Trace 中保存的完整工具观察；压缩时写入 `context_compacted` 事件，`trace_reader` 恢复会话时
+将 checkpoint 作为 `summary` 消息放在结论级历史之前。回放默认仍以各轮 `llm_request` 中的
+实际消息为准，不把压缩摘要误当作新的用户输入。
 
 ### 6.5 回放污染与隔离（踩坑）
 

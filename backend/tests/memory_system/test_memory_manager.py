@@ -6,12 +6,97 @@ from datetime import datetime, timedelta, timezone
 
 from memory_system.manager import MemoryManager, _normalize_subject
 from memory_system.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
+from memory_system.policy import MemoryRecallPolicy, MemoryWritePolicy
 
 
 def _extract(items):
     async def fn(prompt):
         return json.dumps(items, ensure_ascii=False)
     return fn
+
+
+def test_memory_write_policy_rejects_transient_and_low_confidence_candidates():
+    policy = MemoryWritePolicy(min_confidence=0.6)
+    assert not policy.evaluate({
+        "memory_type": "insight", "summary": "temporary result", "temporary": True,
+    }).allowed
+    assert not policy.evaluate({
+        "memory_type": "decision", "summary": "unverified guess", "confidence": 0.2,
+    }).allowed
+    assert policy.evaluate({
+        "memory_type": "decision", "summary": "use SQLite", "confidence": 0.8,
+    }).allowed
+
+
+def test_memory_recall_policy_filters_irrelevant_and_limits_duplicates():
+    policy = MemoryRecallPolicy(min_score=0.1, max_per_type=1)
+    results = [
+        RecallResult(MemoryEntry("p", MemoryType.INSIGHT, "same design choice"), 0.9),
+        RecallResult(MemoryEntry("p", MemoryType.INSIGHT, "same design choice again"), 0.8),
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "use SQLite"), 0.7),
+        RecallResult(MemoryEntry("p", MemoryType.PREFERENCE, "irrelevant"), 0.0),
+    ]
+    selected = policy.select(results, top_k=5, max_tokens=100)
+    assert [item.entry.summary for item in selected] == [
+        "same design choice", "use SQLite"
+    ]
+
+
+def test_memory_recall_policy_deduplicates_subjects():
+    policy = MemoryRecallPolicy(min_score=0.0, max_per_type=3)
+    results = [
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "canonical decision", subject="arch:storage"), 0.9),
+        RecallResult(MemoryEntry("p", MemoryType.DECISION, "stale conflicting decision", subject="ARCH:STORAGE"), 0.8),
+        RecallResult(MemoryEntry("p", MemoryType.PREFERENCE, "other preference", subject="user:style"), 0.7),
+    ]
+
+    selected = policy.select(results, top_k=5, max_tokens=100)
+
+    assert [item.entry.summary for item in selected] == [
+        "canonical decision", "other preference"
+    ]
+
+
+def test_memory_recall_policy_prefers_confirmed_latest_subject_conflict():
+    policy = MemoryRecallPolicy(min_score=0.0, max_per_type=3)
+    stale = MemoryEntry(
+        "p", MemoryType.DECISION, "unconfirmed stale decision",
+        subject="arch:storage", updated_at="2025-01-01T00:00:00+00:00",
+    )
+    confirmed = MemoryEntry(
+        "p", MemoryType.DECISION, "confirmed storage decision",
+        subject="ARCH:STORAGE", user_feedback="accepted",
+        updated_at="2024-01-01T00:00:00+00:00",
+    )
+
+    selected = policy.select([
+        RecallResult(stale, 0.99), RecallResult(confirmed, 0.40),
+    ], top_k=5, max_tokens=100)
+
+    assert [item.entry.summary for item in selected] == ["confirmed storage decision"]
+
+
+def test_remember_records_provenance_and_governance_metadata(tmp_path):
+    async def _run():
+        mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
+        await mgr.remember(
+            "p", "ctx", "agent_task", "u", "o",
+            extract_fn=_extract([{
+                "memory_type": "decision", "summary": "use SQLite",
+                "confidence": 0.9, "importance": 0.8,
+            }]),
+            source_run_id="run-1", source_trace_id="trace-1",
+            source_message_id="message-1", scope="project",
+        )
+        entry = mgr.db.list_by_project("p")[0]
+        assert entry.metadata["provenance"]["run_id"] == "run-1"
+        assert entry.metadata["provenance"]["trace_id"] == "trace-1"
+        assert entry.metadata["scope"] == "project"
+        assert entry.metadata["governance"]["confidence"] == 0.9
+        assert entry.metadata["governance"]["status"] == "active"
+        mgr.close()
+
+    asyncio.run(_run())
 
 
 def test_insight_subject_supersession(tmp_path):
@@ -137,6 +222,18 @@ def test_migration_adds_columns_idempotently(tmp_path):
     assert "updated_at" in cols
     assert db.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
     db.close()
+
+
+def test_maintenance_timestamp_survives_manager_recreation(tmp_path):
+    db_path = str(tmp_path / "m.db")
+    first = MemoryManager(db_path=db_path)
+    first.maintenance("p")
+    assert first.db.get_maintenance_at("p")
+    first.close()
+
+    second = MemoryManager(db_path=db_path)
+    assert second.db.get_maintenance_at("p")
+    second.close()
 
 
 def test_recall_hits_chinese_and_alias(tmp_path):

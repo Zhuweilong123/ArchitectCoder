@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.tools.review import ReviewManager
+from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.file_system_tools import (
-    BashTool, safe_path, create_file_system_tools, _decode_output,
+    BashTool, DeletePathTool, SearchTextTool, safe_path,
+    create_file_system_tools, _decode_output,
 )
 
 
@@ -97,6 +99,32 @@ def test_write_file_blocks_escape(workspace):
     assert "escapes workspace" in result
 
 
+def test_edit_file_expected_hash_prevents_lost_update(workspace):
+    src, _ = workspace
+    edit = _tool_by_name(_tools(workspace), "edit_file")
+    result = _run(edit, {
+        "path": "a.py",
+        "old_text": "line0",
+        "new_text": "changed",
+        "expected_sha256": "0" * 64,
+    })
+    assert "Conflict" in result
+    assert (src / "a.py").read_text(encoding="utf-8").startswith("line0")
+
+
+def test_change_set_records_and_rolls_back_file_changes(workspace):
+    src, test = workspace
+    changes = ChangeSet()
+    tools = create_file_system_tools(str(src), str(test), change_set=changes)
+    write = _tool_by_name(tools, "write_file")
+
+    assert "Wrote" in _run(write, {"path": "transaction.txt", "content": "new"})
+    assert changes.has_changes
+    assert changes.manifest()[0]["path"].endswith("transaction.txt")
+    changes.rollback()
+    assert not (src / "transaction.txt").exists()
+
+
 # ── glob ───────────────────────────────────────────────
 
 def test_glob(workspace):
@@ -113,6 +141,48 @@ def test_bash_echo(workspace):
     assert _run(bash, {"command": "echo hello"}).strip() == "hello"
 
 
+def test_bash_allows_model_selected_file_discovery(workspace, monkeypatch):
+    """Listing commands are governed by the normal bash policy, not glob-only routing."""
+    bash = _tool_by_name(_tools(workspace), "bash")
+
+    async def fake_run(command, cwd=None):
+        return f"executed:{command}:{cwd}"
+
+    monkeypatch.setattr(bash, "_run_command", fake_run)
+    result = _run(bash, {"command": "ls -la", "cwd": "source"})
+
+    assert result == "executed:ls -la:" + str(workspace[0])
+
+
+def test_bash_cwd_alias_is_supported_and_schema_is_explicit(workspace):
+    src, test = workspace
+    bash = _tool_by_name(_tools(workspace), "bash")
+    assert _run(bash, {"command": "python --version", "cwd": "test"})
+    schema = bash.to_openai_schema()["function"]["parameters"]
+    assert "cwd" in schema["properties"]
+    assert "cd" in schema["properties"]["command"]["description"]
+
+
+def test_search_text_uses_structured_project_search(workspace):
+    search = _tool_by_name(_tools(workspace), "search_text")
+    result = _run(search, {"pattern": "line1", "path": "a.py"})
+    assert "a.py:2" in result
+    assert "line1" in result
+
+
+def test_delete_path_is_explicit_and_change_set_can_restore(workspace):
+    src, test = workspace
+    target = src / "temporary.py"
+    target.write_text("temporary", encoding="utf-8")
+    changes = ChangeSet()
+    delete = DeletePathTool(str(src), str(test), change_set=changes)
+    assert "Deleted" in delete.run({"path": "temporary.py"})
+    assert not target.exists()
+    changes.rollback()
+    assert target.read_text(encoding="utf-8") == "temporary"
+    assert "workspace root" in delete.run({"path": str(src)})
+
+
 def test_bash_deny_list(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     result = _run(bash, {"command": "format c:"})
@@ -123,6 +193,12 @@ def test_bash_deny_list(workspace):
 def test_bash_empty_command(workspace):
     bash = _tool_by_name(_tools(workspace), "bash")
     assert "non-empty" in _run(bash, {"command": ""})
+
+
+def test_bash_rejects_shell_chaining(workspace):
+    bash = _tool_by_name(_tools(workspace), "bash")
+    result = _run(bash, {"command": "echo safe && python -c \"open('x','w').write('bad')\""})
+    assert "shell operators" in result
 
 
 # ── bash 敏感命令审核（两级防护） ────────────────────────
@@ -173,6 +249,19 @@ def test_bash_sensitive_accept_executes(workspace):
     # 审核事件已推送（前端据此弹卡）
     assert any(e.get("event") == "review" and e.get("review_type") == "bash_command"
                for e in progress.events)
+
+
+def test_bash_sensitive_auto_approval_stub_executes(workspace):
+    src, test = workspace
+    mgr = ReviewManager(auto_approve_reviews=True)
+    progress = _FakeProgress()
+    bash = BashTool(str(src), str(test), review_manager=mgr, progress=progress)
+
+    result = _run(bash, {"command": SENSITIVE_CMD})
+
+    assert "git reset --hard is risky" in result
+    assert not mgr.has_pending()
+    assert mgr.approval_events[-1]["approval_mode"] == "auto_stub"
 
 
 def test_bash_sensitive_reject_blocked(workspace):
