@@ -175,7 +175,7 @@ class ReActAgent(Agent):
         max_tool_calls: int = 100,
         max_repeated_tool_calls: int = 3,
         max_run_seconds: float = 600.0,
-        max_total_tokens: int = 120000,
+        max_total_tokens: int = 200000,
         token_finalization_reserve_tokens: int = 12000,
         convergence_tool_steps: int = 25,
         convergence_budget_ratio: float = 0.8,
@@ -368,6 +368,7 @@ class ReActAgent(Agent):
         from app.services.chat_trace import trace_span
 
         allowed_tools = kwargs.pop("allowed_tools", None)
+        initial_token_usage = max(0, int(kwargs.pop("initial_token_usage", 0) or 0))
         allowed_set = set(allowed_tools) if allowed_tools is not None else None
         # Preserve caller-provided tool order for stable schemas/cache keys;
         # use a set only for membership checks below. This is unrelated to
@@ -416,7 +417,10 @@ class ReActAgent(Agent):
         tool_call_count = 0
         repeated_calls: dict[str, int] = {}
         started_at = time.monotonic()
-        total_tokens = 0
+        # Planning and read-only exploration happen immediately before this
+        # loop. Count their measured usage against the same task budget so a
+        # worker cannot silently extend the run beyond max_total_tokens.
+        total_tokens = initial_token_usage
         soft_budget_notified = False
         convergence_compaction_active = False
         ended_by_model_answer = False

@@ -42,6 +42,12 @@ from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools, ProgressRelay,
 )
+from app.agent_base.core.orchestration import (
+    OrchestrationRequest,
+    apply_runtime_directives,
+    exclude_tools,
+    load_orchestrator,
+)
 from app.agent_base.execution import build_linux_command_executor
 from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
 from app.services.trace_reader import reconstruct_history
@@ -731,6 +737,8 @@ async def _handle_dev(
     stop_check,
     trace_log: ChatTraceLogger | None = None,
     project_file: str = "",
+    source_dir: str = "",
+    test_dir: str = "",
     progress: ProgressRelay | None = None,
     context: str = "",
     fallback_review_runs: dict[int, str] | None = None,
@@ -835,6 +843,46 @@ async def _handle_dev(
         context = "\n\n".join(filter(None, [
             context, _enabled_tools_context(),
         ]))
+        orchestration_settings = get_settings()
+        orchestrator = load_orchestrator(
+            llm=agent.llm,
+            settings=orchestration_settings,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+        )
+        if trace_log:
+            trace_log.event("orchestrator_phase", phase="plan", status="started")
+        orchestration_result = await orchestrator.prepare(OrchestrationRequest(
+            user_message=user_message,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+            previous_checkpoint=agent.last_run_checkpoint,
+            available_tools=tuple(agent.tool_registry.list_tools()),
+        ))
+        if trace_log:
+            trace_log.event(
+                "orchestrator_plan",
+                **orchestration_result.metadata,
+                phase=orchestration_result.phase,
+                token_overhead=orchestration_result.token_overhead,
+            )
+            if orchestration_result.phase == "explore":
+                trace_log.event(
+                    "orchestrator_phase",
+                    phase="explore",
+                    status="completed",
+                    worker_tokens=orchestration_result.metadata.get("worker_tokens", 0),
+                )
+        apply_runtime_directives(orchestration_result.runtime_directives)
+        if orchestration_result.context:
+            context = "\n\n".join(filter(None, [context, orchestration_result.context]))
+        main_allowed_tools = None
+        if orchestration_result.excluded_tools:
+            main_allowed_tools = exclude_tools(
+                agent.tool_registry.list_tools(), orchestration_result.excluded_tools,
+            )
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
             agent.on_context_compacted = lambda report: trace_log.context_compacted(
@@ -848,7 +896,10 @@ async def _handle_dev(
                 keep_recent_steps=report.get("keep_recent_steps", 0),
             )
         async for step_progress in agent.arun_stream(
-            user_message, context=context,
+            user_message,
+            context=context,
+            initial_token_usage=orchestration_result.token_overhead,
+            **({"allowed_tools": main_allowed_tools} if main_allowed_tools is not None else {}),
         ):
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
@@ -1372,6 +1423,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
+                    source_dir=source_dir, test_dir=test_dir,
                     progress=progress, context=context,
                     fallback_review_runs=fallback_review_runs,
                     run_id=run.run_id, run_owner=connection_owner,
@@ -1533,6 +1585,7 @@ async def agent_chat_ws(websocket: WebSocket):
                             run_task = asyncio.create_task(_handle_dev(
                                 dev_agent, review_mgr, followup, websocket, _stop_check,
                                 trace_log=trace_log, project_file=project_file,
+                                source_dir=source_dir, test_dir=test_dir,
                                 progress=progress, context=followup_context,
                                 fallback_review_runs=fallback_review_runs,
                                 run_id=followup_run.run_id, run_owner=connection_owner,

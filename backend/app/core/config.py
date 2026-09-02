@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 100
     agent_max_repeated_tool_calls: int = 3
     agent_max_run_seconds: int = 600
-    agent_max_total_tokens: int = 120000
+    agent_max_total_tokens: int = 200000
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
     agent_context_max_react_steps: int = 24
+
+    # Main-flow orchestration knobs. The planner is deliberately small and the
+    # optional strategy worker is bounded so orchestration cannot consume the
+    # task budget before the main agent starts.
+    agent_planner_max_tokens: int = 1200
+    agent_planner_timeout_seconds: float = 30.0
+    agent_explorer_max_steps: int = 6
+    agent_orchestration_enabled: bool = True
+    agent_orchestrator_provider: str = "app.agent_base.orchestration.provider:create"
 
     # Command tools expose one Linux/POSIX contract.  Windows deployments use
     # the configured WSL distribution instead of asking the model to choose a

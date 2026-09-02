@@ -8,3 +8,9 @@ def test_settings_accepts_deprecated_sub_agent_model_without_routing(monkeypatch
 
     assert settings.deepseek_model
     assert settings.legacy_sub_agent_model == "legacy-flash-model"
+
+
+def test_settings_default_task_budget_is_200k():
+    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+
+    assert settings.agent_max_total_tokens == 200000

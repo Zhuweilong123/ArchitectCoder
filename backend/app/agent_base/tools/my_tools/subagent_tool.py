@@ -11,7 +11,6 @@ from app.agent_base.tools.my_tools.conversation_tools import AsyncTool, _kg_db_p
 from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
 from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
-from app.agent_base.core.hooks import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +109,10 @@ class SpawnSubagentTool(AsyncTool):
         )
         self.llm = llm
         self.max_steps = max_steps
+        self.last_token_usage = 0
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
+        self._single_use_used = False
         unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
         if not self.toolkits or unknown_toolkits:
             raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
@@ -140,15 +141,14 @@ class SpawnSubagentTool(AsyncTool):
         if not isinstance(description, str) or not description.strip():
             return "Error: description is required"
 
-        runtime = get_runtime()
-        if self.single_use and runtime.strategy_subagent_used:
+        if self.single_use and self._single_use_used:
             return "Error: the strategy subagent may be used only once per task"
 
         toolkit = str(params.get("toolkit") or self.toolkits[0]).strip().lower()
         if toolkit not in self.sub_registries:
             toolkit = self.toolkits[0]
         if self.single_use:
-            runtime.strategy_subagent_used = True
+            self._single_use_used = True
         registry = self.sub_registries[toolkit]
         sub_tools = registry.get_openai_specs()
 
@@ -156,6 +156,7 @@ class SpawnSubagentTool(AsyncTool):
             {"role": "system", "content": self.system_prompts[toolkit]},
             {"role": "user", "content": description},
         ]
+        self.last_token_usage = 0
 
         for _ in range(self.max_steps):
             response = await self.llm.ainvoke_with_tools(
@@ -164,6 +165,9 @@ class SpawnSubagentTool(AsyncTool):
                 tool_choice="auto",
                 temperature=0.3,
             )
+            usage = response.get("usage") or {}
+            if isinstance(usage, dict):
+                self.last_token_usage += int(usage.get("total_tokens") or 0)
             content = response.get("content") or ""
             tool_calls = response.get("tool_calls")
 

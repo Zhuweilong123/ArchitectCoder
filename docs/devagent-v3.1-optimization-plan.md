@@ -1036,7 +1036,7 @@ the uppercase variable name below and takes effect after the backend restarts.
 | Environment variable | Default | Purpose |
 |---|---:|---|
 | `AGENT_MAX_STEPS` | `50` | Maximum productive work steps; it excludes the optional final summary request. |
-| `AGENT_MAX_TOTAL_TOKENS` | `120000` | Cumulative LLM usage budget for one task. |
+| `AGENT_MAX_TOTAL_TOKENS` | `200000` | Cumulative LLM usage budget for one task. |
 | `AGENT_TOKEN_FINALIZATION_RESERVE_TOKENS` | `12000` | Enter a no-tools finalization request when remaining budget is at or below this amount. |
 | `AGENT_CONVERGENCE_TOOL_STEPS` | `25` | Start evidence compaction after this many executed tool calls; parallel calls count individually. |
 | `AGENT_CONVERGENCE_BUDGET_RATIO` | `0.8` | Also start evidence compaction and a convergence warning at this budget ratio. |
@@ -1044,6 +1044,11 @@ the uppercase variable name below and takes effect after the backend restarts.
 | `AGENT_EVIDENCE_MAX_RECORDS` | `128` | Maximum structured evidence records retained during a run; the effective value is never below the tool-call limit. |
 | `AGENT_FORCE_FINAL_SUMMARY_ON_STEP_LIMIT` | `true` | Issue one tool-free summary request after the productive-step limit. |
 | `AGENT_FINAL_SUMMARY_MAX_TOKENS` | `3000` | Output cap for that final summary request. |
+| `AGENT_ORCHESTRATION_ENABLED` | `true` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
+| `AGENT_ORCHESTRATOR_PROVIDER` | `app.agent_base.orchestration.provider:create` | `module:factory` provider path; `none`/`noop` disables it. |
+| `AGENT_PLANNER_MAX_TOKENS` | `1200` | Planner output cap for the default LLM provider. |
+| `AGENT_PLANNER_TIMEOUT_SECONDS` | `30` | Planner request timeout. |
+| `AGENT_EXPLORER_MAX_STEPS` | `6` | Maximum read-only strategy-worker steps. |
 
 Budget finalization takes precedence: if the reserve zone is reached before the
 productive-step limit, the agent stops requesting tools and delivers from current
@@ -1059,3 +1064,19 @@ analysis and runtime tuning.
 为保证移除操作具有真实前置状态，新用例使用独立 fixture，初始组件名和源码标识均带 `CompElement`，项目入口保持参考 Trace 的 `radar_design_0730.umlproj` 结构，并启用自动审核 stub。用例元数据标记 `conversation_mode=continuous`、`reference_turn_count=7` 和 `baseline_comparable=true`，便于与 3.0 Trace 按同轮次、同模型、同 fixture 口径对比。
 
 新增用例已使用 3.1 版本实跑：`eval_e9184aa983c3439d`，7 轮均完成，UML、源码标识、无关文件清理和 37 个测试等硬校验通过。本次运行 100 次工具调用、346,107 tokens、249.7 秒；第 3/4 轮曾触发单轮 token 预算停止，且本次 Trace 未产生 `review_request/review_response` 事件，因此审核 stub 链路尚未被实际覆盖。该结果作为连续对话正确性样本，不作为最终性能门禁数据。
+
+### 15.7 主流程任务编排器实现（2026-09-02）
+
+参考 `backend/app/code.py` 的任务状态、计划门禁、独立只读 worker 和证据交接思路，当前主流程已增加模块化 `TaskOrchestrator`：
+
+- `orchestration/contracts.py` 定义 `TaskContract`、`TaskPlan`、`TaskPhase` 和 `OrchestrationResult`，不依赖具体工具实现；
+- `orchestration/orchestrator.py` 负责一次任务的计划、可选只读探索和主 Agent hand-off。规划器只输出 JSON，解析失败自动回退到确定性计划；
+- 跨设计/源码/测试的任务最多启动一个 `strategy` 子代理。该子代理使用独立消息上下文和只读工具包，禁止写文件、执行命令及递归派生；
+- 探索完成后主 Agent 移除宽泛的图谱发现工具，只保留读取、修改、验证和审核能力，避免重复探索；
+- 规划结果写入当前 `AgentRuntime` 的 Todo/验收契约，复杂任务必须保留分析、执行、验证证据；
+- 规划器和子代理的实际 usage 汇总为 `token_overhead`，通过 `initial_token_usage` 纳入同一轮 ReAct 的 `max_total_tokens`，不再隐式扩展任务预算；
+- `agent_base/core/orchestration.py` 提供稳定的 `OrchestrationPort`、`OrchestrationRequest`、`OrchestrationPreparation`、动态 Loader 和零开销 `NoOpOrchestrator`；主流程不再依赖具体 provider；
+- `agent_base/orchestration/provider.py` 是当前 LLM 编排 provider 适配器。通过 `AGENT_ORCHESTRATOR_PROVIDER` 动态加载，provider 缺失、禁用或初始化失败时自动退化为 NoOp；
+- `agent_chat_ws.py` 只负责生命周期和 trace 事件，编排策略、契约和 worker 工具集分别位于独立模块，删除 provider 包无需修改主流程代码。
+
+该实现刻意不引入模型路由、正则意图分类、持久化 teammate 总线或 worktree 隔离；这些机制会增加链路和缓存变体，和当前“单主 Agent + 可选短生命周期只读 worker”的简洁架构不一致。

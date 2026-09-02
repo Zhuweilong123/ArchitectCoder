@@ -373,12 +373,13 @@ class BaseAgentsLLM:
         try:
             response = self._client.chat.completions.create(**call_kwargs)
             content = response.choices[0].message.content or ""
+            usage = _usage_dict(getattr(response, "usage", None))
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=usage,
                     duration_ms=(time.monotonic() - _t0) * 1000)
         return content
 
@@ -405,7 +406,14 @@ class BaseAgentsLLM:
     # ── 异步调用 ───────────────────────────────────────────
 
     async def ainvoke(self, messages: list[dict], **kwargs) -> str:
+        result = await self.ainvoke_with_metadata(messages, **kwargs)
+        return str(result.get("content") or "")
+
+    async def ainvoke_with_metadata(self, messages: list[dict], **kwargs) -> dict:
         """异步调用 LLM，返回文本响应
+
+        The returned mapping includes the text plus provider usage metadata so
+        orchestration calls can share the same per-task budget as the main loop.
 
         支持 ``model=`` 参数覆盖实例默认模型。
         """
@@ -435,14 +443,15 @@ class BaseAgentsLLM:
                 lambda: self._async_client.chat.completions.create(**call_kwargs),
             )
             content = response.choices[0].message.content or ""
+            usage = _usage_dict(getattr(response, "usage", None))
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
         _trace_hook("llm_response", span_id=span_id, content=content,
-                    usage=_usage_dict(getattr(response, "usage", None)),
+                    usage=usage,
                     duration_ms=(time.monotonic() - _t0) * 1000)
-        return content
+        return {"content": content, "usage": usage, "model": call_kwargs["model"]}
 
     async def athink(self, messages: list[dict], **kwargs) -> AsyncIterator[str]:
         """异步流式调用，逐块产出文本

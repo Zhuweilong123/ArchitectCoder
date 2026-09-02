@@ -25,7 +25,7 @@ class EvalCase(BaseModel):
     hard_checkers: list[dict[str, Any]] = Field(default_factory=list)
     max_seconds: float = Field(default=600.0, gt=0, le=3600)
     max_tool_calls: int = Field(default=100, gt=0, le=1000)
-    max_total_tokens: int = Field(default=100000, gt=0, le=1000000)
+    max_total_tokens: int = Field(default=200000, gt=0, le=1000000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
