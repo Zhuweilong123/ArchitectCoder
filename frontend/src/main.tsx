@@ -5,26 +5,27 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from 'antd';
+import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
 import App from './App';
+import { useUiStore } from './stores/uiStore';
 
-const root = ReactDOM.createRoot(
-  document.getElementById('root') as HTMLElement
-);
+const Root: React.FC = () => {
+  const interfaceLanguage = useUiStore((state) => state.interfaceLanguage);
 
-root.render(
-  <React.StrictMode>
+  return (
     <ConfigProvider
-      locale={zhCN}
+      locale={interfaceLanguage === 'zh' ? zhCN : enUS}
       theme={{
         token: {
-          colorPrimary: '#1890ff',
-          borderRadius: 4,
+          colorPrimary: '#2563eb',
+          colorInfo: '#2563eb',
+          borderRadius: 8,
           fontSize: 13,
         },
         components: {
           Button: {
-            controlHeight: 30,
+            controlHeight: 32,
           },
           Tabs: {
             cardPadding: '6px 10px',
@@ -34,5 +35,15 @@ root.render(
     >
       <App />
     </ConfigProvider>
+  );
+};
+
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
+
+root.render(
+  <React.StrictMode>
+    <Root />
   </React.StrictMode>
 );

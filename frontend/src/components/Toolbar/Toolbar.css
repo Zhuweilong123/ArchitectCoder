@@ -39,3 +39,15 @@
   font-size: 12px;
   padding: 2px 8px;
 }
+
+.settings-button {
+  color: #475569;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+.settings-button:hover {
+  color: #2563eb !important;
+  border-color: #93c5fd !important;
+  background: #eff6ff !important;
+}

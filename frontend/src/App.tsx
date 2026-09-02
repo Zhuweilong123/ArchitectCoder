@@ -1,5 +1,5 @@
 /**
- * Main App Component – layout with toolbar, canvas, and right panel.
+ * Main application shell: toolbar, canvas, and the contextual side panel.
  */
 
 import React, { useCallback } from 'react';
@@ -21,21 +21,23 @@ import TraceViewer from './components/TraceViewer/TraceViewer';
 import EvaluationCenter from './components/EvaluationCenter/EvaluationCenter';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { useDiagramStore } from './stores/diagramStore';
+import { t, type TranslationKey } from './i18n';
 import './App.css';
 
-const { Sider, Content } = Layout;
+const { Content } = Layout;
 
 const App: React.FC = () => {
   const {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
-    showTestCaseInCanvas,
+    showTestCaseInCanvas, interfaceLanguage,
   } = useUiStore();
   const diagramType = useDiagramStore((s) => s.diagram.diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
   const hasDiagrams = useDiagramStore((s) => s.project.diagrams.length > 0);
+  const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
-  const handleResize = useCallback((_e: React.MouseEvent, direction: string, ref: HTMLElement) => {
+  const handleResize = useCallback((_e: React.MouseEvent, direction: string) => {
     if (direction === 'left') {
       const handleMove = (moveEvent: MouseEvent) => {
         const newWidth = window.innerWidth - moveEvent.clientX;
@@ -54,7 +56,7 @@ const App: React.FC = () => {
     {
       key: 'properties' as RightPanelTab,
       label: (
-        <Tooltip title="属性">
+        <Tooltip title={copy('properties')}>
           <SettingOutlined />
         </Tooltip>
       ),
@@ -63,7 +65,7 @@ const App: React.FC = () => {
     {
       key: 'diff' as RightPanelTab,
       label: (
-        <Tooltip title="对比">
+        <Tooltip title={copy('diff')}>
           <DiffOutlined />
         </Tooltip>
       ),
@@ -72,7 +74,7 @@ const App: React.FC = () => {
     {
       key: 'testcase' as RightPanelTab,
       label: (
-        <Tooltip title="用例代码">
+        <Tooltip title={copy('testcaseCode')}>
           <FileTextOutlined />
         </Tooltip>
       ),
@@ -80,60 +82,59 @@ const App: React.FC = () => {
     },
   ];
 
+  const statusText = showTestCaseInCanvas
+    ? (interfaceLanguage === 'en'
+      ? 'Double-click a cell to edit test cases · Supports full and incremental test generation'
+      : '双击单元格编辑用例 · 支持全量和增量生成测试代码')
+    : !hasDiagrams
+      ? copy('noDiagramHint')
+      : diagramType === 'sequence'
+        ? (interfaceLanguage === 'en'
+          ? 'Add elements from the toolbar · Click lifeline A then lifeline B to create a message · Ctrl + wheel to zoom'
+          : '从工具栏添加元素 · 依次点击生命线 A 和 B 创建消息 · Ctrl + 滚轮缩放')
+        : diagramType === 'component'
+          ? (interfaceLanguage === 'en'
+            ? 'Add components from the toolbar · Drag ports to create dependencies · Ctrl + wheel to zoom · Space + drag to pan'
+            : '从工具栏添加组件 · 拖动端口创建依赖 · Ctrl + 滚轮缩放 · 按住空格拖动画布')
+          : (interfaceLanguage === 'en'
+            ? 'Add classes from the toolbar · Drag ports to create relationships · Ctrl + wheel to zoom · Space + drag to pan'
+            : '从工具栏添加类 · 拖动端口创建连接 · Ctrl + 滚轮缩放 · 按住空格拖动画布');
+
   return (
     <Layout className="app-layout">
-      {/* Toolbar */}
       <Toolbar />
 
-      {/* Main Area */}
       <Layout className="app-main">
         <Content className="app-content">
           {showTestCaseInCanvas ? (
             <TestCaseViewer embedded />
           ) : !hasDiagrams ? (
-            <div style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center',
-              justifyContent: 'center', height: '100%', color: '#999',
-            }}>
-              <p style={{ fontSize: 18, marginBottom: 8 }}>📋 暂无设计图</p>
-              <p style={{ fontSize: 13 }}>
-                点击工具栏「全局优化」按钮，输入需求描述生成 UML 设计，
-                或使用工具栏「+」下拉菜单手动添加图。
-              </p>
+            <div className="empty-canvas">
+              <div className="empty-canvas-icon">⌘</div>
+              <p className="empty-canvas-title">{copy('noDiagram')}</p>
+              <p className="empty-canvas-hint">{copy('noDiagramHint')}</p>
             </div>
           ) : diagramType === 'sequence' ? (
-            <SeqEditor key={`seq_${activeIdx}`} />
+            <SeqEditor key={'seq_' + activeIdx} />
           ) : diagramType === 'component' ? (
-            <CompEditor key={`comp_${activeIdx}`} />
+            <CompEditor key={'comp_' + activeIdx} />
           ) : (
-            <UMLEditor key={`uml_${activeIdx}`} />
+            <UMLEditor key={'uml_' + activeIdx} />
           )}
-          {/* Status bar */}
+
           <div className="status-bar">
-            {showTestCaseInCanvas ? (
-              <span>双击单元格编辑用例 | 支持增删查改 | 全量/增量生成测试代码</span>
-            ) : !hasDiagrams ? (
-              <span>点击工具栏「全局优化」输入需求生成 UML 设计</span>
-            ) : diagramType === 'sequence' ? (
-              <span>工具栏添加元素 | 点击生命线A→再点生命线B创建消息 | Ctrl+滚轮缩放</span>
-            ) : diagramType === 'component' ? (
-              <span>工具栏添加组件 | 拖拽端口创建依赖 | Ctrl+滚轮缩放 | 空格平移</span>
-            ) : (
-              <span>工具栏添加类 | 拖拽端口创建连接 | Ctrl+滚轮缩放 | 空格平移</span>
-            )}
-            <span>Ctrl+Z 撤销 | Ctrl+Y 重做</span>
+            <span>{statusText}</span>
+            <span>{interfaceLanguage === 'en' ? 'Ctrl + Z Undo · Ctrl + Y Redo' : 'Ctrl + Z 撤销 · Ctrl + Y 重做'}</span>
           </div>
         </Content>
 
-        {/* Resize Handle */}
         {rightPanelVisible && (
           <div
             className="resize-handle"
-            onMouseDown={(e) => handleResize(e, 'left', e.currentTarget)}
+            onMouseDown={(e) => handleResize(e, 'left')}
           />
         )}
 
-        {/* Right Panel */}
         {rightPanelVisible && (
           <div className="right-panel" style={{ width: rightPanelWidth }}>
             <div className="right-panel-tabs">
@@ -147,6 +148,7 @@ const App: React.FC = () => {
                     size="small"
                     icon={<CloseOutlined />}
                     onClick={toggleRightPanel}
+                    aria-label={interfaceLanguage === 'en' ? 'Close panel' : '关闭面板'}
                   />
                 }
                 items={tabItems}
@@ -155,15 +157,15 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Floating button to re-open panel when hidden */}
         {!rightPanelVisible && (
-          <Tooltip title="显示右侧面板">
+          <Tooltip title={interfaceLanguage === 'en' ? 'Show side panel' : '显示右侧面板'}>
             <Button
               type="primary"
               shape="circle"
               size="small"
               icon={<SettingOutlined />}
               onClick={toggleRightPanel}
+              aria-label={interfaceLanguage === 'en' ? 'Show side panel' : '显示右侧面板'}
               style={{
                 position: 'absolute', right: 8, top: 50,
                 zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
@@ -173,13 +175,8 @@ const App: React.FC = () => {
         )}
       </Layout>
 
-      {/* Agent Chat dialog */}
       <AgentChat />
-
-      {/* Trace viewer drawer */}
       <TraceViewer />
-
-      {/* Evaluation center */}
       <EvaluationCenter />
     </Layout>
   );

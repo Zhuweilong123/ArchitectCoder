@@ -1,4 +1,5 @@
 /** UI store – manages UI panel state and global UI preferences. */
+import type { InterfaceLanguage } from '../i18n';
 
 import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
@@ -6,6 +7,7 @@ import type { UmlDiagram } from '../types/uml';
 export type RightPanelTab = 'properties' | 'diff' | 'testcase';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
+export type { InterfaceLanguage } from '../i18n';
 export type DiffDiagramType = string;  // was: 'class' | 'sequence' | 'component' — now dynamic
 
 interface UiState {
@@ -17,6 +19,7 @@ interface UiState {
   // Language
   selectedLanguage: Language;
 
+  interfaceLanguage: InterfaceLanguage;
   // Test code viewer (test case code)
   generatedTestCode: Record<string, string> | null;
   activeTestFile: string | null;
@@ -67,6 +70,7 @@ interface UiState {
   setRightPanelWidth: (width: number) => void;
 
   setSelectedLanguage: (lang: Language) => void;
+  setInterfaceLanguage: (language: InterfaceLanguage) => void;
 
   setGeneratedTestCode: (code: Record<string, string> | null) => void;
   setActiveTestFile: (file: string | null) => void;
@@ -109,6 +113,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   rightPanelTab: 'properties',
   rightPanelWidth: 420,
   selectedLanguage: 'python',
+  interfaceLanguage: localStorage.getItem('interfaceLanguage') === 'zh' ? 'zh' : 'en',
   generatedTestCode: null,
   activeTestFile: null,
   diffContent: null,
@@ -160,6 +165,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   setRightPanelWidth: (width) => set({ rightPanelWidth: width }),
 
   setSelectedLanguage: (lang) => set({ selectedLanguage: lang }),
+  setInterfaceLanguage: (language) => {
+    localStorage.setItem('interfaceLanguage', language);
+    set({ interfaceLanguage: language });
+  },
 
   setGeneratedTestCode: (code) => set({ generatedTestCode: code, activeTestFile: code ? Object.keys(code)[0] || null : null }),
   setActiveTestFile: (file) => set({ activeTestFile: file }),
