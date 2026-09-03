@@ -269,6 +269,7 @@
     "conversation_mode": "continuous",
     "require_auto_approval": true,
     "expected_status_fast_path": true,
-    "baseline_comparable": true
+    "baseline_comparable": true,
+    "convergence_tool_steps": 8
   }
 }

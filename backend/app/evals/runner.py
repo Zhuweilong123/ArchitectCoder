@@ -88,6 +88,10 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         max_tool_calls=case.max_tool_calls,
         max_run_seconds=case.max_seconds,
         max_total_tokens=min(settings.agent_max_total_tokens, case.max_total_tokens),
+        convergence_tool_steps=(
+            int(case.metadata["convergence_tool_steps"])
+            if case.metadata.get("convergence_tool_steps") is not None else None
+        ),
     )
     agent._eval_context = await prompt_builder.build_context(
         str(project_file), str(source_dir), str(test_dir), first_prompt,

@@ -310,6 +310,7 @@ async def _create_dev_agent(
     max_tool_calls: int | None = None,
     max_run_seconds: float | None = None,
     max_total_tokens: int | None = None,
+    convergence_tool_steps: int | None = None,
 ):
     """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
@@ -361,7 +362,11 @@ async def _create_dev_agent(
         max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
         max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
         token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
-        convergence_tool_steps=settings.agent_convergence_tool_steps,
+        convergence_tool_steps=(
+            convergence_tool_steps
+            if convergence_tool_steps is not None
+            else settings.agent_convergence_tool_steps
+        ),
         convergence_budget_ratio=settings.agent_convergence_budget_ratio,
         convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
         evidence_max_records=settings.agent_evidence_max_records,
