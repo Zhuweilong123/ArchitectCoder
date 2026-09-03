@@ -127,6 +127,31 @@ def _enabled_tools_context() -> str:
     return "## Tool policy\nUse only the supplied tool schemas; do not invent tools."
 
 
+def _history_structure(agent: ReActAgent | None) -> dict:
+    """Return history shape metadata without duplicating message content."""
+    history = list(getattr(agent, "_history", []) or []) if agent is not None else []
+    roles = []
+    contents = []
+    for message in history:
+        if isinstance(message, dict):
+            roles.append(str(message.get("role") or "unknown"))
+            contents.append(str(message.get("content") or ""))
+        else:
+            roles.append(str(getattr(message, "role", "unknown") or "unknown"))
+            contents.append(str(getattr(message, "content", "") or ""))
+    return {
+        "history_message_count": len(history),
+        "history_role_sequence": roles,
+        "task_execution_summary_count": sum(
+            role == "summary" or content.startswith("## Task execution checkpoint")
+            for role, content in zip(roles, contents)
+        ),
+        "legacy_history_summary_present": bool(
+            getattr(agent, "_history_summary", "") if agent is not None else ""
+        ),
+    }
+
+
 _TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
     "agent_chat_trace_bridge", default=None,
 )
@@ -527,7 +552,7 @@ def _should_archive_task_memory(
     checkpoint_status: str, tool_calls_detail: list[dict],
 ) -> bool:
     """Archive successful mutations based on observed tool facts, not wording."""
-    mutating_tools = {"write_file", "edit_file", "delete_path"}
+    mutating_tools = {"write_file", "edit_file"}
     return bool(
         checkpoint_status == "completed"
         and any(
@@ -551,6 +576,111 @@ def _terminal_checkpoint_status(final_answer: str, todos: list[dict]) -> tuple[s
     if any(isinstance(todo, dict) and todo.get("status") != "completed" for todo in todos):
         return "partial", "task checklist has pending items"
     return "completed", None
+
+
+def _summary_excerpt(value: object, limit: int = 220) -> str:
+    """Return a bounded single-line value for the next-turn checkpoint."""
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)] + "…"
+
+
+def _build_task_execution_summary(
+    tool_calls: list[dict],
+    checkpoint: dict,
+    status: str,
+) -> str:
+    """Build a deterministic, bounded summary of the completed task.
+
+    The full tool stream remains in ChatTrace.  This checkpoint keeps the
+    small set of facts useful for a later turn: status, changed files,
+    verification, representative successes, and every distinct failure up to
+    a fixed bound.
+    """
+    calls = [item for item in (tool_calls or ()) if isinstance(item, dict)]
+    counts: dict[str, int] = {}
+    success_lines: list[str] = []
+    failure_lines: list[str] = []
+    success_seen: set[tuple[str, str]] = set()
+    failure_seen: set[tuple[str, str, str]] = set()
+
+    for item in calls:
+        name = str(item.get("name") or "tool")
+        item_status = str(item.get("status") or "unknown")
+        counts[item_status] = counts.get(item_status, 0) + 1
+        arguments = item.get("arguments")
+        arguments = arguments if isinstance(arguments, dict) else {}
+        target = (
+            arguments.get("path")
+            or arguments.get("command")
+            or arguments.get("node_id")
+            or arguments.get("cwd")
+            or ""
+        )
+        target_text = _summary_excerpt(target, 150)
+        evidence = item.get("evidence")
+        facts = evidence.get("facts", []) if isinstance(evidence, dict) else []
+        fact_text = "; ".join(
+            _summary_excerpt(fact, 160) for fact in facts[:3]
+            if str(fact or "").strip()
+        )
+        observation = _summary_excerpt(item.get("observation"), 240)
+        is_success = item_status in {"success", "completed"}
+        if is_success:
+            signature = (name, target_text or fact_text)
+            if signature not in success_seen and len(success_lines) < 12:
+                success_seen.add(signature)
+                detail = "; ".join(value for value in (target_text, fact_text) if value)
+                success_lines.append(
+                    f"- {name} succeeded" + (f" ({detail})" if detail else "")
+                )
+        else:
+            signature = (
+                name,
+                str(item.get("error_code") or ""),
+                observation,
+            )
+            if signature not in failure_seen and len(failure_lines) < 12:
+                failure_seen.add(signature)
+                detail = "; ".join(value for value in (
+                    str(item.get("error_code") or ""), target_text, observation,
+                ) if value)
+                failure_lines.append(f"- {name} failed" + (f": {detail}" if detail else ""))
+
+    lines = [
+        "## Task execution checkpoint",
+        f"- Status: {status}",
+        f"- Tool calls: {len(calls)}" + (
+            " (" + ", ".join(f"{key}:{value}" for key, value in sorted(counts.items())) + ")"
+            if counts else ""
+        ),
+    ]
+    changed_files = [str(item) for item in (checkpoint.get("changed_files") or []) if item]
+    if changed_files:
+        lines.append("- Changed files: " + "; ".join(changed_files[:16]))
+    completed = [str(item) for item in (checkpoint.get("completed_items") or []) if item]
+    if completed:
+        lines.append("- Completed items: " + "; ".join(completed[-8:]))
+    verification = [str(item) for item in (checkpoint.get("verification") or []) if item]
+    if verification:
+        lines.append("- Verification attempted: " + "; ".join(verification[-8:]))
+    if success_lines:
+        lines.append("- Successful execution flow:")
+        lines.extend(success_lines)
+    if failure_lines:
+        lines.append("- Failed execution flow:")
+        lines.extend(failure_lines)
+    if len(success_lines) < sum(
+        1 for item in calls if str(item.get("status") or "") in {"success", "completed"}
+    ):
+        lines.append("- Additional successful calls are available in Trace.")
+    pending = [str(item) for item in (checkpoint.get("pending_items") or []) if item]
+    if pending:
+        lines.append("- Pending items: " + "; ".join(pending[-8:]))
+    if checkpoint.get("stop_reason"):
+        lines.append("- Stop reason: " + _summary_excerpt(checkpoint.get("stop_reason"), 260))
+    return "\n".join(lines)
 
 
 async def _archive_task_to_memory(
@@ -721,6 +851,29 @@ async def _handle_dev(
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
     ))
+    task_tool_calls: list[dict] = []
+    task_summary_written = False
+
+    def _write_task_summary(status: str) -> None:
+        """Persist one bounded summary for every terminal execution path."""
+        nonlocal task_summary_written
+        if task_summary_written:
+            return
+        task_summary = _build_task_execution_summary(
+            task_tool_calls,
+            agent.last_run_checkpoint,
+            status,
+        )
+        agent.append_task_summary(task_summary)
+        agent.last_run_checkpoint["task_summary"] = task_summary
+        if trace_log:
+            trace_log.task_summary(
+                summary=task_summary,
+                status=status,
+                tool_call_count=len(task_tool_calls),
+            )
+        task_summary_written = True
+
     try:
         change_set = getattr(agent, "change_set", None)
         if change_set is not None:
@@ -846,6 +999,7 @@ async def _handle_dev(
                         ),
                         fed_truncated=bool(td.get("fed_truncated", False)),
                         fed_length=int(td.get("fed_length") or 0),
+                        duration_ms=float(td.get("duration_ms") or 0.0),
                         evidence=td.get("evidence") if isinstance(td.get("evidence"), dict) else None,
                     )
 
@@ -972,6 +1126,11 @@ async def _handle_dev(
                         "post_review_status": terminal_status,
                     })
 
+                summary_status = (
+                    "waiting_approval" if fallback_review_requested else terminal_status
+                )
+                _write_task_summary(summary_status)
+
                 # A fallback review has no Agent future waiting on it.  Do
                 # not announce success before the human has resolved it.
                 if fallback_review_requested:
@@ -1068,6 +1227,7 @@ async def _handle_dev(
                 if is_paused else "agent task was canceled"
             ),
         }
+        _write_task_summary(agent.last_run_checkpoint["status"])
         if run_id:
             _persist_run_checkpoint(
                 run_id, run_owner, agent.last_run_checkpoint,
@@ -1087,6 +1247,7 @@ async def _handle_dev(
             "status": "stopped",
             "stop_reason": "user requested stop",
         }
+        _write_task_summary("stopped")
         if run_id:
             try:
                 get_run_store().transition(
@@ -1110,7 +1271,9 @@ async def _handle_dev(
             "run_id": run_id,
             "status": "failed",
             "last_error": f"{type(e).__name__}: {e}",
+            "stop_reason": f"{type(e).__name__}: {e}",
         }
+        _write_task_summary("failed")
         logger.exception("[AgentChat] Dev agent execution error")
         try:
             from app.services.agent_metrics import get_agent_metrics
@@ -1271,16 +1434,6 @@ async def agent_chat_ws(websocket: WebSocket):
                 )
 
                 # 记录用户消息（trace）
-                trace_log.user_message(
-                    user_message, project_file=project_file,
-                    source_dir=source_dir, test_dir=test_dir,
-                )
-                trace_log.event(
-                    "agent_model",
-                    model=get_settings().deepseek_model,
-                    policy="fixed_session_model",
-                )
-
                 # One session uses one configured coding model.  Do not infer
                 # model changes from a short follow-up: that makes behaviour
                 # less predictable and breaks provider prompt-cache prefixes.
@@ -1308,33 +1461,9 @@ async def agent_chat_ws(websocket: WebSocket):
 
                 session.touch()
 
-                # 每轮按 live context 组装易变尾块（memo 化），追加到最后一条
-                # user 消息末尾，最大化 system+history 前缀的 KV 缓存命中。
-                context = ""
-                if prompt_builder is not None:
-                    context = await prompt_builder.build_context(
-                        project_file, source_dir, test_dir, effective_user_message,
-                    )
-                    trace_log.event(
-                        "prompt_context",
-                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
-                        static_prompt=prompt_builder.static_prompt_report,
-                        **prompt_builder.last_context_report,
-                    )
-                    from app.services.agent_metrics import get_agent_metrics
-                    static_tokens = int(
-                        (prompt_builder.static_prompt_report or {}).get("estimated_tokens", 0) or 0
-                    )
-                    dynamic_tokens = int(
-                        (prompt_builder.last_context_report or {}).get("estimated_tokens", 0) or 0
-                    )
-                    get_agent_metrics().record_prompt(
-                        static_tokens + dynamic_tokens,
-                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
-                    )
-
-                # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，
-                # 收消息循环必须并发处理 review_response / stop 才能解阻塞。
+                # Bind the durable run before writing per-turn trace events.
+                # This keeps user_message, prompt_context, model, tool, and
+                # terminal events correlated to the same run_id.
                 if run_task is not None and not run_task.done():
                     await websocket.send_json({
                         "event": "error",
@@ -1395,6 +1524,15 @@ async def agent_chat_ws(websocket: WebSocket):
                         )
                 active_run = run
                 trace_log.set_run_id(run.run_id)
+                trace_log.user_message(
+                    user_message, project_file=project_file,
+                    source_dir=source_dir, test_dir=test_dir,
+                )
+                trace_log.event(
+                    "agent_model",
+                    model=get_settings().deepseek_model,
+                    policy="fixed_session_model",
+                )
                 _record_audit(
                     "run_started", run_id=run.run_id, session_id=session_id,
                     kind="agent_chat", project_file=project_file,
@@ -1404,6 +1542,35 @@ async def agent_chat_ws(websocket: WebSocket):
                     "run_id": run.run_id,
                     "status": RunStatus.RUNNING.value,
                 })
+
+                # 每轮按 live context 组装易变尾块（memo 化），追加到最后一条
+                # user 消息末尾，最大化 system+history 前缀的 KV 缓存命中。
+                context = ""
+                if prompt_builder is not None:
+                    context = await prompt_builder.build_context(
+                        project_file, source_dir, test_dir, effective_user_message,
+                    )
+                    trace_log.event(
+                        "prompt_context",
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                        static_prompt=prompt_builder.static_prompt_report,
+                        history_structure=_history_structure(dev_agent),
+                        **prompt_builder.last_context_report,
+                    )
+                    from app.services.agent_metrics import get_agent_metrics
+                    static_tokens = int(
+                        (prompt_builder.static_prompt_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    dynamic_tokens = int(
+                        (prompt_builder.last_context_report or {}).get("estimated_tokens", 0) or 0
+                    )
+                    get_agent_metrics().record_prompt(
+                        static_tokens + dynamic_tokens,
+                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                    )
+
+                # _handle_dev 作为后台任务运行：审核工具会阻塞等待人类回复，
+                # 收消息循环必须并发处理 review_response / stop 才能解阻塞。
                 run_task = asyncio.create_task(_handle_dev(
                     dev_agent, review_mgr, effective_user_message, websocket, _stop_check,
                     trace_log=trace_log, project_file=project_file,
@@ -1533,10 +1700,6 @@ async def agent_chat_ws(websocket: WebSocket):
                                 + "。请据此修改设计文件，然后调用 submit_uml_review 重新提交审核。"
                             )
                             logger.info("[AgentChat] 兜底审核被拒，开启修订轮: %s", feedback_text[:80])
-                            trace_log.user_message(
-                                followup, project_file=project_file,
-                                source_dir=source_dir, test_dir=test_dir,
-                            )
                             stop_requested = False
                             followup_context = ""
                             if prompt_builder is not None:
@@ -1558,6 +1721,23 @@ async def agent_chat_ws(websocket: WebSocket):
                             get_run_store().claim(followup_run.run_id, connection_owner)
                             active_run = followup_run
                             trace_log.set_run_id(followup_run.run_id)
+                            trace_log.user_message(
+                                followup, project_file=project_file,
+                                source_dir=source_dir, test_dir=test_dir,
+                            )
+                            trace_log.event(
+                                "agent_model",
+                                model=get_settings().deepseek_model,
+                                policy="fixed_session_model",
+                            )
+                            if prompt_builder is not None:
+                                trace_log.event(
+                                    "prompt_context",
+                                    prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                                    static_prompt=prompt_builder.static_prompt_report,
+                                    history_structure=_history_structure(dev_agent),
+                                    **prompt_builder.last_context_report,
+                                )
                             _record_audit(
                                 "run_started", run_id=followup_run.run_id, session_id=session_id,
                                 kind="agent_chat", project_file=project_file,

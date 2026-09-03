@@ -49,7 +49,7 @@ class TaskOrchestrator:
     """Prepare a bounded plan and, when needed, run one read-only explorer."""
 
     _EXPLORATION_ONLY = {
-        "get_project_map", "find_nodes", "expand_neighbors", "analyze_impact",
+        "get_project_map", "find_nodes", "expand_neighbors",
         "glob", "spawn_subagent",
     }
 

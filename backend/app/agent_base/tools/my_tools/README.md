@@ -21,8 +21,8 @@
 │  max_steps: agent_max_steps                               │
 │                                                          │
 │  read_file / write_file / edit_file / glob / bash         │  ← 文件系统原语
-│  find_nodes / expand_neighbors / analyze_impact /          │  ← KG 结构化理解
-│  get_project_map / compare_design_code                     │
+│  find_nodes / expand_neighbors /                          │  ← KG 结构化理解
+│  get_project_map                                            │
 │  todo_write                        ← 会话任务列表         │
 │  skill                             ← 领域知识包（L1/L2/L3）│
 │  spawn_subagent                    ← 通用子代理（toolkit） │
@@ -42,7 +42,7 @@
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
 | `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
-| `knowledge_graph_v2_tools.py` | 5 个知识图谱工具（动词命名，分层架构） | ✅ 已接线（`create_conversation_tools()`） |
+| `knowledge_graph_v2_tools.py` | 3 个默认知识图谱工具（漂移分析显式 opt-in） | ✅ 已接线（`create_conversation_tools()`） |
 | `file_search_tools.py` | `grep` 基类（由 `search_text` 适配） | 文件内容搜索实现 |
 
 ## 会话工具清单（`create_conversation_tools()` 装配）
@@ -55,15 +55,15 @@
 | `glob` | `GlobTool` | 按 glob 模式查找文件 |
 | `bash` | `BashTool` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
 | `find_nodes` | `KgLocateTool` | 图谱全文检索：类/方法/组件在哪、某功能在哪个文件（code 节点带 read_file 坐标） |
-| `expand_neighbors` | `KgExpandTool` | 邻域展开：某节点的依赖/方法/关系，带距离与边类型 |
-| `analyze_impact` | `KgImpactTool` | 反依赖影响分析：改 X 会碰谁（直接/传递，含测试） |
+| `expand_neighbors` | `KgExpandTool` | 邻域展开或反向依赖影响分析：带距离、边类型、直接/传递依赖分组 |
 | `get_project_map` | `KgMapTool` | 项目结构地图：图清单、承重墙类、源码/测试统计 |
-| `compare_design_code` | `KgDiffTool` | 设计 vs 代码漂移：缺失实现/多余代码/签名不匹配/未测 |
 | `todo_write` | `TodoWriteTool` | 维护会话任务列表，跟踪长任务子步骤 |
 | `skill` | `SkillTool` | 加载 `## Skills` 目录中的知识包正文或引用文件 |
 | `spawn_subagent` | `SpawnSubagentTool` | 委托子任务，返回 summary；`toolkit` 决定受限子工具集，防递归 |
 | `create_task` / `update_task` / `list_tasks` / `get_task` / `claim_task` / `complete_task` / `create_worktree` | `task_system.py` | 持久化任务 DAG + 认领/完成 + git worktree |
 | `submit_uml_review` | `SubmitUmlReviewTool` | UML diff 人工审核（暂停等待 accept/reject） |
+
+删除操作不再单独暴露 `delete_path`；需要删除明确目标时使用受安全策略约束的 `bash`。
 
 > `create_conversation_tools()` 返回 `(tools, review_manager)`。`review_manager`
 > 供 bash 敏感命令与 `submit_uml_review` 共用同一审核通道。
@@ -86,19 +86,18 @@
 
 KG 提供**文件原语给不了**的结构化答案：类型化关系、设计-代码一致性、大项目的
 有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`bash` 回答
-具体内容与符号——KG 是索引/地图，文件原语是内容。
+具体内容与符号——KG 是索引/地图，文件原语是内容。`compare_design_code`
+保留为显式 opt-in 能力，默认不进入主 Agent 工具列表。
 
 - `find_nodes`：图谱全文检索（BM25 + 名称匹配）。code 层节点返回 `file` +
   `offset`/`limit`（0 基，read_file 就绪）——构成「kg 定位 → read_file 精读」链路。
-- `expand_neighbors`：n-hop 邻域展开，`direction='incoming'` 即「谁依赖 X」。
-- `analyze_impact`：反依赖影响分析，直接/传递分级，按节点类型分组，含测试文件。
+- `expand_neighbors`：n-hop 邻域展开；默认 `mode='neighbors'`，使用
+  `mode='impact'` 可返回反依赖影响分析的直接/传递分级、节点类型分组和测试文件。
 - `get_project_map`：有界结构地图（图/类/文件统计 + in-degree 承重墙），非全量 dump。
-- `compare_design_code`：设计 vs 代码漂移（missing/extra/mismatch/no_coverage），
-  首次调用可能惰性索引代码层。
 
 设计要点：紧凑序列化（丢弃 `methods[]`/`attributes[]` 全量）+ 显式截断标记；
-`project_id` 由工厂绑定，agent 无需手填。重分析型工具（`analyze_impact` /
-`get_project_map` / `compare_design_code`）可通过
+`project_id` 由工厂绑定，agent 无需手填。重分析型工具（`get_project_map` /
+`compare_design_code`）可通过
 `spawn_subagent(toolkit="kg_analysis")` 委派，避免重输出污染主上下文；
 `find_nodes` / `expand_neighbors` 保留直连以支撑 locate→read 链路。
 
@@ -120,8 +119,8 @@ L3 必须由本工具投递而非走 `read_file` —— `safe_path()` 把路径�
 
 - `standard`：文件系统原语 + skill（可读写，默认）
 - `read_only`：`find_nodes` / `expand_neighbors` / `read_file`（只读理解，无写入）
-- `kg_analysis`：`find_nodes` / `analyze_impact` / `get_project_map` /
-  `compare_design_code` / `read_file`（KG 分析三件套，无编辑权）
+- `kg_analysis`：`find_nodes` / `expand_neighbors(mode='impact')` / `get_project_map` /
+  `read_file`（默认不含全量漂移分析，无编辑权）
 
 任何工具包**不含** `submit_uml_review` / `spawn_subagent`，防止递归子代理与
 UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理共用同一通道），防止委托绕过。

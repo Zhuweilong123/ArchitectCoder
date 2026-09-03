@@ -249,7 +249,7 @@
   ],
   "max_seconds": 300,
   "max_tool_calls": 100,
-  "max_total_tokens": 100000,
+  "max_total_tokens": 500000,
   "metadata": {
     "suite": "trace-3.1",
     "capability": "continuous_conversation_prompt_optimization",

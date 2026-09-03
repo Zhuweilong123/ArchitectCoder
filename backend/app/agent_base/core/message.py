@@ -5,7 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 # 定义消息角色的类型
-MessageRole = Literal["user", "assistant", "system", "tool"]
+MessageRole = Literal["user", "assistant", "system", "tool", "summary"]
 
 
 class Message(BaseModel):

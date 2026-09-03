@@ -7,7 +7,7 @@ import pytest
 from app.agent_base.tools.review import ReviewManager
 from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.file_system_tools import (
-    BashTool, DeletePathTool, SearchTextTool, safe_path,
+    BashTool, SearchTextTool, safe_path,
     create_file_system_tools, _decode_output,
 )
 from tests.support.tool_helpers import run_tool, tool_by_name
@@ -32,6 +32,10 @@ def _tools(workspace):
 
 
 _tool_by_name = tool_by_name
+
+
+def test_delete_path_is_not_exposed_by_file_system_factory(workspace):
+    assert "delete_path" not in {tool.name for tool in _tools(workspace)}
 
 
 # ── safe_path ──────────────────────────────────────────
@@ -165,19 +169,6 @@ def test_search_text_uses_structured_project_search(workspace):
     result = _run(search, {"pattern": "line1", "path": "a.py"})
     assert "a.py:2" in result
     assert "line1" in result
-
-
-def test_delete_path_is_explicit_and_change_set_can_restore(workspace):
-    src, test = workspace
-    target = src / "temporary.py"
-    target.write_text("temporary", encoding="utf-8")
-    changes = ChangeSet()
-    delete = DeletePathTool(str(src), str(test), change_set=changes)
-    assert "Deleted" in delete.run({"path": "temporary.py"})
-    assert not target.exists()
-    changes.rollback()
-    assert target.read_text(encoding="utf-8") == "temporary"
-    assert "workspace root" in delete.run({"path": str(src)})
 
 
 def test_bash_deny_list(workspace):

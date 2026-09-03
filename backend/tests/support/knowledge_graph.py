@@ -68,10 +68,11 @@ def build_knowledge_graph(tmp_path: Path) -> tuple[str, str, str]:
     return db_path, str(source_dir), project_id
 
 
-def knowledge_graph_tools(db_path: str, source_dir: str):
+def knowledge_graph_tools(db_path: str, source_dir: str, include_compare: bool = False):
     project_file = str(Path(source_dir).parent / "proj.umlproj")
     return create_kg_v2_tools(
         db_path=db_path,
         project_file=project_file,
         source_dir=source_dir,
+        include_compare=include_compare,
     )

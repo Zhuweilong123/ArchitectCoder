@@ -180,9 +180,9 @@ def test_read_only_toolkit_no_writes(tmp_path):
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert {"find_nodes", "analyze_impact", "get_project_map",
-            "compare_design_code", "read_file"} <= set(names)
-    assert not ({"write_file", "edit_file", "bash", "expand_neighbors"} & set(names))
+    assert {"find_nodes", "expand_neighbors", "get_project_map",
+            "read_file"} <= set(names)
+    assert not ({"write_file", "edit_file", "bash"} & set(names))
 
 
 def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
@@ -193,7 +193,7 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), max_steps=6, single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert {"read_file", "find_nodes", "get_project_map", "compare_design_code", "skill"} <= set(names)
+    assert {"read_file", "find_nodes", "get_project_map", "skill"} <= set(names)
     assert not ({"write_file", "edit_file", "bash", "glob"} & set(names))
     schema = tool.to_openai_schema()
     assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]

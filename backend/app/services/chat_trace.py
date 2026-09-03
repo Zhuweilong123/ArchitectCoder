@@ -72,6 +72,43 @@ def _split_system_prompt(messages: list) -> tuple[str, list]:
     return system_prompt, stripped
 
 
+def _prompt_structure(messages: list, system_prompt: str, conversation: list) -> dict:
+    """Return non-content prompt shape metadata for trace inspection."""
+    roles = [
+        str(message.get("role") or "unknown")
+        for message in messages
+        if isinstance(message, dict)
+    ]
+    contents = [
+        str(message.get("content") or "")
+        for message in messages
+        if isinstance(message, dict)
+    ]
+    return {
+        "total_messages": len(messages),
+        "stable_system_prompt": bool(system_prompt),
+        "conversation_messages": len(conversation),
+        "role_sequence": roles,
+        "task_execution_summary_count": sum(
+            content.startswith("## Task execution checkpoint")
+            for content in contents
+        ),
+        "conversation_checkpoint_count": sum(
+            content.startswith("## Conversation checkpoint")
+            for content in contents
+        ),
+        "tool_call_message_count": sum(
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and bool(message.get("tool_calls"))
+            for message in messages
+        ),
+        "tool_result_message_count": sum(
+            role == "tool" for role in roles
+        ),
+    }
+
+
 def _json_safe(value):
     """Normalize trace payloads so every physical line is strict JSON."""
     if isinstance(value, float) and not math.isfinite(value):
@@ -99,6 +136,7 @@ EVT_DONE = "done"
 EVT_ERROR = "error"
 EVT_KG_INJECT = "kg_inject"
 EVT_CONTEXT_COMPACTED = "context_compacted"
+EVT_TASK_SUMMARY = "task_summary"
 
 
 def _event(
@@ -260,6 +298,21 @@ class ChatTraceLogger:
             keep_recent_steps=keep_recent_steps,
         )
 
+    def task_summary(
+        self,
+        *,
+        summary: str,
+        status: str = "",
+        tool_call_count: int = 0,
+    ) -> None:
+        """Persist the bounded task checkpoint used by later chat turns."""
+        self.event(
+            EVT_TASK_SUMMARY,
+            summary=str(summary or ""),
+            status=status,
+            tool_call_count=tool_call_count,
+        )
+
     def llm_request(self, *, provider: str, model: str, messages: list,
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
@@ -288,6 +341,7 @@ class ChatTraceLogger:
             "response_format": response_format,
             "timeout": timeout,
             "span_path": span_path,
+            "prompt_structure": _prompt_structure(messages, system_prompt, stripped),
             "messages": stripped,
             "tools": tools,
         })

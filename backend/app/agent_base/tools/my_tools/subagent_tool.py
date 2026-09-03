@@ -59,16 +59,14 @@ def _build_toolkit_tools(
     if kind == "kg_analysis":
         return [
             kg["find_nodes"],
-            kg["analyze_impact"],
+            kg["expand_neighbors"],
             kg["get_project_map"],
-            kg["compare_design_code"],
             read_tool,
         ]
     if kind == "strategy":
         return [
             kg["find_nodes"],
             kg["get_project_map"],
-            kg["compare_design_code"],
             read_tool,
             SkillTool(),
         ]

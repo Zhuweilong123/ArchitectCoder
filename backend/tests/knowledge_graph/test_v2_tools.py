@@ -77,13 +77,24 @@ def test_kg_expand(tmp_path):
     assert "truncated" in result["results"]
 
 
+def test_kg_expand_schema_exposes_impact_mode(tmp_path):
+    db_path, source_dir, _ = _build_kg(tmp_path)
+    tool = _tool_by_name(_tools(db_path, source_dir), "expand_neighbors")
+    props = tool.to_openai_schema()["function"]["parameters"]["properties"]
+    assert "mode" in props
+    assert "impact" in props["mode"]["description"]
+
+
 def test_kg_impact(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
     tools = _tools(db_path, source_dir)
     # Order 设计类节点：被 User（association）与 b.py（implements）依赖
     located = _run(_tool_by_name(tools, "find_nodes"), {"query": "Order", "node_types": ["class"], "source": "design"})
     order = next(h for h in located["results"] if h["name"] == "Order")
-    result = _run(_tool_by_name(tools, "analyze_impact"), {"node_id": order["id"]})
+    result = _run(_tool_by_name(tools, "expand_neighbors"), {
+        "node_ids": [order["id"]],
+        "mode": "impact",
+    })
     assert "error" not in result
     assert result["target"]["name"] == "Order"
     assert result["total_affected"] >= 1
@@ -94,7 +105,9 @@ def test_kg_impact(tmp_path):
 
 def test_kg_diff(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
-    result = _run(_tool_by_name(_tools(db_path, source_dir), "compare_design_code"), {})
+    result = _run(_tool_by_name(
+        _tools(db_path, source_dir, include_compare=True), "compare_design_code",
+    ), {})
     assert "error" not in result
     summary = result["summary"]
     # User/Order 均被实现 → 无缺失；Admin 无设计 → extra_code
@@ -142,7 +155,9 @@ def test_kg_diff_method_level_locations(tmp_path):
     builder.build_from_source_dir(str(source_dir), "proj")
     builder.close()
 
-    result = _run(_tool_by_name(_tools(db_path, source_dir), "compare_design_code"), {})
+    result = _run(_tool_by_name(
+        _tools(db_path, source_dir, include_compare=True), "compare_design_code",
+    ), {})
     assert "error" not in result
     mismatch = next(item for item in result["items"]["items"] if item["category"] == "mismatch")
     differences = mismatch["detail"]["differences"]
@@ -176,4 +191,10 @@ def test_factory_wiring(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
     tools = _tools(db_path, source_dir)
     names = [t.name for t in tools]
-    assert names == ["get_project_map", "find_nodes", "expand_neighbors", "analyze_impact", "compare_design_code"]
+    assert names == ["get_project_map", "find_nodes", "expand_neighbors"]
+    opt_in_names = [
+        tool.name for tool in _tools(db_path, source_dir, include_compare=True)
+    ]
+    assert opt_in_names == [
+        "get_project_map", "find_nodes", "expand_neighbors", "compare_design_code",
+    ]

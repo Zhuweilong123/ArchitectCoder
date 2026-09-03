@@ -45,7 +45,7 @@ class CapabilityPolicy:
                 return "command must be a non-empty string"
             return self._check_command(command)
 
-        if name in {"read_file", "write_file", "edit_file", "delete_path"}:
+        if name in {"read_file", "write_file", "edit_file"}:
             path = parameters.get("path", "")
             if not isinstance(path, str) or not path.strip():
                 return "path must be a non-empty string"

@@ -230,12 +230,32 @@ class ReActAgent(Agent):
             str(m.get("content") or "")
             for m in messages
             if m.get("role") == "summary"
+            and (m.get("metadata") or {}).get("kind") != "task_execution"
         )
         self._history = [
             Message(m.get("content", ""), m.get("role", "user"))
             for m in messages
             if m.get("role") in ("user", "assistant")
+            or (
+                m.get("role") == "summary"
+                and (m.get("metadata") or {}).get("kind") == "task_execution"
+            )
         ]
+
+    def append_task_summary(self, summary: str) -> None:
+        """Keep a bounded internal checkpoint for the next turn.
+
+        Tool calls/results are intentionally not added to chat history.  A
+        compact task summary is kept beside the completed user/assistant pair
+        and converted to a system message only when building model input.
+        """
+        value = str(summary or "").strip()
+        if not value:
+            return
+        # Keep the checkpoint adjacent to the user/assistant pair that
+        # produced it.  It is converted to a model-valid system message by
+        # ContextBudgetManager and remains hidden from the user-facing chat.
+        self._history.append(Message(value, "summary"))
 
     # ═══════════════════════════════════════════════════════
     # Public API
@@ -548,6 +568,10 @@ class ReActAgent(Agent):
                     )
                 logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
                 if time.monotonic() - started_at >= self.max_run_seconds:
+                    self.last_context_report.update({
+                        "token_budget_used": total_tokens,
+                        "token_budget_stop_reason": "time_limit",
+                    })
                     final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
@@ -573,6 +597,10 @@ class ReActAgent(Agent):
                             timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
                         )
                     except asyncio.TimeoutError:
+                        self.last_context_report.update({
+                            "token_budget_used": total_tokens,
+                            "token_budget_stop_reason": "llm_timeout",
+                        })
                         final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
                         self.add_message(Message(input_text, "user"))
                         self.add_message(Message(final_answer, "assistant"))
@@ -770,7 +798,7 @@ class ReActAgent(Agent):
                 async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
                     if blocked is not None:
                         return blocked, blocked, ToolResult(status="blocked", data=blocked,
-                                                            error_code="POLICY_BLOCKED")
+                                                            error_code="POLICY_BLOCKED"), 0.0
                     # Check the planning gate immediately before execution.
                     # A preceding todo_write in the same response can therefore
                     # establish the plan before business tools run.
@@ -781,7 +809,7 @@ class ReActAgent(Agent):
                                    "Call todo_write first with the task checklist.")
                         return blocked, blocked, ToolResult(
                             status="blocked", data=blocked, error_code="POLICY_BLOCKED",
-                        )
+                        ), 0.0
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
@@ -789,17 +817,18 @@ class ReActAgent(Agent):
                     )
                     if veto is not None:
                         return veto, veto, ToolResult(status="blocked", data=veto,
-                                                      error_code="HOOK_VETO")
+                                                      error_code="HOOK_VETO"), 0.0
                     with trace_span(f"{self.name}/{tool_name}"):
                         started_tool = time.monotonic()
                         result = await self.tool_registry.aexecute_tool_result_with_params(
                             tool_name, tool_args,
                         )
+                    duration_ms = (time.monotonic() - started_tool) * 1000
                     try:
                         from app.services.agent_metrics import get_agent_metrics
                         get_agent_metrics().record_tool(
                             tool_name, result.status,
-                            (time.monotonic() - started_tool) * 1000,
+                            duration_ms,
                         )
                     except Exception:
                         pass
@@ -810,7 +839,12 @@ class ReActAgent(Agent):
                                     tool_name=tool_name, tool_input=tool_args,
                                     tool_output=observation_full),
                     )
-                    return observation_full, fed if fed is not None else observation_full, result
+                    return (
+                        observation_full,
+                        fed if fed is not None else observation_full,
+                        result,
+                        duration_ms,
+                    )
 
                 executable = [item for item in parsed_calls if item[3] is None]
                 parallel = len(executable) > 1 and all(
@@ -831,8 +865,9 @@ class ReActAgent(Agent):
                         observation_full = observation_fed = blocked
                         result = ToolResult(status="blocked", data=blocked,
                                              error_code="INVALID_ARGUMENTS")
+                        duration_ms = 0.0
                     else:
-                        observation_full, observation_fed, result = execution
+                        observation_full, observation_fed, result, duration_ms = execution
                     if isinstance(tool_args, str):
                         observation_full = observation_fed = execution[0]
                     evidence = evidence_ledger.record(
@@ -860,6 +895,7 @@ class ReActAgent(Agent):
                         "status": result.status,
                         "error_code": result.error_code,
                         "retryable": result.retryable,
+                        "duration_ms": round(duration_ms, 1),
                         "evidence": evidence.to_dict(),
                     })
                     logger.info("  🔧 %s(%s) → %s", tool_name,
@@ -1026,6 +1062,8 @@ class ReActAgent(Agent):
                 self.add_message(Message(input_text, "user"))
                 self.add_message(Message(final_answer, "assistant"))
             logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
+            self.last_context_report.setdefault("token_budget_used", total_tokens)
+            self.last_context_report.setdefault("token_budget_stop_reason", "model_answer")
         finally:
             try:
                 get_hooks().trigger(

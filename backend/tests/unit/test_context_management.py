@@ -87,6 +87,42 @@ def test_react_agent_restores_summary_without_sending_it_as_chat_history():
     assert estimate_tokens("checkpoint") > 0
 
 
+def test_react_agent_appends_bounded_task_summary_to_internal_context():
+    agent = ReActAgent.__new__(ReActAgent)
+    agent._history = []
+    agent._history_summary = "old checkpoint"
+    agent.context_budget = ContextBudgetManager(
+        ContextBudget(max_summary_tokens=40)
+    )
+
+    agent.append_task_summary("## Task execution checkpoint\n- Status: partial\n- Pending: run pytest")
+
+    assert agent._history_summary == "old checkpoint"
+    assert agent._history[-1].role == "summary"
+    assert "Task execution checkpoint" in agent._history[-1].content
+    assert "run pytest" in agent._history[-1].content
+    assert estimate_tokens(agent._history[-1].content) > 0
+
+
+def test_context_budget_keeps_task_summary_adjacent_and_model_compatible():
+    manager = ContextBudgetManager(ContextBudget(max_history_tokens=500))
+    result = manager.build_messages(
+        "system",
+        [
+            Message("first task", "user"),
+            Message("first answer", "assistant"),
+            Message("## Task execution checkpoint\n- first task completed", "summary"),
+        ],
+        "second task",
+    )
+
+    assert [message["role"] for message in result.messages] == [
+        "system", "user", "assistant", "system", "user",
+    ]
+    assert "first task completed" in result.messages[3]["content"]
+    assert result.messages[3]["content"].startswith("## Task execution checkpoint")
+
+
 def test_fit_messages_drops_function_call_and_results_as_one_group():
     manager = ContextBudgetManager(
         ContextBudget(max_context_tokens=40, output_reserve_tokens=5)

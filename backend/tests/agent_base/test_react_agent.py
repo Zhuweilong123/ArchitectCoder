@@ -143,6 +143,7 @@ def test_react_progress_exposes_structured_tool_evidence():
     assert detail is not None
     assert detail["evidence"]["id"] == "E1"
     assert detail["evidence"]["tool_name"] == "echo"
+    assert "duration_ms" in detail
 
 
 def test_usage_budget_keeps_a_text_final_answer_from_the_current_response():
@@ -154,6 +155,8 @@ def test_usage_budget_keeps_a_text_final_answer_from_the_current_response():
     assert llm.count == 1
     assert events[-1].is_final is True
     assert events[-1].final_answer == "not finished"
+    assert agent.last_context_report["token_budget_used"] == 10
+    assert agent.last_context_report["token_budget_stop_reason"] == "model_answer"
 
 
 def test_usage_budget_executes_current_tool_calls_before_stopping():

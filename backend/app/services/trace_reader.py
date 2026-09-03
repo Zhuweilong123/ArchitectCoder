@@ -15,7 +15,11 @@ import os
 from collections import Counter
 from datetime import datetime
 
-from app.services.chat_trace import EVT_CONTEXT_COMPACTED, _chat_log_dir
+from app.services.chat_trace import (
+    EVT_CONTEXT_COMPACTED,
+    EVT_TASK_SUMMARY,
+    _chat_log_dir,
+)
 
 
 def _trace_dir() -> str:
@@ -130,6 +134,11 @@ def summarize_trace(session_id: str) -> dict | None:
     events = data["events"]
     event_counts = Counter(str(event.get("event_type", "unknown")) for event in events)
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    runtime_totals = {
+        "llm_duration_ms": 0.0,
+        "tool_duration_ms": 0.0,
+        "max_tool_duration_ms": 0.0,
+    }
     prompt_versions: Counter[str] = Counter()
     prompt_builds = 0
     prompt_chars = 0
@@ -141,6 +150,13 @@ def summarize_trace(session_id: str) -> dict | None:
             for key in usage_totals:
                 fallback = "input_tokens" if key == "prompt_tokens" else key
                 usage_totals[key] += int(usage.get(key, usage.get(fallback, 0)) or 0)
+            runtime_totals["llm_duration_ms"] += float(event.get("duration_ms", 0) or 0)
+        if event.get("event_type") == "tool_result":
+            duration_ms = float(event.get("duration_ms", 0) or 0)
+            runtime_totals["tool_duration_ms"] += duration_ms
+            runtime_totals["max_tool_duration_ms"] = max(
+                runtime_totals["max_tool_duration_ms"], duration_ms,
+            )
         if event.get("event_type") != "prompt_context":
             continue
         prompt_builds += 1
@@ -161,6 +177,9 @@ def summarize_trace(session_id: str) -> dict | None:
         "llm_requests": event_counts.get("llm_request", 0),
         "llm_responses": event_counts.get("llm_response", 0),
         "llm_usage": usage_totals,
+        "runtime": {
+            key: round(value, 1) for key, value in runtime_totals.items()
+        },
         "tool_calls": event_counts.get("tool_call", 0),
         "tool_results": event_counts.get("tool_result", 0),
         "tool_errors": sum(
@@ -192,22 +211,43 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
 
     history: list[dict] = []
     pending_user: str | None = None
+    pending_task_summaries: list[dict] = []
     checkpoint: str = ""
     for e in data["events"]:
         et = e.get("event_type")
         if et == "user_message":
             if pending_user is not None:
                 history.append({"role": "user", "content": pending_user})
+                history.extend(pending_task_summaries)
+            pending_task_summaries = []
             pending_user = e.get("message", "")
         elif et == "done":
             if pending_user is not None:
                 history.append({"role": "user", "content": pending_user})
                 pending_user = None
             history.append({"role": "assistant", "content": e.get("answer", "")})
+            history.extend(pending_task_summaries)
+            pending_task_summaries = []
         elif et == EVT_CONTEXT_COMPACTED:
             checkpoint = str(e.get("summary") or "")
+        elif et == EVT_TASK_SUMMARY:
+            summary = str(e.get("summary") or "").strip()
+            if summary:
+                pending_task_summaries.append({
+                    "role": "summary",
+                    "content": summary,
+                    "metadata": {
+                        "kind": "task_execution",
+                        "status": str(e.get("status") or ""),
+                        "tool_call_count": e.get("tool_call_count", 0),
+                    },
+                })
     if pending_user is not None:
         history.append({"role": "user", "content": pending_user})
+        history.extend(pending_task_summaries)
     if checkpoint:
-        history.insert(0, {"role": "summary", "content": checkpoint})
+        history.insert(0, {
+            "role": "summary",
+            "content": checkpoint,
+        })
     return history

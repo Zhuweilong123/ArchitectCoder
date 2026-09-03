@@ -218,8 +218,9 @@ export async function getTrace(sessionId: string): Promise<TraceDetail> {
 }
 
 export interface TraceHistoryEntry {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'summary';
   content: string;
+  metadata?: Record<string, unknown>;
 }
 
 export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEntry[]> {

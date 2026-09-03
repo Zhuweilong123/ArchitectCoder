@@ -540,16 +540,17 @@ class KgLocateTool(_KgTool):
 
 
 class KgExpandTool(_KgTool):
-    """邻域展开 — BFS 有界，结果带距离与边类型。"""
+    """邻域展开与反向依赖影响分析 — BFS 有界。"""
 
     def __init__(self, db_path: str, project_id: str):
         super().__init__(
             name="expand_neighbors",
             description=(
                 "Expand the neighborhood of graph node(s) (bounded BFS). Given node ids from "
-                "kg_locate / kg_map, return connected nodes with distance (depth) and the edge "
-                "types that connect them. Use for: what methods/dependencies does class X have, "
-                "who is connected to Y. direction='incoming' answers 'who depends on X'."
+                "find_nodes / get_project_map, return connected nodes with distance and edge "
+                "types. Default mode='neighbors' answers what is connected to a node. For change "
+                "risk, use mode='impact' with exactly one node id: it returns the target, direct "
+                "dependents, transitive dependents, grouped by node type, including test files."
             ),
         )
         self.db_path = db_path
@@ -559,8 +560,13 @@ class KgExpandTool(_KgTool):
         return [
             ToolParameter(
                 name="node_ids", type="array",
-                description="Starting node ids (from kg_locate / kg_map)",
+                description="Starting node ids (from find_nodes / get_project_map); impact mode requires exactly one.",
                 required=True,
+            ),
+            ToolParameter(
+                name="mode", type="string",
+                description="'neighbors' (default) for bounded BFS or 'impact' for reverse dependency summary.",
+                required=False, default="neighbors",
             ),
             ToolParameter(
                 name="direction", type="string",
@@ -585,6 +591,25 @@ class KgExpandTool(_KgTool):
 
     async def _execute(self, params: dict) -> str:
         node_ids = params.get("node_ids") or []
+        mode = str(params.get("mode") or "neighbors").strip().lower() or "neighbors"
+        if mode == "impact":
+            if len(node_ids) != 1:
+                return json.dumps({
+                    "error": "impact 模式要求 node_ids 恰好包含一个节点 id",
+                }, ensure_ascii=False, indent=2)
+            max_depth = int(params.get("max_depth") or MAX_IMPACT_DEPTH)
+            max_nodes = int(params.get("max_nodes") or MAX_IMPACT_NODES)
+            result = await _with_service(
+                self.db_path,
+                lambda svc: svc.impact(
+                    self.project_id, str(node_ids[0]), max_depth, max_nodes,
+                ),
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        if mode != "neighbors":
+            return json.dumps({
+                "error": "mode 必须是 neighbors 或 impact",
+            }, ensure_ascii=False, indent=2)
         direction = str(params.get("direction") or "outgoing").strip().lower() or "outgoing"
         edge_types = params.get("edge_types") or None
         max_depth = int(params.get("max_depth") or MAX_EXPAND_DEPTH)
@@ -594,51 +619,6 @@ class KgExpandTool(_KgTool):
             lambda svc: svc.expand(
                 self.project_id, node_ids, direction, edge_types, max_depth, max_nodes,
             ),
-        )
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
-
-class KgImpactTool(_KgTool):
-    """反依赖影响分析 — 改这个节点会碰谁（bash/grep 表达不了）。"""
-
-    def __init__(self, db_path: str, project_id: str):
-        super().__init__(
-            name="analyze_impact",
-            description=(
-                "Analyze reverse dependencies of a node: what will be affected if this "
-                "class/file changes. Returns direct dependents (depth 1) and transitive "
-                "dependents (depth 2+) grouped by node type, including test files. "
-                "This is the change-risk analysis tool — bash/grep cannot express it."
-            ),
-        )
-        self.db_path = db_path
-        self.project_id = project_id
-
-    def get_parameters(self) -> list:
-        return [
-            ToolParameter(
-                name="node_id", type="string",
-                description="Node id of the thing being changed (from kg_locate / kg_map)",
-                required=True,
-            ),
-            ToolParameter(
-                name="max_depth", type="number",
-                description="How deep to trace reverse dependencies",
-                required=False, default=MAX_IMPACT_DEPTH,
-            ),
-            ToolParameter(
-                name="max_nodes", type="number", description="Result cap",
-                required=False, default=MAX_IMPACT_NODES,
-            ),
-        ]
-
-    async def _execute(self, params: dict) -> str:
-        node_id = str(params.get("node_id") or "").strip()
-        max_depth = int(params.get("max_depth") or MAX_IMPACT_DEPTH)
-        max_nodes = int(params.get("max_nodes") or MAX_IMPACT_NODES)
-        result = await _with_service(
-            self.db_path,
-            lambda svc: svc.impact(self.project_id, node_id, max_depth, max_nodes),
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -696,8 +676,12 @@ def create_kg_v2_tools(
     db_path: str = "./data/knowledge_graph.db",
     project_file: str = "",
     source_dir: str = "",
+    include_compare: bool = False,
 ) -> list[Tool]:
-    """创建 KG v2 工具集（5 个），project_id 由 project_file 自动绑定。
+    """创建 KG v2 工具集（默认 3 个），project_id 由 project_file 自动绑定。
+
+    ``compare_design_code`` 保留为显式 opt-in 工具。窄范围编辑任务通常不需要
+    全量设计-代码漂移分析；默认不暴露它，避免探索阶段产生大体量输出。
 
     Args:
         db_path:     知识图谱数据库路径
@@ -705,17 +689,18 @@ def create_kg_v2_tools(
         source_dir:  源码目录（kg_diff 按需索引代码层时使用）
 
     Returns:
-        [KgMapTool, KgLocateTool, KgExpandTool, KgImpactTool, KgDiffTool]
+        [KgMapTool, KgLocateTool, KgExpandTool]；include_compare=True 时追加 KgDiffTool
     """
     project_id = ""
     if project_file:
         project_id = _normalize_project_id(
             os.path.splitext(os.path.basename(project_file))[0],
         )
-    return [
+    tools: list[Tool] = [
         KgMapTool(db_path, project_id),
         KgLocateTool(db_path, project_id),
         KgExpandTool(db_path, project_id),
-        KgImpactTool(db_path, project_id),
-        KgDiffTool(db_path, project_id, source_dir),
     ]
+    if include_compare:
+        tools.append(KgDiffTool(db_path, project_id, source_dir))
+    return tools
