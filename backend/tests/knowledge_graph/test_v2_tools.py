@@ -1,6 +1,8 @@
 """知识图谱 v2 工具集单元测试（无需 LLM）。"""
 from tests.support.knowledge_graph import build_knowledge_graph, knowledge_graph_tools
 from tests.support.tool_helpers import run_json_tool, tool_by_name
+from app.models.uml import Project, UmlClass, UmlDiagram, UmlMethod
+from knowledge_graph.builder import GraphBuilder
 
 _run = run_json_tool
 _tool_by_name = tool_by_name
@@ -99,7 +101,64 @@ def test_kg_diff(tmp_path):
     assert summary["missing_implementations"] == 0
     assert summary["extra_code"] >= 1
     assert "total_design_classes" in summary
+    assert result["schema_version"] == 2
     assert "items" in result
+    diff_items = result["items"]["items"]
+    extra = next(item for item in diff_items if item["category"] == "extra_code")
+    code_ref = extra["detail"]["code_ref"]
+    assert code_ref["file"]
+    assert code_ref["start_line"] <= code_ref["end_line"]
+    assert code_ref["read_hint"]["offset"] == code_ref["start_line"] - 1
+    assert code_ref["read_hint"]["limit"] == code_ref["end_line"] - code_ref["start_line"] + 1
+
+
+def test_kg_diff_method_level_locations(tmp_path):
+    db_path = str(tmp_path / "kg.db")
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "product.py").write_text(
+        "class Product:\n"
+        "    def lookup(self, value: int) -> str:\n"
+        "        return str(value)\n",
+        encoding="utf-8",
+    )
+
+    project_file = str(tmp_path / "proj.umlproj")
+    project = Project(name="proj", diagrams=[UmlDiagram(
+        name="Domain",
+        diagram_type="class",
+        classes=[UmlClass(
+            id="product",
+            name="Product",
+            methods=[UmlMethod(
+                name="lookup",
+                params="value: str",
+                return_type="int",
+            )],
+        )],
+    )])
+    builder = GraphBuilder(db_path=db_path)
+    builder.build_from_project(project, "proj", filepath=project_file)
+    builder.build_from_source_dir(str(source_dir), "proj")
+    builder.close()
+
+    result = _run(_tool_by_name(_tools(db_path, source_dir), "compare_design_code"), {})
+    assert "error" not in result
+    mismatch = next(item for item in result["items"]["items"] if item["category"] == "mismatch")
+    differences = mismatch["detail"]["differences"]
+    params = next(diff for diff in differences if diff["type"] == "params_mismatch")
+    returns = next(diff for diff in differences if diff["type"] == "return_type_mismatch")
+
+    assert params["design_ref"]["json_pointer"].endswith("/methods/0")
+    assert params["code_ref"]["method"] == "lookup"
+    assert params["code_ref"]["start_line"] == 2
+    assert params["code_ref"]["read_hint"] == {
+        "path": params["code_ref"]["file"],
+        "offset": 1,
+        "limit": 2,
+    }
+    assert returns["design"] == "int"
+    assert returns["code"] == "str"
 
 
 def test_to_openai_schema(tmp_path):

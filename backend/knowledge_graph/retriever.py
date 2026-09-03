@@ -57,6 +57,121 @@ def _mtime_dt(path: str) -> datetime:
         return datetime.fromtimestamp(0, tz=timezone.utc)
 
 
+def _props(node: GraphNode) -> dict:
+    return node.properties if isinstance(node.properties, dict) else {}
+
+
+def _code_ref(node: GraphNode, source_files: dict[str, str]) -> dict:
+    """Return a read_file-ready source location for a KG node."""
+    props = _props(node)
+    filename = str(props.get("filename") or "")
+    path = str(props.get("path") or "")
+    file_path = source_files.get(filename) or path or filename
+    file_path = file_path.replace("\\", "/")
+
+    ref: dict[str, Any] = {
+        "node_id": node.id,
+        "name": node.name,
+        "file": file_path,
+    }
+    parent_class = props.get("parent_class")
+    if parent_class:
+        ref["class"] = parent_class
+    if node.node_type == NodeType.CLASS:
+        ref["class"] = node.name
+    elif node.node_type == NodeType.METHOD:
+        ref["method"] = node.name
+
+    lineno = props.get("lineno")
+    if lineno is not None:
+        start = int(lineno)
+        end = int(props.get("end_lineno") or start)
+        ref.update({"start_line": start, "end_line": end})
+        if file_path:
+            ref["read_hint"] = {
+                "path": file_path,
+                "offset": max(start - 1, 0),
+                "limit": max(end - start + 1, 1),
+            }
+    return ref
+
+
+def _design_ref(node: GraphNode, *, method_name: str = "") -> dict:
+    """Return a stable logical location in the .umlproj design."""
+    props = _props(node)
+    ref: dict[str, Any] = {
+        "node_id": node.id,
+        "name": node.name,
+    }
+    project_file = props.get("project_file")
+    diagram = props.get("diagram")
+    if project_file:
+        ref["project_file"] = str(project_file).replace("\\", "/")
+    if diagram:
+        ref["diagram"] = diagram
+    if node.node_type == NodeType.CLASS:
+        ref["class"] = node.name
+    else:
+        parent_class = props.get("parent_class")
+        if parent_class:
+            ref["class"] = parent_class
+        ref["method"] = method_name or node.name
+    if props.get("diagram_index") is not None:
+        ref["diagram_index"] = props["diagram_index"]
+    if props.get("json_pointer"):
+        ref["json_pointer"] = props["json_pointer"]
+    return ref
+
+
+def _normalize_params(value: Any) -> str:
+    """Normalize Python/UML parameter text for a conservative comparison."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(",")]
+    if parts and parts[0].split(":", 1)[0].strip() in {"self", "cls"}:
+        parts = parts[1:]
+    return ", ".join(parts)
+
+
+def _find_member_node(
+    nodes: list[GraphNode],
+    class_name: str,
+    method_name: str,
+    filename: str = "",
+) -> GraphNode | None:
+    candidates = [
+        node for node in nodes
+        if node.name == method_name
+        and _props(node).get("parent_class", "") == class_name
+    ]
+    if filename:
+        for node in candidates:
+            if _props(node).get("filename", "") == filename:
+                return node
+    return candidates[0] if candidates else None
+
+
+def _resolve_code_class(
+    implementation_node: GraphNode,
+    design_node: GraphNode,
+    code_class_nodes: list[GraphNode],
+) -> GraphNode | None:
+    """Resolve a source-file implementation edge to its code class node."""
+    if implementation_node.node_type == NodeType.CLASS:
+        return implementation_node
+
+    filename = str(_props(implementation_node).get("filename") or implementation_node.name)
+    candidates = [
+        node for node in code_class_nodes
+        if node.name == design_node.name
+        and str(_props(node).get("filename") or "") == filename
+    ]
+    if candidates:
+        return candidates[0]
+    return next((node for node in code_class_nodes if node.name == design_node.name), None)
+
+
 # ═══════════════════════════════════════════════════════════════
 # GraphRetriever
 # ═══════════════════════════════════════════════════════════════
@@ -294,6 +409,22 @@ class GraphRetriever:
 
         summary = DiffSummary()
         items: list[DiffItem] = []
+        source_file_nodes = self.db.find_nodes(
+            project_id, node_type="source_file", source="code", limit=2000,
+        )
+        source_files = {
+            node.name: str(_props(node).get("path") or "").replace("\\", "/")
+            for node in source_file_nodes
+        }
+        design_method_nodes = self.db.find_nodes(
+            project_id, node_type="method", source="design", limit=5000,
+        )
+        code_method_nodes = self.db.find_nodes(
+            project_id, node_type="method", source="code", limit=5000,
+        )
+        code_class_nodes = self.db.find_nodes(
+            project_id, node_type="class", source="code", limit=2000,
+        )
 
         # ── 1. Missing implementation ──
         missing = self.db.get_design_classes_without_implementation(project_id)
@@ -310,6 +441,8 @@ class GraphRetriever:
                     "stereotype": node.properties.get("stereotype", ""),
                     "methods": len(node.properties.get("methods", [])),
                     "attributes": len(node.properties.get("attributes", [])),
+                    "design_ref": _design_ref(node),
+                    "verification": "structural_only",
                 },
             ))
         summary.missing_implementations = len(missing)
@@ -325,7 +458,9 @@ class GraphRetriever:
                 ),
                 code_node_id=node.id,
                 detail={
-                    "path": node.properties.get("path", ""),
+                    "path": _props(node).get("path", ""),
+                    "code_ref": _code_ref(node, source_files),
+                    "verification": "structural_only",
                 },
             ))
         summary.extra_code = len(extra)
@@ -333,7 +468,16 @@ class GraphRetriever:
         # ── 3. Mismatch (方法签名不一致) ──
         pairs = self.db.get_implemented_pairs(project_id)
         for code_node, design_node in pairs:
-            mismatch_details = _compare_class_nodes(design_node, code_node)
+            code_class = _resolve_code_class(
+                code_node, design_node, code_class_nodes,
+            )
+            mismatch_details = _compare_class_nodes(
+                design_node,
+                code_class or code_node,
+                design_method_nodes=design_method_nodes,
+                code_method_nodes=code_method_nodes,
+                source_files=source_files,
+            )
             if mismatch_details:
                 items.append(DiffItem(
                     severity="warning",
@@ -342,8 +486,13 @@ class GraphRetriever:
                         f"设计类 '{design_node.name}' 与源码实现存在差异"
                     ),
                     design_node_id=design_node.id,
-                    code_node_id=code_node.id,
-                    detail={"differences": mismatch_details},
+                    code_node_id=(code_class or code_node).id,
+                    detail={
+                        "design_ref": _design_ref(design_node),
+                        "code_ref": _code_ref(code_class or code_node, source_files),
+                        "differences": mismatch_details,
+                        "verification": "structural_only",
+                    },
                 ))
                 summary.mismatches += 1
 
@@ -351,20 +500,21 @@ class GraphRetriever:
         test_files = self.db.find_nodes(
             project_id, node_type="test_file", source="test", limit=100,
         )
-        source_files = self.db.find_nodes(
-            project_id, node_type="source_file", source="code", limit=200,
-        )
         covered = set()
         for tf in test_files:
             for cov in tf.properties.get("covers", []):
                 covered.add(cov)
-        for sf in source_files:
+        for sf in source_file_nodes:
             if sf.name not in covered:
                 items.append(DiffItem(
                     severity="info",
                     category=DiffCategory.NO_COVERAGE.value,
                     message=f"源码文件 '{sf.name}' 没有对应的测试文件",
                     code_node_id=sf.id,
+                    detail={
+                        "code_ref": _code_ref(sf, source_files),
+                        "verification": "coverage_index_only",
+                    },
                 ))
                 summary.no_coverage += 1
 
@@ -414,54 +564,127 @@ class GraphRetriever:
 
 # ── Comparison helpers ──────────────────────────────────────────
 
-def _compare_class_nodes(design: GraphNode,
-                         code: GraphNode) -> list[dict]:
-    """比较设计和代码 CLASS 节点的方法 / 属性差异."""
+def _compare_class_nodes(
+    design: GraphNode,
+    code: GraphNode,
+    *,
+    design_method_nodes: list[GraphNode] | None = None,
+    code_method_nodes: list[GraphNode] | None = None,
+    source_files: dict[str, str] | None = None,
+) -> list[dict]:
+    """Compare class methods and attach deterministic source locations."""
     diffs: list[dict] = []
+    source_files = source_files or {}
+    design_method_nodes = design_method_nodes or []
+    code_method_nodes = code_method_nodes or []
 
     design_methods: dict[str, dict] = {}
-    for m in design.properties.get("methods", []):
-        if isinstance(m, dict):
-            design_methods[m.get("name", "")] = m
+    for method in _props(design).get("methods", []):
+        if isinstance(method, dict):
+            name = str(method.get("name") or "")
+            design_methods[name] = method
         else:
-            design_methods[str(m)] = {"name": str(m)}
+            name = str(method)
+            design_methods[name] = {"name": name}
 
     code_methods: dict[str, dict] = {}
-    for m in code.properties.get("methods", []):
-        if isinstance(m, dict):
-            code_methods[m.get("name", "")] = m
-        else:
-            code_methods[str(m)] = {"name": str(m)}
+    code_method_refs: dict[str, GraphNode] = {}
+    filename = str(_props(code).get("filename") or "")
+    for method_node in code_method_nodes:
+        props = _props(method_node)
+        if props.get("parent_class") != code.name:
+            continue
+        if filename and props.get("filename") not in {filename, ""}:
+            continue
+        name = method_node.name
+        code_methods[name] = {
+            "name": name,
+            "return_type": props.get("return_type", ""),
+            "params": props.get("params", ""),
+        }
+        code_method_refs[name] = method_node
 
-    # 设计有但代码没有的方法
-    for mn in design_methods:
-        if mn not in code_methods:
+    # Backward-compatible fallback for graphs built before method nodes existed.
+    if not code_methods:
+        for method in _props(code).get("methods", []):
+            if isinstance(method, dict):
+                name = str(method.get("name") or "")
+                code_methods[name] = method
+            else:
+                name = str(method)
+                code_methods[name] = {"name": name}
+
+    def design_method_ref(name: str) -> dict:
+        node = _find_member_node(design_method_nodes, design.name, name)
+        if node is not None:
+            return _design_ref(node)
+        ref = _design_ref(design)
+        ref["method"] = name
+        return ref
+
+    def code_method_ref(name: str) -> dict:
+        node = code_method_refs.get(name)
+        if node is not None:
+            return _code_ref(node, source_files)
+        ref = _code_ref(code, source_files)
+        ref["method"] = name
+        return ref
+
+    for name, expected in design_methods.items():
+        if not name:
+            continue
+        if name not in code_methods:
             diffs.append({
                 "type": "missing_method",
-                "name": mn,
-                "message": f"方法 '{mn}' 在设计 UML 中定义但源码中缺失",
-            })
-    # 代码有但设计没有的方法
-    for mn in code_methods:
-        if mn not in design_methods:
-            diffs.append({
-                "type": "extra_method",
-                "name": mn,
-                "message": f"方法 '{mn}' 在源码中存在但设计 UML 中未定义",
+                "name": name,
+                "design": expected,
+                "code": None,
+                "design_ref": design_method_ref(name),
+                "code_ref": _code_ref(code, source_files),
+                "message": f"method '{name}' is defined in design but missing in code",
             })
 
-    # 参数 / 返回值不匹配 (仅对同名方法)
-    for mn in design_methods:
-        if mn in code_methods:
-            dm = design_methods[mn]
-            cm = code_methods[mn]
-            if dm.get("return_type", "") != cm.get("return_type", ""):
-                diffs.append({
-                    "type": "return_type_mismatch",
-                    "name": mn,
-                    "design": dm.get("return_type"),
-                    "code": cm.get("return_type"),
-                    "message": f"方法 '{mn}' 返回类型不匹配",
-                })
+    for name, actual in code_methods.items():
+        if not name:
+            continue
+        if name not in design_methods:
+            diffs.append({
+                "type": "extra_method",
+                "name": name,
+                "design": None,
+                "code": actual,
+                "design_ref": _design_ref(design),
+                "code_ref": code_method_ref(name),
+                "message": f"method '{name}' exists in code but is not defined in design",
+            })
+
+    for name, expected in design_methods.items():
+        if name not in code_methods:
+            continue
+        actual = code_methods[name]
+        dref = design_method_ref(name)
+        cref = code_method_ref(name)
+        if expected.get("return_type") and expected.get("return_type") != actual.get("return_type"):
+            diffs.append({
+                "type": "return_type_mismatch",
+                "name": name,
+                "design": expected.get("return_type"),
+                "code": actual.get("return_type", ""),
+                "design_ref": dref,
+                "code_ref": cref,
+                "message": f"method '{name}' has a different return type",
+            })
+        expected_params = _normalize_params(expected.get("params"))
+        actual_params = _normalize_params(actual.get("params"))
+        if expected_params and actual_params and expected_params != actual_params:
+            diffs.append({
+                "type": "params_mismatch",
+                "name": name,
+                "design": expected.get("params", ""),
+                "code": actual.get("params", ""),
+                "design_ref": dref,
+                "code_ref": cref,
+                "message": f"method '{name}' has different parameters",
+            })
 
     return diffs

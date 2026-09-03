@@ -74,7 +74,9 @@ class Settings(BaseSettings):
     agent_planner_max_tokens: int = 3000
     agent_planner_timeout_seconds: float = 30.0
     agent_explorer_max_steps: int = 6
-    agent_orchestration_enabled: bool = True
+    # Keep the optional planner/explorer path disabled until its hand-off and
+    # tool-routing behavior is revalidated. The core falls back to NoOp.
+    agent_orchestration_enabled: bool = False
     agent_orchestrator_provider: str = "app.agent_base.orchestration.provider:create"
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the

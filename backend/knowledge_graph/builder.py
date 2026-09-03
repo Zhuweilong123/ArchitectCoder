@@ -197,6 +197,7 @@ class GraphBuilder:
             diag_name = getattr(diagram, "name", f"Diagram_{i + 1}")
             diag_stats = self.build_from_diagram(
                 diagram, project_id, diag_name, project_node.id,
+                filepath=filepath, diagram_index=i,
             )
             stats.nodes_added += diag_stats.nodes_added
             stats.nodes_updated += diag_stats.nodes_updated
@@ -224,7 +225,7 @@ class GraphBuilder:
         return stats
 
     def rebuild_project(self, project: Any,  # app.models.uml.Project
-                        project_id: str) -> BuildStats:
+                        project_id: str, filepath: str = "") -> BuildStats:
         """增量重建整个项目: 逐图更新, 而非全量删除重建.
 
         与 build_from_project() 的区别:
@@ -283,6 +284,7 @@ class GraphBuilder:
             diag_name = getattr(diagram, "name", f"Diagram_{i + 1}")
             d_stats = self.rebuild_diagram(
                 diagram, project_id, diag_name, project_node.id,
+                filepath=filepath, diagram_index=i,
             )
             stats.nodes_added += d_stats.nodes_added
             stats.nodes_removed += d_stats.nodes_removed
@@ -312,7 +314,9 @@ class GraphBuilder:
     def rebuild_diagram(self, diagram: Any,  # app.models.uml.UmlDiagram
                         project_id: str,
                         diagram_name: str,
-                        parent_project_id: str) -> BuildStats:
+                        parent_project_id: str,
+                        filepath: str = "",
+                        diagram_index: int | None = None) -> BuildStats:
         """增量重建单张图的设计层节点和边.
 
         对比全量 build_from_project():
@@ -333,6 +337,7 @@ class GraphBuilder:
         # 2. 重新构建该图 (upsert DIAGRAM 节点 + 实体层)
         stats = self.build_from_diagram(
             diagram, project_id, diagram_name, parent_project_id,
+            filepath=filepath, diagram_index=diagram_index,
         )
         stats.nodes_removed = removed
         logger.info(f"[KG] rebuild_diagram('{diagram_name}'): "
@@ -342,7 +347,9 @@ class GraphBuilder:
     def build_from_diagram(self, diagram: Any,  # app.models.uml.UmlDiagram
                            project_id: str,
                            diagram_name: str,
-                           parent_project_id: str) -> BuildStats:
+                           parent_project_id: str,
+                           filepath: str = "",
+                           diagram_index: int | None = None) -> BuildStats:
         """从单张 UmlDiagram 构建图谱.
 
         Args:
@@ -371,6 +378,8 @@ class GraphBuilder:
                 "diagram_type": diagram_type,
                 "component_id": component_id,
                 "version": getattr(diagram, "version", "1.0"),
+                "project_file": filepath,
+                "diagram_index": diagram_index,
             },
         )
         diag_node.content_text = _build_content_text(
@@ -381,7 +390,11 @@ class GraphBuilder:
 
         # ── 按类型分派构建 ──
         if diagram_type == "class":
-            cls_stats = self._build_class_layer(diagram, project_id, diag_node.id)
+            cls_stats = self._build_class_layer(
+                diagram, project_id, diag_node.id,
+                project_file=filepath, diagram_index=diagram_index,
+                diagram_name=diagram_name,
+            )
             stats.nodes_added += cls_stats.nodes_added
             stats.edges_added += cls_stats.edges_added
         elif diagram_type == "sequence":
@@ -652,7 +665,8 @@ class GraphBuilder:
     def build_incremental(self, project_id: str,
                           design: Any = None,
                           source_dir: str = "",
-                          test_dir: str = "") -> BuildStats:
+                          test_dir: str = "",
+                          project_file: str = "") -> BuildStats:
         """一站式增量构建: 设计 + 源码 + 测试.
 
         用于 Agent 对话开头确保 KG 数据是最新的.
@@ -662,7 +676,7 @@ class GraphBuilder:
         agg = BuildStats(source="exploratory")
 
         if design is not None:
-            ds = self.build_from_project(design, project_id)
+            ds = self.build_from_project(design, project_id, filepath=project_file)
             agg.nodes_added += ds.nodes_added
             agg.nodes_removed += ds.nodes_removed
             agg.edges_added += ds.edges_added
@@ -685,7 +699,10 @@ class GraphBuilder:
     # ── Internal: Class diagram layer ─────────────────────
 
     def _build_class_layer(self, diagram: Any, project_id: str,
-                           parent_diag_id: str) -> BuildStats:
+                           parent_diag_id: str,
+                           project_file: str = "",
+                           diagram_index: int | None = None,
+                           diagram_name: str = "") -> BuildStats:
         """构建类图: CLASS + ATTRIBUTE + METHOD 节点 + 关系边."""
         stats = BuildStats(source="declarative")
         nodes_to_add: list[GraphNode] = []
@@ -696,7 +713,7 @@ class GraphBuilder:
         # 避免项目文件被复制时跨项目 id 冲突（文件 id 全局不唯一）。
         class_id_map: dict[str, str] = {}  # 文件 class.id → KG 节点 id
 
-        for cls in getattr(diagram, "classes", []):
+        for class_index, cls in enumerate(getattr(diagram, "classes", [])):
             cls_orig_id = getattr(cls, "id", "")
             cls_id = self._make_id("class", project_id, getattr(cls, "name", ""), "design")
             if cls_orig_id:
@@ -750,6 +767,13 @@ class GraphBuilder:
                     "methods": method_names,
                     "attributes": attr_names,
                     "orig_id": cls_orig_id,
+                    "project_file": project_file,
+                    "diagram": diagram_name,
+                    "diagram_index": diagram_index,
+                    "json_pointer": (
+                        f"/diagrams/{diagram_index}/classes/{class_index}"
+                        if diagram_index is not None else ""
+                    ),
                 },
             )
             cls_node.content_text = _build_content_text(
@@ -766,7 +790,7 @@ class GraphBuilder:
             ))
 
             # CLASS → METHOD (contains)
-            for m in methods:
+            for method_index, m in enumerate(methods):
                 m_name = getattr(m, "name", "")
                 m_id = self._make_id("method", project_id, f"{cls.name}.{m_name}", "design")
                 m_node = GraphNode(
@@ -782,6 +806,14 @@ class GraphBuilder:
                             if hasattr(getattr(m, "visibility", "+"), "value") else "+",
                         "is_static": getattr(m, "is_static", False),
                         "is_abstract": getattr(m, "is_abstract", False),
+                        "parent_class": cls.name,
+                        "project_file": project_file,
+                        "diagram": diagram_name,
+                        "diagram_index": diagram_index,
+                        "json_pointer": (
+                            f"/diagrams/{diagram_index}/classes/{class_index}/methods/{method_index}"
+                            if diagram_index is not None else ""
+                        ),
                     },
                 )
                 m_node.content_text = _build_content_text(
@@ -796,7 +828,7 @@ class GraphBuilder:
                 ))
 
             # CLASS → ATTRIBUTE (contains)
-            for a in attributes:
+            for attr_index, a in enumerate(attributes):
                 a_name = getattr(a, "name", "")
                 a_id = self._make_id("attribute", project_id, f"{cls.name}.{a_name}", "design")
                 a_node = GraphNode(
@@ -811,6 +843,14 @@ class GraphBuilder:
                             if hasattr(getattr(a, "visibility", "+"), "value") else "+",
                         "is_static": getattr(a, "is_static", False),
                         "default_value": getattr(a, "default_value", None),
+                        "parent_class": cls.name,
+                        "project_file": project_file,
+                        "diagram": diagram_name,
+                        "diagram_index": diagram_index,
+                        "json_pointer": (
+                            f"/diagrams/{diagram_index}/classes/{class_index}/attributes/{attr_index}"
+                            if diagram_index is not None else ""
+                        ),
                     },
                 )
                 a_node.content_text = _build_content_text(

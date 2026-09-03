@@ -797,17 +797,36 @@ class KnowledgeGraphDB:
             WHERE c.project_id = ?
               AND c.node_type = 'class'
               AND c.source = 'code'
-              AND c.id NOT IN (
-                  SELECT e.source_id FROM kg_edges e
-                  WHERE e.edge_type = 'implements'
-                    AND e.target_id IN (
-                        SELECT id FROM kg_nodes
-                        WHERE project_id = ? AND node_type = 'class' AND source = 'design'
-                    )
-              )
             ORDER BY c.name
+        """, (project_id,)).fetchall()
+
+        # The builder records IMPLEMENTS on source_file -> design_class edges,
+        # while this query returns code class nodes.  Treat a code class as
+        # implemented when its containing source file implements a same-named
+        # design class; also keep supporting direct class -> design edges.
+        implemented = self.conn.execute("""
+            SELECT sf.name AS filename, d.name AS class_name, sf.id AS source_id
+            FROM kg_edges e
+            JOIN kg_nodes sf ON sf.id = e.source_id
+            JOIN kg_nodes d ON d.id = e.target_id
+            WHERE e.edge_type = 'implements'
+              AND sf.project_id = ?
+              AND d.project_id = ?
+              AND d.node_type = 'class'
+              AND d.source = 'design'
         """, (project_id, project_id)).fetchall()
-        return [self._row_to_node(r) for r in rows]
+        implemented_keys = {(r["filename"], r["class_name"]) for r in implemented}
+        implemented_source_ids = {r["source_id"] for r in implemented}
+
+        result: list[GraphNode] = []
+        for row in rows:
+            node = self._row_to_node(row)
+            props = node.properties if isinstance(node.properties, dict) else {}
+            filename = str(props.get("filename") or "")
+            if node.id in implemented_source_ids or (filename, node.name) in implemented_keys:
+                continue
+            result.append(node)
+        return result
 
     def get_implemented_pairs(
         self, project_id: str,

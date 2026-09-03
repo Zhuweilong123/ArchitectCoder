@@ -228,7 +228,9 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
 
             builder = GraphBuilder(db_path=kg_db_path)
             try:
-                stats = builder.rebuild_project(project, project_id)
+                stats = builder.rebuild_project(
+                    project, project_id, filepath=filepath,
+                )
                 logger.info(
                     f"[KG] Declarative incremental rebuild for '{project_id}': "
                     f"+{stats.nodes_added} nodes, +{stats.edges_added} edges, "

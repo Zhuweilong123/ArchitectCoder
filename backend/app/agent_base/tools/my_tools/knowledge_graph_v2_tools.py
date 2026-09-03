@@ -354,6 +354,7 @@ class KGService:
             "detail": item.detail,
         } for item in result.items]
         return {
+            "schema_version": 2,
             "summary": result.summary.to_dict(),
             "items": bounded(items, max_items),
         }
@@ -651,7 +652,11 @@ class KgDiffTool(_KgTool):
             description=(
                 "Compare the UML design layer against the code layer: missing implementations, "
                 "extra code, method signature mismatches, untested files. Returns a summary "
-                "count + detail items. Use to check design-code drift before/after changes. "
+                "count + bounded detail items. Each item includes deterministic design_ref/code_ref "
+                "locations; code_ref has file, start_line/end_line and a read_hint for read_file, "
+                "while method mismatches include method-level refs and expected/actual values. "
+                "Use those refs to read only the affected code before semantic verification. "
+                "verification indicates whether the result is structural or coverage-index based. "
                 "On first use this may lazily index the source code layer."
             ),
         )

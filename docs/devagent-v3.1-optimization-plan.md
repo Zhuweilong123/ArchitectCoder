@@ -1044,7 +1044,7 @@ the uppercase variable name below and takes effect after the backend restarts.
 | `AGENT_EVIDENCE_MAX_RECORDS` | `128` | Maximum structured evidence records retained during a run; the effective value is never below the tool-call limit. |
 | `AGENT_FORCE_FINAL_SUMMARY_ON_STEP_LIMIT` | `true` | Issue one tool-free summary request after the productive-step limit. |
 | `AGENT_FINAL_SUMMARY_MAX_TOKENS` | `3000` | Output cap for that final summary request. |
-| `AGENT_ORCHESTRATION_ENABLED` | `true` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
+| `AGENT_ORCHESTRATION_ENABLED` | `false` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
 | `AGENT_ORCHESTRATOR_PROVIDER` | `app.agent_base.orchestration.provider:create` | `module:factory` provider path; `none`/`noop` disables it. |
 | `AGENT_PLANNER_MAX_TOKENS` | `3000` | Planner completion cap, including reasoning headroom for JSON output. |
 | `AGENT_PLANNER_TIMEOUT_SECONDS` | `30` | Planner request timeout. |

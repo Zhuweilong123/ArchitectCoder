@@ -191,6 +191,27 @@ class EvidenceLedger:
             ):
                 if key in summary:
                     record.facts.append(f"{key}={summary[key]}")
+            item_payload = payload.get("items")
+            item_list = item_payload.get("items") if isinstance(item_payload, dict) else item_payload
+            if isinstance(item_list, list):
+                locations: list[str] = []
+                for item in item_list[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+                    refs = [detail.get("code_ref"), detail.get("design_ref")]
+                    for ref in refs:
+                        if not isinstance(ref, dict):
+                            continue
+                        location = str(ref.get("file") or ref.get("project_file") or ref.get("name") or "")
+                        if ref.get("start_line") is not None:
+                            location += f":{ref['start_line']}-{ref.get('end_line', ref['start_line'])}"
+                        if ref.get("class") and ref.get("method"):
+                            location = f"{ref['class']}.{ref['method']}@{location}"
+                        if location:
+                            locations.append(location)
+                if locations:
+                    record.facts.append("locations=" + ";".join(locations[:8]))
             if not record.facts:
                 record.detail = f"result_sha={_sha256(observation)}"
         elif tool_name == "todo_write":
