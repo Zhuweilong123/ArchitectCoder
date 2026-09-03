@@ -33,6 +33,8 @@ class LinuxExecutionProfile:
             "Use cwd='source', 'test', 'design', or 'workspace' instead of cd. "
             "Use POSIX commands only (for example ls, find, grep, pytest, npm, git); "
             "do not invoke cmd.exe, PowerShell, wsl.exe, or Windows-only commands. "
+            "For file edits, prefer read_file/write_file/edit_file; do not use bash, Python, sed, or package-manager commands to edit files. "
+            "For verification, run the requested focused test directly; do not probe python/pip/which or install packages after a command error. "
             "Do not chain commands, use pipes/redirection, nested shells, or inline interpreter code. "
             "Choose the available filesystem tool that best fits the operation. "
             "High-risk commands are denied; sensitive commands require approval."

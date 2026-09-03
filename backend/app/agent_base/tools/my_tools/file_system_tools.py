@@ -280,7 +280,9 @@ class EditFileTool(AsyncTool):
             name="edit_file",
             description=(
                 "Replace the first occurrence of old_text with new_text in a file. "
-                "Use for precise, small edits without rewriting the whole file."
+                "Use this for known exact renames and small edits before trying bash. "
+                "It preserves the rest of the file; verify the replacement with read_file "
+                "or a focused test, and do not use Python or sed as an edit workaround."
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
@@ -327,8 +329,8 @@ class EditFileTool(AsyncTool):
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
-                        "old_text": {"type": "string", "description": "Exact text to replace."},
-                        "new_text": {"type": "string", "description": "Replacement text."},
+                        "old_text": {"type": "string", "description": "Exact text to replace; copy it from the file rather than guessing."},
+                        "new_text": {"type": "string", "description": "Replacement text; keep the surrounding file content unchanged."},
                         "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents lost updates."},
                     },
                     "required": ["path", "old_text", "new_text"],
