@@ -939,7 +939,8 @@ async def _handle_dev(
         async for step_progress in agent.arun_stream(
             user_message,
             context=context,
-            initial_token_usage=orchestration_result.token_overhead,
+            # Planner/explorer usage is tracked as orchestration overhead and
+            # must remain separate from the main Agent's per-task budget.
             **({"allowed_tools": main_allowed_tools} if main_allowed_tools is not None else {}),
         ):
             d = step_progress.to_dict()

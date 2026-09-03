@@ -1074,7 +1074,7 @@ analysis and runtime tuning.
 - 跨设计/源码/测试的任务最多启动一个 `strategy` 子代理。该子代理使用独立消息上下文和只读工具包，禁止写文件、执行命令及递归派生；
 - 探索完成后主 Agent 移除宽泛的图谱发现工具，只保留读取、修改、验证和审核能力，避免重复探索；
 - 规划结果写入当前 `AgentRuntime` 的 Todo/验收契约，复杂任务必须保留分析、执行、验证证据；
-- 规划器和子代理的实际 usage 汇总为 `token_overhead`，通过 `initial_token_usage` 纳入同一轮 ReAct 的 `max_total_tokens`，不再隐式扩展任务预算；
+- 规划器和子代理的实际 usage 单独记为 `token_overhead`，仅用于 Trace 与评测汇总；主 Agent 每个用户任务独立使用 200k 预算，不通过 `initial_token_usage` 继承编排器或其他轮次的消耗；
 - `agent_base/core/orchestration.py` 提供稳定的 `OrchestrationPort`、`OrchestrationRequest`、`OrchestrationPreparation`、动态 Loader 和零开销 `NoOpOrchestrator`；主流程不再依赖具体 provider；
 - `agent_base/orchestration/provider.py` 是当前 LLM 编排 provider 适配器。通过 `AGENT_ORCHESTRATOR_PROVIDER` 动态加载，provider 缺失、禁用或初始化失败时自动退化为 NoOp；
 - `agent_chat_ws.py` 只负责生命周期和 trace 事件，编排策略、契约和 worker 工具集分别位于独立模块，删除 provider 包无需修改主流程代码。
@@ -1104,3 +1104,9 @@ analysis and runtime tuning.
 
 该边界支持后续替换为远程、向量或租户隔离存储，而不改变 Agent、Prompt
 或工具流程；provider 的存储/LLM 异常均 fail-open，不增加任务主链路失败面。
+
+### 15.9 预算语义备注（2026-09-03）
+
+预算边界保持分离：每个用户任务的主 Agent 独立使用 200k token 预算；planner
+和子代理的 usage 作为 `token_overhead` 单独记录，不通过 `initial_token_usage` 扣减主 Agent 预算。
+多轮评测的累计 Token 仅用于结果汇总，不作为后续轮次的初始预算。

@@ -304,13 +304,19 @@ class ChatTraceLogger:
         summary: str,
         status: str = "",
         tool_call_count: int = 0,
+        turn: int | None = None,
     ) -> None:
         """Persist the bounded task checkpoint used by later chat turns."""
+        payload = {
+            "summary": str(summary or ""),
+            "status": status,
+            "tool_call_count": tool_call_count,
+        }
+        if turn is not None:
+            payload["turn"] = turn
         self.event(
             EVT_TASK_SUMMARY,
-            summary=str(summary or ""),
-            status=status,
-            tool_call_count=tool_call_count,
+            **payload,
         )
 
     def llm_request(self, *, provider: str, model: str, messages: list,

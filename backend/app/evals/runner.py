@@ -176,23 +176,58 @@ class EvalRunner:
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
+                    from app.services.agent_chat_ws import _build_task_execution_summary
+                    active_turn: dict[str, Any] = {
+                        "turn": 0,
+                        "details": [],
+                        "checkpoint": {},
+                        "summary_written": False,
+                    }
 
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
                         from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
-                        from app.services.agent_chat_ws import _enabled_tools_context
+                        from app.services.agent_chat_ws import (
+                            _build_task_execution_summary,
+                            _enabled_tools_context,
+                        )
 
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
                         turn_records: list[dict[str, Any]] = []
-                        session_token_usage = 0
+                        # Budget semantics: every user task gets an independent
+                        # ReAct budget. Keep cumulative usage for reporting only;
+                        # never pass it into the next turn's budget.
+                        reported_total_tokens = 0
+                        traced_total_tokens = 0
                         review_offset = 0
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
                         production_agent = hasattr(agent, "tool_registry")
+                        def write_turn_summary(status: str) -> None:
+                            """Write one trace checkpoint for the active eval task."""
+                            if not active_turn["turn"] or active_turn["summary_written"]:
+                                return
+                            checkpoint = dict(active_turn.get("checkpoint") or {})
+                            summary = _build_task_execution_summary(
+                                active_turn.get("details") or [], checkpoint, status,
+                            )
+                            tracer.task_summary(
+                                summary=summary,
+                                status=status,
+                                tool_call_count=len(active_turn.get("details") or []),
+                                turn=active_turn["turn"],
+                            )
+                            active_turn["summary_written"] = True
 
-                        def record_tool_details(step: int, details: list[dict]) -> None:
+                        def record_tool_details(
+                            step: int,
+                            details: list[dict],
+                            collector: list[dict] | None = None,
+                        ) -> None:
                             """Mirror streamed tool details into the evaluation trace."""
+                            if collector is not None:
+                                collector.extend(details)
                             for detail in details:
                                 name = str(detail.get("name") or "tool")
                                 arguments = detail.get("arguments")
@@ -217,7 +252,12 @@ class EvalRunner:
                         for turn_index, (prompt, turn_spec) in enumerate(
                             zip(prompts, turn_specs), 1
                         ):
-                            turn_token_start = session_token_usage
+                            active_turn.update({
+                                "turn": turn_index,
+                                "details": [],
+                                "checkpoint": {},
+                                "summary_written": False,
+                            })
                             tracer.user_message(
                                 prompt,
                                 project_file=getattr(agent, "_eval_project_file", ""),
@@ -233,9 +273,10 @@ class EvalRunner:
                                 turn_tool_calls = 0
                                 turn_tokens = 0
                                 final_answer = ""
+                                turn_tool_details: list[dict] = active_turn["details"]
                                 async for progress in agent.arun_stream(prompt):
                                     details = progress.tool_calls_detail or []
-                                    record_tool_details(progress.step, details)
+                                    record_tool_details(progress.step, details, turn_tool_details)
                                     delta_tool_calls = sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
@@ -257,6 +298,10 @@ class EvalRunner:
                                     "total_tokens": turn_tokens,
                                     "answer": final_answer[:500],
                                 })
+                                active_turn["checkpoint"] = dict(
+                                    getattr(agent, "last_run_checkpoint", {}) or {}
+                                )
+                                write_turn_summary("completed")
                                 continue
 
                             context = ""
@@ -281,16 +326,14 @@ class EvalRunner:
                             stream_kwargs: dict[str, Any] = {}
                             if context:
                                 stream_kwargs["context"] = context
-                            # A multi-turn evaluation has one shared token
-                            # budget.  ReActAgent accepts the already-used
-                            # amount so a later turn cannot silently reset
-                            # the budget and continue beyond the case limit.
-                            stream_kwargs["initial_token_usage"] = session_token_usage
+                            # Each turn is a separate user task with its own
+                            # main-Agent budget. Cumulative usage is report-only.
                             runtime_token = set_runtime(AgentRuntime(
                             ))
                             turn_tool_calls = 0
                             turn_tokens = 0
                             final_answer = ""
+                            turn_tool_details: list[dict] = active_turn["details"]
                             tool_budget_exceeded = False
                             try:
                                 stream = agent.arun_stream(prompt, **stream_kwargs)
@@ -302,7 +345,7 @@ class EvalRunner:
                                         )
                                         for detail in details
                                     )
-                                    record_tool_details(progress.step, details)
+                                    record_tool_details(progress.step, details, turn_tool_details)
                                     turn_tool_calls += sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
@@ -319,21 +362,20 @@ class EvalRunner:
                             finally:
                                 reset_runtime(runtime_token)
 
-                            # Tool-call details do not carry LLM usage, so use
-                            # the trace (and the agent's context report as a
-                            # fallback) to maintain an accurate cross-turn
-                            # token counter.
+                            # Tool-call details do not carry LLM usage. Use the
+                            # trace delta and this turn's report for aggregation,
+                            # without feeding prior-turn usage back into Agent.
                             traced_tokens = _trace_total_tokens(tracer.path)
+                            traced_delta = max(0, traced_tokens - traced_total_tokens)
+                            traced_total_tokens = max(traced_total_tokens, traced_tokens)
                             reported_tokens = int(
                                 getattr(agent, "last_context_report", {}).get(
                                     "token_budget_used", 0
                                 ) or 0
                             )
-                            session_token_usage = max(
-                                session_token_usage, traced_tokens, reported_tokens
-                            )
-                            turn_tokens = max(0, session_token_usage - turn_token_start)
-                            result.total_tokens = max(result.total_tokens, session_token_usage)
+                            turn_tokens = max(traced_delta, reported_tokens)
+                            reported_total_tokens += turn_tokens
+                            result.total_tokens = max(result.total_tokens, reported_total_tokens)
                             budget_stop_reason = str(
                                 getattr(agent, "last_context_report", {}).get(
                                     "token_budget_stop_reason", ""
@@ -351,6 +393,7 @@ class EvalRunner:
                                 "request": prompt[:500],
                                 "verification": [],
                             }
+                            active_turn["checkpoint"] = dict(agent.last_run_checkpoint)
                             turn_records.append({
                                 "turn": turn_index,
                                 "prompt": prompt,
@@ -391,7 +434,7 @@ class EvalRunner:
                                 result.metadata.setdefault("token_budget_stop_reasons", []).append({
                                     "turn": turn_index,
                                     "reason": budget_stop_reason,
-                                    "used": session_token_usage,
+                                    "used": reported_tokens,
                                 })
 
                             if progress_relay is not None:
@@ -414,6 +457,13 @@ class EvalRunner:
                                             response=json.dumps(event, ensure_ascii=False),
                                         )
                                 approval_offset = len(review_mgr.approval_events)
+                            write_turn_summary(
+                                "budget_exceeded"
+                                if budget_stop_reason in _HARD_BUDGET_STOP_REASONS
+                                else "partial"
+                                if budget_stop_reason
+                                else "completed"
+                            )
 
                         result.metadata["turns"] = turn_records
 
@@ -487,12 +537,56 @@ class EvalRunner:
                     else:
                         result.status = "passed" if result.passed else "failed"
             except asyncio.TimeoutError:
+                if (
+                    "tracer" in locals()
+                    and "active_turn" in locals()
+                    and active_turn["turn"]
+                    and not active_turn["summary_written"]
+                ):
+                    active_turn["checkpoint"] = {
+                        **dict(active_turn.get("checkpoint") or {}),
+                        "stop_reason": f"evaluation exceeded {case.max_seconds}s",
+                    }
+                    summary = _build_task_execution_summary(
+                        active_turn.get("details") or [],
+                        active_turn.get("checkpoint") or {},
+                        "partial",
+                    )
+                    tracer.task_summary(
+                        summary=summary,
+                        status="partial",
+                        tool_call_count=len(active_turn.get("details") or []),
+                        turn=active_turn["turn"],
+                    )
+                    active_turn["summary_written"] = True
                 change_set = locals().get("change_set")
                 if change_set is not None:
                     change_set.rollback()
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {case.max_seconds}s"
             except Exception as exc:
+                if (
+                    "tracer" in locals()
+                    and "active_turn" in locals()
+                    and active_turn["turn"]
+                    and not active_turn["summary_written"]
+                ):
+                    active_turn["checkpoint"] = {
+                        **dict(active_turn.get("checkpoint") or {}),
+                        "stop_reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    summary = _build_task_execution_summary(
+                        active_turn.get("details") or [],
+                        active_turn.get("checkpoint") or {},
+                        "failed",
+                    )
+                    tracer.task_summary(
+                        summary=summary,
+                        status="failed",
+                        tool_call_count=len(active_turn.get("details") or []),
+                        turn=active_turn["turn"],
+                    )
+                    active_turn["summary_written"] = True
                 change_set = locals().get("change_set")
                 if change_set is not None:
                     change_set.rollback()

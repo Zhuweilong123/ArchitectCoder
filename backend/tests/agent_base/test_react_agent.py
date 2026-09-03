@@ -519,3 +519,70 @@ def test_veto_hook_blocks_tool():
     assert detail is not None
     assert detail["observation"] == "blocked by policy"
     assert detail["fed_truncated"] is False
+
+
+def test_repeated_call_policy_is_owned_by_hook():
+    runtime_token = set_runtime(AgentRuntime())
+    try:
+        get_hooks().trigger(
+            HookEvent.RUN_START,
+            HookContext(event=HookEvent.RUN_START, agent_name="Test"),
+        )
+        ctx = HookContext(
+            event=HookEvent.TOOL_BEFORE,
+            agent_name="Test",
+            tool_name="read_file",
+            tool_input={"path": "src/a.py"},
+            max_repeated_tool_calls=3,
+        )
+        assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
+        assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
+        assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
+        blocked = get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx)
+    finally:
+        reset_runtime(runtime_token)
+
+    assert blocked is not None
+    assert "Repeated identical tool call blocked" in blocked
+
+
+def test_repeated_failure_hook_allows_corrected_input():
+    runtime_token = set_runtime(AgentRuntime())
+    try:
+        get_hooks().trigger(
+            HookEvent.RUN_START,
+            HookContext(event=HookEvent.RUN_START, agent_name="Test"),
+        )
+        before = HookContext(
+            event=HookEvent.TOOL_BEFORE,
+            agent_name="Test",
+            tool_name="edit_file",
+            tool_input={"path": "src/a.py", "old_text": "wrong"},
+            max_repeated_tool_calls=5,
+        )
+        after = HookContext(
+            event=HookEvent.TOOL_AFTER,
+            agent_name="Test",
+            tool_name="edit_file",
+            tool_input=before.tool_input,
+            tool_status="error",
+            error_code="OLD_TEXT_NOT_FOUND",
+        )
+        for _ in range(2):
+            assert get_hooks().trigger(HookEvent.TOOL_BEFORE, before) is None
+            assert get_hooks().trigger(HookEvent.TOOL_AFTER, after) is None
+        blocked = get_hooks().trigger(HookEvent.TOOL_BEFORE, before)
+        corrected = HookContext(
+            event=HookEvent.TOOL_BEFORE,
+            agent_name="Test",
+            tool_name="edit_file",
+            tool_input={"path": "src/a.py", "old_text": "actual"},
+            max_repeated_tool_calls=5,
+        )
+        corrected_result = get_hooks().trigger(HookEvent.TOOL_BEFORE, corrected)
+    finally:
+        reset_runtime(runtime_token)
+
+    assert blocked is not None
+    assert "Repeated tool failure blocked" in blocked
+    assert corrected_result is None

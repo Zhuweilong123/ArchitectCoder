@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -245,7 +246,7 @@ def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, mon
     )
 
 
-def test_multiturn_eval_passes_cumulative_token_usage_to_agent(tmp_path, monkeypatch):
+def test_multiturn_eval_keeps_independent_token_budgets(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
     monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
     traced_usage = iter([30, 60, 60])
@@ -262,7 +263,7 @@ def test_multiturn_eval_passes_cumulative_token_usage_to_agent(tmp_path, monkeyp
             self.initial_usage = []
 
         async def arun_stream(self, prompt, **kwargs):
-            self.initial_usage.append(kwargs["initial_token_usage"])
+            self.initial_usage.append(kwargs.get("initial_token_usage"))
             yield ReActProgress(step=1, is_final=True, final_answer="done")
 
     agents = []
@@ -281,8 +282,15 @@ def test_multiturn_eval_passes_cumulative_token_usage_to_agent(tmp_path, monkeyp
         EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
     )
 
-    assert agents[0].initial_usage == [0, 30]
+    # Prior-turn usage is report-only; each task starts its own Agent budget.
+    assert agents[0].initial_usage == [None, None]
     assert result.total_tokens == 60
+    events = [
+        json.loads(line)
+        for line in Path(result.trace_path).read_text(encoding="utf-8").splitlines()
+    ]
+    summaries = [event for event in events if event.get("event_type") == "task_summary"]
+    assert [event.get("turn") for event in summaries] == [1, 2]
 
 
 def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeypatch):

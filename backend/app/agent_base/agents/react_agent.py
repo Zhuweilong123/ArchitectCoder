@@ -439,7 +439,6 @@ class ReActAgent(Agent):
         no_tool_call_streak = 0
         _turn_recorded = False
         tool_call_count = 0
-        repeated_calls: dict[str, int] = {}
         started_at = time.monotonic()
         # Planning and read-only exploration happen immediately before this
         # loop. Count their measured usage against the same task budget so a
@@ -778,8 +777,6 @@ class ReActAgent(Agent):
                         parsed_calls.append((tc, tool_name, fn.get("arguments", ""), err_obs))
                         continue
 
-                    call_key = f"{tool_name}:{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
-                    next_repetition = repeated_calls.get(call_key, 0) + 1
                     blocked: str | None = None
                     if allowed_set is not None and tool_name not in allowed_set:
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
@@ -787,11 +784,7 @@ class ReActAgent(Agent):
                     elif tool_call_count >= self.max_tool_calls:
                         blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
-                    elif next_repetition > self.max_repeated_tool_calls:
-                        blocked = ("Repeated identical tool call blocked by circuit breaker. "
-                                   "Use a different input or provide the current result.")
                     else:
-                        repeated_calls[call_key] = next_repetition
                         tool_call_count += 1
                     parsed_calls.append((tc, tool_name, tool_args, blocked))
 
@@ -813,7 +806,8 @@ class ReActAgent(Agent):
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args),
+                                    tool_name=tool_name, tool_input=tool_args,
+                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
                     )
                     if veto is not None:
                         return veto, veto, ToolResult(status="blocked", data=veto,
@@ -837,7 +831,10 @@ class ReActAgent(Agent):
                         HookEvent.TOOL_AFTER,
                         HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
                                     tool_name=tool_name, tool_input=tool_args,
-                                    tool_output=observation_full),
+                                    tool_output=observation_full,
+                                    tool_status=result.status,
+                                    error_code=result.error_code,
+                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
                     )
                     return (
                         observation_full,
