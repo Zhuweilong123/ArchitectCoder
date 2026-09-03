@@ -53,6 +53,8 @@ class EvalSummary(BaseModel):
     passed: int = 0
     failed: int = 0
     timeout: int = 0
+    budget_exceeded: int = 0
+    budget_finalized: int = 0
     errors: int = 0
     pass_rate: float = 0.0
     average_score: float = 0.0
@@ -84,9 +86,18 @@ class EvalArchiveRequest(BaseModel):
 
 def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummary:
     completed = len(results)
-    passed = sum(item.status == "passed" for item in results)
-    failed = sum(item.status == "failed" for item in results)
+    passed = sum(
+        bool(getattr(item, "passed", item.status == "passed"))
+        for item in results
+    )
+    failed = sum(
+        item.status == "failed"
+        or (item.status == "budget_finalized" and not bool(getattr(item, "passed", False)))
+        for item in results
+    )
     timeout = sum(item.status == "timeout" for item in results)
+    budget_exceeded = sum(item.status == "budget_exceeded" for item in results)
+    budget_finalized = sum(item.status == "budget_finalized" for item in results)
     errors = sum(item.status == "error" for item in results)
     return EvalSummary(
         total=total if total is not None else completed,
@@ -94,6 +105,8 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
         passed=passed,
         failed=failed,
         timeout=timeout,
+        budget_exceeded=budget_exceeded,
+        budget_finalized=budget_finalized,
         errors=errors,
         pass_rate=round(passed / completed, 4) if completed else 0.0,
         average_score=round(sum(item.score for item in results) / completed, 4) if completed else 0.0,

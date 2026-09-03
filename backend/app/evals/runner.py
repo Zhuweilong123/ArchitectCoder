@@ -25,6 +25,16 @@ from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
 
+_HARD_BUDGET_STOP_REASONS = {
+    "hard_limit_before_next_llm",
+    "hard_limit_after_current_tools",
+    "tool_call_limit",
+}
+_FINALIZATION_BUDGET_STOP_REASONS = {
+    "reserve_finalization",
+    "reserve_finalization_empty_response",
+}
+
 
 def _trace_total_tokens(trace_path: str) -> int:
     if not trace_path:
@@ -161,6 +171,7 @@ class EvalRunner:
                         change_set.begin()
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
+                    turn_hard_checker_results: list[CheckerResult] = []
 
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
@@ -170,6 +181,7 @@ class EvalRunner:
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
                         turn_records: list[dict[str, Any]] = []
+                        session_token_usage = 0
                         review_offset = 0
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
@@ -201,6 +213,7 @@ class EvalRunner:
                         for turn_index, (prompt, turn_spec) in enumerate(
                             zip(prompts, turn_specs), 1
                         ):
+                            turn_token_start = session_token_usage
                             tracer.user_message(
                                 prompt,
                                 project_file=getattr(agent, "_eval_project_file", ""),
@@ -264,15 +277,27 @@ class EvalRunner:
                             stream_kwargs: dict[str, Any] = {}
                             if context:
                                 stream_kwargs["context"] = context
+                            # A multi-turn evaluation has one shared token
+                            # budget.  ReActAgent accepts the already-used
+                            # amount so a later turn cannot silently reset
+                            # the budget and continue beyond the case limit.
+                            stream_kwargs["initial_token_usage"] = session_token_usage
                             runtime_token = set_runtime(AgentRuntime(
                             ))
                             turn_tool_calls = 0
                             turn_tokens = 0
                             final_answer = ""
+                            tool_budget_exceeded = False
                             try:
                                 stream = agent.arun_stream(prompt, **stream_kwargs)
                                 async for progress in stream:
                                     details = progress.tool_calls_detail or []
+                                    tool_budget_exceeded = tool_budget_exceeded or any(
+                                        "Tool-call budget exceeded" in str(
+                                            detail.get("observation") or ""
+                                        )
+                                        for detail in details
+                                    )
                                     record_tool_details(progress.step, details)
                                     turn_tool_calls += sum(
                                         detail.get("status") != "blocked" for detail in details
@@ -289,6 +314,29 @@ class EvalRunner:
                                         tracer.done(answer=final_answer)
                             finally:
                                 reset_runtime(runtime_token)
+
+                            # Tool-call details do not carry LLM usage, so use
+                            # the trace (and the agent's context report as a
+                            # fallback) to maintain an accurate cross-turn
+                            # token counter.
+                            traced_tokens = _trace_total_tokens(tracer.path)
+                            reported_tokens = int(
+                                getattr(agent, "last_context_report", {}).get(
+                                    "token_budget_used", 0
+                                ) or 0
+                            )
+                            session_token_usage = max(
+                                session_token_usage, traced_tokens, reported_tokens
+                            )
+                            turn_tokens = max(0, session_token_usage - turn_token_start)
+                            result.total_tokens = max(result.total_tokens, session_token_usage)
+                            budget_stop_reason = str(
+                                getattr(agent, "last_context_report", {}).get(
+                                    "token_budget_stop_reason", ""
+                                ) or ""
+                            )
+                            if tool_budget_exceeded and not budget_stop_reason:
+                                budget_stop_reason = "tool_call_limit"
 
                             # Mirror the production transport's terminal
                             # checkpoint for explicit task-status requests.
@@ -309,19 +357,38 @@ class EvalRunner:
                                 "answer": final_answer[:500],
                             })
 
-                            turn_configs = [
-                                *turn_spec.hard_checkers,
-                                *turn_spec.checkers,
-                            ]
-                            if turn_configs:
-                                turn_results = await asyncio.gather(*(
+                            turn_hard_configs = turn_spec.hard_checkers
+                            turn_score_configs = turn_spec.checkers
+                            if turn_hard_configs or turn_score_configs:
+                                turn_hard_results = await asyncio.gather(*(
                                     checker.check(workspace)
-                                    for checker in build_checkers(turn_configs, baseline_hashes)
+                                    for checker in build_checkers(
+                                        turn_hard_configs, baseline_hashes
+                                    )
                                 ))
+                                turn_score_results = await asyncio.gather(*(
+                                    checker.check(workspace)
+                                    for checker in build_checkers(
+                                        turn_score_configs, baseline_hashes
+                                    )
+                                ))
+                                turn_results = [*turn_hard_results, *turn_score_results]
                                 result.checker_results.extend(turn_results)
+                                # A turn-local hard checker is an acceptance
+                                # gate, not merely diagnostic evidence. Keep
+                                # it in the final aggregate so a later turn
+                                # cannot mask an incomplete earlier task.
+                                turn_hard_checker_results.extend(turn_hard_results)
                                 turn_records[-1]["checker_results"] = [
                                     item.model_dump() for item in turn_results
                                 ]
+                            if budget_stop_reason:
+                                turn_records[-1]["token_budget_stop_reason"] = budget_stop_reason
+                                result.metadata.setdefault("token_budget_stop_reasons", []).append({
+                                    "turn": turn_index,
+                                    "reason": budget_stop_reason,
+                                    "used": session_token_usage,
+                                })
 
                             if progress_relay is not None:
                                 for event in progress_relay.events[review_offset:]:
@@ -390,14 +457,31 @@ class EvalRunner:
                         item for item in result.checker_results
                         if item.checker == "review_auto_stub"
                     ]
-                    checker_results = [*execution_results, *hard_results, *score_results]
+                    checker_results = [
+                        *execution_results,
+                        *turn_hard_checker_results,
+                        *hard_results,
+                        *score_results,
+                    ]
                     result.checker_results = list(checker_results)
                     result.score = (
                         sum(item.score for item in checker_results) / len(checker_results)
                         if checker_results else 1.0
                     )
                     result.passed = bool(checker_results) and all(item.passed for item in checker_results)
-                    result.status = "passed" if result.passed else "failed"
+                    budget_events = result.metadata.get("token_budget_stop_reasons", [])
+                    budget_reasons = {
+                        str(event.get("reason") or "")
+                        for event in budget_events
+                    }
+                    if budget_reasons & _HARD_BUDGET_STOP_REASONS:
+                        result.status = "budget_exceeded"
+                        result.passed = False
+                        result.error = "evaluation stopped after a hard execution budget was exhausted"
+                    elif budget_reasons & _FINALIZATION_BUDGET_STOP_REASONS:
+                        result.status = "budget_finalized"
+                    else:
+                        result.status = "passed" if result.passed else "failed"
             except asyncio.TimeoutError:
                 change_set = locals().get("change_set")
                 if change_set is not None:

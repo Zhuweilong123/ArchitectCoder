@@ -80,6 +80,28 @@ class FileContainsChecker(Checker):
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
 
+class FileNotContainsChecker(Checker):
+    name = "file_not_contains"
+
+    def __init__(self, path: str, text: str):
+        self.path = path
+        self.text = text
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            path = _safe_path(workspace, self.path)
+            content = path.read_text(encoding="utf-8")
+            passed = self.text not in content
+            return CheckerResult(
+                checker=self.name,
+                passed=passed,
+                score=1.0 if passed else 0.0,
+                message=("unexpected text absent" if passed else "unexpected text found"),
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
 class JsonFieldChecker(Checker):
     name = "json_field"
 
@@ -373,6 +395,8 @@ def build_checkers(
             result.append(FileAbsentChecker(config["path"]))
         elif kind == "file_contains":
             result.append(FileContainsChecker(config["path"], config["text"]))
+        elif kind == "file_not_contains":
+            result.append(FileNotContainsChecker(config["path"], config["text"]))
         elif kind == "json_field":
             result.append(JsonFieldChecker(config["path"], config["field"], config.get("expected")))
         elif kind == "pytest":

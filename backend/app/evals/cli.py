@@ -38,7 +38,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(json.dumps({"event": "case_start", "case_id": case.id}, ensure_ascii=False), flush=True)
         try:
             result = await runner.run_case(case)
-            if result.status != "passed":
+            if not result.passed:
                 failures += 1
             print(json.dumps({
                 "event": "case_end",

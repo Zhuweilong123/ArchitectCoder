@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -96,11 +96,22 @@ class CheckerResult(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+EvalStatus = Literal[
+    "running",
+    "passed",
+    "failed",
+    "timeout",
+    "budget_exceeded",
+    "budget_finalized",
+    "error",
+]
+
+
 class EvalResult(BaseModel):
     run_id: str
     case_id: str
     agent: str = "devagent"
-    status: str
+    status: EvalStatus
     passed: bool
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     started_at: str = ""

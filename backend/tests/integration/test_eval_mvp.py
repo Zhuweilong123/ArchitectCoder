@@ -184,6 +184,182 @@ def test_file_absent_checker_requires_explicit_path_to_be_removed(tmp_path):
     assert after.passed is True
 
 
+def test_file_not_contains_checker_rejects_stale_text(tmp_path):
+    target = tmp_path / "source.py"
+    target.write_text("NewComponent component", encoding="utf-8")
+    checker = build_checkers([{
+        "type": "file_not_contains",
+        "path": "source.py",
+        "text": "OldComponent component",
+    }])[0]
+
+    clean = asyncio.run(checker.check(tmp_path))
+    target.write_text("OldComponent component", encoding="utf-8")
+    stale = asyncio.run(checker.check(tmp_path))
+
+    assert clean.passed is True
+    assert stale.passed is False
+
+
+def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _ProductionLikeAgent:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.llm = type("FakeLLM", (), {"model": "fake-model"})()
+            self.tool_registry = object()
+            self.last_context_report = {}
+
+        async def arun_stream(self, prompt, **kwargs):
+            (self.workspace / "result.txt").write_text("done", encoding="utf-8")
+            yield ReActProgress(step=1, is_final=True, final_answer="done")
+
+    async def _factory(workspace, case):
+        return _ProductionLikeAgent(workspace)
+
+    case = EvalCase(
+        id="turn-hard-failure",
+        turns=[
+            {
+                "prompt": "完成源码同步",
+                "hard_checkers": [{
+                    "type": "file_contains",
+                    "path": "result.txt",
+                    "text": "required source change",
+                }],
+            },
+            {"prompt": "继续执行后续任务"},
+        ],
+    )
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert result.status == "failed"
+    assert result.passed is False
+    assert any(
+        item.checker == "file_contains" and not item.passed
+        for item in result.checker_results
+    )
+
+
+def test_multiturn_eval_passes_cumulative_token_usage_to_agent(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    traced_usage = iter([30, 60, 60])
+    monkeypatch.setattr(
+        "app.evals.runner._trace_total_tokens",
+        lambda trace_path: next(traced_usage),
+    )
+
+    class _ProductionLikeAgent:
+        def __init__(self, workspace):
+            self.llm = type("FakeLLM", (), {"model": "fake-model"})()
+            self.tool_registry = object()
+            self.last_context_report = {}
+            self.initial_usage = []
+
+        async def arun_stream(self, prompt, **kwargs):
+            self.initial_usage.append(kwargs["initial_token_usage"])
+            yield ReActProgress(step=1, is_final=True, final_answer="done")
+
+    agents = []
+
+    async def _factory(workspace, case):
+        agent = _ProductionLikeAgent(workspace)
+        agents.append(agent)
+        return agent
+
+    case = EvalCase(
+        id="cumulative-token-budget",
+        turns=[{"prompt": "第一轮"}, {"prompt": "第二轮"}],
+        hard_checkers=[{"type": "file_exists", "path": "missing.txt"}],
+    )
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert agents[0].initial_usage == [0, 30]
+    assert result.total_tokens == 60
+
+
+def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _BudgetAgent:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.llm = type("FakeLLM", (), {"model": "fake-model"})()
+            self.tool_registry = object()
+            self.last_context_report = {}
+
+        async def arun_stream(self, prompt, **kwargs):
+            (self.workspace / "result.txt").write_text("done", encoding="utf-8")
+            self.last_context_report = {
+                "token_budget_used": 100,
+                "token_budget_stop_reason": "hard_limit_before_next_llm",
+            }
+            yield ReActProgress(step=1, is_final=True, final_answer="done")
+
+    async def _factory(workspace, case):
+        return _BudgetAgent(workspace)
+
+    case = EvalCase(
+        id="hard-budget-status",
+        prompt="完成任务",
+        checkers=[{"type": "file_contains", "path": "result.txt", "text": "done"}],
+    )
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert result.status == "budget_exceeded"
+    assert result.passed is False
+    assert result.error == "evaluation stopped after a hard execution budget was exhausted"
+    assert result.metadata["token_budget_stop_reasons"][0]["reason"] == (
+        "hard_limit_before_next_llm"
+    )
+
+
+def test_eval_runner_records_budget_finalization_separately(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _FinalizingAgent:
+        def __init__(self, workspace):
+            self.llm = type("FakeLLM", (), {"model": "fake-model"})()
+            self.tool_registry = object()
+            self.last_context_report = {}
+
+        async def arun_stream(self, prompt, **kwargs):
+            (self.workspace / "result.txt").write_text("done", encoding="utf-8")
+            self.last_context_report = {
+                "token_budget_used": 90,
+                "token_budget_stop_reason": "reserve_finalization",
+            }
+            yield ReActProgress(step=1, is_final=True, final_answer="done")
+
+    async def _factory(workspace, case):
+        agent = _FinalizingAgent(workspace)
+        agent.workspace = workspace
+        return agent
+
+    case = EvalCase(
+        id="budget-finalized-status",
+        prompt="完成任务",
+        checkers=[{"type": "file_contains", "path": "result.txt", "text": "done"}],
+    )
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert result.status == "budget_finalized"
+    assert result.passed is True
+
+
 def test_eval_cases_are_pinned_to_devagent():
     with pytest.raises(ValueError):
         EvalCase(id="legacy-agent", prompt="legacy", agent="legacy")
@@ -240,6 +416,22 @@ def test_eval_batch_summary_aggregates_runtime_metrics():
     assert summary.average_score == 0.5
     assert summary.total_tokens == 60
     assert summary.total_tool_calls == 7
+
+
+def test_eval_batch_summary_counts_budget_statuses():
+    results = [
+        type("Result", (), {"status": "budget_exceeded", "passed": False, "score": 0.0, "duration_ms": 100.0, "total_tokens": 10, "tool_calls": 2})(),
+        type("Result", (), {"status": "budget_finalized", "passed": True, "score": 1.0, "duration_ms": 200.0, "total_tokens": 20, "tool_calls": 3})(),
+    ]
+
+    summary = summarize(results)
+
+    assert summary.passed == 1
+    assert summary.budget_exceeded == 1
+    assert summary.budget_finalized == 1
+    assert summary.failed == 0
+    assert summary.timeout == 0
+    assert summary.errors == 0
 
 
 def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
