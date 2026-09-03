@@ -180,6 +180,7 @@ def create_conversation_tools(
             review_manager=review_mgr, progress=progress,
             toolkits=("strategy",),
             max_steps=6,
+            max_total_tokens=get_settings().agent_subagent_max_total_tokens,
             single_use=True,
         ))
 

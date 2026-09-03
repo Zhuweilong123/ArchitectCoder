@@ -69,25 +69,31 @@ def test_memory_archive_requires_completed_mutation_evidence():
 
 
 def test_prompt_builder_reports_dynamic_sections_without_content():
-    builder = DevPromptBuilder()
+    builder = DevPromptBuilder(
+        source_dir="src", test_dir="tests", design_dir="design"
+    )
 
     import asyncio
     context = asyncio.run(builder.build_context("", "src", "tests", "run pytest"))
 
-    assert "Source directory: src" in context
+    assert "Source directory: src" in builder.system_prompt
+    assert "Test directory: tests" in builder.system_prompt
+    assert "Design directory: design" in builder.system_prompt
+    assert "Source directory: src" not in context
     assert builder.static_prompt_report["estimated_tokens"] > 0
-    assert builder.last_context_report["sections"]["workspace"]["chars"] > 0
+    assert "workspace" not in builder.last_context_report["sections"]
     assert "memory" not in builder.last_context_report["sections"]
 
 
-def test_prompt_builder_always_includes_project_workspace():
+def test_prompt_builder_keeps_design_workspace_without_project_file_prompting():
     import asyncio
 
     builder = DevPromptBuilder()
     context = asyncio.run(builder.build_context("project.umlproj", "src", "tests", "你好"))
-    assert "Source directory: src" in context
-    assert "Test directory: tests" in context
-    assert "Current project file: project.umlproj" in context
+    assert "Source directory: src" not in context
+    assert "Test directory: tests" not in context
+    assert "Design directory:" not in context
+    assert "Current project file:" not in context
 
 
 def test_prompt_builder_uses_injected_memory_port_without_manager_dependency():
@@ -140,13 +146,19 @@ def test_memory_archive_helper_only_depends_on_memory_port():
 
 
 def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():
-    builder = DevPromptBuilder()
+    builder = DevPromptBuilder(
+        source_dir="src", test_dir="tests", design_dir="design"
+    )
 
-    assert builder.prompt_version == "3.1"
+    assert builder.prompt_version == "3.1-r4"
     assert "instead of redesigning" in builder.system_prompt
     assert "focused existing test early" in builder.system_prompt
     assert "Do not modify UML unless requested" in builder.system_prompt
-    assert "known canonical .umlproj" in builder.system_prompt
+    assert "known canonical design artifact" in builder.system_prompt
+    assert "call spawn_subagent once" in builder.system_prompt
+    assert "Source directory: src" in builder.system_prompt
+    assert "Test directory: tests" in builder.system_prompt
+    assert "Design directory: design" in builder.system_prompt
     assert set(builder.static_prompt_report) == {"chars", "estimated_tokens"}
 
 

@@ -63,6 +63,7 @@ class TaskOrchestrator:
         planner_max_tokens: int = 1200,
         planner_timeout_seconds: float = 30.0,
         worker_max_steps: int = 6,
+        worker_max_total_tokens: int = 500000,
     ):
         self.llm = llm
         self.project_file = project_file
@@ -71,6 +72,7 @@ class TaskOrchestrator:
         self.planner_max_tokens = max(256, int(planner_max_tokens))
         self.planner_timeout_seconds = max(1.0, float(planner_timeout_seconds))
         self.worker_max_steps = max(1, int(worker_max_steps))
+        self.worker_max_total_tokens = max(1, int(worker_max_total_tokens))
 
     def build_contract(self, user_message: str) -> TaskContract:
         scopes: list[ArtifactScope] = []
@@ -116,6 +118,7 @@ class TaskOrchestrator:
             project_file=self.project_file,
             toolkits=("strategy",),
             max_steps=self.worker_max_steps,
+            max_total_tokens=self.worker_max_total_tokens,
             single_use=True,
         )
         description = self._exploration_request(contract, plan)

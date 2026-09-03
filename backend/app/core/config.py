@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     agent_planner_max_tokens: int = 3000
     agent_planner_timeout_seconds: float = 30.0
     agent_explorer_max_steps: int = 6
+    # Independent budget for a main-agent-managed subagent.  This budget is
+    # deliberately separate from the main agent's per-task 200k budget.
+    agent_subagent_max_total_tokens: int = 500000
+    # Main-agent-managed subagent entry point. The optional orchestration layer
+    # remains independently controlled by agent_orchestration_enabled.
+    agent_main_subagent_enabled: bool = True
     # Keep the optional planner/explorer path disabled until its hand-off and
     # tool-routing behavior is revalidated. The core falls back to NoOp.
     agent_orchestration_enabled: bool = False

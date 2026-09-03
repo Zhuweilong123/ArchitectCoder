@@ -90,6 +90,7 @@ class SpawnSubagentTool(AsyncTool):
         design_dir: str = "",
         project_file: str = "",
         max_steps: int = 20,
+        max_total_tokens: int = 500000,
         review_manager=None,
         progress=None,
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
@@ -98,15 +99,17 @@ class SpawnSubagentTool(AsyncTool):
         super().__init__(
             name="spawn_subagent",
             description=(
-                "Launch a focused subagent to complete a self-contained sub-task "
-                "(e.g. explore, summarize, analyze, or implement an isolated change) "
-                "and return only its final summary. Use to avoid cluttering the main "
-                "context with many small reads. Pick toolkit to scope the subagent's "
-                "tools to the task."
+                "Delegate one bounded, self-contained exploration to a read-only "
+                "subagent and receive only a concise summary. Use for cross-file or "
+                "UML/source impact analysis when many small reads would clutter the "
+                "main context; do not use for greetings, simple single-file tasks, "
+                "editing, review, or final verification. The subagent cannot spawn "
+                "agents, write files, run bash, or submit UML review."
             ),
         )
         self.llm = llm
         self.max_steps = max_steps
+        self.max_total_tokens = max(1, int(max_total_tokens))
         self.last_token_usage = 0
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
@@ -157,6 +160,11 @@ class SpawnSubagentTool(AsyncTool):
         self.last_token_usage = 0
 
         for _ in range(self.max_steps):
+            if self.last_token_usage >= self.max_total_tokens:
+                return (
+                    "Subagent budget exceeded: reached the configured limit of "
+                    f"{self.max_total_tokens} tokens before completing the sub-task."
+                )
             response = await self.llm.ainvoke_with_tools(
                 messages=messages,
                 tools=sub_tools,
@@ -171,6 +179,12 @@ class SpawnSubagentTool(AsyncTool):
 
             if not tool_calls:
                 return content.strip() or "(subagent finished without a summary)"
+
+            if self.last_token_usage >= self.max_total_tokens:
+                return (
+                    "Subagent budget exceeded: reached the configured limit of "
+                    f"{self.max_total_tokens} tokens before producing a final summary."
+                )
 
             messages.append({
                 "role": "assistant",

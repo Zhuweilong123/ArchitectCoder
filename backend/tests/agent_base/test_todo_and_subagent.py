@@ -216,3 +216,29 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
     assert "summary text" in result
     assert llm.last_model is None
+
+
+def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
+    class _BudgetLLM(_MockLLM):
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.count += 1
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": f"c{self.count}",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": json.dumps({"pattern": "*.py"})},
+                }],
+                "usage": {"total_tokens": 60},
+            }
+
+    llm = _BudgetLLM()
+    tool = SpawnSubagentTool(
+        llm=llm, source_dir=str(tmp_path), max_steps=10, max_total_tokens=100,
+    )
+
+    result = asyncio.run(tool._execute({"description": "find files"}))
+
+    assert "budget exceeded" in result
+    assert tool.last_token_usage == 120
+    assert llm.count == 2

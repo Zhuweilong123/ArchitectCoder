@@ -70,4 +70,5 @@ def create(*, llm, settings, project_file: str = "", source_dir: str = "", test_
         planner_max_tokens=settings.agent_planner_max_tokens,
         planner_timeout_seconds=settings.agent_planner_timeout_seconds,
         worker_max_steps=settings.agent_explorer_max_steps,
+        worker_max_total_tokens=settings.agent_subagent_max_total_tokens,
     ))

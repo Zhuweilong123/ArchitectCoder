@@ -181,14 +181,21 @@ class DevPromptBuilder:
         self,
         memory: MemoryPort | None = None,
         *,
+        source_dir: str = "",
+        test_dir: str = "",
+        design_dir: str = "",
         memory_recall_top_k: int = 3,
         memory_recall_max_tokens: int = 500,
     ):
-        # One production prompt keeps the system prefix byte-stable across
-        # sessions. Prompt experiments belong to isolated eval runs, not an
-        # environment flag that can split cache cohorts in production.
-        self.prompt_version = "3.1-r3"
-        self.system_prompt = self._build_static_prompt()
+        # The system prompt is stable for the lifetime of an agent. Workspace
+        # roots are session invariants, so keep them here instead of repeating
+        # them in every user-context suffix.
+        self.prompt_version = "3.1-r4"
+        self.system_prompt = self._build_static_prompt(
+            source_dir=source_dir,
+            test_dir=test_dir,
+            design_dir=design_dir,
+        )
         self.memory = memory if memory is not None else NoOpMemory()
         self.memory_recall_top_k = max(1, int(memory_recall_top_k))
         self.memory_recall_max_tokens = max(1, int(memory_recall_max_tokens))
@@ -205,11 +212,27 @@ class DevPromptBuilder:
         }
 
     @staticmethod
-    def _build_static_prompt() -> str:
-        """The single production system prompt for DevAgent 3.1-r3."""
+    def _build_static_prompt(
+        *, source_dir: str = "", test_dir: str = "", design_dir: str = ""
+    ) -> str:
+        """The single production system prompt for DevAgent 3.1-r4."""
+        workspace_lines = ["## Workspace (host paths; bash executes in WSL Linux)"]
+        for label, path in (
+            ("Source directory", source_dir),
+            ("Test directory", test_dir),
+            ("Design directory", design_dir),
+        ):
+            if path:
+                workspace_lines.append(f"- {label}: {path}")
+        workspace_lines.append(
+            "- Use the cwd aliases supplied by the bash schema. Do not convert these "
+            "host paths or invoke WSL yourself."
+        )
         return "\n".join([
             "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
             "Complete the user's request end to end: inspect relevant state, evolve existing artifacts instead of redesigning them unless requested, make scoped changes, verify results, and report what was done and what remains.",
+            "",
+            *workspace_lines,
             "",
             "## Execution rules",
             "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
@@ -221,10 +244,11 @@ class DevPromptBuilder:
             "- Do not duplicate discovery, inspect a directory merely to find the supplied workspace, or create a helper script solely to inspect or summarize an existing file.",
             "- Treat the supplied Source directory as the working root for relative paths and shell commands.",
             "- Use only tools exposed for the current task and their supplied schemas. Prefer direct domain tools over shell workarounds; treat tool errors as capability facts and change approach instead of repeating them.",
+            "- For a task spanning UML/design and source or multiple unrelated files, call spawn_subagent once before broad direct exploration. Give it a read-only fact-finding task, use its summary, and do not repeat the same discovery yourself. Do not call it for greetings, simple single-file work, edits, review, or final verification.",
             "",
             "## UML and verification",
             "- Do not modify UML unless requested or required by an externally visible code-contract change. For UML work, prefer graph and targeted file tools; load a skill only when its guidance is necessary.",
-            "- For a full migration from a known canonical .umlproj to a stale peer, reuse the canonical file instead of reconstructing diagrams. Use one workspace-local copy operation, then validate the target.",
+            "- For a full migration from a known canonical design artifact to a stale peer, reuse the canonical artifact instead of reconstructing diagrams. Use one workspace-local copy operation, then validate the target.",
             "- JSON parsing alone does not verify a UML repair: verify the project loads with a non-empty diagram set, using a valid project as structural reference rather than creating an empty placeholder.",
             "- Follow the current task policy for planning and verification; do not create plans or worktrees when they are not required. Report modified, verified, partial, blocked, and failed states distinctly.",
             "",
@@ -235,14 +259,10 @@ class DevPromptBuilder:
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
         """构建易变上下文尾块（memo 化），返回空串表示无易变内容。"""
-        from app.core.config import get_settings
-
-        design_dir = (os.path.dirname(os.path.abspath(project_file))
-                      if project_file else os.path.abspath(get_settings().uml_dir))
         today = datetime.now().strftime("%Y-%m-%d")
         # user_message 必须入 key：记忆 recall 按查询相关性排序，
         # 否则同项目同日内后续轮次会一直沿用首轮的记忆块。
-        key = (project_file, source_dir, test_dir, design_dir, today, user_message)
+        key = (project_file, today, user_message)
         if key == self._ctx_key:
             return self._ctx_value
 
@@ -251,35 +271,6 @@ class DevPromptBuilder:
         def add_section(name: str, value: str) -> None:
             if value:
                 sections.append((name, value))
-
-        # ── workspace 目录（每轮固定注入）──
-        # Workspace and open-project facts are session invariants.  They are
-        # never conditional on a natural-language task classifier: a wording
-        # miss must not make the agent rediscover its own project boundary.
-        workspace_entries = [
-            ("Source directory", source_dir),
-            ("Test directory", test_dir),
-            ("Design directory", design_dir),
-        ]
-        provided = [(label, d) for label, d in workspace_entries if d]
-        if provided:
-            lines = ["## Workspace (host paths; bash executes in WSL Linux)"]
-            for label, d in provided:
-                lines.append(f"- {label}: {d}")
-            lines.append(
-                "- Use the cwd aliases supplied by the bash schema. Do not convert these "
-                "host paths or invoke WSL yourself."
-            )
-            add_section("workspace", "\n".join(lines))
-
-        # ── 项目上下文 ──
-        if project_file:
-            add_section("project_context",
-                "## Project Context\n"
-                f"- Current project file: {project_file}\n"
-                "  (use this exact path as project_file parameter; "
-                "do NOT guess or shorten the filename)"
-            )
 
         # ── 记忆 recall（按项目，只在 key 变化时重算）──
         project_id = (os.path.splitext(os.path.basename(project_file))[0]
@@ -339,8 +330,8 @@ async def _create_dev_agent(
 ):
     """创建对话 Agent 实例，注册全部工具，并返回 prompt 组装器。
 
-    静态 system prompt 由 DevPromptBuilder 一次生成；workspace/项目/记忆等
-    易变上下文由 builder 每轮追加到最后一条 user 消息末尾（见 build_context）。
+    静态 system prompt 由 DevPromptBuilder 一次生成；workspace 目录作为会话不变量
+    固定在其中，记忆等易变上下文由 builder 每轮追加到最后一条 user 消息末尾。
     """
     from app.core.config import get_settings
 
@@ -357,9 +348,10 @@ async def _create_dev_agent(
         review_project_id=os.path.splitext(os.path.basename(project_file))[0] if project_file else "",
         auto_approve_reviews=auto_approve_reviews,
         command_executor=command_executor,
-        # The default chat path stays single-agent.  Dedicated orchestration
-        # can opt into subagents explicitly without adding a task classifier.
-        include_subagent=False,
+        # The main Agent owns the delegation decision.  This is independent
+        # from the optional orchestration layer, which remains disabled by
+        # default and must not be used to trigger subagents.
+        include_subagent=settings.agent_main_subagent_enabled,
     )
 
     workspace_roots = [source_dir, test_dir]
@@ -370,8 +362,16 @@ async def _create_dev_agent(
         registry.register_tool(t)
 
     memory_provider = load_memory(llm=llm, settings=settings)
+    design_dir = (
+        os.path.dirname(os.path.abspath(project_file))
+        if project_file
+        else os.path.abspath(settings.uml_dir)
+    )
     prompt_builder = DevPromptBuilder(
         memory=memory_provider,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        design_dir=design_dir,
         memory_recall_top_k=settings.agent_memory_recall_top_k,
         memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
     )
