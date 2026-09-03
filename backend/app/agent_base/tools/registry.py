@@ -1,5 +1,6 @@
 """工具注册机制 — 支持 Tool 对象注册和函数便捷注册"""
 
+import copy
 from typing import Dict, Any, Callable, Optional
 from .base import Tool
 from .result import ToolResult
@@ -87,12 +88,38 @@ class ToolRegistry:
             descriptions.append(f"- {name}: {info['description']}")
         return "\n".join(descriptions) if descriptions else "暂无可用工具"
 
-    def get_openai_specs(self) -> list[dict]:
+    @staticmethod
+    def _compact_openai_spec(schema: dict) -> dict:
+        """Reduce repeated schema prose while preserving call shape and key guidance."""
+        compact = copy.deepcopy(schema)
+        function = compact.get("function", {})
+        description = str(function.get("description") or "")
+        if len(description) > 240:
+            function["description"] = (
+                description[:160].rstrip() + " ... " + description[-70:].lstrip()
+            )
+        parameters = function.get("parameters")
+
+        def strip_parameter_descriptions(value: Any) -> None:
+            if isinstance(value, dict):
+                value.pop("description", None)
+                for child in value.values():
+                    strip_parameter_descriptions(child)
+            elif isinstance(value, list):
+                for child in value:
+                    strip_parameter_descriptions(child)
+
+        strip_parameter_descriptions(parameters)
+        return compact
+
+    def get_openai_specs(self, compact: bool = False) -> list[dict]:
         """收集所有工具的 OpenAI Function Calling schema。
 
         - 注册的 Tool 对象调用 ``to_openai_schema()``
         - :meth:`register_function` 注册的简装工具自动生成最简 schema
           （单一 ``input`` 字符串参数）
+        - ``compact=True`` 保留工具名称、参数类型和关键描述，去除重复的
+          参数说明，适合已经完成至少一次工具调用的长循环。
         """
         specs = []
         for tool in self._tools.values():
@@ -100,7 +127,7 @@ class ToolRegistry:
             params = schema.get("function", {}).get("parameters", {})
             if params.get("type") == "object":
                 params.setdefault("additionalProperties", False)
-            specs.append(schema)
+            specs.append(self._compact_openai_spec(schema) if compact else schema)
         for name, info in self._functions.items():
             schema = {
                 "type": "function",
@@ -120,12 +147,15 @@ class ToolRegistry:
                 },
             }
             schema["function"]["parameters"]["additionalProperties"] = False
-            specs.append(schema)
+            specs.append(self._compact_openai_spec(schema) if compact else schema)
         return specs
 
-    def get_openai_specs_for(self, names: list[str]) -> list[dict]:
+    def get_openai_specs_for(self, names: list[str], compact: bool = False) -> list[dict]:
         """根据名称列表筛选 spec（用于限制本轮可用的工具）"""
-        all_specs = {s["function"]["name"]: s for s in self.get_openai_specs()}
+        all_specs = {
+            s["function"]["name"]: s
+            for s in self.get_openai_specs(compact=compact)
+        }
         return [all_specs[n] for n in names if n in all_specs]
 
     def can_parallel(self, name: str) -> bool:

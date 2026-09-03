@@ -373,9 +373,13 @@ class ReActAgent(Agent):
         # Preserve caller-provided tool order for stable schemas/cache keys;
         # use a set only for membership checks below. This is unrelated to
         # model selection, which is fixed for the session.
-        tool_specs = (
+        full_tool_specs = (
             self.tool_registry.get_openai_specs_for(allowed_tools)
             if allowed_tools is not None else self.tool_registry.get_openai_specs()
+        )
+        compact_tool_specs = (
+            self.tool_registry.get_openai_specs_for(allowed_tools, compact=True)
+            if allowed_tools is not None else self.tool_registry.get_openai_specs(compact=True)
         )
         compacted = self.context_budget.prepare_history(
             self._history, self._history_summary,
@@ -387,7 +391,7 @@ class ReActAgent(Agent):
             input_text,
             context=context,
             history_summary=self._history_summary,
-            tools=tool_specs,
+            tools=full_tool_specs,
         )
         messages = built.messages
         current_user_index = built.current_user_index
@@ -452,7 +456,9 @@ class ReActAgent(Agent):
 
                 remaining_tokens = self.max_total_tokens - total_tokens
                 finalization_mode = remaining_tokens <= self.token_finalization_reserve_tokens
-                active_tool_specs = [] if finalization_mode else tool_specs
+                active_tool_specs = [] if finalization_mode else (
+                    compact_tool_specs if tool_call_count else full_tool_specs
+                )
                 if finalization_mode:
                     messages.append({
                         "role": "system",

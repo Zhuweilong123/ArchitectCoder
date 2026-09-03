@@ -162,7 +162,7 @@ class DevPromptBuilder:
         # One production prompt keeps the system prefix byte-stable across
         # sessions. Prompt experiments belong to isolated eval runs, not an
         # environment flag that can split cache cohorts in production.
-        self.prompt_version = "3.1-r1"
+        self.prompt_version = "3.1-r3"
         self.system_prompt = self._build_static_prompt()
         self.memory = memory if memory is not None else NoOpMemory()
         self.memory_recall_top_k = max(1, int(memory_recall_top_k))
@@ -181,7 +181,7 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt() -> str:
-        """The single production system prompt for DevAgent 3.1-r1."""
+        """The single production system prompt for DevAgent 3.1-r3."""
         return "\n".join([
             "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
             "Complete the user's request end to end: inspect relevant state, evolve existing artifacts instead of redesigning them unless requested, make scoped changes, verify results, and report what was done and what remains.",

@@ -58,6 +58,19 @@ def test_registry_openai_specs_includes_all():
     assert names == {"echo", "double"}
 
 
+def test_registry_compact_specs_preserve_call_shape_without_parameter_prose():
+    reg = ToolRegistry()
+    reg.register_tool(EchoTool())
+
+    full = reg.get_openai_specs()[0]
+    compact = reg.get_openai_specs(compact=True)[0]
+
+    assert compact["function"]["name"] == full["function"]["name"]
+    assert compact["function"]["parameters"]["properties"]["text"]["type"] == "string"
+    assert "description" in full["function"]["parameters"]["properties"]["text"]
+    assert "description" not in compact["function"]["parameters"]["properties"]["text"]
+
+
 def test_registry_unregister_and_missing_tool():
     reg = ToolRegistry()
     reg.register_function("f", "desc", lambda s: s)
