@@ -171,6 +171,7 @@ interface DiagramState {
 }
 
 const _initialProject = createDefaultProject();
+const _initialFilepath = localStorage.getItem('currentFilepath');
 
 export const useDiagramStore = create<DiagramState>((set, get) => ({
   project: _initialProject,
@@ -182,7 +183,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   selectedComponentId: null,
   selectedCompRelationId: null,
   isModified: false,
-  currentFilepath: null,
+  currentFilepath: _initialFilepath,
   currentWorkspacePath: null,
   currentWorkspaceSafe: true,
   undoStack: [],
@@ -211,6 +212,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   newProject: (name) => {
     const project = createDefaultProject(name);
     console.debug('[Store] newProject:', project.name);
+    localStorage.removeItem('currentFilepath');
     set({
       project,
       diagram: _activeDiagram(project),
@@ -333,6 +335,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   newDiagram: (name) => {
     console.debug('[Store] newDiagram (legacy):', name);
     const project = createDefaultProject(name);
+    localStorage.removeItem('currentFilepath');
     set({
       project,
       diagram: _activeDiagram(project),
@@ -814,7 +817,14 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   clearHistory: () => set({ undoStack: [], redoStack: [], lastOperationTime: 0, lastMergeKey: null }),
 
-  setCurrentFilepath: (path) => set({ currentFilepath: path }),
+  setCurrentFilepath: (path) => {
+    if (path) {
+      localStorage.setItem('currentFilepath', path);
+    } else {
+      localStorage.removeItem('currentFilepath');
+    }
+    set({ currentFilepath: path });
+  },
   setCurrentWorkspacePath: (path, safe = true) => set({
     currentWorkspacePath: path,
     currentWorkspaceSafe: safe,
