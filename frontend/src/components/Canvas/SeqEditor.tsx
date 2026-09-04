@@ -96,11 +96,24 @@ function ensureShapesRegistered() {
 
 // ── HTML builders ────────────────────────────────────
 
-function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean, theme: CanvasTheme): string {
-  const selClass = selected ? 'selected' : '';
+function buildLifelineHTML(
+  lifeline: SeqLifeline,
+  selected: boolean,
+  endpointHighlighted: boolean,
+  theme: CanvasTheme,
+  autoActivationYs: number[] = [],
+): string {
+  const selClass = [
+    selected ? 'selected' : '',
+    endpointHighlighted ? 'message-endpoint' : '',
+  ].filter(Boolean).join(' ');
   const bars = (lifeline.activations || []).map((y, i) =>
     `<div class="seq-activation" style="top:${y - 6}px" title="激活条 #${i + 1}"></div>`
   ).join('');
+  const autoBars = autoActivationYs.map((messageY, i) => {
+    const bodyOffset = messageY - LIFELINE_Y - 45 - 9;
+    return `<div class="seq-activation seq-activation-auto" style="top:${Math.max(0, bodyOffset)}px" title="消息激活 #${i + 1}"></div>`;
+  }).join('');
   const hint = selected
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
@@ -108,7 +121,7 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean, theme: Canv
     <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
       <div class="seq-lifeline-dash"></div>
-      ${bars}
+      ${bars}${autoBars}
       ${hint}
     </div>
   </div>`;
@@ -119,6 +132,34 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean, theme: Canv
 const LIFELINE_WIDTH = 140;
 const LIFELINE_HEIGHT = 400;
 const LIFELINE_Y = 120;  // give top padding so lifelines aren't cut off
+const MESSAGE_START_Y = 190;
+const MESSAGE_GAP = 45;
+
+function getMessageVisual(type: MessageType, theme: CanvasTheme) {
+  const palette = theme === 'dark'
+    ? {
+        sync: '#60a5fa', async: '#4ade80', return: '#cbd5e1', simple: '#e2e8f0', self: '#a78bfa',
+      }
+    : {
+        sync: '#2563eb', async: '#16a34a', return: '#64748b', simple: '#475569', self: '#7c3aed',
+      };
+  const color = palette[type];
+  return {
+    color,
+    dash: type === 'return' ? '6,3' : '',
+    marker: type === 'simple' ? null : {
+      name: type === 'async' ? 'classic' : 'block',
+      width: 10,
+      height: 6,
+      fill: color,
+      stroke: color,
+    },
+  };
+}
+
+function getMessageY(message: SeqMessage): number {
+  return message.y || MESSAGE_START_Y + (message.order - 1) * MESSAGE_GAP;
+}
 
 const SeqEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -127,6 +168,7 @@ const SeqEditor: React.FC = () => {
   const clipboard = useRef<any>(null);
   const [messageMode, setMessageMode] = useState<MessageType>('sync');
   const messageModeRef = useRef<MessageType>('sync');
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
 
   const {
     diagram, selectedLifelineId, selectedMessageId,
@@ -302,6 +344,10 @@ const SeqEditor: React.FC = () => {
       selectMessage(edge.id);
       setRightPanelTab('properties');
     });
+    graph.on('edge:mouseenter', ({ edge }) => setHoveredMessageId(edge.id));
+    graph.on('edge:mouseleave', ({ edge }) => {
+      setHoveredMessageId((current) => (current === edge.id ? null : current));
+    });
 
     // Save edge Y position when dragged
     graph.on('edge:change:source', ({ edge, current }) => {
@@ -417,7 +463,14 @@ const SeqEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; theme: CanvasTheme; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, {
+    entity: SeqLifeline;
+    selected: boolean;
+    endpointHighlighted: boolean;
+    autoActivationSignature: string;
+    theme: CanvasTheme;
+    html: string;
+  }>>(new Map());
   const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
   const messageSignatureCache = useRef<Map<string, string>>(new Map());
   const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
@@ -431,6 +484,20 @@ const SeqEditor: React.FC = () => {
       isInternalUpdate.current = true;
       const lifelines = diagram.lifelines || [];
       const messages = diagram.messages || [];
+      const selectedMessage = messages.find((message) => message.id === selectedMessageId);
+      const selectedEndpointIds = new Set(
+        selectedMessage
+          ? [selectedMessage.from_lifeline, selectedMessage.to_lifeline]
+          : [],
+      );
+      const autoActivationMap = new Map<string, number[]>();
+      messages.forEach((message) => {
+        if (message.type === 'return') return;
+        const activationLifeline = message.to_lifeline || message.from_lifeline;
+        const activations = autoActivationMap.get(activationLifeline) || [];
+        activations.push(getMessageY(message));
+        autoActivationMap.set(activationLifeline, activations);
+      });
       const currentLIds = new Set(lifelines.map((l) => l.id));
 
       // Remove deleted lifelines
@@ -448,7 +515,7 @@ const SeqEditor: React.FC = () => {
       // _SEQ_START_Y=190. Using msg.y directly avoids drift from formula mismatches.
       let maxMsgY = 0;
       for (const m of messages) {
-        const y = m.y || (LIFELINE_Y + 30 + m.order * 45);
+        const y = getMessageY(m);
         if (y > maxMsgY) maxMsgY = y;
       }
       const neededHeight = Math.max(
@@ -459,16 +526,28 @@ const SeqEditor: React.FC = () => {
       // Add/update lifelines (coordinate validation handled by store)
       lifelines.forEach((ll) => {
         const selected = ll.id === selectedLifelineId;
+        const endpointHighlighted = selectedEndpointIds.has(ll.id);
+        const autoActivationYs = autoActivationMap.get(ll.id) || [];
+        const autoActivationSignature = JSON.stringify(autoActivationYs);
         const cachedRender = renderCache.current.get(ll.id);
         const htmlContent = cachedRender?.entity === ll && cachedRender.selected === selected
+          && cachedRender.endpointHighlighted === endpointHighlighted
+          && cachedRender.autoActivationSignature === autoActivationSignature
           && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildLifelineHTML(ll, selected, canvasTheme);
+          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme, autoActivationYs);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
         ]);
-        renderCache.current.set(ll.id, { entity: ll, selected, theme: canvasTheme, html: htmlContent });
+        renderCache.current.set(ll.id, {
+          entity: ll,
+          selected,
+          endpointHighlighted,
+          autoActivationSignature,
+          theme: canvasTheme,
+          html: htmlContent,
+        });
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
@@ -523,19 +602,20 @@ const SeqEditor: React.FC = () => {
 
       // Add/update messages — use persisted msg.y, fall back to order-based calculation
       const lifelineMap = new Map(lifelines.map((l) => [l.id, l]));
-      const MSG_Y_BASE = LIFELINE_Y + 30;
       messages.forEach((msg) => {
         const srcLL = lifelineMap.get(msg.from_lifeline);
         const tgtLL = lifelineMap.get(msg.to_lifeline);
         if (!srcLL || !tgtLL) return;
 
         const isSelf = msg.from_lifeline === msg.to_lifeline;
-        const msgY = msg.y || MSG_Y_BASE + msg.order * 45;  // persisted Y takes priority; fallback matches backend 45px gap
+        const msgY = getMessageY(msg);  // persisted Y takes priority
 
         // Connect to the visual axis of each lifeline instead of the outer
         // node boundary. This makes messages feel anchored to the dashed line.
         const sourceAxisX = srcLL.x + LIFELINE_WIDTH / 2;
         const targetAxisX = tgtLL.x + LIFELINE_WIDTH / 2;
+        // Self-messages consistently open to the right for a stable visual language.
+        const selfLoopDirection = 1;
         let fromX: number, toX: number;
         if (isSelf) {
           fromX = sourceAxisX;
@@ -546,22 +626,49 @@ const SeqEditor: React.FC = () => {
         }
 
         const isSelected = msg.id === selectedMessageId;
-        let strokeColor = '#1890ff';
-        let strokeDash = '';
-        if (msg.type === 'return') { strokeColor = '#888'; strokeDash = '6,3'; }
-        else if (msg.type === 'simple') { strokeColor = '#333'; }
-        else if (msg.type === 'async') { strokeColor = '#52c41a'; }
-        if (isSelected) strokeColor = '#2563eb';
-
+        const isHovered = msg.id === hoveredMessageId;
+        const visual = getMessageVisual(msg.type, canvasTheme);
+        const strokeColor = isSelected
+          ? (canvasTheme === 'dark' ? '#93c5fd' : '#1d4ed8')
+          : visual.color;
+        const strokeDash = visual.dash;
+        const labelPosition = {
+          distance: 0.5,
+          offset: isSelf ? { x: 0, y: -14 } : -12,
+        };
         const lineAttrs: Record<string, unknown> = {
           stroke: strokeColor,
-          strokeWidth: isSelected ? 2.5 : 2,
+          strokeWidth: isSelected ? 3 : isHovered ? 2.5 : 1.8,
           strokeDasharray: strokeDash,
-          targetMarker: { name: 'block', width: 10, height: 6 },
+          targetMarker: visual.marker,
         };
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 14,
+          fill: 'none',
+          pointerEvents: 'stroke',
+        };
+        const edgeLabels = msg.label ? [{
+          attrs: {
+            text: {
+              text: msg.label,
+              fontSize: isSelected || isHovered ? 11 : 10,
+              fontWeight: isSelected ? 600 : 500,
+              fill: strokeColor,
+            },
+            rect: {
+              fill: canvasTheme === 'dark' ? '#172033' : '#ffffff',
+              stroke: isSelected ? strokeColor : canvasTheme === 'dark' ? '#334155' : '#e2e8f0',
+              strokeWidth: isSelected ? 1 : 0.6,
+              rx: 4,
+              ry: 4,
+            },
+          },
+          position: labelPosition,
+        }] : [];
         const signature = JSON.stringify([
           srcLL.x, tgtLL.x, msgY, isSelf, msg.label, msg.type, strokeColor, strokeDash,
-          isSelected, canvasTheme,
+          selfLoopDirection, isSelected, isHovered, canvasTheme,
         ]);
 
         try {
@@ -574,36 +681,23 @@ const SeqEditor: React.FC = () => {
             edge.setTarget({ x: toX, y: isSelf ? msgY + 24 : msgY });
             if (isSelf) {
               edge.setVertices([
-                { x: sourceAxisX + 40, y: msgY },
-                { x: sourceAxisX + 40, y: msgY + 24 },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY + 24 },
               ]);
             } else {
               edge.setVertices([]);
             }
-            edge.setLabels(msg.label ? [{
-              attrs: {
-                text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
-              },
-              position: { distance: 0.5, offset: -12 },
-            }] : []);
+            edge.setLabels(edgeLabels);
             edge.setAttrByPath('line/stroke', strokeColor);
-            edge.setAttrByPath('line/strokeWidth', isSelected ? 2.5 : 2);
+            edge.setAttrByPath('line/strokeWidth', isSelected ? 3 : isHovered ? 2.5 : 1.8);
             edge.setAttrByPath('line/strokeDasharray', strokeDash);
+            edge.setAttrByPath('line/targetMarker', visual.marker);
+            edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+            edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+            edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
             messageSignatureCache.current.set(msg.id, signature);
             return;
           }
-
-          // New edge
-          const edgeLabel = msg.label
-            ? [{
-                attrs: {
-                  text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                  rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
-                },
-                position: { distance: 0.5, offset: -12 },
-              }]
-            : undefined;
 
           if (isSelf) {
             const edge = graph.addEdge({
@@ -611,12 +705,12 @@ const SeqEditor: React.FC = () => {
               source: { x: sourceAxisX, y: msgY },
               target: { x: sourceAxisX, y: msgY + 24 },
               vertices: [
-                { x: sourceAxisX + 40, y: msgY },
-                { x: sourceAxisX + 40, y: msgY + 24 },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY + 24 },
               ],
-              labels: edgeLabel,
+              labels: edgeLabels,
               connector: { name: 'rounded' },
-              attrs: { line: lineAttrs },
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) messageSignatureCache.current.set(msg.id, signature);
           } else {
@@ -624,8 +718,8 @@ const SeqEditor: React.FC = () => {
               id: msg.id,
               source: { x: fromX, y: msgY },
               target: { x: toX, y: msgY },
-              labels: edgeLabel,
-              attrs: { line: lineAttrs },
+              labels: edgeLabels,
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) messageSignatureCache.current.set(msg.id, signature);
           }
@@ -655,7 +749,12 @@ const SeqEditor: React.FC = () => {
         const h = Math.max(60, (f.y_end || (yStart + 120)) - yStart);
         const stroke = f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
         const dash = f.type === 'opt' ? '4,2' : '';
-        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash]);
+        const fill = f.type === 'alt'
+          ? 'rgba(114,46,209,0.05)'
+          : f.type === 'loop'
+            ? 'rgba(24,144,255,0.05)'
+            : 'rgba(100,116,139,0.04)';
+        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash, fill]);
         try {
           const existing = graph.getCellById(f.id);
           if (existing && existing.isNode()
@@ -676,6 +775,7 @@ const SeqEditor: React.FC = () => {
             fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
             fn.setAttrByPath('body/stroke', stroke);
             fn.setAttrByPath('body/strokeDasharray', dash);
+            fn.setAttrByPath('body/fill', fill);
             // Fragments are visual containers. Keep them behind lifelines and
             // message edges so elements inside a loop remain selectable.
             fn.toBack();
@@ -754,7 +854,11 @@ const SeqEditor: React.FC = () => {
   const [showToolbar, setShowToolbar] = useState(true);
 
   const handleAddLifeline = useCallback(() => {
-    const x = 150 + Math.random() * 300;
+    const lifelines = getActiveDiagram().lifelines || [];
+    const rightmostX = lifelines.reduce((maxX, lifeline) => Math.max(maxX, lifeline.x), 0);
+    // Keep the new participant beside the current rightmost one. The 220px
+    // step leaves room for the 140px header and a comfortable visual gap.
+    const x = lifelines.length > 0 ? rightmostX + 220 : 200;
     addLifeline(x);
   }, [addLifeline]);
 
@@ -785,7 +889,7 @@ const SeqEditor: React.FC = () => {
           background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6,
           padding: '4px 6px', display: 'flex', gap: 4, alignItems: 'center',
           boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
-          flexWrap: 'wrap', maxWidth: 360,
+          flexWrap: 'wrap', maxWidth: 480,
         }}>
           <Tooltip title="添加生命线">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>生命线</Button>
@@ -810,6 +914,11 @@ const SeqEditor: React.FC = () => {
               <Button size="small" onClick={arrangeSequence}>整理</Button>
             </Tooltip>
           )}
+          {(diagram.lifelines || []).length > 0 && (
+            <Tooltip title="将时序图自动居中到可视画布">
+              <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>居中</Button>
+            </Tooltip>
+          )}
           <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>片段:</span>
           {(Object.keys(FRAGMENT_LABELS) as FragmentType[]).map((t) => (
             <Tooltip key={t} title={`添加 ${FRAGMENT_LABELS[t]} 片段`}>
@@ -817,6 +926,12 @@ const SeqEditor: React.FC = () => {
                 style={{ fontSize: 11, padding: '0 6px' }}>{FRAGMENT_LABELS[t]}</Button>
             </Tooltip>
           ))}
+          <div className="seq-legend" aria-label="消息类型图例">
+            <span className="seq-legend-item"><i className="seq-legend-line" />同步</span>
+            <span className="seq-legend-item"><i className="seq-legend-line async" />异步</span>
+            <span className="seq-legend-item"><i className="seq-legend-line return" />返回</span>
+            <span className="seq-legend-item"><i className="seq-legend-line self" />自反</span>
+          </div>
           <Button size="small" type="text"
             onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>

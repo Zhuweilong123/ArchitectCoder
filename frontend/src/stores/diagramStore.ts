@@ -87,6 +87,24 @@ function _expandFragmentForMessage(
   });
 }
 
+/** Keep newly inserted messages readable without overriding an intentional click position. */
+function _allocateSequenceMessageY(
+  messages: SeqMessage[],
+  requestedY: number,
+  minGap = 28,
+): number {
+  const occupied = messages.map((message) => message.y || 0).filter((y) => y > 0);
+  if (!occupied.some((y) => Math.abs(y - requestedY) < minGap)) return requestedY;
+
+  for (let step = 1; step <= 20; step += 1) {
+    const candidates = [requestedY + step * 45, requestedY - step * 45];
+    const available = candidates.find((candidate) => candidate >= 150
+      && !occupied.some((y) => Math.abs(y - candidate) < minGap));
+    if (typeof available === 'number') return available;
+  }
+  return requestedY + 45;
+}
+
 // Helper: update the active diagram within a project
 function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlDiagram): Project {
   const idx = project.active_diagram_index;
@@ -845,8 +863,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   addMessage: (from, to, type = 'sync', requestedY) => {
     const state = get();
-    const order = (_activeDiagram(state.project).messages?.length || 0) + 1;
-    const y = typeof requestedY === 'number' ? requestedY : 150 + order * 40;
+    const existingMessages = _activeDiagram(state.project).messages || [];
+    const order = existingMessages.length + 1;
+    const preferredY = typeof requestedY === 'number'
+      ? requestedY
+      : 190 + (order - 1) * 45;
+    const y = _allocateSequenceMessageY(existingMessages, preferredY);
     const msg = { ...createDefaultMessage(from, to, order, y), type };
     get().pushSnapshot('add_message');
     const project = _updateActiveDiagram(state.project, (d) => {
