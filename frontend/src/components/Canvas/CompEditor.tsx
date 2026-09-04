@@ -14,6 +14,7 @@ import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
+import { centerCanvasContent, syncCanvasGrid, syncCanvasViewport } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
@@ -566,13 +567,7 @@ const CompEditor: React.FC = () => {
         setTimeout(() => {
           const g = graphRef.current;
           if (!g) return;
-          g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-          const sidebarW = useUiStore.getState().rightPanelWidth;
-          const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-          const visibleW = g.options.width - sidebarW;
-          if (bbox.width < visibleW - 40) {
-            g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-          }
+          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
         }, 200);
       }
     } catch (err) {
@@ -586,38 +581,26 @@ const CompEditor: React.FC = () => {
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
-      graph.zoomTo(viewport.zoom);
-    }
+    syncCanvasViewport(graph, viewport);
   }, [viewport.zoom]);
 
   // Restore persisted translation when switching diagrams or loading a project.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    const translation = graph.translate();
-    if (
-      Math.abs(translation.tx - viewport.panX) > 0.5
-      || Math.abs(translation.ty - viewport.panY) > 0.5
-    ) {
-      graph.translate(viewport.panX, viewport.panY);
-    }
+    syncCanvasViewport(graph, viewport);
   }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;
     if (!graph) return;
-    try {
-      if (diagram.grid_visible !== false) {
-        graph.showGrid();
-        graph.setGridSize(diagram.grid_size || 20);
-        graph.drawGrid({ size: diagram.grid_size || 20,
-          args: { color: diagram.grid_color || '#e0e0e0', thickness: diagram.grid_thickness || 1 } });
-      } else {
-        graph.hideGrid();
-      }
-    } catch (e) { /* ignore */ }
+    syncCanvasGrid(graph, {
+      visible: diagram.grid_visible !== false,
+      size: diagram.grid_size || 20,
+      color: diagram.grid_color || '#e0e0e0',
+      thickness: diagram.grid_thickness || 1,
+    });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
 
   // ── Auto-center on recenter trigger ───────────────
@@ -627,13 +610,7 @@ const CompEditor: React.FC = () => {
     setTimeout(() => {
       const g = graphRef.current;
       if (!g) return;
-      g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-      const sidebarW = useUiStore.getState().rightPanelWidth;
-      const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-      const visibleW = g.options.width - sidebarW;
-      if (bbox.width < visibleW - 40) {
-        g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-      }
+      centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
     }, 100);
   }, [recenterCounter]);
 
