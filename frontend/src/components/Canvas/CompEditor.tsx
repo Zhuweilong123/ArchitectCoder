@@ -138,7 +138,7 @@ const CompEditor: React.FC = () => {
     addComponent, removeComponent, moveComponent,
     addCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
-    undo, redo, project, setActiveDiagram, addDiagram,
+    undo, redo, project, setActiveDiagram, addDiagram, autoLayoutComponents,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedComponentId: s.selectedComponentId,
@@ -154,6 +154,7 @@ const CompEditor: React.FC = () => {
     project: s.project,
     setActiveDiagram: s.setActiveDiagram,
     addDiagram: s.addDiagram,
+    autoLayoutComponents: s.autoLayoutComponents,
     selectedCompRelationId: s.selectedCompRelationId,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
@@ -665,6 +666,11 @@ const CompEditor: React.FC = () => {
           <Tooltip title="选中组件时创建子组件，未选中时创建顶层组件">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddComponent}>组件</Button>
           </Tooltip>
+          {(diagram.components || []).length >= 2 && (
+            <Tooltip title="按依赖关系排列组件，并整理子组件层级">
+              <Button size="small" onClick={autoLayoutComponents}>整理</Button>
+            </Tooltip>
+          )}
           <Button size="small" type="text" onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>
