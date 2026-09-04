@@ -8,6 +8,31 @@
   transition: background 0.2s ease;
 }
 
+.seq-inline-editor {
+  height: 28px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  color: #334155;
+  font: 600 12px/18px Consolas, Monaco, monospace;
+  background: #fff;
+  border: 2px solid #2563eb;
+  border-radius: 6px;
+  outline: none;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.22);
+}
+
+.seq-inline-editor.theme-dark {
+  color: #e2e8f0;
+  background: #172033;
+  border-color: #60a5fa;
+}
+
+.seq-inline-editor.theme-blueprint {
+  color: #0c4a6e;
+  background: #f0f9ff;
+  border-color: #0284c7;
+}
+
 .seq-canvas-container.theme-dark {
   --seq-canvas-bg: #0f172a;
 }

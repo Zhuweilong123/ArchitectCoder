@@ -161,6 +161,16 @@ function getMessageY(message: SeqMessage): number {
   return message.y || MESSAGE_START_Y + (message.order - 1) * MESSAGE_GAP;
 }
 
+type InlineEditKind = 'lifeline' | 'message' | 'fragment';
+interface InlineEditState {
+  kind: InlineEditKind;
+  id: string;
+  value: string;
+  x: number;
+  y: number;
+  width: number;
+}
+
 const SeqEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -169,6 +179,8 @@ const SeqEditor: React.FC = () => {
   const [messageMode, setMessageMode] = useState<MessageType>('sync');
   const messageModeRef = useRef<MessageType>('sync');
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
+  const inlineInputRef = useRef<HTMLInputElement>(null);
 
   const {
     diagram, selectedLifelineId, selectedMessageId,
@@ -192,6 +204,28 @@ const SeqEditor: React.FC = () => {
   const viewport = useDiagramStore((s) => s.viewport);
 
   const { setRightPanelTab, canvasTheme } = useUiStore();
+
+  const beginInlineEdit = useCallback((edit: InlineEditState) => {
+    setInlineEdit(edit);
+    window.setTimeout(() => {
+      inlineInputRef.current?.focus();
+      inlineInputRef.current?.select();
+    }, 0);
+  }, []);
+
+  const commitInlineEdit = useCallback(() => {
+    if (!inlineEdit) return;
+    const value = inlineEdit.value.trim();
+    const store = useDiagramStore.getState();
+    if (inlineEdit.kind === 'lifeline' && value) {
+      store.updateLifeline(inlineEdit.id, { name: value });
+    } else if (inlineEdit.kind === 'message' && value) {
+      store.updateMessage(inlineEdit.id, { label: value });
+    } else if (inlineEdit.kind === 'fragment') {
+      store.updateFragment(inlineEdit.id, { label: value });
+    }
+    setInlineEdit(null);
+  }, [inlineEdit]);
 
   // ── Canvas context menu ────────────────────────────
   const [ctxMenu, setCtxMenu] = useState<{
@@ -241,6 +275,30 @@ const SeqEditor: React.FC = () => {
       }
       selectLifeline(node.id);
       setRightPanelTab('properties');
+    });
+
+    // Inline editing: double-click the visible text instead of opening the
+    // property panel. The normal click handler remains selection-only for a
+    // repeated click on the same lifeline, so this cannot create a self-message.
+    graph.on('node:dblclick', ({ node, e }: any) => {
+      if (node.shape !== 'seq-lifeline' && node.shape !== 'seq-fragment') return;
+      e?.evt?.preventDefault?.();
+      e?.evt?.stopPropagation?.();
+      const bbox = node.getBBox();
+      const topLeft = graph.localToClient(bbox.x, bbox.y);
+      const isLifeline = node.shape === 'seq-lifeline';
+      const item = isLifeline
+        ? (getActiveDiagram().lifelines || []).find((lifeline) => lifeline.id === node.id)
+        : (getActiveDiagram().fragments || []).find((fragment) => fragment.id === node.id);
+      if (!item) return;
+      beginInlineEdit({
+        kind: isLifeline ? 'lifeline' : 'fragment',
+        id: node.id,
+        value: 'name' in item ? item.name : item.label,
+        x: Math.round(topLeft.x + (isLifeline ? 8 : 4)),
+        y: Math.round(topLeft.y + (isLifeline ? 5 : 2)),
+        width: isLifeline ? Math.max(110, Math.min(220, bbox.width - 16)) : 180,
+      });
     });
 
     graph.on('blank:click', () => {
@@ -344,6 +402,23 @@ const SeqEditor: React.FC = () => {
     graph.on('edge:click', ({ edge }) => {
       selectMessage(edge.id);
       setRightPanelTab('properties');
+    });
+    graph.on('edge:dblclick', ({ edge, e }: any) => {
+      const message = (getActiveDiagram().messages || []).find((item) => item.id === edge.id);
+      if (!message) return;
+      e?.evt?.preventDefault?.();
+      e?.evt?.stopPropagation?.();
+      const evt = e?.evt || e;
+      const edgeBox = edge.getBBox();
+      const fallback = graph.localToClient(edgeBox.x + edgeBox.width / 2, edgeBox.y);
+      beginInlineEdit({
+        kind: 'message',
+        id: edge.id,
+        value: message.label,
+        x: Math.round(evt?.clientX ?? fallback.x - 90),
+        y: Math.round(evt?.clientY ?? fallback.y - 16),
+        width: 180,
+      });
     });
     graph.on('edge:mouseenter', ({ edge }) => setHoveredMessageId(edge.id));
     graph.on('edge:mouseleave', ({ edge }) => {
@@ -953,6 +1028,35 @@ const SeqEditor: React.FC = () => {
       )}
 
       <div ref={containerRef} className={`seq-canvas-container theme-${canvasTheme}`} />
+
+      {inlineEdit && (
+        <input
+          ref={inlineInputRef}
+          className={`seq-inline-editor theme-${canvasTheme}`}
+          value={inlineEdit.value}
+          onChange={(event) => setInlineEdit({ ...inlineEdit, value: event.target.value })}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commitInlineEdit();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              setInlineEdit(null);
+            }
+          }}
+          onBlur={commitInlineEdit}
+          onMouseDown={(event) => event.stopPropagation()}
+          style={{
+            position: 'fixed',
+            left: inlineEdit.x,
+            top: inlineEdit.y,
+            width: inlineEdit.width,
+            zIndex: 1200,
+          }}
+          aria-label="图内编辑"
+        />
+      )}
 
       {/* Canvas right-click menu */}
       {ctxMenu.visible && (
