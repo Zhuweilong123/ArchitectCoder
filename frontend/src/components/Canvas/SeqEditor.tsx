@@ -6,7 +6,7 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Graph, Node, Edge } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
-import { Button, Tooltip } from 'antd';
+import { Button, Select, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
@@ -124,6 +124,8 @@ const SeqEditor: React.FC = () => {
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
   const clipboard = useRef<any>(null);
+  const [messageMode, setMessageMode] = useState<MessageType>('sync');
+  const messageModeRef = useRef<MessageType>('sync');
 
   const {
     diagram, selectedLifelineId, selectedMessageId,
@@ -184,12 +186,8 @@ const SeqEditor: React.FC = () => {
         return;
       }
       const store = useDiagramStore.getState();
-      if (store.selectedLifelineId === node.id) {
-        store.addMessage(node.id, node.id);
-        return;
-      }
       if (store.selectedLifelineId) {
-        store.addMessage(store.selectedLifelineId, node.id);
+        store.addMessage(store.selectedLifelineId, node.id, messageModeRef.current);
         return;
       }
       selectLifeline(node.id);
@@ -794,6 +792,21 @@ const SeqEditor: React.FC = () => {
         }}>
           <Tooltip title="添加生命线">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>生命线</Button>
+          </Tooltip>
+          <Tooltip title="先选择消息类型，再依次点击发送方和接收方生命线">
+            <Select
+              size="small"
+              value={messageMode}
+              onChange={(value: MessageType) => {
+                messageModeRef.current = value;
+                setMessageMode(value);
+              }}
+              options={(Object.keys(MESSAGE_TYPE_LABELS) as MessageType[]).map((type) => ({
+                value: type,
+                label: MESSAGE_TYPE_LABELS[type],
+              }))}
+              style={{ width: 104 }}
+            />
           </Tooltip>
           {(diagram.lifelines || []).length > 0 && (
             <Tooltip title="均匀排列生命线并整理消息时间轴">

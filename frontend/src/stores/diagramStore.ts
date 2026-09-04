@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project } from '../types/uml';
 import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
-import type { SeqLifeline, SeqMessage } from '../types/sequence';
+import type { SeqLifeline, SeqMessage, SeqFragment, MessageType } from '../types/sequence';
 import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
@@ -66,6 +66,25 @@ function _applyViewport(diagram: UmlDiagram, viewport: ViewportState): UmlDiagra
     pan_x: viewport.panX,
     pan_y: viewport.panY,
   };
+}
+
+/** Expand a combined fragment when a nearby message enters or moves beyond it. */
+function _expandFragmentForMessage(
+  fragments: SeqFragment[],
+  messageY: number,
+  previousY?: number,
+): SeqFragment[] {
+  return fragments.map((fragment) => {
+    const wasInside = typeof previousY === 'number'
+      && previousY >= fragment.y_start && previousY <= fragment.y_end;
+    const isNear = messageY >= fragment.y_start - 20 && messageY <= fragment.y_end + 45;
+    if (!wasInside && !isNear) return fragment;
+    return {
+      ...fragment,
+      y_start: Math.max(80, Math.min(fragment.y_start, messageY - 24)),
+      y_end: Math.max(fragment.y_end, messageY + 36),
+    };
+  });
 }
 
 // Helper: update the active diagram within a project
@@ -158,7 +177,7 @@ export interface DiagramState {
   moveLifeline: (id: string, x: number) => void;
   updateLifeline: (id: string, updates: Partial<SeqLifeline>) => void;
 
-  addMessage: (from: string, to: string) => void;
+  addMessage: (from: string, to: string, type?: MessageType) => void;
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
   arrangeSequence: () => void;
@@ -823,20 +842,22 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  addMessage: (from, to) => {
+  addMessage: (from, to, type = 'sync') => {
     const state = get();
     const order = (_activeDiagram(state.project).messages?.length || 0) + 1;
     const y = 150 + order * 40;  // LIFELINE_Y(120) + 30 + order*40
-    const msg = createDefaultMessage(from, to, order, y);
+    const msg = { ...createDefaultMessage(from, to, order, y), type };
     get().pushSnapshot('add_message');
     const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
       messages: [...(d.messages || []), msg],
+      fragments: _expandFragmentForMessage(d.fragments || [], y),
     }));
-    console.debug('[Store] addMessage:', msg.label, from, '→', to);
+    console.debug('[Store] addMessage:', msg.label, type, from, '→', to);
     set({
       project,
       selectedMessageId: msg.id,
+      selectedLifelineId: null,
       isModified: true,
     });
   },
@@ -856,11 +877,20 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateMessage: (id, updates) => {
+    const state = get();
+    const currentMessage = (_activeDiagram(state.project).messages || []).find((message) => message.id === id);
     get().pushSnapshot('update_message', `update_message:${id}`);
-    const project = _updateActiveDiagram(get().project, (d) => {
+    const project = _updateActiveDiagram(state.project, (d) => {
       const nextMessages = (d.messages || []).map((m) =>
         m.id === id ? { ...m, ...updates } : m
       );
+      const fragments = typeof updates.y === 'number'
+        ? _expandFragmentForMessage(
+          d.fragments || [],
+          updates.y,
+          currentMessage?.y,
+        )
+        : d.fragments;
       if (typeof updates.y !== 'number') return { ...d, messages: nextMessages };
 
       // Keep persisted order aligned with the visual timeline after an edge
@@ -869,7 +899,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const messages = [...nextMessages]
         .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
         .map((message, index) => ({ ...message, order: index + 1 }));
-      return { ...d, messages };
+      return { ...d, messages, fragments };
     });
     set({ project, isModified: true });
   },
