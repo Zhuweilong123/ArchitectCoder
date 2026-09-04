@@ -133,7 +133,7 @@ const LIFELINE_WIDTH = 140;
 const LIFELINE_HEIGHT = 400;
 const LIFELINE_Y = 120;  // give top padding so lifelines aren't cut off
 const MESSAGE_START_Y = 190;
-const MESSAGE_GAP = 45;
+const MESSAGE_GAP = 48;
 
 function getMessageVisual(type: MessageType, theme: CanvasTheme) {
   const palette = theme === 'dark'
@@ -174,7 +174,7 @@ const SeqEditor: React.FC = () => {
     diagram, selectedLifelineId, selectedMessageId,
     addLifeline, removeLifeline, moveLifeline,
     selectLifeline, selectMessage,
-    undo, redo, arrangeSequence,
+    undo, redo, arrangeSequence, fitSequenceFragments,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedLifelineId: s.selectedLifelineId,
@@ -187,6 +187,7 @@ const SeqEditor: React.FC = () => {
     undo: s.undo,
     redo: s.redo,
     arrangeSequence: s.arrangeSequence,
+    fitSequenceFragments: s.fitSequenceFragments,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
@@ -917,6 +918,11 @@ const SeqEditor: React.FC = () => {
           {(diagram.lifelines || []).length > 0 && (
             <Tooltip title="将时序图自动居中到可视画布">
               <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>居中</Button>
+            </Tooltip>
+          )}
+          {(diagram.fragments || []).length > 0 && (
+            <Tooltip title="根据片段内消息自动调整 loop、alt 等片段范围">
+              <Button size="small" onClick={fitSequenceFragments}>适配片段</Button>
             </Tooltip>
           )}
           <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>片段:</span>

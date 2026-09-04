@@ -9,6 +9,9 @@ import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
 
+const SEQUENCE_MESSAGE_START_Y = 190;
+const SEQUENCE_MESSAGE_GAP = 48;
+
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
   if (typeof val !== 'number' || isNaN(val) || val < min || val > max) return def;
@@ -87,6 +90,32 @@ function _expandFragmentForMessage(
   });
 }
 
+/** Calculate a stable message coordinate for both legacy and current diagrams. */
+function _sequenceMessageY(message: SeqMessage): number {
+  return message.y || SEQUENCE_MESSAGE_START_Y + (message.order - 1) * SEQUENCE_MESSAGE_GAP;
+}
+
+/** Fit fragments to the messages currently inside them while preserving empty fragments. */
+function _fitSequenceFragments(
+  fragments: SeqFragment[],
+  messages: SeqMessage[],
+): SeqFragment[] {
+  return fragments.map((fragment) => {
+    const contained = messages
+      .map((message) => ({ message, y: _sequenceMessageY(message) }))
+      .filter(({ y }) => y >= fragment.y_start && y <= fragment.y_end);
+    if (contained.length === 0) return fragment;
+
+    const minY = Math.min(...contained.map(({ y }) => y));
+    const maxY = Math.max(...contained.map(({ y }) => y));
+    return {
+      ...fragment,
+      y_start: Math.max(80, minY - 28),
+      y_end: Math.max(minY + 72, maxY + 36),
+    };
+  });
+}
+
 /** Keep newly inserted messages readable without overriding an intentional click position. */
 function _allocateSequenceMessageY(
   messages: SeqMessage[],
@@ -97,12 +126,15 @@ function _allocateSequenceMessageY(
   if (!occupied.some((y) => Math.abs(y - requestedY) < minGap)) return requestedY;
 
   for (let step = 1; step <= 20; step += 1) {
-    const candidates = [requestedY + step * 45, requestedY - step * 45];
+    const candidates = [
+      requestedY + step * SEQUENCE_MESSAGE_GAP,
+      requestedY - step * SEQUENCE_MESSAGE_GAP,
+    ];
     const available = candidates.find((candidate) => candidate >= 150
       && !occupied.some((y) => Math.abs(y - candidate) < minGap));
     if (typeof available === 'number') return available;
   }
-  return requestedY + 45;
+  return requestedY + SEQUENCE_MESSAGE_GAP;
 }
 
 // Helper: update the active diagram within a project
@@ -199,6 +231,7 @@ export interface DiagramState {
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
   arrangeSequence: () => void;
+  fitSequenceFragments: () => void;
 
   // ── Fragment operations (UML 2.5.1) ───────────
   addFragment: (y?: number) => void;
@@ -867,7 +900,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const order = existingMessages.length + 1;
     const preferredY = typeof requestedY === 'number'
       ? requestedY
-      : 190 + (order - 1) * 45;
+      : SEQUENCE_MESSAGE_START_Y + (order - 1) * SEQUENCE_MESSAGE_GAP;
     const y = _allocateSequenceMessageY(existingMessages, preferredY);
     const msg = { ...createDefaultMessage(from, to, order, y), type };
     get().pushSnapshot('add_message');
@@ -946,11 +979,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
     const oldMessageY = new Map(messages.map((message) => [
       message.id,
-      message.y || 150 + message.order * 40,
+      _sequenceMessageY(message),
     ]));
     const messageY = new Map<string, number>();
     const arrangedMessages = messages.map((message, index) => {
-      const y = 190 + index * 45;
+      const y = SEQUENCE_MESSAGE_START_Y + index * SEQUENCE_MESSAGE_GAP;
       messageY.set(message.id, y);
       return { ...message, y, order: index + 1 };
     });
@@ -961,15 +994,15 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         return y >= fragment.y_start && y <= fragment.y_end;
       });
       if (containedMessages.length === 0) return fragment;
-      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || 190));
-      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || 190));
+      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
+      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
       return {
         ...fragment,
         // Re-fit the fragment to its original message membership. This is
         // intentionally done by the explicit arrange command so normal
         // editing can still preserve a user's manually enlarged region.
-        y_start: Math.max(80, minMessageY - 24),
-        y_end: Math.max(minMessageY + 36, maxMessageY + 36),
+        y_start: Math.max(80, minMessageY - 28),
+        y_end: Math.max(minMessageY + 72, maxMessageY + 36),
       };
     });
 
@@ -985,6 +1018,21 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     get().pushSnapshot('arrange_sequence');
     set({ project, isModified: true });
     get().triggerRecenter();
+  },
+
+  fitSequenceFragments: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    if (!(diagram.fragments || []).length || !(diagram.messages || []).length) return;
+    get().pushSnapshot('fit_sequence_fragments');
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      fragments: _fitSequenceFragments(
+        activeDiagram.fragments || [],
+        activeDiagram.messages || [],
+      ),
+    }));
+    set({ project, isModified: true });
   },
 
   // ── Fragment operations (UML 2.5.1) ─────────────────────
