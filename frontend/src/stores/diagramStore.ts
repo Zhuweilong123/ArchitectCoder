@@ -68,7 +68,7 @@ function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlD
   };
 }
 
-interface DiagramState {
+export interface DiagramState {
   // Core state
   project: Project;
   /** Viewport is kept separate so pan/zoom does not invalidate diagram content subscriptions. */
@@ -198,6 +198,9 @@ interface DiagramState {
   setCurrentFilepath: (path: string | null) => void;
   setCurrentWorkspacePath: (path: string | null, safe?: boolean) => void;
 }
+
+/** Canonical selector for the active diagram. Consumers should use this instead of the legacy mirror. */
+export const selectActiveDiagram = (state: DiagramState): UmlDiagram => _activeDiagram(state.project);
 
 const _initialProject = createDefaultProject();
 const _initialFilepath = localStorage.getItem('currentFilepath');
@@ -408,7 +411,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   addClass: (position) => {
     const state = get();
-    const clsCount = state.diagram.classes.length;
+    const clsCount = _activeDiagram(state.project).classes.length;
     const validPos = {
       x: clampCoord(position?.x, 150 + (clsCount % 5) * 200),
       y: clampCoord(position?.y, 100 + Math.floor(clsCount / 5) * 200),
@@ -527,7 +530,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   addLifeline: (x) => {
     const state = get();
-    const llCount = (state.diagram.lifelines || []).length;
+    const llCount = (_activeDiagram(state.project).lifelines || []).length;
     const validX = clampCoord(x, 200 + llCount * 200);
     const lifeline = createDefaultLifeline(validX);
     get().pushSnapshot('add_lifeline');
@@ -584,7 +587,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   addMessage: (from, to) => {
     const state = get();
-    const order = (state.diagram.messages?.length || 0) + 1;
+    const order = (_activeDiagram(state.project).messages?.length || 0) + 1;
     const y = 150 + order * 40;  // LIFELINE_Y(120) + 30 + order*40
     const msg = createDefaultMessage(from, to, order, y);
     get().pushSnapshot('add_message');
@@ -672,7 +675,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       return;
     }
     const snapshot = {
-      diagram: JSON.parse(JSON.stringify(state.diagram)),
+      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
       timestamp: now,
     };
     const newUndo = [...state.undoStack, snapshot].slice(-state.maxHistorySteps);
@@ -685,7 +688,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       isBatching: true,
       batchSnapshot: {
-        diagram: JSON.parse(JSON.stringify(state.diagram)),
+        diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
         timestamp: Date.now(),
       },
     });
@@ -697,7 +700,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const baseline = state.batchSnapshot;
     const changed = Boolean(
       baseline
-      && JSON.stringify(baseline.diagram) !== JSON.stringify(state.diagram),
+      && JSON.stringify(baseline.diagram) !== JSON.stringify(_activeDiagram(state.project)),
     );
     const undoStack = changed && baseline
       ? [...state.undoStack, baseline].slice(-state.maxHistorySteps)
@@ -719,7 +722,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   addComponent: (position, parentId = '') => {
     const state = get();
-    const compCount = (state.diagram.components || []).length;
+    const compCount = (_activeDiagram(state.project).components || []).length;
     const validX = clampCoord(position?.x, 150 + (compCount % 5) * 200);
     const validY = clampCoord(position?.y, 100 + Math.floor(compCount / 5) * 200);
     const c = createDefaultComponent(validX, validY, parentId);
@@ -867,7 +870,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const state = get();
     if (state.undoStack.length === 0) return;
     const currentSnapshot: Snapshot = {
-      diagram: JSON.parse(JSON.stringify(state.diagram)),
+      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
       timestamp: Date.now(),
     };
     const newUndo = [...state.undoStack];
@@ -889,7 +892,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const state = get();
     if (state.redoStack.length === 0) return;
     const currentSnapshot: Snapshot = {
-      diagram: JSON.parse(JSON.stringify(state.diagram)),
+      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
       timestamp: Date.now(),
     };
     const newRedo = [...state.redoStack];
@@ -929,3 +932,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     currentWorkspaceSafe: safe,
   }),
 }));
+
+/** Non-reactive counterpart for event handlers and services. */
+export const getActiveDiagram = (): UmlDiagram => selectActiveDiagram(useDiagramStore.getState());

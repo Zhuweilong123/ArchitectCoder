@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons';
 import Toolbar from './components/Toolbar/Toolbar';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
-import { useDiagramStore } from './stores/diagramStore';
+import { selectActiveDiagram, useDiagramStore } from './stores/diagramStore';
 import { t, type TranslationKey } from './i18n';
 import './App.css';
 
@@ -37,7 +37,7 @@ const App: React.FC = () => {
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
     showTestCaseInCanvas, interfaceLanguage,
   } = useUiStore();
-  const diagramType = useDiagramStore((s) => s.diagram.diagram_type || 'class');
+  const diagramType = useDiagramStore((s) => selectActiveDiagram(s).diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
   const hasDiagrams = useDiagramStore((s) => s.project.diagrams.length > 0);
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);

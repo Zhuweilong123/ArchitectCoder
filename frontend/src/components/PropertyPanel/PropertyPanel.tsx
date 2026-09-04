@@ -10,7 +10,7 @@ import {
 import {
   DeleteOutlined, PlusOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
   Visibility, Stereotype, RelationType,
@@ -33,7 +33,7 @@ const PropertyPanel: React.FC = () => {
     updateComponent, removeComponent,
     project, setActiveDiagram, addDiagram,
   } = useDiagramStore(useShallow((s) => ({
-    diagram: s.diagram,
+    diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
     selectedRelationId: s.selectedRelationId,
     selectedLifelineId: s.selectedLifelineId,
@@ -68,14 +68,14 @@ const PropertyPanel: React.FC = () => {
       updateClass(selectedClass.id, { [field]: value });
     };
     const updateAttributeField = (index: number, field: string, value: unknown) => {
-      const liveClass = useDiagramStore.getState().diagram.classes.find((item) => item.id === selectedClass.id);
+      const liveClass = getActiveDiagram().classes.find((item) => item.id === selectedClass.id);
       if (!liveClass?.attributes[index]) return;
       const attributes = [...liveClass.attributes];
       attributes[index] = { ...attributes[index], [field]: value };
       updateClass(selectedClass.id, { attributes });
     };
     const updateMethodField = (index: number, field: string, value: unknown) => {
-      const liveClass = useDiagramStore.getState().diagram.classes.find((item) => item.id === selectedClass.id);
+      const liveClass = getActiveDiagram().classes.find((item) => item.id === selectedClass.id);
       if (!liveClass?.methods[index]) return;
       const methods = [...liveClass.methods];
       methods[index] = { ...methods[index], [field]: value };

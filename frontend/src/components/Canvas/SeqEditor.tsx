@@ -8,7 +8,7 @@ import { Graph, Node, Edge } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
@@ -131,7 +131,7 @@ const SeqEditor: React.FC = () => {
     selectLifeline, selectMessage,
     undo, redo,
   } = useDiagramStore(useShallow((s) => ({
-    diagram: s.diagram,
+    diagram: selectActiveDiagram(s),
     selectedLifelineId: s.selectedLifelineId,
     selectedMessageId: s.selectedMessageId,
     addLifeline: s.addLifeline,
@@ -156,7 +156,7 @@ const SeqEditor: React.FC = () => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = useDiagramStore.getState().diagram;
+    const d = getActiveDiagram();
     const graph = createCanvasGraph({
       container: containerRef.current,
       grid: {
@@ -225,8 +225,8 @@ const SeqEditor: React.FC = () => {
         const position = node.position();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          store.diagram.snap_to_grid,
-          store.diagram.grid_size,
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -273,8 +273,8 @@ const SeqEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const nextPosition = snapCanvasPosition(
         { x: position.x, y: position.y },
-        store.diagram.snap_to_grid,
-        store.diagram.grid_size,
+        getActiveDiagram().snap_to_grid,
+        getActiveDiagram().grid_size,
       );
       if (position.x !== nextPosition.x) {
         isInternalUpdate.current = true;
@@ -323,7 +323,7 @@ const SeqEditor: React.FC = () => {
 
       if (e.ctrlKey && e.key === 'c') {
         if (store.selectedLifelineId) {
-          const ll = (store.diagram.lifelines || []).find((l) => l.id === store.selectedLifelineId);
+          const ll = (getActiveDiagram().lifelines || []).find((l) => l.id === store.selectedLifelineId);
           if (ll) clipboard.current = JSON.parse(JSON.stringify(ll));
         }
       } else if (e.ctrlKey && e.key === 'v') {
@@ -332,7 +332,7 @@ const SeqEditor: React.FC = () => {
           store.addLifeline(c.x + 30);
           // Apply copied name
           const store2 = useDiagramStore.getState();
-          const lls = store2.diagram.lifelines || [];
+          const lls = getActiveDiagram().lifelines || [];
           const pasted = lls[lls.length - 1];
           if (pasted) {
             store2.updateLifeline(pasted.id, {
@@ -725,13 +725,13 @@ const SeqEditor: React.FC = () => {
 
   const handleAddFragment = useCallback((type: FragmentType) => {
     const store = useDiagramStore.getState();
-    const msgs = store.diagram.messages || [];
+    const msgs = getActiveDiagram().messages || [];
     const y = msgs.length > 0
       ? Math.max(...msgs.map((m) => (m.y || 100))) + 60
       : 200;
     store.addFragment(y);
     // Set the fragment type
-    const frags = store.diagram.fragments || [];
+    const frags = getActiveDiagram().fragments || [];
     if (frags.length > 0) {
       store.updateFragment(frags[frags.length - 1].id, {
         type,

@@ -17,7 +17,7 @@ import {
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
   BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
 } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram } from '../../types/uml';
@@ -60,7 +60,7 @@ const Toolbar: React.FC = () => {
     setCurrentFilepath, currentFilepath, currentWorkspacePath,
     currentWorkspaceSafe, setCurrentWorkspacePath,
   } = useDiagramStore(useShallow((s) => ({
-    diagram: s.diagram,
+    diagram: selectActiveDiagram(s),
     project: s.project,
     isModified: s.isModified,
     undoStack: s.undoStack,

@@ -8,7 +8,7 @@ import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
@@ -124,7 +124,7 @@ const CompEditor: React.FC = () => {
     selectComponent, selectCompRelation,
     undo, redo, project, setActiveDiagram, addDiagram,
   } = useDiagramStore(useShallow((s) => ({
-    diagram: s.diagram,
+    diagram: selectActiveDiagram(s),
     selectedComponentId: s.selectedComponentId,
     addComponent: s.addComponent,
     removeComponent: s.removeComponent,
@@ -148,7 +148,7 @@ const CompEditor: React.FC = () => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = useDiagramStore.getState().diagram;
+    const d = getActiveDiagram();
     const graph = createCanvasGraph({
       container: containerRef.current,
       grid: {
@@ -191,8 +191,8 @@ const CompEditor: React.FC = () => {
         const store = useDiagramStore.getState();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          store.diagram.snap_to_grid,
-          store.diagram.grid_size,
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -230,7 +230,7 @@ const CompEditor: React.FC = () => {
       const evt = e.evt || e;
       evt?.preventDefault?.();
       const store = useDiagramStore.getState();
-      const comp = (store.diagram.components || []).find((c) => c.id === node.id);
+      const comp = (getActiveDiagram().components || []).find((c) => c.id === node.id);
       setCtxMenu({
         visible: true,
         x: evt?.clientX || evt?.pageX || 0,
@@ -247,7 +247,7 @@ const CompEditor: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.ctrlKey && e.key === 'c') {
         if (store.selectedComponentId) {
-          const c = (store.diagram.components || []).find((x) => x.id === store.selectedComponentId);
+          const c = (getActiveDiagram().components || []).find((x) => x.id === store.selectedComponentId);
           if (c) clipboard.current = JSON.parse(JSON.stringify(c));
         }
       } else if (e.ctrlKey && e.key === 'v') {
@@ -258,7 +258,7 @@ const CompEditor: React.FC = () => {
           }, c.parent_id || '');
           // Apply copied size and interfaces
           const store2 = useDiagramStore.getState();
-          const comps = store2.diagram.components || [];
+          const comps = getActiveDiagram().components || [];
           const pasted = comps[comps.length - 1];
           if (pasted) {
             store2.updateComponent(pasted.id, {
@@ -517,7 +517,7 @@ const CompEditor: React.FC = () => {
     const parent = store.selectedComponentId;
     if (parent) {
       // Create child inside selected parent
-      const parentComp = store.diagram.components?.find((c) => c.id === parent);
+      const parentComp = getActiveDiagram().components?.find((c) => c.id === parent);
       const relX = 20 + Math.random() * 80;
       const relY = 40 + Math.random() * 60;
       store.addComponent({ x: relX, y: relY }, parent);

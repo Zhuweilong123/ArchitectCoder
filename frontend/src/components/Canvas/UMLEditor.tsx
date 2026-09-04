@@ -8,7 +8,7 @@ import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Edge, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
@@ -204,7 +204,7 @@ const UMLEditor: React.FC = () => {
     addRelation, removeClass, removeRelation, addClass,
     undo, redo,
   } = useDiagramStore(useShallow((s) => ({
-    diagram: s.diagram,
+    diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
     moveClass: s.moveClass,
     resizeClass: s.resizeClass,
@@ -270,8 +270,8 @@ const UMLEditor: React.FC = () => {
         const store = useDiagramStore.getState();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          store.diagram.snap_to_grid,
-          store.diagram.grid_size,
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -313,7 +313,7 @@ const UMLEditor: React.FC = () => {
       if (e.ctrlKey && e.key === 'c') {
         // Copy selected class
         if (store.selectedClassId) {
-          const cls = store.diagram.classes.find((c) => c.id === store.selectedClassId);
+          const cls = getActiveDiagram().classes.find((c) => c.id === store.selectedClassId);
           if (cls) {
             clipboard.current = { classes: [JSON.parse(JSON.stringify(cls))], relations: [] };
             console.log('[UMLEditor] Copied:', cls.name);
@@ -326,7 +326,8 @@ const UMLEditor: React.FC = () => {
           store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
           // Apply copied size, attributes, methods
           const store2 = useDiagramStore.getState();
-          const lastAdded = store2.diagram.classes[store2.diagram.classes.length - 1];
+          const activeDiagram = getActiveDiagram();
+          const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
           if (lastAdded) {
             store2.updateClass(lastAdded.id, {
               name: cls.name,
