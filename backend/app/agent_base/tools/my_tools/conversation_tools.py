@@ -173,6 +173,7 @@ def create_conversation_tools(
         from app.agent_base.tools.review import SubmitUmlReviewTool
         tools.append(SubmitUmlReviewTool(
             manager=review_mgr, progress=progress, project_file=project_file,
+            workspace_root=workspace_root,
         ))
 
     return tools, review_mgr
