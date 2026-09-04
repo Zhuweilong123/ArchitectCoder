@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.services.llm_service import chat
 from app.core.json_utils import clean_llm_json_response
 

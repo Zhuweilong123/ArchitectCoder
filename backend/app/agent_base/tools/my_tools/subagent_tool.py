@@ -7,7 +7,7 @@ import logging
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 

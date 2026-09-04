@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraphProvider(Protocol):
@@ -59,6 +62,19 @@ class KnowledgeGraphProvider(Protocol):
     ) -> dict: ...
 
 
+
+class KnowledgeGraphToolFactory(Protocol):
+    """Optional Agent-facing tool capability supplied by a KG provider."""
+
+    def create_tools(
+        self,
+        *,
+        project_file: str = "",
+        source_dir: str = "",
+        include_compare: bool = False,
+    ) -> list[Any]: ...
+
+
 class NoOpKnowledgeGraphProvider:
     """Explicit no-op provider for deployments without graph indexing."""
 
@@ -93,6 +109,15 @@ class NoOpKnowledgeGraphProvider:
              force_rebuild: bool = False, max_items: int = 30) -> dict:
         return self._disabled()
 
+    def create_tools(
+        self,
+        *,
+        project_file: str = "",
+        source_dir: str = "",
+        include_compare: bool = False,
+    ) -> list[Any]:
+        return []
+
 
 def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
     """Load the configured graph provider through the central manager."""
@@ -104,6 +129,35 @@ def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
         kwargs=kwargs,
     )
     return instance if instance is not None else NoOpKnowledgeGraphProvider()
+
+
+def load_knowledge_graph_tools(
+    *,
+    settings=None,
+    project_file: str = "",
+    source_dir: str = "",
+    include_compare: bool = False,
+) -> list[Any]:
+    """Load Agent-facing graph tools through the enabled KG provider.
+
+    Tool exposure intentionally follows the existing knowledge-graph plugin
+    switch. Providers that only support graph indexing/querying may omit the
+    optional ``create_tools`` capability and expose no Agent tools.
+    """
+    provider = load_knowledge_graph(settings=settings)
+    create_tools = getattr(provider, "create_tools", None)
+    if not callable(create_tools):
+        return []
+    try:
+        tools = create_tools(
+            project_file=project_file,
+            source_dir=source_dir,
+            include_compare=include_compare,
+        )
+        return list(tools or ())
+    except Exception:
+        logger.warning("[KnowledgeGraph] tool creation failed; exposing no KG tools", exc_info=True)
+        return []
 
 
 _default_provider: KnowledgeGraphProvider | None = None
@@ -119,7 +173,9 @@ def get_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
 
 __all__ = [
     "KnowledgeGraphProvider",
+    "KnowledgeGraphToolFactory",
     "NoOpKnowledgeGraphProvider",
     "get_knowledge_graph",
     "load_knowledge_graph",
+    "load_knowledge_graph_tools",
 ]

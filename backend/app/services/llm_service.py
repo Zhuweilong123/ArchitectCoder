@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.llm import LLMRequest, OpenAICompatibleGateway
 
 settings = get_settings()

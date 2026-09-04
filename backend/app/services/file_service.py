@@ -6,7 +6,7 @@ import os
 import threading
 from datetime import datetime
 from app.models.uml import UmlDiagram, Project
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.agent_base.core.knowledge_graph import get_knowledge_graph
 from app.services.project_repository import ProjectRepository, ProjectSaveResult
 

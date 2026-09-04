@@ -34,7 +34,7 @@ from typing import Optional, List, AsyncIterator
 from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
-from ..core.config import Config
+from backend.config import AgentConfig
 from ..core.hooks import (
     get_hooks, HookEvent, HookContext, get_runtime,
     todo_plan_complete,
@@ -168,7 +168,7 @@ class ReActAgent(Agent):
         llm: BaseAgentsLLM,
         tool_registry: ToolRegistry,
         system_prompt: Optional[str] = None,
-        config: Optional[Config] = None,
+        config: Optional[AgentConfig] = None,
         max_steps: int = 5,
         use_native_fc: bool = True,
         custom_prompt: Optional[str] = None,

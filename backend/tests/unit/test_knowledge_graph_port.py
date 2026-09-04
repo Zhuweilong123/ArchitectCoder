@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.agent_base.core.knowledge_graph import (
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
+    load_knowledge_graph_tools,
 )
 from app.models.uml import Project, UmlClass, UmlDiagram
 from extensions.knowledge_graph.provider import LocalKnowledgeGraphProvider
@@ -33,6 +34,14 @@ class _Provider:
     def diff(self, project_id, source_dir=None, force_rebuild=False, max_items=30):
         return {"items": []}
 
+    def create_tools(self, *, project_file="", source_dir="", include_compare=False):
+        return [{
+            "name": "kg-test-tool",
+            "project_file": project_file,
+            "source_dir": source_dir,
+            "include_compare": include_compare,
+        }]
+
 
 def test_disabled_knowledge_graph_uses_noop_provider():
     provider = load_knowledge_graph(
@@ -42,6 +51,9 @@ def test_disabled_knowledge_graph_uses_noop_provider():
     assert isinstance(provider, NoOpKnowledgeGraphProvider)
     assert provider.rebuild_project({}, "project-1") is None
     assert provider.search_diagrams("project-1", ["login"]) == {}
+    assert load_knowledge_graph_tools(
+        settings=SimpleNamespace(agent_knowledge_graph_enabled=False),
+    ) == []
 
 
 def test_knowledge_graph_provider_factory_is_pluggable(monkeypatch):
@@ -63,6 +75,34 @@ def test_knowledge_graph_provider_factory_is_pluggable(monkeypatch):
     assert provider.search_diagrams("project-1", ["login"]) == {
         "overview": {"login"},
     }
+
+
+def test_knowledge_graph_tools_follow_the_provider_switch(monkeypatch):
+    import sys
+
+    module_name = "test_knowledge_graph_tools_provider_plugin"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(create=lambda **kwargs: _Provider()),
+    )
+    settings = SimpleNamespace(
+        agent_knowledge_graph_enabled=True,
+        agent_knowledge_graph_provider=f"{module_name}:create",
+    )
+
+    tools = load_knowledge_graph_tools(
+        settings=settings,
+        project_file="demo.umlproj",
+        source_dir="src",
+    )
+
+    assert tools == [{
+        "name": "kg-test-tool",
+        "project_file": "demo.umlproj",
+        "source_dir": "src",
+        "include_compare": False,
+    }]
 
 
 def test_local_provider_adapts_build_and_diagram_search(tmp_path):

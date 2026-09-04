@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel
 
 
-class Config(BaseModel):
+class AgentConfig(BaseModel):
     """BaseAgents 配置类"""
 
     # LLM 配置
@@ -22,7 +22,7 @@ class Config(BaseModel):
     max_history_length: int = 100
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> "AgentConfig":
         """从环境变量创建配置"""
         return cls(
             debug=os.getenv("DEBUG", "false").lower() == "true",

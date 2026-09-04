@@ -25,31 +25,9 @@ import os
 from typing import Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
-
-
-# ── 异步工具基类 — run() 返回 coroutine，由 aexecute_tool_with_params await ──
-
-class AsyncTool(Tool):
-    """异步工具基类。
-
-    ``run()`` 返回 coroutine，由 ``ToolRegistry.aexecute_tool_with_params()``
-    在 ReActAgent FC 循环中正确地 await 它。
-    """
-
-    def get_parameters(self) -> list:
-        return []  # 子类通过 to_openai_schema() 直接提供 schema
-
-    def run(self, parameters: dict) -> str:
-        """返回 coroutine，由 aexecute_tool_with_params await。"""
-        return self._execute(parameters)  # type: ignore[return-value]
-
-    async def _execute(self, parameters: dict) -> str:
-        raise NotImplementedError
-
-    def to_openai_schema(self) -> dict:
-        raise NotImplementedError
 
 
 # ── 进度事件转发 ──
@@ -91,22 +69,6 @@ class ProgressRelay:
         return self._events
 
 
-# ═══════════════════════════════════════════════════════════
-# 工厂函数
-# ═══════════════════════════════════════════════════════════
-
-def _kg_db_path() -> str:
-    """知识图谱数据库路径（与 explore_project_tools._kg_db_path 同口径）。"""
-    try:
-        from app.core.config import get_settings
-        base = os.path.dirname(get_settings().uml_dir)
-    except Exception:
-        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")
-    return os.path.normpath(os.path.abspath(
-        os.path.join(base, "data", "knowledge_graph.db"),
-    ))
-
-
 def create_conversation_tools(
     llm: BaseAgentsLLM,
     source_dir: str = "",
@@ -134,7 +96,7 @@ def create_conversation_tools(
         # environment. Standalone low-level file-tool tests may inject the
         # compatibility adapter explicitly instead.
         from app.agent_base.execution import build_linux_command_executor
-        from app.core.config import get_settings
+        from backend.config import get_settings
         command_executor = build_linux_command_executor(get_settings())
 
     # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
@@ -149,7 +111,7 @@ def create_conversation_tools(
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
-    from app.core.config import get_settings
+    from backend.config import get_settings
     # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
     design_dir = (os.path.dirname(os.path.abspath(project_file))
                   if project_file else os.path.abspath(get_settings().uml_dir))
@@ -189,16 +151,14 @@ def create_conversation_tools(
         tools.extend(create_task_system_tools(scope=task_scope))
 
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
-    # read_file/grep 回答具体内容与符号）
-    # Knowledge-graph tools are intentionally disabled for DevAgent. The
-    # implementation remains available for direct opt-in and its own tests,
-    # but it is not exposed in the default conversation tool registry. This
-    # avoids broad graph exploration and repeated reads during normal tasks.
-    # from extensions.knowledge_graph.tools import create_kg_v2_tools
-    # tools.extend(create_kg_v2_tools(
-    #     db_path=_kg_db_path(),
-    #     project_file=project_file, source_dir=source_dir,
-    # ))
+    # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
+    # 关闭或 Provider 不可用时不会注册任何 KG 工具。
+    from app.agent_base.core.knowledge_graph import load_knowledge_graph_tools
+    tools.extend(load_knowledge_graph_tools(
+        settings=get_settings(),
+        project_file=project_file,
+        source_dir=source_dir,
+    ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool

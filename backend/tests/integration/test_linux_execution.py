@@ -11,7 +11,7 @@ from app.agent_base.execution.linux import (
     windows_path_to_wsl,
 )
 from app.agent_base.tools.my_tools.file_system_tools import BashTool
-from app.core.config import Settings
+from backend.config import Settings
 
 
 def test_windows_workspace_path_maps_to_wsl_mount():

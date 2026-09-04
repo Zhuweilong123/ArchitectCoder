@@ -10,7 +10,25 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from pydantic import BaseModel, Field
+
 logger = logging.getLogger(__name__)
+
+
+class EvalBatchRequest(BaseModel):
+    """Provider-neutral request for starting an evaluation batch."""
+
+    suite: str = ""
+    case_ids: list[str] = Field(default_factory=list, max_length=200)
+    version: str = Field(default="working-tree", min_length=1, max_length=100)
+    label: str = Field(default="", max_length=200)
+
+
+class EvalArchiveRequest(BaseModel):
+    """Provider-neutral request for archiving an evaluation batch."""
+
+    batch_id: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=500)
 
 
 class EvalProvider(Protocol):
@@ -19,6 +37,8 @@ class EvalProvider(Protocol):
     def list_cases(self) -> list[Any]: ...
 
     def get_case(self, case_id: str) -> Any | None: ...
+
+    def get_baseline(self) -> dict[str, Any]: ...
 
     async def run_case(self, case: Any) -> Any: ...
 
@@ -47,6 +67,9 @@ class NoOpEvalProvider:
 
     def get_case(self, case_id: str) -> Any | None:
         return None
+
+    def get_baseline(self) -> dict[str, Any]:
+        raise RuntimeError("evaluation provider is disabled")
 
     async def run_case(self, case: Any) -> Any:
         raise RuntimeError("evaluation provider is disabled")
@@ -125,4 +148,10 @@ def load_evals(*, settings=None, **kwargs) -> EvalProvider:
     return _ResilientEvalProvider(instance)
 
 
-__all__ = ["EvalProvider", "NoOpEvalProvider", "load_evals"]
+__all__ = [
+    "EvalArchiveRequest",
+    "EvalBatchRequest",
+    "EvalProvider",
+    "NoOpEvalProvider",
+    "load_evals",
+]

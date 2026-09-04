@@ -11,7 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.core.config import get_settings
+from backend.config import get_settings
+from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchRequest
 
 from .models import EvalResult
 from .registry import load_cases
@@ -38,13 +39,6 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             rows.append(value)
     return rows
-
-
-class EvalBatchRequest(BaseModel):
-    suite: str = ""
-    case_ids: list[str] = Field(default_factory=list, max_length=200)
-    version: str = Field(default="working-tree", min_length=1, max_length=100)
-    label: str = Field(default="", max_length=200)
 
 
 class EvalSummary(BaseModel):
@@ -77,11 +71,6 @@ class EvalBatch(BaseModel):
     results: list[EvalResult] = Field(default_factory=list)
     summary: EvalSummary = Field(default_factory=EvalSummary)
     error: str = ""
-
-
-class EvalArchiveRequest(BaseModel):
-    batch_id: str = Field(min_length=1, max_length=100)
-    note: str = Field(default="", max_length=500)
 
 
 def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummary:

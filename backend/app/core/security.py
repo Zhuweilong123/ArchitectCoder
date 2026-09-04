@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from fastapi import HTTPException
 
-from app.core.config import get_settings
+from backend.config import get_settings
 
 
 def sanitize_path_segment(segment: str) -> str:

@@ -144,7 +144,7 @@ class PluginManager:
 
         if settings is None:
             try:
-                from app.core.config import get_settings
+                from backend.config import get_settings
 
                 settings = get_settings()
             except Exception:

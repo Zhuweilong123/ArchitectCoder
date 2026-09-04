@@ -3,13 +3,13 @@
 分层解耦、职责单一、接口统一。
 
 架构:
-- core/     : 核心基础设施 (LLM、Message、Config、Agent基类、异常)
+- core/     : 核心基础设施 (LLM、Message、AgentConfig、Agent基类、异常)
 - agents/   : 4 种 Agent 范式 (Simple、ReAct、Reflection、PlanAndSolve)
 - tools/    : 工具系统 (Tool基类、ToolRegistry、ToolChain、AsyncToolExecutor)
 
 Usage::
 
-    from app.agent_base import BaseAgentsLLM, Config, SimpleAgent
+    from app.agent_base import BaseAgentsLLM, AgentConfig, SimpleAgent
 
     llm = BaseAgentsLLM()
     agent = SimpleAgent(name="助手", llm=llm)
@@ -19,14 +19,16 @@ Usage::
 from .core.exceptions import (
     BaseAgentsException, ConfigError, LLMError, AgentError, ToolError,
 )
-from .core.config import Config
+from backend.config import AgentConfig
 from .core.message import Message, MessageRole
 from .core.llm import BaseAgentsLLM
 from .core.agent import Agent
 from .core.knowledge_graph import (
     KnowledgeGraphProvider,
+    KnowledgeGraphToolFactory,
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
+    load_knowledge_graph_tools,
 )
 from .core.plugins import (
     PluginManager,
@@ -37,19 +39,29 @@ from .core.plugins import (
 
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
-from .tools import Tool, ToolParameter, ToolRegistry, ToolChain, ToolChainManager, AsyncToolExecutor
+from .tools import (
+    Tool,
+    ToolParameter,
+    ToolRegistry,
+    ToolChain,
+    ToolChainManager,
+    AsyncTool,
+    AsyncToolExecutor,
+)
 from .execution import ToolExecutor
 
 __all__ = [
     # core
     "BaseAgentsException", "ConfigError", "LLMError", "AgentError", "ToolError",
-    "Config",
+    "AgentConfig",
     "Message", "MessageRole",
     "BaseAgentsLLM",
     "Agent",
     "KnowledgeGraphProvider",
+    "KnowledgeGraphToolFactory",
     "NoOpKnowledgeGraphProvider",
     "load_knowledge_graph",
+    "load_knowledge_graph_tools",
     "PluginManager",
     "PluginSpec",
     "PluginState",
@@ -63,6 +75,7 @@ __all__ = [
     "Tool", "ToolParameter",
     "ToolRegistry",
     "ToolChain", "ToolChainManager",
+    "AsyncTool",
     "AsyncToolExecutor",
     "ToolExecutor",
 ]

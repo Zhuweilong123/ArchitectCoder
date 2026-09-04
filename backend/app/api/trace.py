@@ -9,8 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.trace.tracing import load_trace
-from extensions.trace.replay import replay_agent_session, ReplayExhausted
+from app.trace.tracing import TraceReplayExhausted, load_trace
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +61,14 @@ async def replay_trace_endpoint(
     tool_policy: live 模式下真实工具策略（readonly / full），仅 live 生效。
     """
     try:
-        return await replay_agent_session(
+        return await load_trace().replay(
             session_id, mode=mode, until_turn=turn, tool_policy=tool_policy,
         )
     except ValueError as e:
         msg = str(e)
         status = 404 if "不存在" in msg else 400
         raise HTTPException(status_code=status, detail=msg)
-    except ReplayExhausted as e:
+    except TraceReplayExhausted as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))

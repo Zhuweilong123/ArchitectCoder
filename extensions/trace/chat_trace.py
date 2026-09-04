@@ -437,7 +437,7 @@ class ChatTraceLogger:
 
 def _chat_log_dir() -> str:
     """计算 chat_log 目录（与 pipeline_log 同级）。"""
-    from app.core.config import get_settings
+    from backend.config import get_settings
     settings = get_settings()
     return os.path.normpath(os.path.abspath(
         os.path.join(os.path.dirname(settings.uml_dir), "chat_log"),
@@ -669,6 +669,23 @@ class JsonlTraceProvider:
 
     def query(self):
         return JsonlTraceQuery()
+
+    async def replay(
+        self,
+        session_id: str,
+        *,
+        mode: str = "mock",
+        until_turn: int | None = None,
+        tool_policy: str = "readonly",
+    ) -> dict:
+        from .replay import replay_agent_session
+
+        return await replay_agent_session(
+            session_id,
+            mode=mode,
+            until_turn=until_turn,
+            tool_policy=tool_policy,
+        )
 
 
 class JsonlTraceQuery:

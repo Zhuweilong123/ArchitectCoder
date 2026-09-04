@@ -13,9 +13,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.agent_base.assembly import (
+    ProgressRelay,
+    create_dev_agent,
+    enabled_tools_context,
+)
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.core.config import get_settings
+from app.agent_base.execution_summary import build_task_execution_summary
+from backend.config import get_settings
 from app.services.agent_metrics import get_agent_metrics
 from app.trace.tracing import TraceSession
 
@@ -66,9 +72,6 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     assembly function. Evaluation only changes the workspace, run budgets and
     approval policy; it does not replace the production prompt/tool chain.
     """
-    from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
-    from app.services.agent_chat_ws import _create_dev_agent, _enabled_tools_context
-
     settings = get_settings()
     first_prompt = case.prompts()[0]
     llm = BaseAgentsLLM.from_settings(temperature=0.3)
@@ -77,7 +80,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
     progress = ProgressRelay()
-    agent, review_mgr, prompt_builder = await _create_dev_agent(
+    agent, review_mgr, prompt_builder = await create_dev_agent(
         llm,
         source_dir=str(source_dir),
         test_dir=str(test_dir),
@@ -106,7 +109,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     agent._eval_review_manager = review_mgr
     agent._eval_agent_mode = "devagent"
     agent._eval_context = "\n\n".join(filter(None, [
-        agent._eval_context, _enabled_tools_context(),
+        agent._eval_context, enabled_tools_context(),
     ]))
     return agent
 
@@ -216,7 +219,6 @@ class EvalRunner:
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
-                    from app.services.agent_chat_ws import _build_task_execution_summary
                     active_turn: dict[str, Any] = {
                         "turn": 0,
                         "details": [],
@@ -263,11 +265,6 @@ class EvalRunner:
                         from app.agent_base.core.hooks import (
                             AgentRuntime, get_runtime, set_runtime, reset_runtime,
                         )
-                        from app.services.agent_chat_ws import (
-                            _build_task_execution_summary,
-                            _enabled_tools_context,
-                        )
-
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
                         turn_records: list[dict[str, Any]] = []
@@ -328,7 +325,7 @@ class EvalRunner:
                             if not active_turn["turn"] or active_turn["summary_written"]:
                                 return
                             checkpoint = dict(active_turn.get("checkpoint") or {})
-                            summary = _build_task_execution_summary(
+                            summary = build_task_execution_summary(
                                 active_turn.get("details") or [], checkpoint, status,
                             )
                             tracer.task_summary(
@@ -442,7 +439,7 @@ class EvalRunner:
                                 )
                             context = "\n\n".join(filter(None, [
                                 context,
-                                _enabled_tools_context(),
+                                enabled_tools_context(),
                             ]))
                             stream_kwargs: dict[str, Any] = {}
                             if context:
@@ -692,7 +689,7 @@ class EvalRunner:
                         **dict(active_turn.get("checkpoint") or {}),
                         "stop_reason": f"evaluation exceeded {case.max_seconds}s",
                     }
-                    summary = _build_task_execution_summary(
+                    summary = build_task_execution_summary(
                         active_turn.get("details") or [],
                         active_turn.get("checkpoint") or {},
                         "partial",
@@ -726,7 +723,7 @@ class EvalRunner:
                         **dict(active_turn.get("checkpoint") or {}),
                         "stop_reason": f"{type(exc).__name__}: {exc}",
                     }
-                    summary = _build_task_execution_summary(
+                    summary = build_task_execution_summary(
                         active_turn.get("details") or [],
                         active_turn.get("checkpoint") or {},
                         "failed",

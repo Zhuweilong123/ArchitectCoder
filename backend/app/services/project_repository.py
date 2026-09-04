@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.models.uml import Project, UmlDiagram
 
 

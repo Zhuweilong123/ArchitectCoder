@@ -23,10 +23,12 @@ from __future__ import annotations
 import logging
 import os
 
+from app.trace.tracing import TraceReplayExhausted
+
 logger = logging.getLogger(__name__)
 
 
-class ReplayExhausted(Exception):
+class ReplayExhausted(TraceReplayExhausted):
     """trace 中的记录已耗尽，说明回放流程与记录不一致。"""
 
 
@@ -129,7 +131,7 @@ def _reconstruct_workspace(events: list[dict]) -> tuple[str, str, str, str]:
         design_dir = os.path.dirname(os.path.abspath(project_file))
     else:
         try:
-            from app.core.config import get_settings
+            from backend.config import get_settings
             design_dir = os.path.abspath(get_settings().uml_dir)
         except Exception:
             design_dir = ""

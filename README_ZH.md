@@ -39,7 +39,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 ### AI 开发助手
 
-右下角机器人按钮打开浮动对话面板，生产 **DevAgent**（底层使用 ReActAgent runtime）承接全部消息，支持从 UML 设计到代码实现的协同开发，并可根据任务分析、生成、修改和验证代码。v3.1 默认使用直接 ReAct 主流程，并通过可插拔 provider 提供可选的任务编排和只读策略子代理：
+右下角机器人按钮打开浮动对话面板，生产 **DevAgent**（底层使用 ReActAgent runtime）承接全部消息，支持从 UML 设计到代码实现的协同开发，并可根据任务分析、生成、修改和验证代码。v3.2 默认使用直接 ReAct 主流程，并通过可插拔 provider 提供可选的任务编排和只读策略子代理：
 
 - **文件系统原语**：`read_file` / `write_file` / `edit_file` / `glob` / `bash` —— 读写代码、跑 pytest、修复失败，全由 Agent 自主编排
 - **任务规划**：`todo_write` 维护会话任务清单，多步任务先规划、边做边更新状态
@@ -95,7 +95,8 @@ Excel 用例驱动的测试代码生成：
 
 ### 知识图谱
 
-SQLite 图数据库 + FTS5 全文索引，工程保存时自动重建，为 AI 助手提供结构化项目理解：
+SQLite 图数据库 + FTS5 全文索引，知识图谱插件开启后在工程保存时自动重建，
+为 AI 助手提供结构化项目理解：
 
 - **三层知识**：项目层 → 实体层 → 关系层（继承/组合/依赖 + 设计-代码映射 + 测试覆盖）
 - **双源构建**：设计层（UML JSON 自动同步）+ 代码层（AST 解析源码目录）
@@ -143,24 +144,27 @@ ArchitectCoder/
 │   ├── package.json
 │   └── vite.config.ts
 ├── backend/                        # FastAPI 后端
+│   ├── config/                     # 应用配置与 AgentConfig
 │   ├── app/
 │   │   ├── api/                    # REST + WebSocket 路由 (files/llm/optimize_v2/testhub/trace/metrics/evals)
-│   │   ├── core/                   # 配置 / 鉴权 / 安全
+│   │   ├── core/                   # 鉴权与安全
 │   │   ├── models/                 # Pydantic 数据模型
 │   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
-│   │   ├── evals/                  # DevAgent 评测运行时代码
 │   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
 │   │   │   └── tools/my_tools/     # 文件系统原语 / todo / 子代理 / 审核
 │   │   └── main.py
-│   ├── evals/                      # 版本化评测用例和 fixture
-│   ├── examples/                   # 可选 BaseAgent 示例
-│   ├── knowledge_graph/            # 知识图谱系统 (SQLite + FTS5)
-│   ├── memory_system/              # 跨会话记忆系统 (SQLite + FTS5 + jieba)
+│   ├── evals/                      # 版本化评测用例和 fixtures
 │   ├── tests/                      # 单元测试和集成测试
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # 设计文档、评测基线和系统归档
-├── skills/uml-design-guide/         # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
+├── extensions/                     # 统一的插件实现与 Provider 入口
+│   ├── orchestration/              # 编排插件
+│   ├── memory/                     # 记忆插件
+│   ├── trace/                      # Trace 插件
+│   ├── evals/                      # 评测插件与 CLI
+│   └── knowledge_graph/            # 知识图谱插件
+├── skills/uml-design-guide/        # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
 ├── project/                        # 项目代码输出 (src/ + test/)
 ├── temp/                           # 运行时临时文件（不上库）
 ├── .claude/                        # Claude Code 配置
@@ -183,7 +187,33 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-可选配置：`DEEPSEEK_MODEL`（每个会话固定一个模型）、`AGENT_ORCHESTRATION_ENABLED`、`AGENT_ORCHESTRATOR_PROVIDER` 和 `AGENT_MEMORY_*`。当前不使用模型路由或 `SUB_AGENT_MODEL`。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。Windows 下命令执行优先使用配置的 WSL 环境；依赖安装完成后，也可直接运行 `start.bat` 一键启动前后端。
+可选配置包括 `DEEPSEEK_MODEL`、五类插件的 `AGENT_*_ENABLED` 开关和 `AGENT_*_PROVIDER` 入口。配置定义集中在 `backend/config/settings.py` 与 `backend/config/agent_config.py`，插件实现统一位于 `extensions/`，由 `backend/app/agent_base/core/plugins.py` 加载。将开关设为 `false`，或将 Provider 设为 `none`、`noop`、`disabled`，即可关闭插件；当前不使用模型路由或 `SUB_AGENT_MODEL`。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。Windows 下命令执行优先使用配置的 WSL 环境；依赖安装完成后，也可直接运行 `start.bat` 一键启动前后端。
+
+## 插件架构
+
+当前五类可插拔能力统一由 `PluginManager` 管理：编排、记忆、Trace、Evals
+和知识图谱。每个插件通过 `module:factory` 形式的 Provider 入口加载，具体
+实现代码统一放在 `extensions/` 下，主流程只依赖稳定接口和降级实现。
+
+配置定义集中在 `backend/config/`：
+
+- `settings.py`：应用级配置、插件开关和 Provider 配置
+- `agent_config.py`：Agent 实例级配置
+- `__init__.py`：统一导出配置类型
+
+运行时可以在 `backend/.env` 中覆盖 `backend/config/` 中配置类的默认值。例如：
+
+```env
+AGENT_MEMORY_ENABLED=false
+AGENT_TRACE_PROVIDER=extensions.trace:create
+```
+
+插件机制的完整设计、生命周期、目录边界和已知缺口见：
+[插件机制设计归档](docs/plugin-architecture-design.md)。
+
+知识图谱工具与知识图谱 Provider 共用 `AGENT_KNOWLEDGE_GRAPH_ENABLED` 开关。
+开启后，主 Agent 默认获得 `get_project_map`、`find_nodes` 和
+`expand_neighbors` 工具；关闭后不会注册任何知识图谱工具。
 
 ## API 与开发验证
 

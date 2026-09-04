@@ -18,7 +18,7 @@ from typing import Optional, Iterator
 from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
-from ..core.config import Config
+from backend.config import AgentConfig
 from ..tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class SimpleAgent(Agent):
         name: str,
         llm: BaseAgentsLLM,
         system_prompt: Optional[str] = None,
-        config: Optional[Config] = None,
+        config: Optional[AgentConfig] = None,
         tool_registry: Optional[ToolRegistry] = None,
         enable_tool_calling: bool = True,
     ):

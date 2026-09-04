@@ -29,7 +29,7 @@ from typing import Any, Callable, Optional
 
 from app.agent_base.core.knowledge_graph import KnowledgeGraphProvider, get_knowledge_graph
 from app.agent_base.tools.base import Tool, ToolParameter
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.async_tool import AsyncTool
 
 logger = logging.getLogger(__name__)
 

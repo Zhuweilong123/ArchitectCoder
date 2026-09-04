@@ -29,14 +29,18 @@ from datetime import datetime
 from typing import Optional, AsyncIterator
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.services.uml_common import (
-    _build_reference_index,
+from app.services.uml_index import _build_reference_index
+from app.services.uml_prompting import (
     _build_global_prompt,
     _analyze_scope,
+)
+from app.services.uml_validation import (
     _normalize_optimize_result,
     _normalize_llm_output,
     _validate_cross_references,
     _apply_auto_fixes,
+)
+from app.services.uml_stream import (
     JsonElementExtractor,
 )
 from app.services.layout_engine import auto_layout

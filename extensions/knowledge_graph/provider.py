@@ -52,7 +52,7 @@ class LocalKnowledgeGraphProvider:
     @staticmethod
     def _default_db_path(settings=None) -> str:
         if settings is None:
-            from app.core.config import get_settings
+            from backend.config import get_settings
 
             settings = get_settings()
         configured = str(getattr(settings, "agent_knowledge_graph_db_path", "") or "").strip()
@@ -135,6 +135,23 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.diff(
                 project_id, source_dir, force_rebuild, max_items,
             ),
+        )
+
+    def create_tools(
+        self,
+        *,
+        project_file: str = "",
+        source_dir: str = "",
+        include_compare: bool = False,
+    ) -> list[Any]:
+        """Create Agent tools while keeping the concrete factory in this extension."""
+        from .tools import create_kg_v2_tools
+
+        return create_kg_v2_tools(
+            project_file=project_file,
+            source_dir=source_dir,
+            include_compare=include_compare,
+            provider=self,
         )
 
     @staticmethod
