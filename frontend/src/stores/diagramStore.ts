@@ -856,12 +856,20 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   updateMessage: (id, updates) => {
     get().pushSnapshot('update_message', `update_message:${id}`);
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      messages: (d.messages || []).map((m) =>
+    const project = _updateActiveDiagram(get().project, (d) => {
+      const nextMessages = (d.messages || []).map((m) =>
         m.id === id ? { ...m, ...updates } : m
-      ),
-    }));
+      );
+      if (typeof updates.y !== 'number') return { ...d, messages: nextMessages };
+
+      // Keep persisted order aligned with the visual timeline after an edge
+      // is dragged. Stable tie-breaking prevents messages at the same Y from
+      // swapping on every mouse move.
+      const messages = [...nextMessages]
+        .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
+        .map((message, index) => ({ ...message, order: index + 1 }));
+      return { ...d, messages };
+    });
     set({ project, isModified: true });
   },
 
@@ -971,19 +979,39 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   removeComponent: (id) => {
+    const state = get();
+    const removedIds = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      (_activeDiagram(state.project).components || []).forEach((component) => {
+        if (component.parent_id && removedIds.has(component.parent_id) && !removedIds.has(component.id)) {
+          removedIds.add(component.id);
+          changed = true;
+        }
+      });
+    }
+    const removedRelationIds = new Set<string>();
+    (_activeDiagram(state.project).comp_relations || []).forEach((relation) => {
+      if (removedIds.has(relation.source) || removedIds.has(relation.target)) {
+        removedRelationIds.add(relation.id);
+      }
+    });
     get().pushSnapshot('remove_component');
-    const project = _updateActiveDiagram(get().project, (d) => ({
+    const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
-      components: (d.components || []).filter((c) => c.id !== id),
-      comp_relations: (d.comp_relations || []).filter(
-        (r) => r.source !== id && r.target !== id
-      ),
+      components: (d.components || []).filter((c) => !removedIds.has(c.id)),
+      comp_relations: (d.comp_relations || []).filter((r) => !removedRelationIds.has(r.id)),
     }));
     set({
       project,
-      selectedComponentId: get().selectedComponentId === id ? null : get().selectedComponentId,
+      selectedComponentId: state.selectedComponentId && removedIds.has(state.selectedComponentId)
+        ? null : state.selectedComponentId,
+      selectedCompRelationId: state.selectedCompRelationId && removedRelationIds.has(state.selectedCompRelationId)
+        ? null : state.selectedCompRelationId,
       isModified: true,
     });
+    console.debug('[Store] removeComponent:', id, '→ removed subtree:', removedIds.size);
   },
 
   moveComponent: (id, x, y) => {
