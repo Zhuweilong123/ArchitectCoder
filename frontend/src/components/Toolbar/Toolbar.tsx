@@ -159,7 +159,7 @@ const Toolbar: React.FC = () => {
 
   // ── Global optimize handler (SSE 流式 / REST 非流式) ─────────
   const handleGlobalOptimize = async () => {
-    const proj = useDiagramStore.getState().project;
+    const proj = useDiagramStore.getState().getProjectSnapshot();
 
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
@@ -177,7 +177,7 @@ const Toolbar: React.FC = () => {
           ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
           : `${projName}.umlproj`;
         const result = await saveProject(
-          { ...useDiagramStore.getState().project, name: projName },
+          { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
           targetPath,
           currentWorkspacePath ? currentWorkspaceSafe : true,
         );
@@ -648,13 +648,14 @@ const Toolbar: React.FC = () => {
     }
     try {
       // 若工程名仍是默认值，则用当前文件路径的文件名同步工程名
-      let proj = project;
+      let proj = useDiagramStore.getState().getProjectSnapshot();
       const curName = (currentFilepath || '').replace(/[\\/]+/g, '/').split('/').pop() || '';
       const curBase = curName.replace(/\.umlproj$/i, '').replace(/\.uml$/i, '');
       if ((!proj.name || proj.name === 'Untitled') && curBase) {
         proj = { ...proj, name: curBase };
         setProject(proj);
       }
+      proj = useDiagramStore.getState().getProjectSnapshot();
       const targetPath = currentFilepath ||
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
@@ -698,7 +699,7 @@ const Toolbar: React.FC = () => {
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
         : filename;
       const result = await saveProject(
-        { ...project, name: projName },
+        { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
       );

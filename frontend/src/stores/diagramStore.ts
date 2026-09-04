@@ -101,6 +101,8 @@ export interface DiagramState {
   setProject: (project: Project) => void;
   /** Apply a computed project mutation while preserving the current viewport when possible. */
   applyProjectUpdate: (project: Project) => void;
+  /** Return the project with the runtime viewport merged into the active diagram. */
+  getProjectSnapshot: () => Project;
   markSaved: (revision: number) => void;
   newProject: (name?: string) => void;
   setActiveDiagram: (index: number) => void;
@@ -263,6 +265,16 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       viewport: activeIndexChanged ? _viewportFromDiagram(activeDiagram) : state.viewport,
       isModified: true,
     });
+  },
+
+  getProjectSnapshot: () => {
+    const state = get();
+    return _updateActiveDiagram(state.project, (diagram) => ({
+      ...diagram,
+      zoom: state.viewport.zoom,
+      pan_x: state.viewport.panX,
+      pan_y: state.viewport.panY,
+    }));
   },
 
   newProject: (name) => {
@@ -847,19 +859,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   setZoom: (zoom) => {
     const nextZoom = Math.max(0.1, Math.min(5, zoom));
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      zoom: nextZoom,
-    }));
-    set((state) => ({
-      project,
-      viewport: { ...state.viewport, zoom: nextZoom },
-    }));
+    set((state) => ({ viewport: { ...state.viewport, zoom: nextZoom } }));
   },
 
   setPan: (x, y) => {
-    const project = _updateActiveDiagram(get().project, (d) => ({ ...d, pan_x: x, pan_y: y }));
-    set({ project, viewport: { zoom: get().viewport.zoom, panX: x, panY: y } });
+    set((state) => ({ viewport: { zoom: state.viewport.zoom, panX: x, panY: y } }));
   },
 
   // ── Undo/Redo ─────────────────────────────────────────
@@ -919,7 +923,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   markSaved: (revision) => {
     const state = get();
-    const project = { ...state.project, revision };
+    const project = { ...get().getProjectSnapshot(), revision };
     const activeDiagram = _activeDiagram(project);
     set({ project, viewport: _viewportFromDiagram(activeDiagram), isModified: false });
   },
