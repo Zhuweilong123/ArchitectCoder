@@ -95,7 +95,8 @@ Excel 用例驱动的测试代码生成：
 
 ### 知识图谱
 
-SQLite 图数据库 + FTS5 全文索引，工程保存时自动重建，为 AI 助手提供结构化项目理解：
+SQLite 图数据库 + FTS5 全文索引，知识图谱插件开启后在工程保存时自动重建，
+为 AI 助手提供结构化项目理解：
 
 - **三层知识**：项目层 → 实体层 → 关系层（继承/组合/依赖 + 设计-代码映射 + 测试覆盖）
 - **双源构建**：设计层（UML JSON 自动同步）+ 代码层（AST 解析源码目录）
@@ -209,6 +210,10 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 插件机制的完整设计、生命周期、目录边界和已知缺口见：
 [插件机制设计归档](docs/plugin-architecture-design.md)。
+
+知识图谱工具与知识图谱 Provider 共用 `AGENT_KNOWLEDGE_GRAPH_ENABLED` 开关。
+开启后，主 Agent 默认获得 `get_project_map`、`find_nodes` 和
+`expand_neighbors` 工具；关闭后不会注册任何知识图谱工具。
 
 ## API 与开发验证
 

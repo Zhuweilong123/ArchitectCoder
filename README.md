@@ -97,7 +97,8 @@ Excel test-case-driven test code generation:
 
 ### Knowledge Graph
 
-SQLite graph database + FTS5 full-text index, automatically rebuilt on project save, giving the AI assistant structured project understanding:
+SQLite graph database + FTS5 full-text index, rebuilt on project save when the
+knowledge-graph plugin is enabled, giving the AI assistant structured project understanding:
 
 - **Three knowledge layers**: Project → Entity → Relationship (inheritance/composition/dependency + design-code mapping + test coverage)
 - **Dual-source build**: design layer (UML JSON auto-sync) + code layer (AST parsing of source directories)
@@ -186,6 +187,11 @@ Each extension exposes a `module:factory` entry point, for example
 setting the corresponding `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` variables in
 `backend/.env`. See [Plugin Architecture Design Archive](docs/plugin-architecture-design.md)
 for the complete design, lifecycle, fallback behavior, and ownership rules.
+
+Knowledge-graph tools use the same `AGENT_KNOWLEDGE_GRAPH_ENABLED` switch as
+the graph provider. When enabled, the main Agent receives the default
+`get_project_map`, `find_nodes`, and `expand_neighbors` tools; when disabled,
+no knowledge-graph tools are registered.
 
 ## Quick Start
 

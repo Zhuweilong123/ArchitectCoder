@@ -91,22 +91,6 @@ class ProgressRelay:
         return self._events
 
 
-# ═══════════════════════════════════════════════════════════
-# 工厂函数
-# ═══════════════════════════════════════════════════════════
-
-def _kg_db_path() -> str:
-    """知识图谱数据库路径（与 explore_project_tools._kg_db_path 同口径）。"""
-    try:
-        from backend.config import get_settings
-        base = os.path.dirname(get_settings().uml_dir)
-    except Exception:
-        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")
-    return os.path.normpath(os.path.abspath(
-        os.path.join(base, "data", "knowledge_graph.db"),
-    ))
-
-
 def create_conversation_tools(
     llm: BaseAgentsLLM,
     source_dir: str = "",
@@ -189,16 +173,14 @@ def create_conversation_tools(
         tools.extend(create_task_system_tools(scope=task_scope))
 
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
-    # read_file/grep 回答具体内容与符号）
-    # Knowledge-graph tools are intentionally disabled for DevAgent. The
-    # implementation remains available for direct opt-in and its own tests,
-    # but it is not exposed in the default conversation tool registry. This
-    # avoids broad graph exploration and repeated reads during normal tasks.
-    # from extensions.knowledge_graph.tools import create_kg_v2_tools
-    # tools.extend(create_kg_v2_tools(
-    #     db_path=_kg_db_path(),
-    #     project_file=project_file, source_dir=source_dir,
-    # ))
+    # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
+    # 关闭或 Provider 不可用时不会注册任何 KG 工具。
+    from app.agent_base.core.knowledge_graph import load_knowledge_graph_tools
+    tools.extend(load_knowledge_graph_tools(
+        settings=get_settings(),
+        project_file=project_file,
+        source_dir=source_dir,
+    ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool

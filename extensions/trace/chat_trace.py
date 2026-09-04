@@ -670,6 +670,23 @@ class JsonlTraceProvider:
     def query(self):
         return JsonlTraceQuery()
 
+    async def replay(
+        self,
+        session_id: str,
+        *,
+        mode: str = "mock",
+        until_turn: int | None = None,
+        tool_policy: str = "readonly",
+    ) -> dict:
+        from .replay import replay_agent_session
+
+        return await replay_agent_session(
+            session_id,
+            mode=mode,
+            until_turn=until_turn,
+            tool_policy=tool_policy,
+        )
+
 
 class JsonlTraceQuery:
     """Read-side adapter kept beside the JSONL storage implementation."""

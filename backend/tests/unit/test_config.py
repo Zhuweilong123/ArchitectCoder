@@ -39,7 +39,10 @@ def test_settings_allows_overriding_subagent_budget(monkeypatch):
 def test_settings_exposes_pluggable_memory_defaults():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
+    assert settings.agent_orchestration_enabled is True
     assert settings.agent_memory_enabled is True
+    assert settings.agent_trace_enabled is True
+    assert settings.agent_evals_enabled is True
     assert settings.agent_memory_provider == "extensions.memory:create"
     assert settings.agent_memory_recall_top_k == 3
     assert settings.agent_memory_recall_max_tokens == 500

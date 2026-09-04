@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     agent_main_subagent_enabled: bool = True
     # Keep the optional planner/explorer path disabled until its hand-off and
     # tool-routing behavior is revalidated. The core falls back to NoOp.
-    agent_orchestration_enabled: bool = False
+    agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = "extensions.orchestration:create"
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     # Optional knowledge-graph backend.  Application services depend on the
     # provider boundary; the default adapter keeps the existing local SQLite
     # implementation replaceable by a remote or domain-specific backend.
+    # The same plugin switch controls both graph backend availability and
+    # whether graph tools are exposed to the main Agent.
     agent_knowledge_graph_enabled: bool = True
     agent_knowledge_graph_provider: str = "extensions.knowledge_graph:create"
     agent_knowledge_graph_db_path: str = ""

@@ -71,6 +71,19 @@ class TraceProvider(Protocol):
 
     def create(self, request: TraceSessionRequest) -> TraceSink: ...
 
+    async def replay(
+        self,
+        session_id: str,
+        *,
+        mode: str = "mock",
+        until_turn: int | None = None,
+        tool_policy: str = "readonly",
+    ) -> dict[str, Any]: ...
+
+
+class TraceReplayExhausted(RuntimeError):
+    """The recorded trace cannot satisfy the requested replay sequence."""
+
 
 class TraceQueryPort(Protocol):
     """Optional read-side capability exposed by a trace provider."""
@@ -133,6 +146,16 @@ class NoOpTraceSink:
 class NoOpTraceProvider:
     def create(self, request: TraceSessionRequest) -> TraceSink:
         return NoOpTraceSink()
+
+    async def replay(
+        self,
+        session_id: str,
+        *,
+        mode: str = "mock",
+        until_turn: int | None = None,
+        tool_policy: str = "readonly",
+    ) -> dict[str, Any]:
+        raise RuntimeError("trace provider is disabled")
 
     def query(self) -> TraceQueryPort:
         return NoOpTraceQuery()
@@ -199,6 +222,28 @@ class _ResilientTraceProvider:
         except Exception:
             logger.warning("[Trace] provider could not create sink; using no-op", exc_info=True)
             return NoOpTraceSink()
+
+    async def replay(
+        self,
+        session_id: str,
+        *,
+        mode: str = "mock",
+        until_turn: int | None = None,
+        tool_policy: str = "readonly",
+    ) -> dict[str, Any]:
+        try:
+            replay = getattr(self.provider, "replay")
+            return await replay(
+                session_id,
+                mode=mode,
+                until_turn=until_turn,
+                tool_policy=tool_policy,
+            )
+        except TraceReplayExhausted:
+            raise
+        except Exception:
+            logger.warning("[Trace] provider replay failed", exc_info=True)
+            raise
 
     def query(self) -> TraceQueryPort:
         try:
@@ -432,6 +477,7 @@ __all__ = [
     "NoOpTraceProvider",
     "NoOpTraceSink",
     "TraceProvider",
+    "TraceReplayExhausted",
     "TraceQueryPort",
     "TraceSession",
     "TraceSessionRequest",

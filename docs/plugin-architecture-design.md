@@ -160,7 +160,11 @@ contract.
 
 The default provider is the local SQLite graph implementation. Graph building,
 retrieval, impact analysis, diffing and v2 tools are kept in
-`extensions/knowledge_graph`.
+`extensions/knowledge_graph`. The same `AGENT_KNOWLEDGE_GRAPH_ENABLED` switch
+also controls whether the default Agent-facing graph tools are registered. The
+local provider exposes the bounded `get_project_map`, `find_nodes` and
+`expand_neighbors` tools through its optional tool capability; the design-code
+comparison tool remains an explicit opt-in at the composition layer.
 
 ## 6. Configuration model
 

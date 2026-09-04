@@ -64,7 +64,6 @@ from app.trace.tracing import (
     pop_trace_hook,
     push_trace_hook,
 )
-from extensions.trace.trace_reader import reconstruct_history
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.change_set import ChangeSet
 from app.services.run_state import (
@@ -1426,10 +1425,13 @@ async def agent_chat_ws(websocket: WebSocket):
     session = get_or_create(session_id)
     # 恢复历史会话：全新会话但磁盘上已有 trace → 重建对话历史，等 agent 创建时注入
     restore_history = None
-    if session.agent is None:
-        restore_history = reconstruct_history(session_id)
-    if session.trace_log is None:
+    trace_provider = None
+    if session.agent is None or session.trace_log is None:
         trace_provider = load_trace(settings=get_settings())
+    if session.agent is None:
+        restore_history = trace_provider.query().reconstruct_history(session_id)
+    if session.trace_log is None:
+        assert trace_provider is not None
         trace_log = trace_provider.create(TraceSessionRequest(session_id=session_id))
         trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
     else:

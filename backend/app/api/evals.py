@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from app.agent_base.core.evals import load_evals
-from extensions.evals.models import EvalResult
-from extensions.evals.batches import (
+from app.agent_base.core.evals import (
     EvalArchiveRequest,
     EvalBatchRequest,
+    load_evals,
 )
-from extensions.evals.paths import baseline_path
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
-BASELINE_PATH = baseline_path()
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+# Compatibility export for existing integrations; baseline reads now go
+# through EvalProvider.get_baseline().
+BASELINE_PATH = REPOSITORY_ROOT / "backend" / "evals" / "baseline.json"
 
 
 class EvalRunRequest(BaseModel):
@@ -30,13 +29,16 @@ class EvalBaselineArchiveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
-def _read_baseline() -> dict:
-    if not BASELINE_PATH.is_file():
-        raise HTTPException(status_code=404, detail="evaluation baseline not found")
+def _provider_baseline(provider) -> dict:
+    """Read baseline data through the active evaluation provider."""
     try:
-        return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return provider.get_baseline()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="evaluation baseline not found") from exc
+    except (OSError, ValueError, ValidationError) as exc:
         raise HTTPException(status_code=500, detail="evaluation baseline is invalid") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _git_output(*args: str) -> str:
@@ -89,7 +91,7 @@ async def list_cases():
 
 @router.get("/baseline")
 async def get_baseline():
-    return _read_baseline()
+    return _provider_baseline(load_evals())
 
 
 @router.get("/repository")
@@ -100,14 +102,15 @@ async def get_repository():
 @router.post("/baseline/archive")
 async def archive_baseline(request: EvalBaselineArchiveRequest):
     try:
-        return load_evals().archive_baseline(_read_baseline(), request.note)
+        provider = load_evals()
+        return provider.archive_baseline(_provider_baseline(provider), request.note)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("/run", response_model=EvalResult)
+@router.post("/run")
 async def run_eval(request: EvalRunRequest):
     provider = load_evals()
     case = provider.get_case(request.case_id)

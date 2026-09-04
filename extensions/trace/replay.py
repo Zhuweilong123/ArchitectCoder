@@ -23,10 +23,12 @@ from __future__ import annotations
 import logging
 import os
 
+from app.trace.tracing import TraceReplayExhausted
+
 logger = logging.getLogger(__name__)
 
 
-class ReplayExhausted(Exception):
+class ReplayExhausted(TraceReplayExhausted):
     """trace 中的记录已耗尽，说明回放流程与记录不一致。"""
 
 

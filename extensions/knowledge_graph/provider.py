@@ -137,6 +137,23 @@ class LocalKnowledgeGraphProvider:
             ),
         )
 
+    def create_tools(
+        self,
+        *,
+        project_file: str = "",
+        source_dir: str = "",
+        include_compare: bool = False,
+    ) -> list[Any]:
+        """Create Agent tools while keeping the concrete factory in this extension."""
+        from .tools import create_kg_v2_tools
+
+        return create_kg_v2_tools(
+            project_file=project_file,
+            source_dir=source_dir,
+            include_compare=include_compare,
+            provider=self,
+        )
+
     @staticmethod
     def _collect_diagram_hits(retriever, result, output: dict[str, set[str]]) -> None:
         node = result.node

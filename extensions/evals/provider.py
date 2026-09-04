@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from .batches import get_batch_manager
 from .registry import load_cases
 from .runner import EvalRunner
@@ -22,6 +24,14 @@ class LocalEvalProvider:
 
     def get_case(self, case_id: str):
         return load_cases().get(case_id)
+
+    def get_baseline(self):
+        from .paths import baseline_path
+
+        path = baseline_path()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return json.loads(path.read_text(encoding="utf-8"))
 
     async def run_case(self, case):
         return await self._runner().run_case(case)
