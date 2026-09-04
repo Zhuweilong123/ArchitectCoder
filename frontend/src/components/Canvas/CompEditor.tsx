@@ -12,6 +12,7 @@ import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
+import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
@@ -173,54 +174,42 @@ const CompEditor: React.FC = () => {
       onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
-    graph.on('node:click', ({ node }) => {
-      selectComponent(node.id);
-      setRightPanelTab('properties');
-    });
-    graph.on('blank:click', () => {
-      selectComponent(null);
-      selectCompRelation(null);
-    });
-    graph.on('node:moved', ({ node }) => {
-      if (isInternalUpdate.current) return;
-      moveComponent(node.id, node.position().x, node.position().y);
-    });
-    graph.on('node:resized', ({ node }) => {
-      if (isInternalUpdate.current) return;
-      const store = useDiagramStore.getState();
-      store.updateComponent(node.id, {
-        width: node.size().width,
-        height: node.size().height,
-      });
-    });
-    graph.on('edge:click', ({ edge }) => {
-      selectCompRelation(edge.id);
-      setRightPanelTab('properties');
-    });
-    graph.on('edge:connected', ({ edge, isNew }) => {
-      if (isInternalUpdate.current) return;
-      if (isNew) {
-        const src = edge.getSourceCellId();
-        const tgt = edge.getTargetCellId();
-        if (src && tgt) {
-          isInternalUpdate.current = true;
-          edge.remove();
-          isInternalUpdate.current = false;
-          addCompRelation(src, tgt);
-        }
-      }
-    });
-    graph.on('edge:mouseenter', ({ edge }) => {
-      try { edge.addTools([
-        { name: 'source-arrowhead' }, { name: 'target-arrowhead' },
+    const detachCanvasEvents = attachCanvasEventAdapter({
+      graph,
+      isInternalUpdate,
+      onNodeClick: (node) => {
+        selectComponent(node.id);
+        setRightPanelTab('properties');
+      },
+      onBlankClick: () => {
+        selectComponent(null);
+        selectCompRelation(null);
+      },
+      onNodeMoved: (node) => {
+        moveComponent(node.id, node.position().x, node.position().y);
+      },
+      onNodeResized: (node) => {
+        useDiagramStore.getState().updateComponent(node.id, {
+          width: node.size().width,
+          height: node.size().height,
+        });
+      },
+      onEdgeClick: (edge) => {
+        selectCompRelation(edge.id);
+        setRightPanelTab('properties');
+      },
+      onNewEdge: (edge, sourceId, targetId) => {
+        isInternalUpdate.current = true;
+        edge.remove();
+        isInternalUpdate.current = false;
+        addCompRelation(sourceId, targetId);
+      },
+      onEdgeRemoved: (edge) => removeCompRelation(edge.id),
+      edgeTools: [
+        { name: 'source-arrowhead' },
+        { name: 'target-arrowhead' },
         { name: 'button-remove', args: { distance: -30 } },
-      ]); } catch { /* ignore */ }
-    });
-    graph.on('edge:mouseleave', ({ edge }) => {
-      try { edge.removeTools(); } catch { /* ignore */ }
-    });
-    graph.on('edge:removed', ({ edge }) => {
-      if (!isInternalUpdate.current) removeCompRelation(edge.id);
+      ],
     });
 
     // Right-click context menu on component nodes
@@ -293,6 +282,7 @@ const CompEditor: React.FC = () => {
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachCanvasEvents();
       detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;

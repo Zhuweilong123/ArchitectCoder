@@ -12,6 +12,7 @@ import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
+import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -252,66 +253,42 @@ const UMLEditor: React.FC = () => {
     });
 
     // ── Events ───────────────────────────────────────
-    graph.on('node:click', ({ node }) => {
-      selectClass(node.id);
-      setRightPanelTab('properties');
-    });
-
-    graph.on('blank:click', () => {
-      selectClass(null);
-      selectRelation(null);
-    });
-
-    graph.on('node:moved', ({ node }) => {
-      if (isInternalUpdate.current) return;
-      moveClass(node.id, { x: node.position().x, y: node.position().y });
-    });
-
-    graph.on('node:resized', ({ node }) => {
-      if (isInternalUpdate.current) return;
-      resizeClass(node.id, {
-        width: node.size().width,
-        height: node.size().height,
-      });
-    });
-
-    graph.on('edge:click', ({ edge }) => {
-      selectRelation(edge.id);
-      setRightPanelTab('properties');
-    });
-
-    graph.on('edge:connected', ({ edge, isNew }) => {
-      if (isInternalUpdate.current) return;
-      if (isNew) {
-        const src = edge.getSourceCellId();
-        const tgt = edge.getTargetCellId();
-        if (src && tgt) {
-          isInternalUpdate.current = true;
-          edge.remove();
-          isInternalUpdate.current = false;
-          addRelation(src, tgt);
-        }
-      }
-    });
-
-    graph.on('edge:mouseenter', ({ edge }) => {
-      try {
-        edge.addTools([
-          { name: 'source-arrowhead' },
-          { name: 'target-arrowhead' },
-          { name: 'button-remove', args: { distance: -40 } },
-        ]);
-      } catch { /* ignore */ }
-    });
-
-    graph.on('edge:mouseleave', ({ edge }) => {
-      try { edge.removeTools(); } catch { /* ignore */ }
-    });
-
-    graph.on('edge:removed', ({ edge }) => {
-      if (!isInternalUpdate.current) {
-        removeRelation(edge.id);
-      }
+    const detachCanvasEvents = attachCanvasEventAdapter({
+      graph,
+      isInternalUpdate,
+      onNodeClick: (node) => {
+        selectClass(node.id);
+        setRightPanelTab('properties');
+      },
+      onBlankClick: () => {
+        selectClass(null);
+        selectRelation(null);
+      },
+      onNodeMoved: (node) => {
+        moveClass(node.id, { x: node.position().x, y: node.position().y });
+      },
+      onNodeResized: (node) => {
+        resizeClass(node.id, {
+          width: node.size().width,
+          height: node.size().height,
+        });
+      },
+      onEdgeClick: (edge) => {
+        selectRelation(edge.id);
+        setRightPanelTab('properties');
+      },
+      onNewEdge: (edge, sourceId, targetId) => {
+        isInternalUpdate.current = true;
+        edge.remove();
+        isInternalUpdate.current = false;
+        addRelation(sourceId, targetId);
+      },
+      onEdgeRemoved: (edge) => removeRelation(edge.id),
+      edgeTools: [
+        { name: 'source-arrowhead' },
+        { name: 'target-arrowhead' },
+        { name: 'button-remove', args: { distance: -40 } },
+      ],
     });
 
     // Keyboard shortcuts
@@ -382,6 +359,7 @@ const UMLEditor: React.FC = () => {
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachCanvasEvents();
       detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
