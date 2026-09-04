@@ -4,7 +4,16 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #fafafa;
+  background: var(--seq-canvas-bg, #fafafa);
+  transition: background 0.2s ease;
+}
+
+.seq-canvas-container.theme-dark {
+  --seq-canvas-bg: #0f172a;
+}
+
+.seq-canvas-container.theme-blueprint {
+  --seq-canvas-bg: #eaf5ff;
 }
 
 /* Lifeline node */
@@ -77,6 +86,30 @@
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 
+.seq-lifeline-node.theme-dark .seq-lifeline-name {
+  color: #f8fafc;
+  background: #172033;
+  border-color: #475569;
+}
+.seq-lifeline-node.theme-dark .seq-lifeline-dash { border-color: #64748b; }
+.seq-lifeline-node.theme-dark .seq-click-hint { color: #60a5fa; }
+.seq-lifeline-node.theme-dark .seq-activation {
+  background: #1e3a5f;
+  border-color: #60a5fa;
+}
+
+.seq-lifeline-node.theme-blueprint .seq-lifeline-name {
+  color: #0c4a6e;
+  background: #f6fbff;
+  border-color: #7dd3fc;
+}
+.seq-lifeline-node.theme-blueprint .seq-lifeline-dash { border-color: #0284c7; }
+.seq-lifeline-node.theme-blueprint .seq-click-hint { color: #0284c7; }
+.seq-lifeline-node.theme-blueprint .seq-activation {
+  background: #e0f2fe;
+  border-color: #0284c7;
+}
+
 /* Edge labels */
 .x6-edge .x6-edge-label text {
   font-family: Consolas, Monaco, monospace;
@@ -84,4 +117,13 @@
 
 .x6-node {
   border: none !important;
+}
+
+.seq-canvas-container.theme-dark .x6-edge .x6-edge-label {
+  fill: #cbd5e1;
+  stroke: #172033;
+}
+.seq-canvas-container.theme-blueprint .x6-edge .x6-edge-label {
+  fill: #075985;
+  stroke: #eaf5ff;
 }

@@ -391,24 +391,30 @@ const UMLEditor: React.FC = () => {
         }
       } else if (modifier && key === 'v') {
         e.preventDefault();
+        if (clipboard.current.classes.length === 0) return;
         // Paste copied classes at offset position with same size
-        clipboard.current.classes.forEach((cls: any) => {
-          store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
-          // Apply copied size, attributes, methods
-          const store2 = useDiagramStore.getState();
-          const activeDiagram = getActiveDiagram();
-          const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
-          if (lastAdded) {
-            store2.updateClass(lastAdded.id, {
-              name: cls.name,
-              size: { ...cls.size },
-              attributes: [...cls.attributes],
-              methods: [...cls.methods],
-              stereotype: cls.stereotype,
-              note: cls.note,
-            });
-          }
-        });
+        store.beginBatch();
+        try {
+          clipboard.current.classes.forEach((cls: any) => {
+            store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
+            // Apply copied size, attributes, methods
+            const store2 = useDiagramStore.getState();
+            const activeDiagram = getActiveDiagram();
+            const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
+            if (lastAdded) {
+              store2.updateClass(lastAdded.id, {
+                name: cls.name,
+                size: { ...cls.size },
+                attributes: [...cls.attributes],
+                methods: [...cls.methods],
+                stereotype: cls.stereotype,
+                note: cls.note,
+              });
+            }
+          });
+        } finally {
+          store.endBatch();
+        }
         clipboard.current = { classes: clipboard.current.classes.map((c: any) => ({
           ...c, position: { x: c.position.x + 30, y: c.position.y + 30 }
         })), relations: [] };

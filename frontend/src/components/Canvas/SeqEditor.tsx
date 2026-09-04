@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { snapCanvasPosition } from './core/snapToGrid';
@@ -95,7 +95,7 @@ function ensureShapesRegistered() {
 
 // ── HTML builders ────────────────────────────────────
 
-function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
+function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean, theme: CanvasTheme): string {
   const selClass = selected ? 'selected' : '';
   const bars = (lifeline.activations || []).map((y, i) =>
     `<div class="seq-activation" style="top:${y - 6}px" title="激活条 #${i + 1}"></div>`
@@ -103,7 +103,7 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
   const hint = selected
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
-  return `<div class="seq-lifeline-node ${selClass}">
+  return `<div class="seq-lifeline-node theme-${theme} ${selClass}">
     <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
       <div class="seq-lifeline-dash"></div>
@@ -144,7 +144,7 @@ const SeqEditor: React.FC = () => {
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const { setRightPanelTab, canvasTheme } = useUiStore();
 
   // ── Fragment context menu ───────────────────────────
   const [ctxMenu, setCtxMenu] = useState<{ visible: boolean; x: number; y: number; nodeId: string }>({
@@ -381,7 +381,7 @@ const SeqEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; theme: CanvasTheme; html: string }>>(new Map());
   const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
   const messageSignatureCache = useRef<Map<string, string>>(new Map());
   const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
@@ -425,13 +425,14 @@ const SeqEditor: React.FC = () => {
         const selected = ll.id === selectedLifelineId;
         const cachedRender = renderCache.current.get(ll.id);
         const htmlContent = cachedRender?.entity === ll && cachedRender.selected === selected
+          && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildLifelineHTML(ll, selected);
+          : buildLifelineHTML(ll, selected, canvasTheme);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
         ]);
-        renderCache.current.set(ll.id, { entity: ll, selected, html: htmlContent });
+        renderCache.current.set(ll.id, { entity: ll, selected, theme: canvasTheme, html: htmlContent });
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
@@ -439,6 +440,12 @@ const SeqEditor: React.FC = () => {
             const node = existing as Node;
             node.setPosition(ll.x, LIFELINE_Y);
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
+            node.setAttrs({
+              body: {
+                stroke: selected ? '#2563eb' : '#334155',
+                strokeWidth: selected ? 2.5 : 1.5,
+              },
+            });
             if (cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(ll.id, htmlContent);
@@ -450,7 +457,13 @@ const SeqEditor: React.FC = () => {
               shape: 'seq-lifeline',
               x: ll.x, y: LIFELINE_Y,
               width: LIFELINE_WIDTH, height: neededHeight,
-              attrs: { content: { html: htmlContent } },
+              attrs: {
+                content: { html: htmlContent },
+                body: {
+                  stroke: selected ? '#2563eb' : '#334155',
+                  strokeWidth: selected ? 2.5 : 1.5,
+                },
+              },
             });
             htmlCache.current.set(ll.id, htmlContent);
             if (node) lifelineSignatureCache.current.set(ll.id, signature);
@@ -493,20 +506,23 @@ const SeqEditor: React.FC = () => {
           toX   = srcIsLeft ? tgtLL.x : tgtLL.x + LIFELINE_WIDTH;
         }
 
+        const isSelected = msg.id === selectedMessageId;
         let strokeColor = '#1890ff';
         let strokeDash = '';
         if (msg.type === 'return') { strokeColor = '#888'; strokeDash = '6,3'; }
         else if (msg.type === 'simple') { strokeColor = '#333'; }
         else if (msg.type === 'async') { strokeColor = '#52c41a'; }
+        if (isSelected) strokeColor = '#2563eb';
 
         const lineAttrs: Record<string, unknown> = {
           stroke: strokeColor,
-          strokeWidth: 2,
+          strokeWidth: isSelected ? 2.5 : 2,
           strokeDasharray: strokeDash,
           targetMarker: { name: 'block', width: 10, height: 6 },
         };
         const signature = JSON.stringify([
-          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, strokeColor, strokeDash,
+          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, msg.type, strokeColor, strokeDash,
+          isSelected, canvasTheme,
         ]);
 
         try {
@@ -528,11 +544,12 @@ const SeqEditor: React.FC = () => {
             edge.setLabels(msg.label ? [{
               attrs: {
                 text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                rect: { fill: '#fff', stroke: 'none', rx: 2 },
+                rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
               },
               position: { distance: 0.5, offset: -12 },
             }] : []);
             edge.setAttrByPath('line/stroke', strokeColor);
+            edge.setAttrByPath('line/strokeWidth', isSelected ? 2.5 : 2);
             edge.setAttrByPath('line/strokeDasharray', strokeDash);
             messageSignatureCache.current.set(msg.id, signature);
             return;
@@ -543,7 +560,7 @@ const SeqEditor: React.FC = () => {
             ? [{
                 attrs: {
                   text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                  rect: { fill: '#fff', stroke: 'none', rx: 2 },
+                  rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
                 },
                 position: { distance: 0.5, offset: -12 },
               }]
@@ -654,7 +671,7 @@ const SeqEditor: React.FC = () => {
       console.error('[SeqEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId]);
+  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId, selectedMessageId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -776,7 +793,7 @@ const SeqEditor: React.FC = () => {
         </div>
       )}
 
-      <div ref={containerRef} className="seq-canvas-container" />
+      <div ref={containerRef} className={`seq-canvas-container theme-${canvasTheme}`} />
 
       {/* Fragment right-click menu */}
       {ctxMenu.visible && (

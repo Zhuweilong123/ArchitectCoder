@@ -9,7 +9,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
@@ -78,7 +78,7 @@ function ensureShapesRegistered() {
 
 // ── HTML builder ─────────────────────────────────────
 
-function buildCompHTML(comp: CompNode, selected: boolean): string {
+function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme): string {
   const isChild = !!comp.parent_id;
   const selClass = selected ? 'selected' : '';
   const childClass = isChild ? 'child' : '';
@@ -91,7 +91,7 @@ function buildCompHTML(comp: CompNode, selected: boolean): string {
     `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${escapeHtml(i)}</div>`
   ).join('');
 
-  return `<div class="comp-node ${childClass} ${selClass}">
+  return `<div class="comp-node theme-${theme} ${childClass} ${selClass}">
     <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
     <div class="comp-name">${escapeHtml(comp.name)}</div>
     ${provided ? `<div class="comp-block"><div class="comp-block-label">provided interfaces</div>${provided}</div>` : ''}
@@ -106,6 +106,17 @@ const COMP_HEIGHT = 160;
 const CHILD_WIDTH = 150;
 const CHILD_HEIGHT = 100;
 
+function getCompNodeSize(comp: CompNode): { width: number; height: number } {
+  const isChild = !!comp.parent_id;
+  const interfaceCount = (comp.provided_interfaces || []).length
+    + (comp.required_interfaces || []).length;
+  const minHeight = 76 + (interfaceCount > 0 ? 24 + interfaceCount * 18 : 0);
+  return {
+    width: comp.width || (isChild ? CHILD_WIDTH : COMP_WIDTH),
+    height: Math.max(comp.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT), minHeight),
+  };
+}
+
 const CompEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -118,7 +129,7 @@ const CompEditor: React.FC = () => {
   }>({ visible: false, x: 0, y: 0, compId: '', compName: '' });
 
   const {
-    diagram, selectedComponentId,
+    diagram, selectedComponentId, selectedCompRelationId,
     addComponent, removeComponent, moveComponent,
     addCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
@@ -138,10 +149,11 @@ const CompEditor: React.FC = () => {
     project: s.project,
     setActiveDiagram: s.setActiveDiagram,
     addDiagram: s.addDiagram,
+    selectedCompRelationId: s.selectedCompRelationId,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const { setRightPanelTab, canvasTheme } = useUiStore();
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
@@ -163,6 +175,8 @@ const CompEditor: React.FC = () => {
           stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
+        router: { name: 'orth' },
+        connector: { name: 'rounded' },
       },
     });
 
@@ -305,7 +319,7 @@ const CompEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevCompIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; theme: CanvasTheme; html: string }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
@@ -333,18 +347,18 @@ const CompEditor: React.FC = () => {
       // Add/update components + handle embedding
       comps.forEach((c) => {
         const isChild = !!c.parent_id;
-        const w = c.width || (isChild ? CHILD_WIDTH : COMP_WIDTH);
-        const h = c.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT);
+        const { width: w, height: h } = getCompNodeSize(c);
         const selected = c.id === selectedComponentId;
         const cachedRender = renderCache.current.get(c.id);
         const htmlContent = cachedRender?.entity === c && cachedRender.selected === selected
+          && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildCompHTML(c, selected);
+          : buildCompHTML(c, selected, canvasTheme);
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
           htmlContent, c.x, c.y, w, h, c.parent_id || '',
         ]);
-        renderCache.current.set(c.id, { entity: c, selected, html: htmlContent });
+        renderCache.current.set(c.id, { entity: c, selected, theme: canvasTheme, html: htmlContent });
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {
@@ -352,6 +366,12 @@ const CompEditor: React.FC = () => {
             const node = existing as Node;
             node.setPosition(c.x, c.y);
             node.setSize({ width: w, height: h });
+            node.setAttrs({
+              body: {
+                stroke: selected ? '#2563eb' : '#d48806',
+                strokeWidth: selected ? 2.5 : 1.5,
+              },
+            });
             if (cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(c.id, htmlContent);
@@ -367,7 +387,13 @@ const CompEditor: React.FC = () => {
               id: c.id, shape: 'comp-component',
               x: c.x, y: c.y,
               width: w, height: h,
-              attrs: { content: { html: htmlContent } },
+              attrs: {
+                content: { html: htmlContent },
+                body: {
+                  stroke: selected ? '#2563eb' : '#d48806',
+                  strokeWidth: selected ? 2.5 : 1.5,
+                },
+              },
             });
             htmlCache.current.set(c.id, htmlContent);
             if (node) nodeSignatureCache.current.set(c.id, signature);
@@ -390,7 +416,21 @@ const CompEditor: React.FC = () => {
       });
 
       rels.forEach((r) => {
-        const signature = JSON.stringify([r.source, r.target]);
+        const selected = r.id === selectedCompRelationId;
+        const stroke = selected ? '#2563eb' : r.type === 'delegation' ? '#389e0d' : '#d48806';
+        const dash = r.type === 'delegation' ? '' : '6,4';
+        const signature = JSON.stringify([r.source, r.target, r.type, selected, canvasTheme]);
+        const lineAttrs = {
+          stroke, strokeWidth: selected ? 2.5 : 2, strokeDasharray: dash,
+          targetMarker: { name: 'block', width: 10, height: 6 },
+        };
+        const labels = [{
+          attrs: {
+            text: { text: r.type, fontSize: 10, fill: stroke },
+            rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
+          },
+          position: { distance: 0.5, offset: -10 },
+        }];
         try {
           if (existingEdges.has(r.id)) {
             if (edgeSignatureCache.current.get(r.id) === signature) return;
@@ -398,6 +438,12 @@ const CompEditor: React.FC = () => {
             if (edge) {
               edge.setSource({ cell: r.source });
               edge.setTarget({ cell: r.target });
+              edge.setRouter({ name: 'orth' });
+              edge.setConnector({ name: 'rounded' });
+              edge.setLabels(labels);
+              edge.setAttrByPath('line/stroke', stroke);
+              edge.setAttrByPath('line/strokeWidth', selected ? 2.5 : 2);
+              edge.setAttrByPath('line/strokeDasharray', dash);
               edgeSignatureCache.current.set(r.id, signature);
             }
           } else {
@@ -414,11 +460,11 @@ const CompEditor: React.FC = () => {
               source: { cell: r.source },
               target: { cell: r.target },
               attrs: {
-                line: {
-                  stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
-                  targetMarker: { name: 'block', width: 10, height: 6 },
-                },
+                line: lineAttrs,
               },
+              labels,
+              router: { name: 'orth' },
+              connector: { name: 'rounded' },
             });
             if (edge) edgeSignatureCache.current.set(r.id, signature);
           }
@@ -452,7 +498,7 @@ const CompEditor: React.FC = () => {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.components, diagram.comp_relations, selectedComponentId]);
+  }, [diagram.components, diagram.comp_relations, selectedComponentId, selectedCompRelationId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -548,7 +594,7 @@ const CompEditor: React.FC = () => {
           <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
-      <div ref={containerRef} className="comp-canvas-container" />
+      <div ref={containerRef} className={`comp-canvas-container theme-${canvasTheme}`} />
 
       {/* Component right-click context menu */}
       {ctxMenu.visible && (() => {

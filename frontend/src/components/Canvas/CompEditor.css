@@ -1,5 +1,15 @@
 .comp-canvas-container {
-  width: 100%; height: 100%; overflow: hidden; background: #fafafa;
+  width: 100%; height: 100%; overflow: hidden;
+  background: var(--comp-canvas-bg, #fafafa);
+  transition: background 0.2s ease;
+}
+
+.comp-canvas-container.theme-dark {
+  --comp-canvas-bg: #0f172a;
+}
+
+.comp-canvas-container.theme-blueprint {
+  --comp-canvas-bg: #eaf5ff;
 }
 
 .comp-node {
@@ -58,3 +68,23 @@
 .x6-node .x6-port-body circle { opacity: 0; }
 .x6-node:hover .x6-port-body circle { opacity: 1; transition: opacity 0.15s; }
 .x6-node { border: none !important; }
+
+.comp-node.theme-dark {
+  background: #172033;
+  color: #e2e8f0;
+}
+.comp-node.theme-dark.child { background: #1e293b; border-color: #60a5fa; }
+.comp-node.theme-dark .comp-name { color: #f8fafc; border-color: #334155; }
+.comp-node.theme-dark .comp-stereotype { color: #60a5fa; }
+.comp-node.theme-dark .comp-block { border-color: #334155; }
+.comp-node.theme-dark .comp-block-label { color: #94a3b8; }
+
+.comp-node.theme-blueprint {
+  background: #f6fbff;
+  color: #164e63;
+}
+.comp-node.theme-blueprint.child { background: #eff6ff; border-color: #0284c7; }
+.comp-node.theme-blueprint .comp-name { color: #0c4a6e; border-color: #bae6fd; }
+.comp-node.theme-blueprint .comp-stereotype { color: #0284c7; }
+.comp-node.theme-blueprint .comp-block { border-color: #bae6fd; }
+.comp-node.theme-blueprint .comp-block-label { color: #0369a1; }
