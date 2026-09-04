@@ -246,6 +246,7 @@ const UMLEditor: React.FC = () => {
     moveClass, resizeClass, selectClass, selectRelation,
     addRelation, removeClass, removeRelation, addClass,
     undo, redo, selectClasses, alignClasses, distributeClasses,
+    autoLayoutClasses,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
@@ -264,6 +265,7 @@ const UMLEditor: React.FC = () => {
     selectClasses: s.selectClasses,
     alignClasses: s.alignClasses,
     distributeClasses: s.distributeClasses,
+    autoLayoutClasses: s.autoLayoutClasses,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
@@ -794,6 +796,9 @@ const UMLEditor: React.FC = () => {
           padding: '4px 6px', boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
         }}>
           <Button size="small" icon={<PlusOutlined />} onClick={handleAddClass}>类</Button>
+          {diagram.classes.length >= 2 && (
+            <Button size="small" type="text" title="Auto layout" onClick={autoLayoutClasses}>布局</Button>
+          )}
           <Button size="small" type="text" onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>

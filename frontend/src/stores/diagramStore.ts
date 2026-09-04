@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project } from '../types/uml';
-import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject } from '../types/uml';
+import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
 import type { SeqLifeline, SeqMessage } from '../types/sequence';
 import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
@@ -137,6 +137,7 @@ export interface DiagramState {
   selectClasses: (ids: string[]) => void;
   alignClasses: (direction: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
   distributeClasses: (axis: 'horizontal' | 'vertical') => void;
+  autoLayoutClasses: () => void;
 
   // ── Relation operations ────────────────────────
 
@@ -605,6 +606,113 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     }));
     get().pushSnapshot(`distribute_${axis}`);
     set({ project, isModified: true });
+  },
+
+  autoLayoutClasses: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    if (diagram.classes.length < 2) return;
+
+    const classIds = new Set(diagram.classes.map((cls) => cls.id));
+    const hierarchyRelations = diagram.relations.filter((relation) => (
+      (relation.type === RelationType.INHERITANCE || relation.type === RelationType.REALIZATION)
+      && classIds.has(relation.source)
+      && classIds.has(relation.target)
+    ));
+    const relations = hierarchyRelations.length > 0
+      ? hierarchyRelations
+      : diagram.relations.filter((relation) => (
+        classIds.has(relation.source) && classIds.has(relation.target)
+      ));
+    const isHierarchyLayout = hierarchyRelations.length > 0;
+    const outgoing = new Map<string, string[]>();
+    const indegree = new Map<string, number>();
+    const levels = new Map<string, number>();
+
+    diagram.classes.forEach((cls) => {
+      outgoing.set(cls.id, []);
+      indegree.set(cls.id, 0);
+      levels.set(cls.id, 0);
+    });
+
+    relations.forEach((relation) => {
+      // UML inheritance is stored child -> parent, while the layout flows
+      // parent -> child so base classes appear above derived classes.
+      const from = isHierarchyLayout ? relation.target : relation.source;
+      const to = isHierarchyLayout ? relation.source : relation.target;
+      const neighbors = outgoing.get(from);
+      if (!neighbors || !indegree.has(to) || neighbors.includes(to)) return;
+      neighbors.push(to);
+      indegree.set(to, (indegree.get(to) || 0) + 1);
+    });
+
+    const queue = diagram.classes
+      .filter((cls) => indegree.get(cls.id) === 0)
+      .map((cls) => cls.id);
+    const processed = new Set<string>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const currentId = queue[index];
+      processed.add(currentId);
+      const currentLevel = levels.get(currentId) || 0;
+      outgoing.get(currentId)?.forEach((nextId) => {
+        levels.set(nextId, Math.max(levels.get(nextId) || 0, currentLevel + 1));
+        const nextIndegree = (indegree.get(nextId) || 0) - 1;
+        indegree.set(nextId, nextIndegree);
+        if (nextIndegree === 0) queue.push(nextId);
+      });
+    }
+
+    // Cycles have no meaningful topological level; keep them together below
+    // the resolved hierarchy so the result remains deterministic and usable.
+    if (processed.size < diagram.classes.length) {
+      const maxLevel = Math.max(...Array.from(levels.values()));
+      diagram.classes.forEach((cls) => {
+        if (!processed.has(cls.id)) levels.set(cls.id, maxLevel + 1);
+      });
+    }
+
+    const rows = new Map<number, UmlClass[]>();
+    diagram.classes.forEach((cls) => {
+      const level = levels.get(cls.id) || 0;
+      const row = rows.get(level) || [];
+      row.push(cls);
+      rows.set(level, row);
+    });
+    rows.forEach((row) => row.sort((a, b) => (
+      a.position.y - b.position.y || a.position.x - b.position.x || a.id.localeCompare(b.id)
+    )));
+
+    const startX = 120;
+    const startY = 100;
+    const horizontalGap = 80;
+    const verticalGap = 100;
+    const rowY = new Map<number, number>();
+    let nextY = startY;
+    Array.from(rows.keys()).sort((a, b) => a - b).forEach((level) => {
+      rowY.set(level, nextY);
+      const rowHeight = Math.max(...(rows.get(level) || []).map((cls) => cls.size.height || 150));
+      nextY += rowHeight + verticalGap;
+    });
+
+    const positions = new Map<string, Position>();
+    rows.forEach((row, level) => {
+      let nextX = startX;
+      row.forEach((cls) => {
+        positions.set(cls.id, { x: nextX, y: rowY.get(level) || startY });
+        nextX += (cls.size.width || 200) + horizontalGap;
+      });
+    });
+
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      classes: activeDiagram.classes.map((cls) => {
+        const position = positions.get(cls.id);
+        return position ? { ...cls, position } : cls;
+      }),
+    }));
+    get().pushSnapshot('auto_layout');
+    set({ project, isModified: true });
+    get().triggerRecenter();
   },
 
   // ── Relation operations ────────────────────────────────
