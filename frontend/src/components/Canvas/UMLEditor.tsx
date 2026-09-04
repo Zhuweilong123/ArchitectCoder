@@ -13,6 +13,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
+import { snapCanvasPosition } from './core/snapToGrid';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -265,7 +266,19 @@ const UMLEditor: React.FC = () => {
         selectRelation(null);
       },
       onNodeMoved: (node) => {
-        moveClass(node.id, { x: node.position().x, y: node.position().y });
+        const position = node.position();
+        const store = useDiagramStore.getState();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          store.diagram.snap_to_grid,
+          store.diagram.grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
+          isInternalUpdate.current = true;
+          node.setPosition(nextPosition.x, nextPosition.y);
+          isInternalUpdate.current = false;
+        }
+        moveClass(node.id, nextPosition);
       },
       onNodeResized: (node) => {
         resizeClass(node.id, {

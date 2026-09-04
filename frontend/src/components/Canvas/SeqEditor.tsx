@@ -12,6 +12,7 @@ import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
+import { snapCanvasPosition } from './core/snapToGrid';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
@@ -220,10 +221,22 @@ const SeqEditor: React.FC = () => {
       if (node.shape === 'seq-fragment' && !isInternalUpdate.current) {
         fragMoved = true;
         const h = node.size().height;
+        const store = useDiagramStore.getState();
+        const position = node.position();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          store.diagram.snap_to_grid,
+          store.diagram.grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
+          isInternalUpdate.current = true;
+          node.setPosition(nextPosition.x, nextPosition.y);
+          isInternalUpdate.current = false;
+        }
         useDiagramStore.getState().updateFragment(node.id, {
-          x: node.position().x,
-          y_start: node.position().y,
-          y_end: node.position().y + h,
+          x: nextPosition.x,
+          y_start: nextPosition.y,
+          y_end: nextPosition.y + h,
         } as any);
       }
     });
@@ -256,7 +269,19 @@ const SeqEditor: React.FC = () => {
 
     graph.on('node:moved', ({ node }) => {
       if (isInternalUpdate.current || node.shape !== 'seq-lifeline') return;
-      moveLifeline(node.id, node.position().x);
+      const position = node.position();
+      const store = useDiagramStore.getState();
+      const nextPosition = snapCanvasPosition(
+        { x: position.x, y: position.y },
+        store.diagram.snap_to_grid,
+        store.diagram.grid_size,
+      );
+      if (position.x !== nextPosition.x) {
+        isInternalUpdate.current = true;
+        node.setPosition(nextPosition.x, position.y);
+        isInternalUpdate.current = false;
+      }
+      moveLifeline(node.id, nextPosition.x);
     });
 
     graph.on('edge:click', ({ edge }) => {

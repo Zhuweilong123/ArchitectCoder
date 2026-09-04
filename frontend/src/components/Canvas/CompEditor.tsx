@@ -13,6 +13,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
+import { snapCanvasPosition } from './core/snapToGrid';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
@@ -186,7 +187,19 @@ const CompEditor: React.FC = () => {
         selectCompRelation(null);
       },
       onNodeMoved: (node) => {
-        moveComponent(node.id, node.position().x, node.position().y);
+        const position = node.position();
+        const store = useDiagramStore.getState();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          store.diagram.snap_to_grid,
+          store.diagram.grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
+          isInternalUpdate.current = true;
+          node.setPosition(nextPosition.x, nextPosition.y);
+          isInternalUpdate.current = false;
+        }
+        moveComponent(node.id, nextPosition.x, nextPosition.y);
       },
       onNodeResized: (node) => {
         useDiagramStore.getState().updateComponent(node.id, {
