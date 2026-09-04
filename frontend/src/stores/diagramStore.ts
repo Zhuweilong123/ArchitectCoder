@@ -21,6 +21,10 @@ interface Snapshot {
   timestamp: number;
 }
 
+// Keep the empty-project fallback referentially stable. Selectors are allowed
+// to return a placeholder, but must not allocate one on every store read.
+const _emptyProjectDiagramCache = new WeakMap<Project, UmlDiagram>();
+
 export interface ViewportState {
   zoom: number;
   panX: number;
@@ -39,7 +43,12 @@ function _activeDiagram(project: Project): UmlDiagram {
     return project.diagrams[0];
   }
   // Empty project — return a placeholder so UI doesn't crash
-  return createDefaultDiagram(project.name || 'Untitled');
+  let placeholder = _emptyProjectDiagramCache.get(project);
+  if (!placeholder) {
+    placeholder = createDefaultDiagram(project.name || 'Untitled');
+    _emptyProjectDiagramCache.set(project, placeholder);
+  }
+  return placeholder;
 }
 
 function _viewportFromDiagram(diagram: UmlDiagram): ViewportState {
