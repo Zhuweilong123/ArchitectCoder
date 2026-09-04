@@ -380,9 +380,6 @@ export function restoreOriginalsToCanvas(originals: Record<string, any>): any | 
   if (!changed) return null;
 
   const restoredProject = { ...project, diagrams };
-  useDiagramStore.setState({
-    project: restoredProject,
-    isModified: true,
-  });
+  useDiagramStore.getState().applyProjectUpdate(restoredProject);
   return restoredProject;
 }

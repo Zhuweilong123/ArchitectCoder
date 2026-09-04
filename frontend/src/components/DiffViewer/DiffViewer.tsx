@@ -24,10 +24,11 @@ const { TextArea } = Input;
 
 const DiffViewer: React.FC = () => {
   const {
-    setDiagram, diagram, setActiveDiagram, project, currentFilepath, triggerRecenter,
+    setDiagram, diagram, applyProjectUpdate, setActiveDiagram, project, currentFilepath, triggerRecenter,
   } = useDiagramStore(useShallow((s) => ({
     setDiagram: s.setDiagram,
     diagram: selectActiveDiagram(s),
+    applyProjectUpdate: s.applyProjectUpdate,
     setActiveDiagram: s.setActiveDiagram,
     project: s.project,
     currentFilepath: s.currentFilepath,
@@ -192,31 +193,27 @@ const DiffViewer: React.FC = () => {
           const opt = optimizedDiagrams[type];
           if (!opt) continue;
           const { dtype, dname } = parseDiagramKey(type);
+          const store = useDiagramStore.getState();
+          const currentProject = store.project;
           let idx = dname
-            ? project.diagrams.findIndex(
+            ? currentProject.diagrams.findIndex(
                 d => (d.diagram_type || 'class') === dtype && d.name === dname
               )
-            : project.diagrams.findIndex(
+            : currentProject.diagrams.findIndex(
                 d => (d.diagram_type || 'class') === type
               );
           if (idx >= 0) {
-            const updatedDiagrams = [...project.diagrams];
-            updatedDiagrams[idx] = { ...updatedDiagrams[idx], ...opt };
-            useDiagramStore.setState({
-              project: { ...project, diagrams: updatedDiagrams },
-              isModified: true,
-            });
+            const updatedDiagrams = [...currentProject.diagrams];
+            updatedDiagrams[idx] = { ...currentProject.diagrams[idx], ...opt };
+            applyProjectUpdate({ ...currentProject, diagrams: updatedDiagrams });
           } else {
             // Auto-create missing diagram
-            const store = useDiagramStore.getState();
             store.addDiagram(dtype, opt.name || dname || dtype, opt.component_id || '');
-            const newIdx = store.project.diagrams.length - 1;
-            const updatedDiagrams = [...store.project.diagrams];
+            const projectAfterAdd = useDiagramStore.getState().project;
+            const newIdx = projectAfterAdd.diagrams.length - 1;
+            const updatedDiagrams = [...projectAfterAdd.diagrams];
             updatedDiagrams[newIdx] = { ...updatedDiagrams[newIdx], ...opt };
-            useDiagramStore.setState({
-              project: { ...store.project, diagrams: updatedDiagrams },
-              isModified: true,
-            });
+            applyProjectUpdate({ ...projectAfterAdd, diagrams: updatedDiagrams });
           }
         }
       } else {

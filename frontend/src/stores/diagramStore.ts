@@ -99,6 +99,8 @@ export interface DiagramState {
   // ── Project actions ───────────────────────────
 
   setProject: (project: Project) => void;
+  /** Apply a computed project mutation while preserving the current viewport when possible. */
+  applyProjectUpdate: (project: Project) => void;
   markSaved: (revision: number) => void;
   newProject: (name?: string) => void;
   setActiveDiagram: (index: number) => void;
@@ -245,6 +247,21 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       recenterCounter: hasStoredViewport
         ? get().recenterCounter
         : get().recenterCounter + 1,
+    });
+  },
+
+  applyProjectUpdate: (project) => {
+    const state = get();
+    const normalizedProject = normalizeProject(project);
+    const activeDiagram = _activeDiagram(normalizedProject);
+    const activeIndexChanged =
+      normalizedProject.active_diagram_index !== state.project.active_diagram_index;
+    set({
+      project: normalizedProject,
+      // Project mutations do not normally change the viewport. Rebuild it only
+      // when the mutation switches the active diagram.
+      viewport: activeIndexChanged ? _viewportFromDiagram(activeDiagram) : state.viewport,
+      isModified: true,
     });
   },
 
