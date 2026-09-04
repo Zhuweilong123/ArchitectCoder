@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.trace.tracing import load_trace
-from app.trace.replay import replay_agent_session, ReplayExhausted
+from extensions.trace.replay import replay_agent_session, ReplayExhausted
 
 logger = logging.getLogger(__name__)
 

@@ -40,7 +40,7 @@ def test_settings_exposes_pluggable_memory_defaults():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
     assert settings.agent_memory_enabled is True
-    assert settings.agent_memory_provider == "memory_system.provider:create"
+    assert settings.agent_memory_provider == "extensions.memory:create"
     assert settings.agent_memory_recall_top_k == 3
     assert settings.agent_memory_recall_max_tokens == 500
 
@@ -49,8 +49,18 @@ def test_settings_exposes_pluggable_knowledge_graph_defaults():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
     assert settings.agent_knowledge_graph_enabled is True
-    assert settings.agent_knowledge_graph_provider == "knowledge_graph.provider:create"
+    assert settings.agent_knowledge_graph_provider == "extensions.knowledge_graph:create"
     assert settings.agent_knowledge_graph_db_path == ""
+
+
+def test_settings_points_managed_plugins_at_extensions_directory():
+    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+
+    assert settings.agent_orchestrator_provider == "extensions.orchestration:create"
+    assert settings.agent_memory_provider == "extensions.memory:create"
+    assert settings.agent_trace_provider == "extensions.trace:create"
+    assert settings.agent_evals_provider == "extensions.evals:create"
+    assert settings.agent_knowledge_graph_provider == "extensions.knowledge_graph:create"
 
 
 def test_settings_planner_budget_has_reasoning_headroom():

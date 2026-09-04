@@ -83,13 +83,13 @@ class Settings(BaseSettings):
     # Keep the optional planner/explorer path disabled until its hand-off and
     # tool-routing behavior is revalidated. The core falls back to NoOp.
     agent_orchestration_enabled: bool = False
-    agent_orchestrator_provider: str = "app.agent_base.orchestration.provider:create"
+    agent_orchestrator_provider: str = "extensions.orchestration:create"
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
     # concrete SQLite adapter is loaded dynamically so it can be disabled or
     # replaced without changing the Agent main loop.
     agent_memory_enabled: bool = True
-    agent_memory_provider: str = "memory_system.provider:create"
+    agent_memory_provider: str = "extensions.memory:create"
     agent_memory_db_path: str = ""
     agent_memory_recall_top_k: int = 3
     agent_memory_recall_max_tokens: int = 500
@@ -98,18 +98,18 @@ class Settings(BaseSettings):
     # Optional trace backend.  The Agent core only depends on the tracing
     # port; the default JSONL provider remains compatible with existing logs.
     agent_trace_enabled: bool = True
-    agent_trace_provider: str = "app.trace.chat_trace:create"
+    agent_trace_provider: str = "extensions.trace:create"
 
     # Optional evaluation backend.  The local Eval MVP is the default;
     # external CI or hosted evaluation services can implement the same port.
     agent_evals_enabled: bool = True
-    agent_evals_provider: str = "app.evals.provider:create"
+    agent_evals_provider: str = "extensions.evals:create"
 
     # Optional knowledge-graph backend.  Application services depend on the
     # provider boundary; the default adapter keeps the existing local SQLite
     # implementation replaceable by a remote or domain-specific backend.
     agent_knowledge_graph_enabled: bool = True
-    agent_knowledge_graph_provider: str = "knowledge_graph.provider:create"
+    agent_knowledge_graph_provider: str = "extensions.knowledge_graph:create"
     agent_knowledge_graph_db_path: str = ""
 
     # Command tools expose one Linux/POSIX contract.  Windows deployments use

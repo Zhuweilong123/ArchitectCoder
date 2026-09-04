@@ -12,8 +12,8 @@ from app.agent_base.core.orchestration import (
     load_orchestrator,
 )
 import app.agent_base.core.orchestration as core_orchestration
-from app.agent_base.orchestration import TaskOrchestrator, TaskPhase
-import app.agent_base.orchestration.orchestrator as orchestrator_module
+from extensions.orchestration import TaskOrchestrator, TaskPhase
+import extensions.orchestration.orchestrator as orchestrator_module
 
 
 class _PlannerLLM:

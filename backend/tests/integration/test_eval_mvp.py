@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.agents.react_agent import ReActProgress
-from app.evals.models import EvalCase
-from app.evals.checkers import build_checkers
-from app.evals.projects import load_projects, resolve_fixture
-from app.evals.registry import load_cases
-from app.evals.runner import EvalRunner
-from app.evals.batches import EvalArchiveRequest, EvalBatch, EvalBatchManager, summarize
+from extensions.evals.models import EvalCase
+from extensions.evals.checkers import build_checkers
+from extensions.evals.projects import load_projects, resolve_fixture
+from extensions.evals.registry import load_cases
+from extensions.evals.runner import EvalRunner
+from extensions.evals.batches import EvalArchiveRequest, EvalBatch, EvalBatchManager, summarize
 from app.api.evals import BASELINE_PATH, get_baseline, get_repository
 
 
@@ -36,7 +36,7 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     fixture.mkdir()
     (fixture / "input.txt").write_text("input", encoding="utf-8")
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
     case = EvalCase(
         id="file-change",
@@ -58,7 +58,7 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
 
 def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
     class _MultiAgent:
         def __init__(self, workspace):
@@ -204,7 +204,7 @@ def test_file_not_contains_checker_rejects_stale_text(tmp_path):
 
 def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
     class _ProductionLikeAgent:
         def __init__(self, workspace):
@@ -248,10 +248,10 @@ def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, mon
 
 def test_multiturn_eval_keeps_independent_token_budgets(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
     traced_usage = iter([30, 60, 60])
     monkeypatch.setattr(
-        "app.evals.runner._trace_total_tokens",
+        "extensions.evals.runner._trace_total_tokens",
         lambda trace_path: next(traced_usage),
     )
 
@@ -295,7 +295,7 @@ def test_multiturn_eval_keeps_independent_token_budgets(tmp_path, monkeypatch):
 
 def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
     class _BudgetAgent:
         def __init__(self, workspace):
@@ -334,7 +334,7 @@ def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeyp
 
 def test_eval_runner_records_budget_finalization_separately(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
 
     class _FinalizingAgent:
         def __init__(self, workspace):
@@ -443,7 +443,7 @@ def test_eval_batch_summary_counts_budget_statuses():
 
 
 def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
     manager = EvalBatchManager()
     batch = EvalBatch(
         batch_id="batch_test",
@@ -465,7 +465,7 @@ def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
 
 
 def test_eval_batch_archive_baseline_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
     manager = EvalBatchManager()
 
     archive = manager.archive_baseline(

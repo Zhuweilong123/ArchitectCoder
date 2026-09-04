@@ -17,11 +17,8 @@ Memory System v2 独立演示
 import asyncio
 import json
 import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from memory_system import (
+from extensions.memory import (
     MemoryManager, MemoryConfig, MemoryType, is_jieba_available,
 )
 

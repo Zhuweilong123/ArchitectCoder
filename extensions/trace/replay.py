@@ -445,7 +445,7 @@ async def replay_agent_session(
         executed_turns / total_turns: 已执行轮数 / 总轮数（until_turn 截断时不同）
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
-    from app.trace.trace_reader import read_trace
+    from extensions.trace.trace_reader import read_trace
     from app.agent_base.agents.react_agent import ReActAgent
 
     if mode not in ("mock", "rerun", "live"):

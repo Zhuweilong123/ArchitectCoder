@@ -4,9 +4,9 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from memory_system.manager import MemoryManager, _normalize_subject
-from memory_system.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
-from memory_system.policy import MemoryRecallPolicy, MemoryWritePolicy
+from extensions.memory.manager import MemoryManager, _normalize_subject
+from extensions.memory.models import MemoryEntry, MemoryType, RecallResult, MemoryConfig
+from extensions.memory.policy import MemoryRecallPolicy, MemoryWritePolicy
 
 
 def _extract(items):
@@ -215,7 +215,7 @@ def test_migration_adds_columns_idempotently(tmp_path):
     con.commit()
     con.close()
 
-    from memory_system.database import MemoryDatabase
+    from extensions.memory.database import MemoryDatabase
     db = MemoryDatabase(db_path)
     cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(memories)")}
     assert "subject" in cols

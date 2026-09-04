@@ -654,7 +654,7 @@ def create_kg_v2_tools(
         else:
             # Preserve the old test/embedding API while still routing every
             # tool operation through the provider contract.
-            from knowledge_graph.provider import create as create_local_provider
+            from extensions.knowledge_graph.provider import create as create_local_provider
 
             provider = create_local_provider(db_path=db_path)
 

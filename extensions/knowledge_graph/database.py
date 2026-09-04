@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # 复用 memory_system tokenizer, 仅在可用时导入
 
 try:
-    from memory_system.tokenizer import tokenize_for_fts as _tokenize_for_fts
+    from extensions.memory.tokenizer import tokenize_for_fts as _tokenize_for_fts
 except ImportError:
     def _tokenize_for_fts(text: str) -> str:
         """Fallback: 直接用原始文本做 FTS 查询."""

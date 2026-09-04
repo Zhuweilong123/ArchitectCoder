@@ -15,7 +15,7 @@ import os
 from collections import Counter
 from datetime import datetime
 
-from app.trace.chat_trace import (
+from extensions.trace.chat_trace import (
     EVT_CONTEXT_COMPACTED,
     EVT_TASK_SUMMARY,
     _chat_log_dir,

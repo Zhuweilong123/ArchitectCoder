@@ -356,14 +356,14 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 在项目根目录执行正式基线：
 
 ```powershell
-conda run --no-capture-output -n hello_agents python -m app.evals.cli --suite baseline
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite baseline
 ```
 
 执行 P0 或单个诊断用例时：
 
 ```powershell
-conda run --no-capture-output -n hello_agents python -m app.evals.cli --suite p0
-conda run --no-capture-output -n hello_agents python -m app.evals.cli --ids radar-p1-uml-flow-001
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite p0
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --ids radar-p1-uml-flow-001
 ```
 
 实际执行前应确认：

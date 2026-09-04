@@ -12,16 +12,18 @@
 ## 2. 架构
 
 ```
-backend/knowledge_graph/
+extensions/knowledge_graph/
 ├── __init__.py                     # 统一导出入口
 ├── models.py                       # 数据模型 (GraphNode / GraphEdge / NodeType / EdgeType / 枚举)
 ├── database.py                     # SQLite 图数据库 + FTS5 全文索引
 ├── builder.py                      # GraphBuilder (设计层 + 代码层构建)
 ├── retriever.py                    # GraphRetriever (query / expand / trace / diff)
-├── provider.py                     # 默认 SQLite provider 适配器
 └── README.md                       # 本文件（迁移自旧 README）
 
-backend/app/agent_base/tools/my_tools/
+extensions/knowledge_graph/
+└── provider.py                     # 默认 SQLite provider 实现
+
+extensions/knowledge_graph/
 └── knowledge_graph_v2_tools.py    # 结构化图谱工具（显式 opt-in）
 ```
 
@@ -30,7 +32,7 @@ backend/app/agent_base/tools/my_tools/
 Application services do not import `GraphBuilder` or `GraphRetriever` directly. The stable boundary is
 `app.agent_base.core.knowledge_graph.KnowledgeGraphProvider`, loaded from
 `AGENT_KNOWLEDGE_GRAPH_PROVIDER` (`module:factory` syntax). The default implementation is
-`knowledge_graph.provider:LocalKnowledgeGraphProvider`, which adapts the existing SQLite + FTS5
+`extensions.knowledge_graph:create`, which adapts the existing SQLite + FTS5
 implementation. Set `AGENT_KNOWLEDGE_GRAPH_ENABLED=false` or use `noop` to disable indexing and
 retrieval without changing the agent runtime.
 
@@ -286,10 +288,10 @@ retriever.close()
 
 | 文件 | 职责 |
 |---|---|
-| `backend/knowledge_graph/models.py` | `GraphNode` / `GraphEdge` / `NodeType` / `EdgeType` 及枚举 |
-| `backend/knowledge_graph/database.py` | SQLite 图数据库 + FTS5 索引 + 幂等迁移 |
-| `backend/knowledge_graph/builder.py` | `GraphBuilder`（设计层 + 代码层 + 跨图关联，项目作用域 id） |
-| `backend/knowledge_graph/retriever.py` | `GraphRetriever`（query / expand / trace / diff） |
+| `extensions/knowledge_graph/models.py` | `GraphNode` / `GraphEdge` / `NodeType` / `EdgeType` 及枚举 |
+| `extensions/knowledge_graph/database.py` | SQLite 图数据库 + FTS5 索引 + 幂等迁移 |
+| `extensions/knowledge_graph/builder.py` | `GraphBuilder`（设计层 + 代码层 + 跨图关联，项目作用域 id） |
+| `extensions/knowledge_graph/retriever.py` | `GraphRetriever`（query / expand / trace / diff） |
 | `backend/app/agent_base/tools/my_tools/knowledge_graph_tools.py` | 5 个内部 AsyncTool（kg_*） |
 | `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | 项目探索统一入口（内部调 kg_project_structure + 交叉校验） |
 | `backend/app/services/file_service.py` | `save_project` 触发 KG 增量重建 |

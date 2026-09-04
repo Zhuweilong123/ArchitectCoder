@@ -64,7 +64,7 @@ from app.trace.tracing import (
     pop_trace_hook,
     push_trace_hook,
 )
-from app.trace.trace_reader import reconstruct_history
+from extensions.trace.trace_reader import reconstruct_history
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.change_set import ChangeSet
 from app.services.run_state import (

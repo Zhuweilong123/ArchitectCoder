@@ -7,7 +7,7 @@ from app.agent_base.core.knowledge_graph import (
     load_knowledge_graph,
 )
 from app.models.uml import Project, UmlClass, UmlDiagram
-from knowledge_graph.provider import LocalKnowledgeGraphProvider
+from extensions.knowledge_graph.provider import LocalKnowledgeGraphProvider
 
 
 class _Provider:
@@ -108,7 +108,7 @@ def test_v2_tools_can_be_created_with_a_custom_provider():
     import asyncio
     import json
 
-    from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
+    from extensions.knowledge_graph.tools import create_kg_v2_tools
 
     provider = _Provider()
     tools = create_kg_v2_tools(

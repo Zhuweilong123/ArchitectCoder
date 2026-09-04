@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
-import logging
 from typing import Any, Protocol
-
-logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraphProvider(Protocol):
@@ -98,57 +94,16 @@ class NoOpKnowledgeGraphProvider:
         return self._disabled()
 
 
-def _load_factory(provider: str):
-    module_name, separator, attribute = provider.partition(":")
-    if not separator or not module_name or not attribute:
-        raise ValueError("knowledge graph provider must use 'module:factory' syntax")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    if not callable(factory):
-        raise TypeError(f"knowledge graph provider is not callable: {provider}")
-    return factory
-
-
 def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
-    """Load the configured graph provider without a concrete KG import."""
-    if settings is None:
-        try:
-            from app.core.config import get_settings
+    """Load the configured graph provider through the central manager."""
+    from .plugins import get_plugin_manager
 
-            settings = get_settings()
-        except Exception:
-            settings = None
-
-    if settings is not None and not getattr(settings, "agent_knowledge_graph_enabled", True):
-        return NoOpKnowledgeGraphProvider()
-
-    provider = str(
-        getattr(settings, "agent_knowledge_graph_provider", "knowledge_graph.provider:create")
-        or ""
-    ).strip()
-    if not provider or provider.lower() in {"none", "noop", "disabled"}:
-        return NoOpKnowledgeGraphProvider()
-
-    try:
-        factory = _load_factory(provider)
-        instance = factory(settings=settings, **kwargs)
-        required = (
-            "rebuild_project",
-            "search_diagrams",
-            "map_project",
-            "locate",
-            "expand",
-            "impact",
-            "diff",
-        )
-        if not all(callable(getattr(instance, name, None)) for name in required):
-            raise TypeError(
-                "knowledge graph provider must expose rebuild_project and search_diagrams"
-            )
-        return instance
-    except Exception:
-        logger.warning("[KG] provider unavailable; using no-op", exc_info=True)
-        return NoOpKnowledgeGraphProvider()
+    instance = get_plugin_manager().load(
+        "knowledge_graph",
+        settings=settings,
+        kwargs=kwargs,
+    )
+    return instance if instance is not None else NoOpKnowledgeGraphProvider()
 
 
 _default_provider: KnowledgeGraphProvider | None = None

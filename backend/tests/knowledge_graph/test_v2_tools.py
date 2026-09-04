@@ -2,7 +2,7 @@
 from tests.support.knowledge_graph import build_knowledge_graph, knowledge_graph_tools
 from tests.support.tool_helpers import run_json_tool, tool_by_name
 from app.models.uml import Project, UmlClass, UmlDiagram, UmlMethod
-from knowledge_graph.builder import GraphBuilder
+from extensions.knowledge_graph.builder import GraphBuilder
 
 _run = run_json_tool
 _tool_by_name = tool_by_name

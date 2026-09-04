@@ -94,7 +94,7 @@ class LocalKnowledgeGraphProvider:
         """Run the existing local graph service behind this provider."""
         # Imported lazily to keep the provider usable without loading Agent
         # tool classes during application startup.
-        from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import KGService
+        from .tools import KGService
 
         context = _LocalKnowledgeGraphContext(self.db_path)
         try:

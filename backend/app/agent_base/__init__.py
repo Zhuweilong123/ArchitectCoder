@@ -28,6 +28,12 @@ from .core.knowledge_graph import (
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
 )
+from .core.plugins import (
+    PluginManager,
+    PluginSpec,
+    PluginState,
+    get_plugin_manager,
+)
 
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
@@ -44,6 +50,10 @@ __all__ = [
     "KnowledgeGraphProvider",
     "NoOpKnowledgeGraphProvider",
     "load_knowledge_graph",
+    "PluginManager",
+    "PluginSpec",
+    "PluginState",
+    "get_plugin_manager",
     # agents
     "SimpleAgent",
     "ReActAgent",

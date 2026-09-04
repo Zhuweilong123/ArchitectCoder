@@ -16,7 +16,7 @@ from typing import Any
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 
-from .contracts import (
+from extensions.orchestration.contracts import (
     ArtifactScope,
     OrchestrationResult,
     TaskContract,

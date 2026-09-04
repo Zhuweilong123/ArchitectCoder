@@ -111,7 +111,7 @@ def _build_content_text(node_type: NodeType, name: str,
 
     # ── jieba 预分词 ──
     try:
-        from memory_system.tokenizer import tokenize_for_fts
+        from extensions.memory.tokenizer import tokenize_for_fts
         return tokenize_for_fts(raw_text)
     except ImportError:
         return raw_text

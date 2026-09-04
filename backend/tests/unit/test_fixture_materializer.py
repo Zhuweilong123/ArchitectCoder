@@ -1,7 +1,7 @@
 import pytest
 
-from app.evals.fixture_materializer import materialize_fixture
-from app.evals.models import ProjectManifest
+from extensions.evals.fixture_materializer import materialize_fixture
+from extensions.evals.models import ProjectManifest
 
 
 def test_materialize_fixture_copies_base_then_overlay(tmp_path, monkeypatch):
@@ -19,7 +19,7 @@ def test_materialize_fixture_copies_base_then_overlay(tmp_path, monkeypatch):
     (overlay / "src" / "__pycache__" / "ignored.pyc").write_bytes(b"generated")
 
     monkeypatch.setattr(
-        "app.evals.fixture_materializer.fixtures_dir", lambda: fixtures,
+        "extensions.evals.fixture_materializer.fixtures_dir", lambda: fixtures,
     )
     manifest = ProjectManifest(id="overlay", fixture="overlay", base_fixture="base")
 
@@ -35,7 +35,7 @@ def test_materialize_fixture_rejects_base_escape(tmp_path, monkeypatch):
     overlay = fixtures / "overlay"
     overlay.mkdir(parents=True)
     monkeypatch.setattr(
-        "app.evals.fixture_materializer.fixtures_dir", lambda: fixtures,
+        "extensions.evals.fixture_materializer.fixtures_dir", lambda: fixtures,
     )
     manifest = ProjectManifest.model_construct(
         id="overlay", fixture="overlay", base_fixture="../outside",

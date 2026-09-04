@@ -1,8 +1,7 @@
-"""Trace subsystem.
+"""Trace subsystem contracts.
 
-The stable runtime contracts and concrete adapters are co-located here.  The
-legacy ``app.agent_base.core.tracing`` path is retained only as a compatibility
-import for existing integrations.
+The stable runtime contracts live here. Concrete writers, readers and replay
+implementations live under the repository-level ``extensions.trace`` package.
 """
 
 from .tracing import (

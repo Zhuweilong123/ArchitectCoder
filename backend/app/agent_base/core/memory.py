@@ -7,7 +7,6 @@ without making an interactive LLM call for memory work.
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import logging
 from dataclasses import dataclass, field
@@ -122,33 +121,22 @@ class _ResilientMemory:
 
 
 def _load_factory(provider: str):
-    module_name, separator, attribute = provider.partition(":")
-    if not separator or not module_name or not attribute:
-        raise ValueError("memory provider must use 'module:factory' syntax")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    if not callable(factory):
-        raise TypeError(f"memory provider is not callable: {provider}")
-    return factory
+    """Compatibility hook; actual loading remains owned by PluginManager."""
+    from .plugins import PluginManager
+
+    return PluginManager._load_factory(provider)
 
 
 def load_memory(*, llm, settings, **kwargs) -> MemoryPort:
-    """Load an optional memory provider without a core import dependency."""
+    """Load memory through the central extension manager."""
+    from .plugins import get_plugin_manager
 
-    if not getattr(settings, "agent_memory_enabled", True):
+    instance = get_plugin_manager().load(
+        "memory",
+        settings=settings,
+        kwargs={"llm": llm, **kwargs},
+        factory_loader=_load_factory,
+    )
+    if instance is None:
         return NoOpMemory()
-    provider = str(
-        getattr(settings, "agent_memory_provider", "memory_system.provider:create")
-        or ""
-    ).strip()
-    if not provider or provider.lower() in {"none", "noop", "disabled"}:
-        return NoOpMemory()
-    try:
-        factory = _load_factory(provider)
-        instance = factory(llm=llm, settings=settings, **kwargs)
-        if not all(callable(getattr(instance, name, None)) for name in ("recall", "archive", "reinforce")):
-            raise TypeError("memory provider must expose recall/archive/reinforce")
-        return _ResilientMemory(instance)
-    except Exception:
-        logger.warning("[Memory] provider unavailable; using no-op", exc_info=True)
-        return NoOpMemory()
+    return _ResilientMemory(instance)

@@ -66,9 +66,8 @@ The evaluation system now covers only the production **DevAgent** path. Legacy /
 - **Run and archive**: the Evaluation Center supports one-click suite runs, live batch/result inspection, and one-click archiving for completed batches or the baseline snapshot under `temp/evals/archives/`. The CLI can run all cases or a selected suite:
 
   ```bash
-  cd backend
-  python -m app.evals.cli
-  python -m app.evals.cli --suite p0
+  python -m extensions.evals.cli
+  python -m extensions.evals.cli --suite p0
   ```
 
   The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
@@ -163,6 +162,7 @@ ArchitectCoder/
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # Design docs, evaluation baseline, and system archives
+├── extensions/                     # Unified provider implementations and entry points
 ├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
 ├── project/                        # Project code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
@@ -170,6 +170,14 @@ ArchitectCoder/
 ├── README.md                       # English project documentation (default)
 └── README_ZH.md                    # Chinese project documentation
 ```
+
+## Extension layout
+
+All plugin implementation code is physically kept under `extensions/`:
+`orchestration/`, `memory/`, `trace/`, `evals/`, and `knowledge_graph/`.
+The similarly named directories under `backend/` are compatibility facades or
+stable core contracts only; the main flow loads implementations through the
+central plugin manager.
 
 ## Quick Start
 
@@ -186,7 +194,7 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), `AGENT_ORCHESTRATION_ENABLED`, `AGENT_ORCHESTRATOR_PROVIDER`, the `AGENT_MEMORY_*` provider settings, and the `AGENT_KNOWLEDGE_GRAPH_*` provider settings. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
+Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Provider entry points are managed through `backend/app/agent_base/core/plugins.py` and stored under `extensions/`. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
 
 ## API and Development Checks
 
@@ -194,7 +202,7 @@ Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), `AGENT
 - The conversational Agent uses WebSocket: `/api/ws/chat`.
 - API docs: open `http://localhost:8001/api/docs` after starting the backend.
 - Unit tests: `cd backend && python -m pytest -q`.
-- Run the full DevAgent evaluation catalog: `cd backend && python -m app.evals.cli`.
+- Run the full DevAgent evaluation catalog from the repository root: `python -m extensions.evals.cli`.
 - Production frontend build: `cd frontend && npm run build`.
 
 Evaluation and runtime logs are written to `temp/`. Generated code and databases are runtime artifacts and are not committed.

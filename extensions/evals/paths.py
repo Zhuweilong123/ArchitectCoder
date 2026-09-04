@@ -1,6 +1,6 @@
 """Canonical paths for versioned evaluation data.
 
-Evaluation execution code lives under :mod:`app.evals`, while the case
+Evaluation execution code lives under :mod:`extensions.evals`, while the case
 catalog and project fixtures are repository data under ``backend/evals``.
 Keeping the lookup in one module prevents callers from coupling themselves to
 the Python package layout.
@@ -14,8 +14,8 @@ from pathlib import Path
 def data_root() -> Path:
     """Return the repository-local evaluation data directory."""
 
-    # ``.../backend/app/evals/paths.py`` -> ``.../backend``.
-    return Path(__file__).resolve().parents[2] / "evals"
+    # ``.../extensions/evals/paths.py`` -> repository root -> backend.
+    return Path(__file__).resolve().parents[2] / "backend" / "evals"
 
 
 def cases_dir() -> Path:

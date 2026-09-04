@@ -194,7 +194,7 @@ def create_conversation_tools(
     # implementation remains available for direct opt-in and its own tests,
     # but it is not exposed in the default conversation tool registry. This
     # avoids broad graph exploration and repeated reads during normal tasks.
-    # from .knowledge_graph_v2_tools import create_kg_v2_tools
+    # from extensions.knowledge_graph.tools import create_kg_v2_tools
     # tools.extend(create_kg_v2_tools(
     #     db_path=_kg_db_path(),
     #     project_file=project_file, source_dir=source_dir,

@@ -9,7 +9,6 @@ can be introduced without changing the current trace format.
 from __future__ import annotations
 
 import contextvars
-import importlib
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -233,50 +232,25 @@ class _ResilientTraceQuery:
 
 
 def _load_factory(provider: str):
-    module_name, separator, attribute = provider.partition(":")
-    if not separator or not module_name or not attribute:
-        raise ValueError("trace provider must use 'module:factory' syntax")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    if not callable(factory):
-        raise TypeError(f"trace provider is not callable: {provider}")
-    return factory
+    """Compatibility hook; actual loading remains owned by PluginManager."""
+    from app.agent_base.core.plugins import PluginManager
+
+    return PluginManager._load_factory(provider)
 
 
 def load_trace(*, settings=None, **kwargs) -> TraceProvider:
-    """Load the configured trace provider without a core import dependency."""
+    """Load trace through the central extension manager."""
+    from app.agent_base.core.plugins import get_plugin_manager
 
-    if settings is None:
-        try:
-            from app.core.config import get_settings
-
-            settings = get_settings()
-        except Exception:
-            settings = None
-
-    if settings is not None and not getattr(settings, "agent_trace_enabled", True):
+    instance = get_plugin_manager().load(
+        "trace",
+        settings=settings,
+        kwargs=kwargs,
+        factory_loader=_load_factory,
+    )
+    if instance is None:
         return NoOpTraceProvider()
-
-    provider = str(
-        getattr(
-            settings,
-            "agent_trace_provider",
-            "app.trace.chat_trace:create",
-        )
-        or ""
-    ).strip()
-    if not provider or provider.lower() in {"none", "noop", "disabled"}:
-        return NoOpTraceProvider()
-
-    try:
-        factory = _load_factory(provider)
-        instance = factory(settings=settings, **kwargs)
-        if not callable(getattr(instance, "create", None)):
-            raise TypeError("trace provider must expose create()")
-        return _ResilientTraceProvider(instance)
-    except Exception:
-        logger.warning("[Trace] provider unavailable; using no-op", exc_info=True)
-        return NoOpTraceProvider()
+    return _ResilientTraceProvider(instance)
 
 
 # The hook stack is coroutine-local.  This is the only global state the core

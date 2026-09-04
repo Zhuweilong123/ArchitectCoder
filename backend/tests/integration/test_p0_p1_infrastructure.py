@@ -7,12 +7,12 @@ from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.task_system import _default_dirs
-from app.services.chat_trace import (
+from extensions.trace.chat_trace import (
     ChatTraceLogger,
     EVT_SESSION_END,
     EVT_TASK_SUMMARY,
 )
-from app.services.trace_reader import reconstruct_history, summarize_trace
+from extensions.trace.trace_reader import reconstruct_history, summarize_trace
 
 
 class _Echo(Tool):
@@ -38,7 +38,7 @@ class _LoopLLM:
 
 
 def test_trace_close_writes_session_end(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("trace-test")
     tracer.start()
     tracer.close()
@@ -47,7 +47,7 @@ def test_trace_close_writes_session_end(tmp_path, monkeypatch):
 
 
 def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("strict-json-test")
     tracer.llm_request(
         provider="test", model="test",
@@ -81,8 +81,8 @@ def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypa
 
 
 def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("checkpoint-test")
     tracer.start()
     tracer.user_message("old question")
@@ -107,8 +107,8 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
 
 
 def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("task-summary-test")
     tracer.start()
     tracer.user_message("continue the task")
@@ -139,8 +139,8 @@ def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
 
 
 def test_task_execution_summaries_stay_with_their_task(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("task-summary-association-test")
     tracer.start()
     tracer.user_message("first task")
@@ -171,8 +171,8 @@ def test_task_execution_summaries_stay_with_their_task(tmp_path, monkeypatch):
 
 
 def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("summary-test")
     tracer.start()
     tracer.user_message("run a task")

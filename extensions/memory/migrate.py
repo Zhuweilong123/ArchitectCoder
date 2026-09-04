@@ -16,14 +16,12 @@ import argparse
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import List
 
 # 确保可以导入
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory_system import MemoryManager, MemoryEntry, MemoryType
+from extensions.memory import MemoryManager, MemoryEntry, MemoryType
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("migrate")

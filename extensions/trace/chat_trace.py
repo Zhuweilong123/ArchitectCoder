@@ -675,19 +675,19 @@ class JsonlTraceQuery:
     """Read-side adapter kept beside the JSONL storage implementation."""
 
     def list_traces(self):
-        from app.trace.trace_reader import list_traces
+        from extensions.trace.trace_reader import list_traces
         return list_traces()
 
     def read_trace(self, session_id: str):
-        from app.trace.trace_reader import read_trace
+        from extensions.trace.trace_reader import read_trace
         return read_trace(session_id)
 
     def summarize_trace(self, session_id: str):
-        from app.trace.trace_reader import summarize_trace
+        from extensions.trace.trace_reader import summarize_trace
         return summarize_trace(session_id)
 
     def reconstruct_history(self, session_id: str):
-        from app.trace.trace_reader import reconstruct_history
+        from extensions.trace.trace_reader import reconstruct_history
         return reconstruct_history(session_id)
 
 

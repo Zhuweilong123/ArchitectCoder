@@ -10,12 +10,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agent_base.core.evals import load_evals
-from app.evals.models import EvalResult
-from app.evals.batches import (
+from extensions.evals.models import EvalResult
+from extensions.evals.batches import (
     EvalArchiveRequest,
     EvalBatchRequest,
 )
-from app.evals.paths import baseline_path
+from extensions.evals.paths import baseline_path
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
 BASELINE_PATH = baseline_path()

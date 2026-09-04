@@ -7,7 +7,6 @@ different evaluation backend to be installed without changing the API.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from typing import Any, Protocol
 
@@ -105,46 +104,25 @@ class _ResilientEvalProvider:
 
 
 def _load_factory(provider: str):
-    module_name, separator, attribute = provider.partition(":")
-    if not separator or not module_name or not attribute:
-        raise ValueError("eval provider must use 'module:factory' syntax")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    if not callable(factory):
-        raise TypeError(f"eval provider is not callable: {provider}")
-    return factory
+    """Compatibility hook; actual loading remains owned by PluginManager."""
+    from .plugins import PluginManager
+
+    return PluginManager._load_factory(provider)
 
 
 def load_evals(*, settings=None, **kwargs) -> EvalProvider:
-    """Load the configured evaluation provider without a core import dependency."""
+    """Load evaluations through the central extension manager."""
+    from .plugins import get_plugin_manager
 
-    if settings is None:
-        try:
-            from app.core.config import get_settings
-
-            settings = get_settings()
-        except Exception:
-            settings = None
-
-    if settings is not None and not getattr(settings, "agent_evals_enabled", True):
+    instance = get_plugin_manager().load(
+        "evals",
+        settings=settings,
+        kwargs=kwargs,
+        factory_loader=_load_factory,
+    )
+    if instance is None:
         return NoOpEvalProvider()
-
-    provider = str(
-        getattr(settings, "agent_evals_provider", "app.evals.provider:create") or ""
-    ).strip()
-    if not provider or provider.lower() in {"none", "noop", "disabled"}:
-        return NoOpEvalProvider()
-
-    try:
-        factory = _load_factory(provider)
-        instance = factory(settings=settings, **kwargs)
-        required = ("list_cases", "get_case", "run_case", "list_results")
-        if not all(callable(getattr(instance, name, None)) for name in required):
-            raise TypeError("eval provider must expose the case and result operations")
-        return _ResilientEvalProvider(instance)
-    except Exception:
-        logger.warning("[Evals] provider unavailable; using no-op", exc_info=True)
-        return NoOpEvalProvider()
+    return _ResilientEvalProvider(instance)
 
 
 __all__ = ["EvalProvider", "NoOpEvalProvider", "load_evals"]
