@@ -14,7 +14,9 @@ import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
-import { centerCanvasContent, syncCanvasGrid, syncCanvasViewport } from './core/canvasCommon';
+import {
+  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid, syncCanvasViewport,
+} from './core/canvasCommon';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -245,7 +247,7 @@ const UMLEditor: React.FC = () => {
   const {
     diagram, selectedClassId, selectedClassIds, selectedRelationId,
     moveClass, resizeClass, selectClass, selectRelation,
-    addRelation, removeClass, removeRelation, addClass,
+    addRelation, updateRelation, removeClass, removeRelation, addClass,
     undo, redo, selectClasses, alignClasses, distributeClasses,
     autoLayoutClasses,
   } = useDiagramStore(useShallow((s) => ({
@@ -258,6 +260,7 @@ const UMLEditor: React.FC = () => {
     selectClass: s.selectClass,
     selectRelation: s.selectRelation,
     addRelation: s.addRelation,
+    updateRelation: s.updateRelation,
     removeClass: s.removeClass,
     removeRelation: s.removeRelation,
     addClass: s.addClass,
@@ -293,7 +296,7 @@ const UMLEditor: React.FC = () => {
           strokeWidth: 2,
           targetMarker: { name: 'block', width: 12, height: 8 },
         },
-        router: { name: 'orth' },
+        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
         connector: { name: 'rounded' },
       },
     });
@@ -349,6 +352,13 @@ const UMLEditor: React.FC = () => {
       onEdgeClick: (edge) => {
         selectRelation(edge.id);
         setRightPanelTab('properties');
+      },
+      onEdgeEndpointChanged: (edge) => {
+        if (!(getActiveDiagram().relations || []).some((relation) => relation.id === edge.id)) return;
+        const source = edge.getSourceCellId();
+        const target = edge.getTargetCellId();
+        if (!source || !target || source === target) return;
+        updateRelation(edge.id, { source, target });
       },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
@@ -578,6 +588,13 @@ const UMLEditor: React.FC = () => {
         }
       });
 
+      const classRects = diagram.classes.map((cls) => ({
+        id: cls.id,
+        x: cls.position.x,
+        y: cls.position.y,
+        width: cls.size.width || 200,
+        height: cls.size.height || 150,
+      }));
       diagram.relations.forEach((rel) => {
         const isSelected = rel.id === selectedRelationId;
         const isComposition = rel.type === RelationType.COMPOSITION;
@@ -596,15 +613,19 @@ const UMLEditor: React.FC = () => {
           ? 'block' : 'classic';
 
         const lineAttrs = {
-          stroke: isSelected ? '#2563eb' : '#64748b',
+          stroke: isSelected
+            ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+            : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
           strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
           sourceMarker: isComposition || isAggregation
             ? {
                 name: 'diamond',
-                width: 16,
-                height: 12,
-                fill: isComposition ? '#64748b' : '#ffffff',
+              width: 16,
+              height: 12,
+                fill: isComposition
+                  ? (canvasTheme === 'dark' ? '#94a3b8' : '#64748b')
+                  : '#ffffff',
               }
             : undefined,
           targetMarker: {
@@ -613,20 +634,29 @@ const UMLEditor: React.FC = () => {
             height: 8,
             fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
               ? '#ffffff'
-              : isSelected ? '#2563eb' : '#64748b',
+              : isSelected
+                ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+                : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
           },
         };
+        const labelColor = canvasTheme === 'dark'
+          ? '#f8fafc'
+          : isSelected ? '#1d4ed8' : '#475569';
+        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+        const labelBorder = canvasTheme === 'dark'
+          ? (isSelected ? '#60a5fa' : '#475569')
+          : isSelected ? '#93c5fd' : '#cbd5e1';
         const edgeLabels = labelText ? [{
           attrs: {
             text: {
               text: labelText,
               fontSize: 10,
               fontWeight: 600,
-              fill: isSelected ? '#1d4ed8' : '#475569',
+              fill: labelColor,
             },
             rect: {
-              fill: '#ffffff',
-              stroke: isSelected ? '#93c5fd' : '#cbd5e1',
+              fill: labelBackground,
+              stroke: labelBorder,
               strokeWidth: 1,
               rx: 4,
               ry: 4,
@@ -634,9 +664,16 @@ const UMLEditor: React.FC = () => {
           },
           position: { distance: 0.5, offset: -10 },
         }] : [];
+        const vertices = getParallelEdgeVertices(rel, diagram.relations, classRects);
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 18,
+          fill: 'none',
+          pointerEvents: 'stroke',
+        };
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
-          isSelected, isComposition, isAggregation,
+          isSelected, isComposition, isAggregation, vertices,
         ]);
 
         try {
@@ -648,7 +685,8 @@ const UMLEditor: React.FC = () => {
               edge.setSource({ cell: rel.source });
               edge.setTarget({ cell: rel.target });
               edge.setLabels(edgeLabels);
-              edge.setRouter({ name: 'orth' });
+              edge.setVertices(vertices);
+              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
               edge.setConnector({ name: 'rounded' });
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
@@ -663,6 +701,9 @@ const UMLEditor: React.FC = () => {
               );
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
               edge.setAttrByPath('line/targetMarker/fill', lineAttrs.targetMarker.fill);
+              edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+              edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+              edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
               edgeSignatureCache.current.set(rel.id, signature);
             }
           } else {
@@ -680,9 +721,10 @@ const UMLEditor: React.FC = () => {
               source: { cell: rel.source },
               target: { cell: rel.target },
               labels: edgeLabels,
-              router: { name: 'orth' },
+              vertices,
+              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
               connector: { name: 'rounded' },
-              attrs: { line: lineAttrs },
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) edgeSignatureCache.current.set(rel.id, signature);
           }

@@ -698,11 +698,13 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       ));
     const isHierarchyLayout = hierarchyRelations.length > 0;
     const outgoing = new Map<string, string[]>();
+    const incoming = new Map<string, string[]>();
     const indegree = new Map<string, number>();
     const levels = new Map<string, number>();
 
     diagram.classes.forEach((cls) => {
       outgoing.set(cls.id, []);
+      incoming.set(cls.id, []);
       indegree.set(cls.id, 0);
       levels.set(cls.id, 0);
     });
@@ -715,6 +717,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const neighbors = outgoing.get(from);
       if (!neighbors || !indegree.has(to) || neighbors.includes(to)) return;
       neighbors.push(to);
+      incoming.get(to)?.push(from);
       indegree.set(to, (indegree.get(to) || 0) + 1);
     });
 
@@ -750,29 +753,44 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       row.push(cls);
       rows.set(level, row);
     });
-    rows.forEach((row) => row.sort((a, b) => (
-      a.position.y - b.position.y || a.position.x - b.position.x || a.id.localeCompare(b.id)
-    )));
-
     const startX = 120;
     const startY = 100;
-    const horizontalGap = 80;
-    const verticalGap = 100;
-    const rowY = new Map<number, number>();
+    const horizontalGap = 110;
+    const verticalGap = 120;
+    const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
+    const maxRowWidth = Math.max(...orderedLevels.map((level) => (
+      (rows.get(level) || []).reduce((sum, cls) => sum + (cls.size.width || 200), 0)
+      + Math.max(0, (rows.get(level) || []).length - 1) * horizontalGap
+    )));
+    const layoutCenterX = Math.max(680, maxRowWidth / 2 + startX);
     let nextY = startY;
-    Array.from(rows.keys()).sort((a, b) => a - b).forEach((level) => {
-      rowY.set(level, nextY);
-      const rowHeight = Math.max(...(rows.get(level) || []).map((cls) => cls.size.height || 150));
-      nextY += rowHeight + verticalGap;
-    });
-
     const positions = new Map<string, Position>();
-    rows.forEach((row, level) => {
-      let nextX = startX;
-      row.forEach((cls) => {
-        positions.set(cls.id, { x: nextX, y: rowY.get(level) || startY });
-        nextX += (cls.size.width || 200) + horizontalGap;
+    const centerById = new Map<string, number>();
+    orderedLevels.forEach((level) => {
+      const row = rows.get(level) || [];
+      row.sort((a, b) => {
+        const averageCenter = (cls: UmlClass) => {
+          const parentCenters = (incoming.get(cls.id) || [])
+            .map((parentId) => centerById.get(parentId))
+            .filter((center): center is number => typeof center === 'number');
+          return parentCenters.length > 0
+            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length
+            : cls.position.x;
+        };
+        return averageCenter(a) - averageCenter(b) || a.position.x - b.position.x || a.id.localeCompare(b.id);
       });
+      const totalWidth = row.reduce((sum, cls) => sum + (cls.size.width || 200), 0)
+        + Math.max(0, row.length - 1) * horizontalGap;
+      const rowStartX = layoutCenterX - totalWidth / 2;
+      let nextX = rowStartX;
+      row.forEach((cls) => {
+        const width = cls.size.width || 200;
+        positions.set(cls.id, { x: Math.max(startX, nextX), y: nextY });
+        centerById.set(cls.id, nextX + width / 2);
+        nextX += width + horizontalGap;
+      });
+      const rowHeight = Math.max(...row.map((cls) => cls.size.height || 150));
+      nextY += rowHeight + verticalGap;
     });
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
@@ -1274,10 +1292,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       return topLevelIds.has(current) ? current : id;
     };
     const outgoing = new Map<string, string[]>();
+    const incoming = new Map<string, string[]>();
     const indegree = new Map<string, number>();
     const levels = new Map<string, number>();
     topLevel.forEach((component) => {
       outgoing.set(component.id, []);
+      incoming.set(component.id, []);
       indegree.set(component.id, 0);
       levels.set(component.id, 0);
     });
@@ -1288,6 +1308,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const neighbors = outgoing.get(source)!;
       if (neighbors.includes(target)) return;
       neighbors.push(target);
+      incoming.get(target)?.push(source);
       indegree.set(target, (indegree.get(target) || 0) + 1);
     });
 
@@ -1320,16 +1341,38 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       row.push(component);
       rows.set(levels.get(component.id) || 0, row);
     });
-    rows.forEach((row) => row.sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id)));
-
-    let nextY = 80;
-    const rowGap = 100;
-    Array.from(rows.keys()).sort((a, b) => a - b).forEach((level) => {
+    const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
+    const horizontalGap = 120;
+    const rowGap = 130;
+    const maxRowWidth = Math.max(...orderedLevels.map((level) => {
       const row = rows.get(level) || [];
-      let nextX = 100;
+      return row.reduce((sum, component) => sum + sizes.get(component.id)!.width, 0)
+        + Math.max(0, row.length - 1) * horizontalGap;
+    }));
+    const layoutCenterX = Math.max(700, maxRowWidth / 2 + 100);
+    let nextY = 80;
+    const centerById = new Map<string, number>();
+    orderedLevels.forEach((level) => {
+      const row = rows.get(level) || [];
+      row.sort((a, b) => {
+        const averageCenter = (component: CompNode) => {
+          const parentCenters = (incoming.get(component.id) || [])
+            .map((parentId) => centerById.get(parentId))
+            .filter((center): center is number => typeof center === 'number');
+          return parentCenters.length > 0
+            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length
+            : component.x;
+        };
+        return averageCenter(a) - averageCenter(b) || a.x - b.x || a.id.localeCompare(b.id);
+      });
+      const totalWidth = row.reduce((sum, component) => sum + sizes.get(component.id)!.width, 0)
+        + Math.max(0, row.length - 1) * horizontalGap;
+      let nextX = layoutCenterX - totalWidth / 2;
       row.forEach((component) => {
-        positions.set(component.id, { x: nextX, y: nextY });
-        nextX += sizes.get(component.id)!.width + 80;
+        const width = sizes.get(component.id)!.width;
+        positions.set(component.id, { x: Math.max(100, nextX), y: nextY });
+        centerById.set(component.id, nextX + width / 2);
+        nextX += width + horizontalGap;
       });
       const rowHeight = Math.max(...row.map((component) => sizes.get(component.id)!.height));
       nextY += rowHeight + rowGap;

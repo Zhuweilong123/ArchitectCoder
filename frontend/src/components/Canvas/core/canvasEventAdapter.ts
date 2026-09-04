@@ -13,6 +13,7 @@ export interface CanvasEventAdapterOptions {
   onNodeMoved?: (node: Node) => void;
   onNodeResized?: (node: Node) => void;
   onEdgeClick?: (edge: Edge) => void;
+  onEdgeEndpointChanged?: (edge: Edge) => void;
   onNewEdge?: (edge: Edge, sourceId: string, targetId: string) => void;
   onEdgeRemoved?: (edge: Edge) => void;
   edgeTools?: Parameters<Edge['addTools']>[0];
@@ -32,6 +33,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     onNodeMoved,
     onNodeResized,
     onEdgeClick,
+    onEdgeEndpointChanged,
     onNewEdge,
     onEdgeRemoved,
     edgeTools,
@@ -49,6 +51,9 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     if (!isInternalUpdate.current) onNodeResized?.(node);
   };
   const handleEdgeClick = ({ edge }: { edge: Edge }) => onEdgeClick?.(edge);
+  const handleEdgeEndpointChanged = ({ edge }: { edge: Edge }) => {
+    if (!isInternalUpdate.current) onEdgeEndpointChanged?.(edge);
+  };
   const handleEdgeConnected = ({ edge, isNew }: { edge: Edge; isNew?: boolean }) => {
     if (isInternalUpdate.current || !isNew) return;
     const sourceId = edge.getSourceCellId();
@@ -73,6 +78,8 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   graph.on('node:moved', handleNodeMoved);
   graph.on('node:resized', handleNodeResized);
   graph.on('edge:click', handleEdgeClick);
+  graph.on('edge:change:source', handleEdgeEndpointChanged);
+  graph.on('edge:change:target', handleEdgeEndpointChanged);
   graph.on('edge:connected', handleEdgeConnected);
   if (edgeTools) {
     graph.on('edge:mouseenter', handleEdgeMouseEnter);
@@ -87,6 +94,8 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     graph.off('node:moved', handleNodeMoved);
     graph.off('node:resized', handleNodeResized);
     graph.off('edge:click', handleEdgeClick);
+    graph.off('edge:change:source', handleEdgeEndpointChanged);
+    graph.off('edge:change:target', handleEdgeEndpointChanged);
     graph.off('edge:connected', handleEdgeConnected);
     if (edgeTools) {
       graph.off('edge:mouseenter', handleEdgeMouseEnter);

@@ -247,3 +247,15 @@
 .x6-edge-selected .x6-edge-label {
   fill: var(--uml-selection, #1d4ed8);
 }
+
+.uml-canvas-container.theme-dark .x6-edge .x6-edge-label {
+  fill: #f8fafc;
+  stroke: #0b1220;
+  stroke-width: 4px;
+}
+
+.uml-canvas-container.theme-dark .x6-edge:hover .x6-edge-label,
+.uml-canvas-container.theme-dark .x6-edge-selected .x6-edge-label {
+  fill: #bfdbfe;
+  stroke: #0b1220;
+}

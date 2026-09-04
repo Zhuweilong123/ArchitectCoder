@@ -14,7 +14,9 @@ import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
-import { centerCanvasContent, syncCanvasGrid, syncCanvasViewport } from './core/canvasCommon';
+import {
+  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid, syncCanvasViewport,
+} from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
@@ -137,7 +139,7 @@ const CompEditor: React.FC = () => {
   const {
     diagram, selectedComponentId, selectedCompRelationId,
     addComponent, removeComponent, moveComponent,
-    addCompRelation, removeCompRelation,
+    addCompRelation, updateCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
     undo, redo, project, setActiveDiagram, addDiagram, autoLayoutComponents,
   } = useDiagramStore(useShallow((s) => ({
@@ -147,6 +149,7 @@ const CompEditor: React.FC = () => {
     removeComponent: s.removeComponent,
     moveComponent: s.moveComponent,
     addCompRelation: s.addCompRelation,
+    updateCompRelation: s.updateCompRelation,
     removeCompRelation: s.removeCompRelation,
     selectComponent: s.selectComponent,
     selectCompRelation: s.selectCompRelation,
@@ -182,7 +185,7 @@ const CompEditor: React.FC = () => {
           stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
-        router: { name: 'orth' },
+        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
         connector: { name: 'rounded' },
       },
     });
@@ -231,6 +234,13 @@ const CompEditor: React.FC = () => {
       onEdgeClick: (edge) => {
         selectCompRelation(edge.id);
         setRightPanelTab('properties');
+      },
+      onEdgeEndpointChanged: (edge) => {
+        if (!(getActiveDiagram().comp_relations || []).some((relation) => relation.id === edge.id)) return;
+        const source = edge.getSourceCellId();
+        const target = edge.getTargetCellId();
+        if (!source || !target || source === target) return;
+        updateCompRelation(edge.id, { source, target });
       },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
@@ -497,36 +507,63 @@ const CompEditor: React.FC = () => {
         }
       });
 
+      const componentRects = comps.map((component) => ({
+        id: component.id,
+        x: component.x,
+        y: component.y,
+        width: component.width || COMP_WIDTH,
+        height: component.height || COMP_HEIGHT,
+      }));
       rels.forEach((r) => {
         const selected = r.id === selectedCompRelationId;
-        const stroke = selected ? '#2563eb' : r.type === 'delegation' ? '#389e0d' : '#d48806';
+        const stroke = selected
+          ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+          : r.type === 'delegation'
+            ? (canvasTheme === 'dark' ? '#4ade80' : '#389e0d')
+            : (canvasTheme === 'dark' ? '#fbbf24' : '#d48806');
         const dash = r.type === 'delegation' ? '' : '6,4';
-        const signature = JSON.stringify([r.source, r.target, r.type, selected, canvasTheme]);
+        const labelColor = canvasTheme === 'dark' ? '#f8fafc' : stroke;
+        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+        const labelBorder = canvasTheme === 'dark' ? '#475569' : '#e2e8f0';
         const lineAttrs = {
           stroke, strokeWidth: selected ? 2.5 : 2, strokeDasharray: dash,
-          targetMarker: { name: 'block', width: 10, height: 6 },
+          targetMarker: { name: 'block', width: 10, height: 6, fill: stroke, stroke },
         };
         const labels = [{
           attrs: {
-            text: { text: r.type, fontSize: 10, fill: stroke },
-            rect: { fill: canvasTheme === 'dark' ? '#172033' : '#fff', stroke: 'none', rx: 3 },
+            text: { text: r.type, fontSize: 10, fontWeight: 600, fill: labelColor },
+            rect: { fill: labelBackground, stroke: labelBorder, strokeWidth: 0.8, rx: 4, ry: 4 },
           },
           position: { distance: 0.5, offset: -10 },
         }];
+        const vertices = getParallelEdgeVertices(r, rels, componentRects);
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 18,
+          fill: 'none',
+          pointerEvents: 'stroke',
+        };
+        const edgeSignature = JSON.stringify([r.source, r.target, r.type, selected, canvasTheme, vertices]);
         try {
           if (existingEdges.has(r.id)) {
-            if (edgeSignatureCache.current.get(r.id) === signature) return;
+            if (edgeSignatureCache.current.get(r.id) === edgeSignature) return;
             const edge = graph.getCellById(r.id) as any;
             if (edge) {
               edge.setSource({ cell: r.source });
               edge.setTarget({ cell: r.target });
-              edge.setRouter({ name: 'orth' });
+              edge.setVertices(vertices);
+              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
               edge.setConnector({ name: 'rounded' });
               edge.setLabels(labels);
               edge.setAttrByPath('line/stroke', stroke);
               edge.setAttrByPath('line/strokeWidth', selected ? 2.5 : 2);
               edge.setAttrByPath('line/strokeDasharray', dash);
-              edgeSignatureCache.current.set(r.id, signature);
+              edge.setAttrByPath('line/targetMarker/fill', stroke);
+              edge.setAttrByPath('line/targetMarker/stroke', stroke);
+              edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+              edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+              edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
+              edgeSignatureCache.current.set(r.id, edgeSignature);
             }
           } else {
             if (!graph.getCellById(r.source)) {
@@ -541,14 +578,16 @@ const CompEditor: React.FC = () => {
               id: r.id,
               source: { cell: r.source },
               target: { cell: r.target },
+              vertices,
               attrs: {
                 line: lineAttrs,
+                wrap: interactionAttrs,
               },
               labels,
-              router: { name: 'orth' },
+              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
               connector: { name: 'rounded' },
             });
-            if (edge) edgeSignatureCache.current.set(r.id, signature);
+            if (edge) edgeSignatureCache.current.set(r.id, edgeSignature);
           }
         } catch (e) { console.warn('[CompEditor] Edge error:', r.id, e); }
       });

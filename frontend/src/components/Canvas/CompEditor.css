@@ -12,6 +12,33 @@
   --comp-canvas-bg: #eaf5ff;
 }
 
+.comp-canvas-container .x6-edge .x6-edge-label {
+  font-size: 10px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.comp-canvas-container.theme-dark .x6-edge .x6-edge-label {
+  fill: #f8fafc;
+  stroke: #111827;
+  stroke-width: 4px;
+}
+
+.comp-canvas-container .x6-edge:hover .x6-edge-label,
+.comp-canvas-container .x6-edge-selected .x6-edge-label {
+  fill: #1d4ed8;
+  stroke: #ffffff;
+}
+
+.comp-canvas-container.theme-dark .x6-edge:hover .x6-edge-label,
+.comp-canvas-container.theme-dark .x6-edge-selected .x6-edge-label {
+  fill: #bfdbfe;
+  stroke: #111827;
+}
+
 .comp-node {
   padding: 8px 10px; height: 100%; box-sizing: border-box;
 }
