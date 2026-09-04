@@ -13,7 +13,7 @@ from app.services.file_service import (
     save_project_with_result, load_project, list_projects,
 )
 from app.services.project_repository import ProjectConflictError
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.core.auth import require_auth
 from app.core.security import safe_path, resolve_path, sanitize_path_segment
 

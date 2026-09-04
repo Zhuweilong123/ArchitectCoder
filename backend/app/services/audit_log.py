@@ -17,7 +17,7 @@ _SECRET_VALUE = re.compile(r"(?i)(bearer\s+|sk-[a-z0-9_-]{8,})[a-z0-9._~+/=-]*")
 
 
 def _audit_path() -> Path:
-    from app.core.config import get_settings
+    from backend.config import get_settings
 
     return Path(get_settings().uml_dir).resolve().parent / "data" / "audit.jsonl"
 

@@ -12,7 +12,7 @@ import hmac
 import logging
 from fastapi import HTTPException, Request, Depends, WebSocket
 
-from app.core.config import get_settings
+from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
 

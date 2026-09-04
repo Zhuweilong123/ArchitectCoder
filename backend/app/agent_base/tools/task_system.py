@@ -606,7 +606,7 @@ class CreateWorktreeTool(Tool):
 
 def _default_dirs(scope: str = ""):
     """从 settings.uml_dir 推导 temp/ 下的 .tasks 与 .worktrees。"""
-    from app.core.config import get_settings
+    from backend.config import get_settings
     base = Path(get_settings().uml_dir).resolve().parent  # temp/
     if scope:
         # 项目路径可能包含中文、空格或盘符；用可读前缀 + hash 组成稳定目录名。

@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.services.agent_metrics import get_agent_metrics
 from app.trace.tracing import TraceSession
 

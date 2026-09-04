@@ -19,7 +19,7 @@ from typing import Optional, Dict, List
 from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
-from ..core.config import Config
+from backend.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class PlanAndSolveAgent(Agent):
         name: str,
         llm: BaseAgentsLLM,
         system_prompt: Optional[str] = None,
-        config: Optional[Config] = None,
+        config: Optional[AgentConfig] = None,
         custom_prompts: Optional[Dict[str, str]] = None,
     ):
         super().__init__(name, llm, system_prompt, config)

@@ -437,7 +437,7 @@ class ChatTraceLogger:
 
 def _chat_log_dir() -> str:
     """计算 chat_log 目录（与 pipeline_log 同级）。"""
-    from app.core.config import get_settings
+    from backend.config import get_settings
     settings = get_settings()
     return os.path.normpath(os.path.abspath(
         os.path.join(os.path.dirname(settings.uml_dir), "chat_log"),

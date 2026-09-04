@@ -32,7 +32,7 @@ from typing import Callable, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.auth import require_ws_auth
 from app.core.security import validate_agent_workspace_path
-from app.core.config import get_settings
+from backend.config import get_settings
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
@@ -340,7 +340,7 @@ async def _create_dev_agent(
     静态 system prompt 由 DevPromptBuilder 一次生成；workspace 目录作为会话不变量
     固定在其中，记忆等易变上下文由 builder 每轮追加到最后一条 user 消息末尾。
     """
-    from app.core.config import get_settings
+    from backend.config import get_settings
 
     change_set = ChangeSet(project_file=project_file)
     settings = get_settings()

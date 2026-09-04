@@ -52,7 +52,7 @@ class LocalKnowledgeGraphProvider:
     @staticmethod
     def _default_db_path(settings=None) -> str:
         if settings is None:
-            from app.core.config import get_settings
+            from backend.config import get_settings
 
             settings = get_settings()
         configured = str(getattr(settings, "agent_knowledge_graph_db_path", "") or "").strip()

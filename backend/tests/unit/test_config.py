@@ -1,4 +1,4 @@
-from app.core.config import Settings
+from backend.config import Settings
 
 
 def test_settings_accepts_deprecated_sub_agent_model_without_routing(monkeypatch):

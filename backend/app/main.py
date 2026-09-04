@@ -27,7 +27,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
+from backend.config import get_settings
 from app.core.auth import require_auth
 from app.api.files import router as files_router
 from app.api.llm import router as llm_router

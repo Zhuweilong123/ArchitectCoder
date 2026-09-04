@@ -98,7 +98,7 @@ class ProgressRelay:
 def _kg_db_path() -> str:
     """知识图谱数据库路径（与 explore_project_tools._kg_db_path 同口径）。"""
     try:
-        from app.core.config import get_settings
+        from backend.config import get_settings
         base = os.path.dirname(get_settings().uml_dir)
     except Exception:
         base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..")
@@ -134,7 +134,7 @@ def create_conversation_tools(
         # environment. Standalone low-level file-tool tests may inject the
         # compatibility adapter explicitly instead.
         from app.agent_base.execution import build_linux_command_executor
-        from app.core.config import get_settings
+        from backend.config import get_settings
         command_executor = build_linux_command_executor(get_settings())
 
     # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
@@ -149,7 +149,7 @@ def create_conversation_tools(
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .file_system_tools import create_file_system_tools
-    from app.core.config import get_settings
+    from backend.config import get_settings
     # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
     design_dir = (os.path.dirname(os.path.abspath(project_file))
                   if project_file else os.path.abspath(get_settings().uml_dir))

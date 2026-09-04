@@ -14,7 +14,7 @@ from typing import Optional, Any
 
 from .message import Message
 from .llm import BaseAgentsLLM
-from .config import Config
+from backend.config import AgentConfig
 
 
 class Agent(ABC):
@@ -30,12 +30,12 @@ class Agent(ABC):
         name: str,
         llm: BaseAgentsLLM,
         system_prompt: Optional[str] = None,
-        config: Optional[Config] = None,
+        config: Optional[AgentConfig] = None,
     ):
         self.name = name
         self.llm = llm
         self.system_prompt = system_prompt
-        self.config = config or Config()
+        self.config = config or AgentConfig()
         self._history: list[Message] = []
 
     @abstractmethod

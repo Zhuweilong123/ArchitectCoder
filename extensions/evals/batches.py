@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.core.config import get_settings
+from backend.config import get_settings
 
 from .models import EvalResult
 from .registry import load_cases

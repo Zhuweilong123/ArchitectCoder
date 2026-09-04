@@ -123,7 +123,7 @@ class RunRecord:
 
 def default_run_state_path() -> Path:
     """Return the application data path without creating directories."""
-    from app.core.config import get_settings
+    from backend.config import get_settings
 
     return Path(get_settings().uml_dir).resolve().parent / "data" / "runs.db"
 

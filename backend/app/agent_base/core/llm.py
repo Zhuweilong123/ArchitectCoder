@@ -274,14 +274,14 @@ class BaseAgentsLLM:
 
         Usage::
 
-            from app.core.config import get_settings
+            from backend.config import get_settings
             from app.agent_base import BaseAgentsLLM
 
             llm = BaseAgentsLLM.from_settings(get_settings())
         """
         if settings is None:
             # 延迟导入，避免循环依赖
-            from app.core.config import get_settings
+            from backend.config import get_settings
             settings = get_settings()
 
         return cls(
