@@ -91,7 +91,7 @@ const Toolbar: React.FC = () => {
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    projectRoot, sourceDir, testDir, interfaceLanguage,
+    projectRoot, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
     setProjectRoot, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
@@ -1047,6 +1047,18 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('resetZoom')}>
           <Button icon={<ExpandOutlined />} onClick={handleZoomReset} />
         </Tooltip>
+        <Select
+          size="small"
+          value={canvasTheme}
+          onChange={setCanvasTheme}
+          aria-label={interfaceLanguage === 'en' ? 'Canvas theme' : '画布主题'}
+          options={[
+            { value: 'light', label: interfaceLanguage === 'en' ? 'Light' : '浅色' },
+            { value: 'dark', label: interfaceLanguage === 'en' ? 'Dark' : '深色' },
+            { value: 'blueprint', label: interfaceLanguage === 'en' ? 'Blueprint' : '蓝图' },
+          ]}
+          style={{ width: 104, marginLeft: 8 }}
+        />
       </div>
       </div>
 

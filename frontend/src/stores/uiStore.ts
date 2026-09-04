@@ -5,6 +5,7 @@ import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
 
 export type RightPanelTab = 'properties' | 'diff' | 'testcase';
+export type CanvasTheme = 'light' | 'dark' | 'blueprint';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
 export type { InterfaceLanguage } from '../i18n';
@@ -20,6 +21,7 @@ interface UiState {
   selectedLanguage: Language;
 
   interfaceLanguage: InterfaceLanguage;
+  canvasTheme: CanvasTheme;
   // Test code viewer (test case code)
   generatedTestCode: Record<string, string> | null;
   activeTestFile: string | null;
@@ -72,6 +74,7 @@ interface UiState {
 
   setSelectedLanguage: (lang: Language) => void;
   setInterfaceLanguage: (language: InterfaceLanguage) => void;
+  setCanvasTheme: (theme: CanvasTheme) => void;
 
   setGeneratedTestCode: (code: Record<string, string> | null) => void;
   setActiveTestFile: (file: string | null) => void;
@@ -116,6 +119,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   rightPanelWidth: 420,
   selectedLanguage: 'python',
   interfaceLanguage: localStorage.getItem('interfaceLanguage') === 'zh' ? 'zh' : 'en',
+  canvasTheme: (() => {
+    const value = localStorage.getItem('canvasTheme');
+    return value === 'dark' || value === 'blueprint' ? value : 'light';
+  })(),
   generatedTestCode: null,
   activeTestFile: null,
   diffContent: null,
@@ -171,6 +178,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   setInterfaceLanguage: (language) => {
     localStorage.setItem('interfaceLanguage', language);
     set({ interfaceLanguage: language });
+  },
+  setCanvasTheme: (theme) => {
+    localStorage.setItem('canvasTheme', theme);
+    set({ canvasTheme: theme });
   },
 
   setGeneratedTestCode: (code) => set({ generatedTestCode: code, activeTestFile: code ? Object.keys(code)[0] || null : null }),

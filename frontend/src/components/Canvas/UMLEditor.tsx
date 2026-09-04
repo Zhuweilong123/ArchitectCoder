@@ -9,7 +9,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Edge, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
 import { createCanvasGraph } from './core/createCanvasGraph';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
@@ -146,7 +146,7 @@ function ensureShapeRegistered() {
 }
 
 // ── Helper: Generate HTML for a UML class ──────────────
-function buildClassHTML(cls: UmlClass, selected: boolean): string {
+function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): string {
   const visibilityClass = (visibility: string) => ({
     '+': 'public',
     '-': 'private',
@@ -193,7 +193,7 @@ function buildClassHTML(cls: UmlClass, selected: boolean): string {
     <div class="uml-class-divider"></div>` : '';
 
   return `
-    <div class="uml-class-node ${selClass}">
+    <div class="uml-class-node theme-${theme} ${selClass}">
       <div class="uml-class-header" style="${nameStyle}">
         ${stereotypeLabel}
         <div class="uml-class-name">${escapeHtml(cls.name)}</div>
@@ -214,6 +214,27 @@ function buildClassHTML(cls: UmlClass, selected: boolean): string {
 }
 
 // ── Component ──────────────────────────────────────────
+/** Estimate a readable minimum size without overwriting the user's manual resize. */
+function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
+  const attributeRows = Math.max(cls.attributes.length, 1);
+  const operationRows = Math.max(cls.methods.length, 1);
+  const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
+    + (cls.required_interfaces?.length ? 1 : 0);
+  const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
+  const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
+  const attributesHeight = 28 + attributeRows * 19;
+  const operationsHeight = 28 + operationRows * 19;
+  const noteHeight = cls.note ? 34 : 0;
+
+  return {
+    width: cls.size.width || 200,
+    height: Math.max(
+      cls.size.height || 150,
+      headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
+    ),
+  };
+}
+
 const UMLEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -242,7 +263,8 @@ const UMLEditor: React.FC = () => {
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const setRightPanelTab = useUiStore((s) => s.setRightPanelTab);
+  const canvasTheme = useUiStore((s) => s.canvasTheme);
 
   // ── Initialize graph (once) ──────────────────────────
   useEffect(() => {
@@ -406,7 +428,12 @@ const UMLEditor: React.FC = () => {
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: UmlClass; selected: boolean; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, {
+    entity: UmlClass;
+    selected: boolean;
+    theme: CanvasTheme;
+    html: string;
+  }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
@@ -433,16 +460,22 @@ const UMLEditor: React.FC = () => {
       diagram.classes.forEach((cls) => {
         const isSelected = cls.id === selectedClassId;
         const cachedRender = renderCache.current.get(cls.id);
-        const htmlContent = cachedRender?.entity === cls && cachedRender.selected === isSelected
+        const htmlContent = cachedRender?.entity === cls
+          && cachedRender.selected === isSelected
+          && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildClassHTML(cls, isSelected);
+          : buildClassHTML(cls, isSelected, canvasTheme);
         const cached = htmlCache.current.get(cls.id);
-        const width = cls.size.width || 200;
-        const height = cls.size.height || 150;
+        const { width, height } = getClassNodeSize(cls);
         const signature = JSON.stringify([
           htmlContent, cls.position.x, cls.position.y, width, height,
         ]);
-        renderCache.current.set(cls.id, { entity: cls, selected: isSelected, html: htmlContent });
+        renderCache.current.set(cls.id, {
+          entity: cls,
+          selected: isSelected,
+          theme: canvasTheme,
+          html: htmlContent,
+        });
 
         try {
           const existing = graph.getCellById(cls.id);
@@ -612,7 +645,7 @@ const UMLEditor: React.FC = () => {
       console.error('[UML Editor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId]);
+  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -705,7 +738,7 @@ const UMLEditor: React.FC = () => {
           <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
-      <div ref={containerRef} className="uml-canvas-container" />
+      <div ref={containerRef} className={`uml-canvas-container theme-${canvasTheme}`} />
     </div>
   );
 };
