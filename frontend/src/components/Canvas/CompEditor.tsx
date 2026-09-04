@@ -106,6 +106,11 @@ const COMP_HEIGHT = 160;
 const CHILD_WIDTH = 150;
 const CHILD_HEIGHT = 100;
 
+interface ComponentClipboard {
+  components: CompNode[];
+  relations: CompRelation[];
+}
+
 function getCompNodeSize(comp: CompNode): { width: number; height: number } {
   const isChild = !!comp.parent_id;
   const interfaceCount = (comp.provided_interfaces || []).length
@@ -121,7 +126,7 @@ const CompEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
-  const clipboard = useRef<any>(null);
+  const clipboard = useRef<ComponentClipboard | null>(null);
 
   // ── Context menu state ──────────────────────────────
   const [ctxMenu, setCtxMenu] = useState<{
@@ -263,32 +268,84 @@ const CompEditor: React.FC = () => {
       const modifier = e.ctrlKey || e.metaKey;
       if (modifier && key === 'c') {
         if (store.selectedComponentId) {
-          const c = (getActiveDiagram().components || []).find((x) => x.id === store.selectedComponentId);
-          if (c) clipboard.current = JSON.parse(JSON.stringify(c));
+          const activeDiagram = getActiveDiagram();
+          const components = activeDiagram.components || [];
+          const copiedIds = new Set([store.selectedComponentId]);
+          let changed = true;
+          while (changed) {
+            changed = false;
+            components.forEach((component) => {
+              if (component.parent_id && copiedIds.has(component.parent_id) && !copiedIds.has(component.id)) {
+                copiedIds.add(component.id);
+                changed = true;
+              }
+            });
+          }
+          clipboard.current = {
+            components: JSON.parse(JSON.stringify(components.filter((component) => copiedIds.has(component.id)))),
+            relations: JSON.parse(JSON.stringify(
+              (activeDiagram.comp_relations || []).filter(
+                (relation) => copiedIds.has(relation.source) && copiedIds.has(relation.target)
+              )
+            )),
+          };
+          console.log('[CompEditor] Copied component subtree:', copiedIds.size);
         }
       } else if (modifier && key === 'v') {
         e.preventDefault();
-        if (clipboard.current) {
-          const c = clipboard.current;
+        if (clipboard.current?.components.length) {
+          const copied = clipboard.current;
           store.beginBatch();
           try {
-            store.addComponent({
-              x: c.x + 30, y: c.y + 30
-            }, c.parent_id || '');
-            // Apply copied size and interfaces
-            const store2 = useDiagramStore.getState();
-            const comps = getActiveDiagram().components || [];
-            const pasted = comps[comps.length - 1];
-            if (pasted) {
+            const idMap = new Map<string, string>();
+            const pending = [...copied.components];
+            const copiedIds = new Set(copied.components.map((component) => component.id));
+            while (pending.length > 0) {
+              const index = pending.findIndex((component) => (
+                !component.parent_id
+                || idMap.has(component.parent_id)
+                || !copiedIds.has(component.parent_id)
+              ));
+              const component = pending.splice(index >= 0 ? index : 0, 1)[0];
+              const newParentId = component.parent_id ? idMap.get(component.parent_id) || '' : '';
+              store.addComponent({ x: component.x + 30, y: component.y + 30 }, newParentId);
+
+              const activeComponents = getActiveDiagram().components || [];
+              const pasted = activeComponents[activeComponents.length - 1];
+              if (!pasted) continue;
+              idMap.set(component.id, pasted.id);
+              const store2 = useDiagramStore.getState();
               store2.updateComponent(pasted.id, {
-                width: c.width, height: c.height,
-                provided_interfaces: [...(c.provided_interfaces || [])],
-                required_interfaces: [...(c.required_interfaces || [])],
+                name: component.name,
+                width: component.width,
+                height: component.height,
+                provided_interfaces: [...(component.provided_interfaces || [])],
+                required_interfaces: [...(component.required_interfaces || [])],
               });
             }
+
+            copied.relations.forEach((relation) => {
+              const source = idMap.get(relation.source);
+              const target = idMap.get(relation.target);
+              if (!source || !target) return;
+              store.addCompRelation(source, target);
+              const relations = getActiveDiagram().comp_relations || [];
+              const pastedRelation = relations[relations.length - 1];
+              if (pastedRelation && pastedRelation.type !== relation.type) {
+                useDiagramStore.getState().updateCompRelation(pastedRelation.id, { type: relation.type });
+              }
+            });
           } finally {
             store.endBatch();
           }
+          clipboard.current = {
+            components: copied.components.map((component) => ({
+              ...component,
+              x: component.x + 30,
+              y: component.y + 30,
+            })),
+            relations: copied.relations.map((relation) => ({ ...relation })),
+          };
         }
       } else if (modifier && key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
       else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
