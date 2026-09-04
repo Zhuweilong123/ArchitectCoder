@@ -25,7 +25,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools,
 )
 from app.agent_base.tools.registry import ToolRegistry
-from app.agent_base.execution import build_linux_command_executor
+from app.runtime import build_command_executor, build_environment_context
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
@@ -33,7 +33,24 @@ from app.services.context_manager import ContextBudget, ContextBudgetManager, es
 
 def enabled_tools_context() -> str:
     """Describe the stable core tool surface for an Agent prompt."""
-    return "## Tool policy\nUse only the supplied tool schemas; do not invent tools."
+    return (
+        "## Tool policy\n"
+        "Use only the supplied tool schemas; do not invent tools.\n"
+        "Core workspace tools are: list_files, read_file, search_text, apply_changes, "
+        "run_program, run_task, and shell. Use apply_changes for all file creation, "
+        "editing, deletion, moving, and copying; use shell only when the operation "
+        "cannot be expressed otherwise."
+    )
+
+
+def _workspace_root(source_dir: str, test_dir: str, design_dir: str) -> str:
+    paths = [path for path in (source_dir, test_dir, design_dir) if path]
+    if not paths:
+        return ""
+    try:
+        return os.path.commonpath([os.path.abspath(path) for path in paths])
+    except ValueError:
+        return os.path.abspath(paths[0])
 
 
 class DevPromptBuilder:
@@ -46,14 +63,25 @@ class DevPromptBuilder:
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
+        environment_context=None,
         memory_recall_top_k: int = 3,
         memory_recall_max_tokens: int = 500,
     ):
         self.prompt_version = "3.1-r4"
+        if environment_context is None:
+            design_dir = design_dir or ""
+            workspace_root = _workspace_root(source_dir, test_dir, design_dir)
+            environment_context = build_environment_context(
+                cwd=workspace_root or source_dir or design_dir or None,
+                workspace_roots=(workspace_root,) if workspace_root else (),
+                workspace_layout=(
+                    ("design", design_dir),
+                    ("src", source_dir),
+                    ("test", test_dir),
+                ),
+            )
         self.system_prompt = self._build_static_prompt(
-            source_dir=source_dir,
-            test_dir=test_dir,
-            design_dir=design_dir,
+            environment_context=environment_context,
         )
         self.memory = memory if memory is not None else NoOpMemory()
         self.memory_recall_top_k = max(1, int(memory_recall_top_k))
@@ -72,36 +100,30 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt(
-        *, source_dir: str = "", test_dir: str = "", design_dir: str = ""
+        *, environment_context=None,
     ) -> str:
-        workspace_lines = ["## Workspace (host paths; bash executes in WSL Linux)"]
-        for label, path in (
-            ("Source directory", source_dir),
-            ("Test directory", test_dir),
-            ("Design directory", design_dir),
-        ):
-            if path:
-                workspace_lines.append(f"- {label}: {path}")
-        workspace_lines.append(
-            "- Use the cwd aliases supplied by the bash schema. Do not convert these "
-            "host paths or invoke WSL yourself."
+        runtime_block = (
+            environment_context.to_prompt()
+            if environment_context is not None
+            else "## Runtime environment\n- Runtime environment is selected by the host runtime."
         )
         return "\n".join([
             "You are DevAgent, a coding and UML engineering agent operating only inside the configured workspace.",
             "Complete the user's request end to end: inspect relevant state, evolve existing artifacts instead of redesigning them unless requested, make scoped changes, verify results, and report what was done and what remains.",
             "",
-            *workspace_lines,
+            runtime_block,
             "",
             "## Execution rules",
             "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
             "- Read the smallest useful context before editing. Preserve unrelated user changes; do not add comments or emojis to code unless requested; do not invent files, tool results, tests, or completion.",
             "- Make the minimal correct edit. For a repair, run the focused existing test early, fix its exact failure before broadening scope, then rerun it. Do not claim success until required verification passes.",
-            "- For a concrete multi-step request, keep one short execution thread: inspect only the named artifact, make the requested edit with the narrowest matching tool, verify it immediately, then move to the next user-requested step.",
+            "- For a concrete multi-step request, keep one short execution thread: inspect only the named artifact, make the requested file change with apply_changes, verify it immediately with run_task or run_program, then move to the next user-requested step.",
             "- When a command or tool fails, treat its error as evidence and change approach. Do not spend the remaining budget probing interpreters, package managers, shells, or unrelated directories; use the supplied file/domain tools and report any unverified step.",
             "- In a continuing conversation, preserve the latest accepted state and never reopen a completed step unless a later request explicitly changes it. A status question should summarize the checkpoint, not start a new investigation.",
             "- Do not duplicate discovery, inspect a directory merely to find the supplied workspace, or create a helper script solely to inspect or summarize an existing file.",
-            "- Treat the supplied Source directory as the working root for relative paths and shell commands.",
-            "- Use only tools exposed for the current task and their supplied schemas. Prefer direct domain tools over shell workarounds; treat tool errors as capability facts and change approach instead of repeating them.",
+            "- Treat the supplied Source directory as the working root for relative paths and execution tools.",
+            "- Use only tools exposed for the current task and their supplied schemas. Prefer list_files/read_file/search_text/apply_changes/run_task/run_program over shell workarounds; treat tool errors as capability facts and change approach instead of repeating them.",
+            "- After any successful UML/design change, call submit_uml_review before reporting completion, wait for its accept/reject decision, and revise if rejected. This remains required when review is auto-approved.",
             "- For a task spanning UML/design and source or multiple unrelated files, call spawn_subagent once before broad direct exploration. Give it a read-only fact-finding task, use its summary, and do not repeat the same discovery yourself. Do not call it for greetings, simple single-file work, edits, review, or final verification.",
             "",
             "## UML and verification",
@@ -188,7 +210,12 @@ async def create_dev_agent(
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
     change_set = ChangeSet(project_file=project_file)
-    command_executor = build_linux_command_executor(settings)
+    command_executor = build_command_executor(settings)
+    design_dir = (
+        os.path.dirname(os.path.abspath(project_file))
+        if project_file else os.path.abspath(settings.uml_dir)
+    )
+    workspace_root = _workspace_root(source_dir, test_dir, design_dir)
     tools, review_mgr = create_conversation_tools(
         llm,
         source_dir=source_dir,
@@ -206,25 +233,31 @@ async def create_dev_agent(
         auto_approve_reviews=auto_approve_reviews,
         command_executor=command_executor,
         include_subagent=settings.agent_main_subagent_enabled,
+        workspace_root=workspace_root,
     )
 
-    workspace_roots = [source_dir, test_dir]
-    if project_file:
-        workspace_roots.append(os.path.dirname(project_file))
+    workspace_roots = [workspace_root] if workspace_root else []
     registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
     for tool in tools:
         registry.register_tool(tool)
 
     memory_provider = load_memory(llm=llm, settings=settings)
-    design_dir = (
-        os.path.dirname(os.path.abspath(project_file))
-        if project_file else os.path.abspath(settings.uml_dir)
+    environment_context = build_environment_context(
+        executor=command_executor,
+        cwd=workspace_root or source_dir or design_dir or None,
+        workspace_roots=workspace_roots,
+        workspace_layout=(
+            ("design", design_dir),
+            ("src", source_dir),
+            ("test", test_dir),
+        ),
     )
     prompt_builder = DevPromptBuilder(
         memory=memory_provider,
         source_dir=source_dir,
         test_dir=test_dir,
         design_dir=design_dir,
+        environment_context=environment_context,
         memory_recall_top_k=settings.agent_memory_recall_top_k,
         memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
     )

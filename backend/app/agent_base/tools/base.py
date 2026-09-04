@@ -36,6 +36,10 @@ class Tool(ABC):
     def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
+        # Optional non-schema names used by compatibility callers.  Aliases
+        # resolve to the same tool but are never exposed as duplicate model
+        # functions by the registry.
+        self.aliases: tuple[str, ...] = ()
         # 默认保守：只有明确声明无副作用的工具才允许同轮并发。
         self.read_only = False
         self.can_parallel = False

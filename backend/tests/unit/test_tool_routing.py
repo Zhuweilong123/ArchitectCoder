@@ -76,9 +76,12 @@ def test_prompt_builder_reports_dynamic_sections_without_content():
     import asyncio
     context = asyncio.run(builder.build_context("", "src", "tests", "run pytest"))
 
-    assert "Source directory: src" in builder.system_prompt
-    assert "Test directory: tests" in builder.system_prompt
-    assert "Design directory: design" in builder.system_prompt
+    assert "## Workspace" not in builder.system_prompt
+    assert builder.system_prompt.count("## Runtime environment") == 1
+    assert "Workspace layout:" in builder.system_prompt
+    assert "- src: src" in builder.system_prompt
+    assert "- test: tests" in builder.system_prompt
+    assert "- design: design" in builder.system_prompt
     assert "Source directory: src" not in context
     assert builder.static_prompt_report["estimated_tokens"] > 0
     assert "workspace" not in builder.last_context_report["sections"]
@@ -156,9 +159,9 @@ def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():
     assert "Do not modify UML unless requested" in builder.system_prompt
     assert "known canonical design artifact" in builder.system_prompt
     assert "call spawn_subagent once" in builder.system_prompt
-    assert "Source directory: src" in builder.system_prompt
-    assert "Test directory: tests" in builder.system_prompt
-    assert "Design directory: design" in builder.system_prompt
+    assert "## Workspace" not in builder.system_prompt
+    assert builder.system_prompt.count("## Runtime environment") == 1
+    assert "Workspace layout:" in builder.system_prompt
     assert set(builder.static_prompt_report) == {"chars", "estimated_tokens"}
 
 

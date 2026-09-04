@@ -41,6 +41,12 @@ class ToolRegistry:
         if tool.name in self._tools:
             print(f"Warning: tool '{tool.name}' already exists and will be replaced")
         self._tools[tool.name] = tool
+        for alias in getattr(tool, "aliases", ()):
+            if alias == tool.name:
+                continue
+            if alias in self._tools:
+                print(f"Warning: tool alias '{alias}' already exists and will be replaced")
+            self._tools[alias] = tool
 
     def register_function(
         self,
@@ -57,7 +63,11 @@ class ToolRegistry:
 
     def unregister(self, name: str) -> bool:
         if name in self._tools:
-            del self._tools[name]
+            tool = self._tools.pop(name)
+            if name == tool.name:
+                for alias in getattr(tool, "aliases", ()):
+                    if self._tools.get(alias) is tool:
+                        del self._tools[alias]
             return True
         if name in self._functions:
             del self._functions[name]
@@ -70,7 +80,8 @@ class ToolRegistry:
     def get_tools_description(self) -> str:
         descriptions = [
             f"- {tool.name}: {tool.description}"
-            for tool in self._tools.values()
+            for name, tool in self._tools.items()
+            if name == tool.name
         ]
         descriptions.extend(
             f"- {name}: {info['description']}"
@@ -104,7 +115,9 @@ class ToolRegistry:
 
     def get_openai_specs(self, compact: bool = False) -> list[dict]:
         specs = []
-        for tool in self._tools.values():
+        for name, tool in self._tools.items():
+            if name != tool.name:
+                continue
             schema = tool.to_openai_schema()
             params = schema.get("function", {}).get("parameters", {})
             if params.get("type") == "object":
@@ -145,7 +158,9 @@ class ToolRegistry:
         return bool(tool and tool.read_only and tool.can_parallel)
 
     def list_tools(self) -> list[str]:
-        return list(self._tools) + list(self._functions)
+        return [
+            name for name, tool in self._tools.items() if name == tool.name
+        ] + list(self._functions)
 
     # Compatibility execution facade. New adapters can inject/replace the
     # executor without changing registration or Agent call sites.
@@ -166,7 +181,7 @@ class ToolRegistry:
         return await self.executor.aexecute_tool_result_with_params(name, parameters)
 
     def __len__(self) -> int:
-        return len(self._tools) + len(self._functions)
+        return len(self.list_tools())
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools or name in self._functions
