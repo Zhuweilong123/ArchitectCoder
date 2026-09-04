@@ -368,20 +368,31 @@ const UMLEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
 
-      if (e.ctrlKey && e.key === 'c') {
-        // Copy selected class
-        if (store.selectedClassId) {
-          const cls = getActiveDiagram().classes.find((c) => c.id === store.selectedClassId);
-          if (cls) {
-            clipboard.current = { classes: [JSON.parse(JSON.stringify(cls))], relations: [] };
-            console.log('[UMLEditor] Copied:', cls.name);
-          }
+      if (modifier && key === 'c') {
+        // Copy all selected classes so rubber-band and shift selection behave consistently.
+        const graphSelectedIds = graph.getSelectedCells()
+          .filter((cell) => cell.isNode() && cell.shape === 'uml-class')
+          .map((cell) => cell.id);
+        const selectedIds = graphSelectedIds.length > 0
+          ? graphSelectedIds
+          : (store.selectedClassIds.length > 0
+            ? store.selectedClassIds
+            : store.selectedClassId ? [store.selectedClassId] : []);
+        const selectedIdSet = new Set(selectedIds);
+        const classes = getActiveDiagram().classes
+          .filter((cls) => selectedIdSet.has(cls.id))
+          .map((cls) => JSON.parse(JSON.stringify(cls)));
+        if (classes.length > 0) {
+          clipboard.current = { classes, relations: [] };
+          console.log('[UMLEditor] Copied classes:', classes.length);
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
         // Paste copied classes at offset position with same size
         clipboard.current.classes.forEach((cls: any) => {
-          const newId = `class_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
           // Apply copied size, attributes, methods
           const store2 = useDiagramStore.getState();
@@ -401,23 +412,34 @@ const UMLEditor: React.FC = () => {
         clipboard.current = { classes: clipboard.current.classes.map((c: any) => ({
           ...c, position: { x: c.position.x + 30, y: c.position.y + 30 }
         })), relations: [] };
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+      } else if (modifier && key === 'z' && !e.shiftKey) {
         e.preventDefault();
         store.undo();
-      } else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      } else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault();
         store.redo();
+      } else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectClass(null);
+        selectRelation(null);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         const cells = graph.getSelectedCells();
-        if (cells.length > 0) {
+        const selectedNodeIds = cells.filter((cell) => cell.isNode()).map((cell) => cell.id);
+        const selectedEdgeIds = cells.filter((cell) => cell.isEdge()).map((cell) => cell.id);
+        const nodeIds = selectedNodeIds.length > 0 ? selectedNodeIds : store.selectedClassIds;
+        const edgeIds = selectedEdgeIds.length > 0
+          ? selectedEdgeIds
+          : store.selectedRelationId ? [store.selectedRelationId] : [];
+        if (nodeIds.length > 0 || edgeIds.length > 0) {
           e.preventDefault();
           isInternalUpdate.current = true;
-          cells.forEach((cell) => {
-            if (cell.isNode()) store.removeClass(cell.id);
-            else if (cell.isEdge()) store.removeRelation(cell.id);
-            cell.remove();
-          });
+          nodeIds.forEach((id) => store.removeClass(id));
+          edgeIds.forEach((id) => store.removeRelation(id));
+          graph.cleanSelection();
           isInternalUpdate.current = false;
+          selectClass(null);
+          selectRelation(null);
         }
       }
     };
