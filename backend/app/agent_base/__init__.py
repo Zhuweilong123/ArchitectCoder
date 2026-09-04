@@ -39,7 +39,15 @@ from .core.plugins import (
 
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
-from .tools import Tool, ToolParameter, ToolRegistry, ToolChain, ToolChainManager, AsyncToolExecutor
+from .tools import (
+    Tool,
+    ToolParameter,
+    ToolRegistry,
+    ToolChain,
+    ToolChainManager,
+    AsyncTool,
+    AsyncToolExecutor,
+)
 from .execution import ToolExecutor
 
 __all__ = [
@@ -67,6 +75,7 @@ __all__ = [
     "Tool", "ToolParameter",
     "ToolRegistry",
     "ToolChain", "ToolChainManager",
+    "AsyncTool",
     "AsyncToolExecutor",
     "ToolExecutor",
 ]

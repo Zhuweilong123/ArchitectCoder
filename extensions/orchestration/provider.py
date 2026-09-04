@@ -59,7 +59,16 @@ class LLMOrchestrator:
         )
 
 
-def create(*, llm, settings, project_file: str = "", source_dir: str = "", test_dir: str = "", **kwargs):
+def create(
+    *,
+    llm,
+    settings,
+    project_file: str = "",
+    source_dir: str = "",
+    test_dir: str = "",
+    explorer_factory=None,
+    **kwargs,
+):
     """Provider factory used by ``load_orchestrator``."""
 
     return LLMOrchestrator(TaskOrchestrator(
@@ -71,4 +80,5 @@ def create(*, llm, settings, project_file: str = "", source_dir: str = "", test_
         planner_timeout_seconds=settings.agent_planner_timeout_seconds,
         worker_max_steps=settings.agent_explorer_max_steps,
         worker_max_total_tokens=settings.agent_subagent_max_total_tokens,
+        explorer_factory=explorer_factory,
     ))

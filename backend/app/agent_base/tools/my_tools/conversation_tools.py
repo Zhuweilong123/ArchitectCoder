@@ -25,31 +25,9 @@ import os
 from typing import Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
-
-
-# ── 异步工具基类 — run() 返回 coroutine，由 aexecute_tool_with_params await ──
-
-class AsyncTool(Tool):
-    """异步工具基类。
-
-    ``run()`` 返回 coroutine，由 ``ToolRegistry.aexecute_tool_with_params()``
-    在 ReActAgent FC 循环中正确地 await 它。
-    """
-
-    def get_parameters(self) -> list:
-        return []  # 子类通过 to_openai_schema() 直接提供 schema
-
-    def run(self, parameters: dict) -> str:
-        """返回 coroutine，由 aexecute_tool_with_params await。"""
-        return self._execute(parameters)  # type: ignore[return-value]
-
-    async def _execute(self, parameters: dict) -> str:
-        raise NotImplementedError
-
-    def to_openai_schema(self) -> dict:
-        raise NotImplementedError
 
 
 # ── 进度事件转发 ──

@@ -46,6 +46,7 @@ backend/
 │   ├── agent_base/
 │   │   ├── assembly.py     # Production Agent composition boundary
 │   │   ├── execution_summary.py # Transport-neutral run summaries
+│   │   ├── tools/async_tool.py # Shared async Tool framework primitive
 │   │   └── core/
 │   │       ├── plugins.py      # Central plugin lifecycle manager
 │   │       ├── memory.py       # Memory port and fallback
@@ -54,7 +55,8 @@ backend/
 │   │       └── knowledge_graph.py # Knowledge-graph port and fallback
 │   ├── services/
 │   │   ├── agent_execution.py # Transport-neutral Agent execution
-│   │   └── agent_chat_ws.py   # WebSocket session/transport adapter
+│   │   ├── chat_session.py    # Session lifecycle/message coordination
+│   │   └── agent_chat_ws.py   # WebSocket transport adapter
 │   └── trace/
 │       └── tracing.py      # Trace port and runtime session bridge
 └── .env                    # Local runtime configuration, not committed
@@ -74,8 +76,15 @@ Agent construction is centralized in `app/agent_base/assembly.py`, so the
 interactive WebSocket adapter and the Evals adapter share the same production
 tool, memory, prompt, and budget assembly. A single Agent run is coordinated
 by `app/services/agent_execution.py` through an injected async `send(payload)`
-callback; it does not depend on FastAPI or WebSocket types. The WebSocket
-module owns session state, message parsing, and transport events only.
+callback; it does not depend on FastAPI or WebSocket types. Session lifecycle
+and message coordination live in `app/services/chat_session.py`; the WebSocket
+module owns authentication and transport adaptation only.
+
+The async tool base is framework infrastructure under
+`app/agent_base/tools/async_tool.py`; conversation-specific factories and
+extensions no longer import it from `conversation_tools.py`. Optional
+orchestration exploration receives an injected `explorer_factory`, keeping the
+orchestration extension independent of the concrete subagent tool class.
 
 `backend/app/trace` is intentionally retained as the Trace port because the
 core Agent runtime needs the session lifecycle, event bridge and coroutine

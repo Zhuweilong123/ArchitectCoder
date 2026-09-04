@@ -19,8 +19,8 @@ from app.agent_base.tools.base import Tool, ToolParameter
 
 
 # ── 直接引用 code_generator 中的核心函数，避免代码重复 ──
-from app.services.uml_common import (
-    _build_reference_index,
+from app.services.uml_index import _build_reference_index
+from app.services.uml_validation import (
     _validate_cross_references,
     _apply_auto_fixes,
 )

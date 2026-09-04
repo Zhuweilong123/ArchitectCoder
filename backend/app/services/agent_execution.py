@@ -6,12 +6,15 @@ injected async sender. WebSocket is only one possible transport adapter.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from typing import Awaitable, Callable
 
 from backend.config import get_settings
 
 from app.agent_base.agents.react_agent import ReActAgent
+from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.core.hooks import (
     AgentRuntime,
@@ -28,6 +31,7 @@ from app.agent_base.core.orchestration import (
 )
 from app.agent_base.execution_summary import build_task_execution_summary
 from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
+from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 from app.services.audit_log import get_audit_logger
 from app.services.run_state import (
     RunStateError,
@@ -38,6 +42,9 @@ from app.services.run_state import (
 from app.trace.tracing import TraceSink
 
 logger = logging.getLogger(__name__)
+
+_TASK_BIND_TIMEOUT_SECONDS = 5.0
+_REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
 
 
 def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
@@ -151,6 +158,75 @@ async def _archive_task_to_memory(
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
 
 
+async def _create_task_execution_async(
+    *,
+    scope: str,
+    run_id: str,
+    owner: str,
+    subject: str,
+    description: str,
+):
+    """Create the optional durable task binding off the Agent event loop.
+
+    Task persistence is an execution aid, not part of the response-critical
+    Agent path.  File-system stalls or an import-time lock must not prevent
+    the main Agent from reaching its first LLM call.
+    """
+    def _bind():
+        logger.info(
+            "[AgentExecution] task binding worker started run=%s scope=%s",
+            run_id,
+            scope,
+        )
+        from app.agent_base.tools.task_system import create_task_execution
+
+        logger.info("[AgentExecution] task_system imported run=%s", run_id)
+        binding = create_task_execution(
+            scope=scope,
+            run_id=run_id,
+            owner=owner,
+            subject=subject,
+            description=description,
+        )
+        logger.info(
+            "[AgentExecution] task binding worker completed run=%s task=%s",
+            run_id,
+            binding.task_id,
+        )
+        return binding
+
+    logger.info("[AgentExecution] scheduling task binding run=%s", run_id)
+    return await asyncio.wait_for(
+        asyncio.to_thread(_bind),
+        timeout=_TASK_BIND_TIMEOUT_SECONDS,
+    )
+
+
+async def _load_review_baseline_async(project_file: str):
+    """Read the review baseline without blocking the Agent event loop."""
+    def _load():
+        logger.info("[AgentExecution] review baseline worker started")
+        if not os.path.isfile(project_file):
+            logger.info("[AgentExecution] review baseline file is unavailable")
+            return None
+        from app.services.file_service import load_project
+
+        baseline = [
+            diagram.model_dump()
+            for diagram in load_project(project_file).diagrams
+        ]
+        logger.info(
+            "[AgentExecution] review baseline worker completed diagrams=%d",
+            len(baseline),
+        )
+        return baseline
+
+    return await asyncio.wait_for(
+        asyncio.to_thread(_load),
+        timeout=_REVIEW_BASELINE_TIMEOUT_SECONDS,
+    )
+
+
 async def handle_agent_execution(
     agent: ReActAgent,
     review_mgr,
@@ -179,6 +255,12 @@ async def handle_agent_execution(
     到 WebSocket 供前端实时渲染（流式优化模式）。
     """
 
+    logger.info(
+        "[AgentExecution] started run=%s session=%s",
+        run_id,
+        session_id,
+    )
+
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     uml_review_seen = False
     resume_checkpoint = dict(resume_checkpoint or {})
@@ -202,6 +284,7 @@ async def handle_agent_execution(
         "test_dir": test_dir,
     }
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+    logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)
 
     async def _on_progress(ev: dict):
         """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
@@ -253,31 +336,57 @@ async def handle_agent_execution(
                 })
 
     if progress:
+        logger.info("[AgentExecution] registering progress callback run=%s", run_id)
         progress.on_progress(_on_progress)
+        logger.info("[AgentExecution] progress callback registered run=%s", run_id)
 
     # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
     # 存在 review_mgr 上（工具与 review_response 处理共享，可随 accept 刷新）。
-    if review_mgr is not None and project_file and os.path.isfile(project_file):
+    logger.info(
+        "[AgentExecution] checking review baseline run=%s has_review=%s has_project=%s",
+        run_id,
+        review_mgr is not None,
+        bool(project_file),
+    )
+    if review_mgr is not None and project_file:
+        logger.info("[AgentExecution] loading review baseline run=%s", run_id)
         try:
-            from app.services.file_service import load_project
-            review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
+            review_mgr.baseline = await _load_review_baseline_async(project_file)
+            logger.info(
+                "[AgentExecution] review baseline loaded run=%s available=%s",
+                run_id,
+                review_mgr.baseline is not None,
+            )
+        except asyncio.TimeoutError:
+            review_mgr.baseline = None
+            logger.error(
+                "[AgentExecution] review baseline timed out after %.1fs; continuing run=%s",
+                _REVIEW_BASELINE_TIMEOUT_SECONDS,
+                run_id,
+            )
         except Exception:
             review_mgr.baseline = None
+            logger.warning("[AgentExecution] review baseline unavailable run=%s", run_id, exc_info=True)
 
+    logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
     ))
+    logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None
     if run_id:
         try:
-            from app.agent_base.tools.task_system import create_task_execution
-
-            task_binding = create_task_execution(
+            task_binding = await _create_task_execution_async(
                 scope=session_id or project_file or "default",
                 run_id=run_id,
                 owner=f"run:{run_id}",
                 subject=user_message,
                 description="Durable task state for one DevAgent execution.",
+            )
+            logger.info(
+                "[AgentExecution] task binding ready run=%s task=%s",
+                run_id,
+                task_binding.task_id,
             )
             agent.last_run_checkpoint["task_id"] = task_binding.task_id
             _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
@@ -287,6 +396,12 @@ async def handle_agent_execution(
                     task_id=task_binding.task_id,
                     status="bound",
                 )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[TaskSystem] task binding timed out after %.1fs; continuing without binding run=%s",
+                _TASK_BIND_TIMEOUT_SECONDS,
+                run_id,
+            )
         except Exception:
             # Task persistence is an execution aid. A store failure must not
             # turn an otherwise usable chat run into a false tool failure.
@@ -352,6 +467,7 @@ async def handle_agent_execution(
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
         ]))
+        logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
         orchestration_settings = get_settings()
         orchestrator = load_orchestrator(
             llm=agent.llm,
@@ -359,6 +475,12 @@ async def handle_agent_execution(
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
+            explorer_factory=SpawnSubagentTool,
+        )
+        logger.info(
+            "[AgentExecution] orchestrator loaded run=%s type=%s",
+            run_id,
+            type(orchestrator).__name__,
         )
         if trace_log:
             trace_log.event("orchestrator_phase", phase="plan", status="started")
@@ -392,6 +514,11 @@ async def handle_agent_execution(
             main_allowed_tools = exclude_tools(
                 agent.tool_registry.list_tools(), orchestration_result.excluded_tools,
             )
+        logger.info(
+            "[AgentExecution] entering agent stream run=%s phase=%s",
+            run_id,
+            orchestration_result.phase,
+        )
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
             agent.on_context_compacted = lambda report: trace_log.context_compacted(

@@ -11,10 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 
 from extensions.orchestration.contracts import (
     ArtifactScope,
@@ -26,6 +25,10 @@ from extensions.orchestration.contracts import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Deprecated compatibility seam for direct tests/custom callers. Production
+# loading supplies ``explorer_factory`` explicitly from the composition root.
+SpawnSubagentTool = None
 
 PLANNER_SYSTEM = """You are the planning gate for a coding task.
 Return JSON only with these keys:
@@ -64,6 +67,7 @@ class TaskOrchestrator:
         planner_timeout_seconds: float = 30.0,
         worker_max_steps: int = 6,
         worker_max_total_tokens: int = 500000,
+        explorer_factory: Callable[..., Any] | None = None,
     ):
         self.llm = llm
         self.project_file = project_file
@@ -73,6 +77,7 @@ class TaskOrchestrator:
         self.planner_timeout_seconds = max(1.0, float(planner_timeout_seconds))
         self.worker_max_steps = max(1, int(worker_max_steps))
         self.worker_max_total_tokens = max(1, int(worker_max_total_tokens))
+        self.explorer_factory = explorer_factory
 
     def build_contract(self, user_message: str) -> TaskContract:
         scopes: list[ArtifactScope] = []
@@ -110,7 +115,12 @@ class TaskOrchestrator:
                 phase=TaskPhase.PLAN,
             )
 
-        explorer = SpawnSubagentTool(
+        explorer_factory = self.explorer_factory or SpawnSubagentTool
+        if explorer_factory is None:
+            raise RuntimeError(
+                "orchestration exploration requires an injected explorer_factory"
+            )
+        explorer = explorer_factory(
             llm=self.llm,
             source_dir=self.source_dir,
             test_dir=self.test_dir,

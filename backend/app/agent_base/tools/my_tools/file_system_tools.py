@@ -27,7 +27,7 @@ from typing import Optional
 from app.agent_base.tools.base import Tool
 from app.agent_base.execution import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
 from app.agent_base.core.hooks import get_runtime
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
 from app.core.risk_policy import RiskDecision, RiskPolicy
 
