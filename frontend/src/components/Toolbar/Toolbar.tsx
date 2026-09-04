@@ -18,6 +18,7 @@ import {
   BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram } from '../../types/uml';
 import {
@@ -58,7 +59,31 @@ const Toolbar: React.FC = () => {
     toggleGrid, setGridSize, setGridColor, setGridThickness,
     setCurrentFilepath, currentFilepath, currentWorkspacePath,
     currentWorkspaceSafe, setCurrentWorkspacePath,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: s.diagram,
+    project: s.project,
+    isModified: s.isModified,
+    undoStack: s.undoStack,
+    redoStack: s.redoStack,
+    undo: s.undo,
+    redo: s.redo,
+    setProject: s.setProject,
+    newProject: s.newProject,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+    removeDiagram: s.removeDiagram,
+    markSaved: s.markSaved,
+    toggleGrid: s.toggleGrid,
+    setGridSize: s.setGridSize,
+    setGridColor: s.setGridColor,
+    setGridThickness: s.setGridThickness,
+    setCurrentFilepath: s.setCurrentFilepath,
+    currentFilepath: s.currentFilepath,
+    currentWorkspacePath: s.currentWorkspacePath,
+    currentWorkspaceSafe: s.currentWorkspaceSafe,
+    setCurrentWorkspacePath: s.setCurrentWorkspacePath,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const {
     selectedLanguage,
@@ -705,8 +730,8 @@ const Toolbar: React.FC = () => {
   };
 
   // ── View controls ───────────────────────────────────
-  const handleZoomIn = () => useDiagramStore.getState().setZoom(diagram.zoom * 1.2);
-  const handleZoomOut = () => useDiagramStore.getState().setZoom(diagram.zoom / 1.2);
+  const handleZoomIn = () => useDiagramStore.getState().setZoom(viewport.zoom * 1.2);
+  const handleZoomOut = () => useDiagramStore.getState().setZoom(viewport.zoom / 1.2);
   const handleZoomReset = () => useDiagramStore.getState().setZoom(1.0);
 
   const saveMenuItems = [
@@ -1014,7 +1039,7 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>
-        <span className="zoom-label">{Math.round(diagram.zoom * 100)}%</span>
+            <span className="zoom-label">{Math.round(viewport.zoom * 100)}%</span>
         <Tooltip title={copy('zoomIn')}>
           <Button icon={<ZoomInOutlined />} onClick={handleZoomIn} />
         </Tooltip>

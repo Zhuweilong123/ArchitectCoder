@@ -7,6 +7,7 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Edge, Node } from '@antv/x6';
+import { useShallow } from 'zustand/react/shallow';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
@@ -200,7 +201,21 @@ const UMLEditor: React.FC = () => {
     moveClass, resizeClass, selectClass, selectRelation,
     addRelation, removeClass, removeRelation, addClass,
     undo, redo,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: s.diagram,
+    selectedClassId: s.selectedClassId,
+    moveClass: s.moveClass,
+    resizeClass: s.resizeClass,
+    selectClass: s.selectClass,
+    selectRelation: s.selectRelation,
+    addRelation: s.addRelation,
+    removeClass: s.removeClass,
+    removeRelation: s.removeRelation,
+    addClass: s.addClass,
+    undo: s.undo,
+    redo: s.redo,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const { setRightPanelTab } = useUiStore();
 
@@ -229,9 +244,9 @@ const UMLEditor: React.FC = () => {
 
     const detachViewport = attachGraphViewport(graph, {
       container: containerRef.current,
-      zoom: diagram.zoom || 1,
-      panX: diagram.pan_x || 0,
-      panY: diagram.pan_y || 0,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
       onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
       onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
@@ -358,7 +373,7 @@ const UMLEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    if (!(diagram.pan_x || diagram.pan_y) && (diagram.zoom || 1) === 1) {
+    if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
     graphRef.current = graph;
@@ -503,8 +518,8 @@ const UMLEditor: React.FC = () => {
       if (
         !_didFirstSync.current
         && graph.getNodes().length > 0
-        && !(diagram.pan_x || diagram.pan_y)
-        && (diagram.zoom || 1) === 1
+        && !(viewport.panX || viewport.panY)
+        && viewport.zoom === 1
       ) {
         _didFirstSync.current = true;
         console.log('[UMLEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
@@ -532,10 +547,10 @@ const UMLEditor: React.FC = () => {
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
-      graph.zoomTo(diagram.zoom);
+    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
+      graph.zoomTo(viewport.zoom);
     }
-  }, [diagram.zoom]);
+  }, [viewport.zoom]);
 
   // Restore persisted translation when switching diagrams or loading a project.
   useEffect(() => {
@@ -543,12 +558,12 @@ const UMLEditor: React.FC = () => {
     if (!graph) return;
     const translation = graph.translate();
     if (
-      Math.abs(translation.tx - diagram.pan_x) > 0.5
-      || Math.abs(translation.ty - diagram.pan_y) > 0.5
+      Math.abs(translation.tx - viewport.panX) > 0.5
+      || Math.abs(translation.ty - viewport.panY) > 0.5
     ) {
-      graph.translate(diagram.pan_x, diagram.pan_y);
+      graph.translate(viewport.panX, viewport.panY);
     }
-  }, [diagram.pan_x, diagram.pan_y]);
+  }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {

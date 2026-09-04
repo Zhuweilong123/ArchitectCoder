@@ -21,6 +21,12 @@ interface Snapshot {
   timestamp: number;
 }
 
+export interface ViewportState {
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
 // Helper: get active diagram from project.
 // Returns a safe fallback for empty projects so existing code doesn't need null checks.
 function _activeDiagram(project: Project): UmlDiagram {
@@ -36,6 +42,23 @@ function _activeDiagram(project: Project): UmlDiagram {
   return createDefaultDiagram(project.name || 'Untitled');
 }
 
+function _viewportFromDiagram(diagram: UmlDiagram): ViewportState {
+  return {
+    zoom: diagram.zoom || 1,
+    panX: diagram.pan_x || 0,
+    panY: diagram.pan_y || 0,
+  };
+}
+
+function _applyViewport(diagram: UmlDiagram, viewport: ViewportState): UmlDiagram {
+  return {
+    ...diagram,
+    zoom: viewport.zoom,
+    pan_x: viewport.panX,
+    pan_y: viewport.panY,
+  };
+}
+
 // Helper: update the active diagram within a project
 function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlDiagram): Project {
   const idx = project.active_diagram_index;
@@ -48,6 +71,8 @@ function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlD
 interface DiagramState {
   // Core state
   project: Project;
+  /** Viewport is kept separate so pan/zoom does not invalidate diagram content subscriptions. */
+  viewport: ViewportState;
   selectedClassId: string | null;
   selectedRelationId: string | null;
   isModified: boolean;
@@ -176,10 +201,12 @@ interface DiagramState {
 
 const _initialProject = createDefaultProject();
 const _initialFilepath = localStorage.getItem('currentFilepath');
+const _initialDiagram = _activeDiagram(_initialProject);
 
 export const useDiagramStore = create<DiagramState>((set, get) => ({
   project: _initialProject,
-  diagram: _activeDiagram(_initialProject),
+  diagram: _initialDiagram,
+  viewport: _viewportFromDiagram(_initialDiagram),
   selectedClassId: null,
   selectedRelationId: null,
   selectedLifelineId: null,
@@ -212,6 +239,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project: normalizedProject,
       diagram: activeDiagram,
+      viewport: _viewportFromDiagram(activeDiagram),
       isModified: false,
       undoStack: [],
       redoStack: [],
@@ -229,6 +257,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       diagram: _activeDiagram(project),
+      viewport: _viewportFromDiagram(_activeDiagram(project)),
       selectedClassId: null,
       selectedRelationId: null,
       isModified: false,
@@ -245,6 +274,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       set({
         project: { ...state.project, active_diagram_index: index },
         diagram: state.project.diagrams[index],
+        viewport: _viewportFromDiagram(state.project.diagrams[index]),
         selectedClassId: null,
         selectedRelationId: null,
         selectedLifelineId: null,
@@ -271,6 +301,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         active_diagram_index: diagrams.length - 1,
       },
       diagram: newD,
+      viewport: _viewportFromDiagram(newD),
       selectedClassId: null,
       selectedRelationId: null,
       isModified: true,
@@ -318,6 +349,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project: normalizedProject,
       diagram: lastIdx >= 0 ? normalizedProject.diagrams[lastIdx] : createDefaultDiagram(),
+      viewport: _viewportFromDiagram(lastIdx >= 0 ? normalizedProject.diagrams[lastIdx] : createDefaultDiagram()),
       selectedClassId: null, selectedRelationId: null,
       isModified: true, undoStack: [], redoStack: [],
     });
@@ -336,6 +368,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         active_diagram_index: newIdx,
       },
       diagram: diagrams.length > 0 ? diagrams[newIdx] : createDefaultDiagram(),
+      viewport: _viewportFromDiagram(diagrams.length > 0 ? diagrams[newIdx] : createDefaultDiagram()),
       isModified: true,
       undoStack: [],
       redoStack: [],
@@ -348,7 +381,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const normalizedDiagram = normalizeDiagram(diagram);
     console.debug('[Store] setDiagram: updating active diagram', normalizedDiagram.name);
     const project = _updateActiveDiagram(get().project, () => normalizedDiagram);
-    set({ project, diagram: _activeDiagram(project), isModified: true });
+    const activeDiagram = _activeDiagram(project);
+    set({ project, diagram: activeDiagram, viewport: _viewportFromDiagram(activeDiagram), isModified: true });
   },
 
   newDiagram: (name) => {
@@ -358,6 +392,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       diagram: _activeDiagram(project),
+      viewport: _viewportFromDiagram(_activeDiagram(project)),
       selectedClassId: null,
       selectedRelationId: null,
       isModified: false,
@@ -810,16 +845,20 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   setZoom: (zoom) => {
+    const nextZoom = Math.max(0.1, Math.min(5, zoom));
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
-      zoom: Math.max(0.1, Math.min(5, zoom)),
+      zoom: nextZoom,
     }));
-    set({ project, diagram: _activeDiagram(project) });
+    set((state) => ({
+      project,
+      viewport: { ...state.viewport, zoom: nextZoom },
+    }));
   },
 
   setPan: (x, y) => {
     const project = _updateActiveDiagram(get().project, (d) => ({ ...d, pan_x: x, pan_y: y }));
-    set({ project, diagram: _activeDiagram(project) });
+    set({ project, viewport: { zoom: get().viewport.zoom, panX: x, panY: y } });
   },
 
   // ── Undo/Redo ─────────────────────────────────────────
@@ -834,10 +873,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const newUndo = [...state.undoStack];
     const target = newUndo.pop()!;
     const newRedo = [...state.redoStack, currentSnapshot];
-    const project = _updateActiveDiagram(state.project, () => target.diagram);
+    const restoredDiagram = _applyViewport(target.diagram, state.viewport);
+    const project = _updateActiveDiagram(state.project, () => restoredDiagram);
     set({
       project,
-      diagram: _activeDiagram(project),
+      diagram: restoredDiagram,
+      viewport: state.viewport,
       undoStack: newUndo,
       redoStack: newRedo,
       isModified: true,
@@ -854,10 +895,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const newRedo = [...state.redoStack];
     const target = newRedo.pop()!;
     const newUndo = [...state.undoStack, currentSnapshot];
-    const project = _updateActiveDiagram(state.project, () => target.diagram);
+    const restoredDiagram = _applyViewport(target.diagram, state.viewport);
+    const project = _updateActiveDiagram(state.project, () => restoredDiagram);
     set({
       project,
-      diagram: _activeDiagram(project),
+      diagram: restoredDiagram,
+      viewport: state.viewport,
       undoStack: newUndo,
       redoStack: newRedo,
       isModified: true,
@@ -878,7 +921,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   markSaved: (revision) => {
     const state = get();
     const project = { ...state.project, revision };
-    set({ project, diagram: _activeDiagram(project), isModified: false });
+    const activeDiagram = _activeDiagram(project);
+    set({ project, diagram: activeDiagram, viewport: _viewportFromDiagram(activeDiagram), isModified: false });
   },
   setCurrentWorkspacePath: (path, safe = true) => set({
     currentWorkspacePath: path,

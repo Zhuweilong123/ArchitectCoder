@@ -11,6 +11,7 @@ import {
   DeleteOutlined, PlusOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   Visibility, Stereotype, RelationType,
   type UmlAttribute, type UmlMethod,
@@ -30,7 +31,27 @@ const PropertyPanel: React.FC = () => {
     updateMessage, removeMessage,
     updateComponent, removeComponent,
     project, setActiveDiagram, addDiagram,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: s.diagram,
+    selectedClassId: s.selectedClassId,
+    selectedRelationId: s.selectedRelationId,
+    selectedLifelineId: s.selectedLifelineId,
+    selectedMessageId: s.selectedMessageId,
+    selectedComponentId: s.selectedComponentId,
+    updateClass: s.updateClass,
+    removeClass: s.removeClass,
+    updateRelation: s.updateRelation,
+    removeRelation: s.removeRelation,
+    updateLifeline: s.updateLifeline,
+    removeLifeline: s.removeLifeline,
+    updateMessage: s.updateMessage,
+    removeMessage: s.removeMessage,
+    updateComponent: s.updateComponent,
+    removeComponent: s.removeComponent,
+    project: s.project,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+  })));
 
   const selectedClass = diagram.classes.find((c) => c.id === selectedClassId);
   const selectedRelation = diagram.relations.find((r) => r.id === selectedRelationId);

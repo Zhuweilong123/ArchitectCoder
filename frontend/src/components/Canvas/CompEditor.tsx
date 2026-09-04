@@ -7,6 +7,7 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Node } from '@antv/x6';
+import { useShallow } from 'zustand/react/shallow';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
@@ -120,7 +121,23 @@ const CompEditor: React.FC = () => {
     addCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
     undo, redo, project, setActiveDiagram, addDiagram,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: s.diagram,
+    selectedComponentId: s.selectedComponentId,
+    addComponent: s.addComponent,
+    removeComponent: s.removeComponent,
+    moveComponent: s.moveComponent,
+    addCompRelation: s.addCompRelation,
+    removeCompRelation: s.removeCompRelation,
+    selectComponent: s.selectComponent,
+    selectCompRelation: s.selectCompRelation,
+    undo: s.undo,
+    redo: s.redo,
+    project: s.project,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const { setRightPanelTab } = useUiStore();
 
@@ -149,9 +166,9 @@ const CompEditor: React.FC = () => {
 
     const detachViewport = attachGraphViewport(graph, {
       container: containerRef.current,
-      zoom: d.zoom || 1,
-      panX: d.pan_x || 0,
-      panY: d.pan_y || 0,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
       onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
       onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
@@ -267,7 +284,7 @@ const CompEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    if (!(d.pan_x || d.pan_y) && (d.zoom || 1) === 1) {
+    if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
     graphRef.current = graph;
@@ -377,8 +394,8 @@ const CompEditor: React.FC = () => {
       if (
         !_didFirstSync.current
         && graph.getNodes().length > 0
-        && !(diagram.pan_x || diagram.pan_y)
-        && (diagram.zoom || 1) === 1
+        && !(viewport.panX || viewport.panY)
+        && viewport.zoom === 1
       ) {
         _didFirstSync.current = true;
         console.log('[CompEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
@@ -405,10 +422,10 @@ const CompEditor: React.FC = () => {
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
-      graph.zoomTo(diagram.zoom);
+    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
+      graph.zoomTo(viewport.zoom);
     }
-  }, [diagram.zoom]);
+  }, [viewport.zoom]);
 
   // Restore persisted translation when switching diagrams or loading a project.
   useEffect(() => {
@@ -416,12 +433,12 @@ const CompEditor: React.FC = () => {
     if (!graph) return;
     const translation = graph.translate();
     if (
-      Math.abs(translation.tx - diagram.pan_x) > 0.5
-      || Math.abs(translation.ty - diagram.pan_y) > 0.5
+      Math.abs(translation.tx - viewport.panX) > 0.5
+      || Math.abs(translation.ty - viewport.panY) > 0.5
     ) {
-      graph.translate(diagram.pan_x, diagram.pan_y);
+      graph.translate(viewport.panX, viewport.panY);
     }
-  }, [diagram.pan_x, diagram.pan_y]);
+  }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {

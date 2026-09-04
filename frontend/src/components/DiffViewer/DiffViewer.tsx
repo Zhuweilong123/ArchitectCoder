@@ -13,6 +13,7 @@ import Editor from '@monaco-editor/react';
 import * as Diff from 'diff';
 import { useUiStore, DiffDiagramType } from '../../stores/uiStore';
 import { useDiagramStore } from '../../stores/diagramStore';
+import { useShallow } from 'zustand/react/shallow';
 import { saveReview } from '../../services/api';
 import { sendAgentMessage } from '../../services/agentChat';
 import { restoreOriginalsToCanvas } from '../../services/designElementHandler';
@@ -22,7 +23,16 @@ import './DiffViewer.css';
 const { TextArea } = Input;
 
 const DiffViewer: React.FC = () => {
-  const { setDiagram, diagram, setActiveDiagram, project, currentFilepath, triggerRecenter } = useDiagramStore();
+  const {
+    setDiagram, diagram, setActiveDiagram, project, currentFilepath, triggerRecenter,
+  } = useDiagramStore(useShallow((s) => ({
+    setDiagram: s.setDiagram,
+    diagram: s.diagram,
+    setActiveDiagram: s.setActiveDiagram,
+    project: s.project,
+    currentFilepath: s.currentFilepath,
+    triggerRecenter: s.triggerRecenter,
+  })));
   const {
     originalCode, optimizedCode, diffContent,
     originalDiagram, optimizedDiagram,
