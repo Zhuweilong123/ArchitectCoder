@@ -177,7 +177,7 @@ export interface DiagramState {
   moveLifeline: (id: string, x: number) => void;
   updateLifeline: (id: string, updates: Partial<SeqLifeline>) => void;
 
-  addMessage: (from: string, to: string, type?: MessageType) => void;
+  addMessage: (from: string, to: string, type?: MessageType, y?: number) => void;
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
   arrangeSequence: () => void;
@@ -843,17 +843,22 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  addMessage: (from, to, type = 'sync') => {
+  addMessage: (from, to, type = 'sync', requestedY) => {
     const state = get();
     const order = (_activeDiagram(state.project).messages?.length || 0) + 1;
-    const y = 150 + order * 40;  // LIFELINE_Y(120) + 30 + order*40
+    const y = typeof requestedY === 'number' ? requestedY : 150 + order * 40;
     const msg = { ...createDefaultMessage(from, to, order, y), type };
     get().pushSnapshot('add_message');
-    const project = _updateActiveDiagram(state.project, (d) => ({
-      ...d,
-      messages: [...(d.messages || []), msg],
-      fragments: _expandFragmentForMessage(d.fragments || [], y),
-    }));
+    const project = _updateActiveDiagram(state.project, (d) => {
+      const messages = [...(d.messages || []), msg]
+        .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
+        .map((message, index) => ({ ...message, order: index + 1 }));
+      return {
+        ...d,
+        messages,
+        fragments: _expandFragmentForMessage(d.fragments || [], y),
+      };
+    });
     console.debug('[Store] addMessage:', msg.label, type, from, '→', to);
     set({
       project,

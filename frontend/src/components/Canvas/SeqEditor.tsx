@@ -52,7 +52,7 @@ function ensureShapesRegistered() {
     ],
     attrs: {
       body: {
-        stroke: '#333', strokeWidth: 2, fill: '#ffe6cc',
+        stroke: 'transparent', strokeWidth: 0, fill: 'transparent',
         rx: 4, ry: 4,
       },
       fo: { refWidth: '100%', refHeight: '100%' },
@@ -150,10 +150,15 @@ const SeqEditor: React.FC = () => {
 
   const { setRightPanelTab, canvasTheme } = useUiStore();
 
-  // ── Fragment context menu ───────────────────────────
-  const [ctxMenu, setCtxMenu] = useState<{ visible: boolean; x: number; y: number; nodeId: string }>({
-    visible: false, x: 0, y: 0, nodeId: '',
-  });
+  // ── Canvas context menu ────────────────────────────
+  const [ctxMenu, setCtxMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    nodeId: string;
+    kind: 'fragment' | 'lifeline';
+    messageY: number;
+  }>({ visible: false, x: 0, y: 0, nodeId: '', kind: 'fragment', messageY: 0 });
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
@@ -181,13 +186,13 @@ const SeqEditor: React.FC = () => {
     });
 
     // Click-to-click message creation (lifelines only)
-    graph.on('node:click', ({ node, e }) => {
+    graph.on('node:click', ({ node }) => {
       if (node.shape === 'seq-fragment') {
         (graph as any).__selectedFragment = node.id;
         return;
       }
       const store = useDiagramStore.getState();
-      if (store.selectedLifelineId) {
+      if (store.selectedLifelineId && store.selectedLifelineId !== node.id) {
         store.addMessage(store.selectedLifelineId, node.id, messageModeRef.current);
         return;
       }
@@ -201,16 +206,24 @@ const SeqEditor: React.FC = () => {
       (graph as any).__selectedFragment = null;
     });
 
-    // Right-click on fragment → context menu
+    // Right-click on a fragment or lifeline → context menu
     graph.on('node:contextmenu', ({ node, e }: any) => {
-      if (node.shape === 'seq-fragment') {
-        const evt = e.evt || e;
+      const evt = e.evt || e;
+      const clientX = evt?.clientX || evt?.pageX || 0;
+      const clientY = evt?.clientY || evt?.pageY || 0;
+      if (node.shape === 'seq-fragment' || node.shape === 'seq-lifeline') {
         evt?.preventDefault?.();
+        const bbox = node.getBBox();
+        const localPoint = graph.clientToLocal(clientX, clientY);
         setCtxMenu({
           visible: true,
-          x: evt?.clientX || evt?.pageX || e.clientX || e.pageX || 0,
-          y: evt?.clientY || evt?.pageY || e.clientY || e.pageY || 0,
+          x: clientX,
+          y: clientY,
           nodeId: node.id,
+          kind: node.shape === 'seq-lifeline' ? 'lifeline' : 'fragment',
+          messageY: node.shape === 'seq-lifeline'
+            ? Math.max(bbox.y + 30, Math.min(localPoint.y, bbox.y + bbox.height - 30))
+            : 0,
         });
       }
     });
@@ -270,15 +283,16 @@ const SeqEditor: React.FC = () => {
     graph.on('node:moved', ({ node }) => {
       if (isInternalUpdate.current || node.shape !== 'seq-lifeline') return;
       const position = node.position();
-      const store = useDiagramStore.getState();
       const nextPosition = snapCanvasPosition(
         { x: position.x, y: position.y },
         getActiveDiagram().snap_to_grid,
         getActiveDiagram().grid_size,
       );
-      if (position.x !== nextPosition.x) {
+      // Lifelines share one horizontal baseline. Only persist X; any
+      // accidental vertical drag is immediately snapped back to it.
+      if (position.x !== nextPosition.x || position.y !== LIFELINE_Y) {
         isInternalUpdate.current = true;
-        node.setPosition(nextPosition.x, position.y);
+        node.setPosition(nextPosition.x, LIFELINE_Y);
         isInternalUpdate.current = false;
       }
       moveLifeline(node.id, nextPosition.x);
@@ -464,8 +478,9 @@ const SeqEditor: React.FC = () => {
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
             node.setAttrs({
               body: {
-                stroke: selected ? '#2563eb' : '#334155',
-                strokeWidth: selected ? 2.5 : 1.5,
+                stroke: 'transparent',
+                strokeWidth: 0,
+                fill: 'transparent',
               },
             });
             if (cached !== htmlContent) {
@@ -482,8 +497,9 @@ const SeqEditor: React.FC = () => {
               attrs: {
                 content: { html: htmlContent },
                 body: {
-                  stroke: selected ? '#2563eb' : '#334155',
-                  strokeWidth: selected ? 2.5 : 1.5,
+                  stroke: 'transparent',
+                  strokeWidth: 0,
+                  fill: 'transparent',
                 },
               },
             });
@@ -516,16 +532,17 @@ const SeqEditor: React.FC = () => {
         const isSelf = msg.from_lifeline === msg.to_lifeline;
         const msgY = msg.y || MSG_Y_BASE + msg.order * 45;  // persisted Y takes priority; fallback matches backend 45px gap
 
-        // Connect from source lifeline edge → target lifeline edge
-        // Self-messages stay on right side; normal messages connect edges
+        // Connect to the visual axis of each lifeline instead of the outer
+        // node boundary. This makes messages feel anchored to the dashed line.
+        const sourceAxisX = srcLL.x + LIFELINE_WIDTH / 2;
+        const targetAxisX = tgtLL.x + LIFELINE_WIDTH / 2;
         let fromX: number, toX: number;
         if (isSelf) {
-          fromX = srcLL.x + LIFELINE_WIDTH;
-          toX   = srcLL.x + LIFELINE_WIDTH;
+          fromX = sourceAxisX;
+          toX = sourceAxisX;
         } else {
-          const srcIsLeft = srcLL.x <= tgtLL.x;
-          fromX = srcIsLeft ? srcLL.x + LIFELINE_WIDTH : srcLL.x;
-          toX   = srcIsLeft ? tgtLL.x : tgtLL.x + LIFELINE_WIDTH;
+          fromX = sourceAxisX;
+          toX = targetAxisX;
         }
 
         const isSelected = msg.id === selectedMessageId;
@@ -557,8 +574,8 @@ const SeqEditor: React.FC = () => {
             edge.setTarget({ x: toX, y: isSelf ? msgY + 24 : msgY });
             if (isSelf) {
               edge.setVertices([
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY },
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY + 24 },
+                { x: sourceAxisX + 40, y: msgY },
+                { x: sourceAxisX + 40, y: msgY + 24 },
               ]);
             } else {
               edge.setVertices([]);
@@ -591,11 +608,11 @@ const SeqEditor: React.FC = () => {
           if (isSelf) {
             const edge = graph.addEdge({
               id: msg.id,
-              source: { x: srcLL.x + LIFELINE_WIDTH, y: msgY },
-              target: { x: srcLL.x + LIFELINE_WIDTH, y: msgY + 24 },
+              source: { x: sourceAxisX, y: msgY },
+              target: { x: sourceAxisX, y: msgY + 24 },
               vertices: [
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY },
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY + 24 },
+                { x: sourceAxisX + 40, y: msgY },
+                { x: sourceAxisX + 40, y: msgY + 24 },
               ],
               labels: edgeLabel,
               connector: { name: 'rounded' },
@@ -659,6 +676,9 @@ const SeqEditor: React.FC = () => {
             fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
             fn.setAttrByPath('body/stroke', stroke);
             fn.setAttrByPath('body/strokeDasharray', dash);
+            // Fragments are visual containers. Keep them behind lifelines and
+            // message edges so elements inside a loop remain selectable.
+            fn.toBack();
             fragmentSignatureCache.current.set(f.id, signature);
           }
         } catch (e) { /* ignore */ }
@@ -813,7 +833,7 @@ const SeqEditor: React.FC = () => {
 
       <div ref={containerRef} className={`seq-canvas-container theme-${canvasTheme}`} />
 
-      {/* Fragment right-click menu */}
+      {/* Canvas right-click menu */}
       {ctxMenu.visible && (
         <div
           style={{
@@ -823,24 +843,43 @@ const SeqEditor: React.FC = () => {
           }}
           onClick={() => setCtxMenu({ ...ctxMenu, visible: false })}
         >
-          <div
-            style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            onClick={() => {
-              const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
-              if (fn) (fn as Node).toBack();
-            }}
-          >置于底层</div>
-          <div
-            style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            onClick={() => {
-              const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
-              if (fn) (fn as Node).toFront();
-            }}
-          >置于上层</div>
+          {ctxMenu.kind === 'lifeline' && (
+            <div
+              style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                useDiagramStore.getState().addMessage(
+                  ctxMenu.nodeId,
+                  ctxMenu.nodeId,
+                  'self',
+                  ctxMenu.messageY,
+                );
+              }}
+            >添加自反消息</div>
+          )}
+          {ctxMenu.kind === 'fragment' && (
+            <>
+              <div
+                style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
+                  if (fn) (fn as Node).toBack();
+                }}
+              >置于底层</div>
+              <div
+                style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
+                  if (fn) (fn as Node).toFront();
+                }}
+              >置于上层</div>
+            </>
+          )}
         </div>
       )}
       {/* Click anywhere to close menu */}
