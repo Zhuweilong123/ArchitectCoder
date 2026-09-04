@@ -204,7 +204,6 @@ const DiffViewer: React.FC = () => {
             updatedDiagrams[idx] = { ...updatedDiagrams[idx], ...opt };
             useDiagramStore.setState({
               project: { ...project, diagrams: updatedDiagrams },
-              diagram: updatedDiagrams[project.active_diagram_index],
               isModified: true,
             });
           } else {
@@ -216,7 +215,6 @@ const DiffViewer: React.FC = () => {
             updatedDiagrams[newIdx] = { ...updatedDiagrams[newIdx], ...opt };
             useDiagramStore.setState({
               project: { ...store.project, diagrams: updatedDiagrams },
-              diagram: updatedDiagrams[store.project.active_diagram_index],
               isModified: true,
             });
           }
