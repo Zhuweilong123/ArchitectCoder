@@ -937,8 +937,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || 190));
       return {
         ...fragment,
-        y_start: Math.max(80, Math.min(fragment.y_start, minMessageY - 24)),
-        y_end: Math.max(fragment.y_end, maxMessageY + 36),
+        // Re-fit the fragment to its original message membership. This is
+        // intentionally done by the explicit arrange command so normal
+        // editing can still preserve a user's manually enlarged region.
+        y_start: Math.max(80, minMessageY - 24),
+        y_end: Math.max(minMessageY + 36, maxMessageY + 36),
       };
     });
 
