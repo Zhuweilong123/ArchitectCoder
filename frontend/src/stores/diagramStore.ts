@@ -64,8 +64,10 @@ interface DiagramState {
   lastMergeKey: string | null;
   maxHistorySteps: number;
   mergeWindowMs: number;
-  /** When true, pushSnapshot is a no-op (e.g. during streaming bulk updates). */
+  /** When true, edits are accumulated into one undo transaction. */
   isBatching: boolean;
+  /** Original diagram captured at the start of the current edit transaction. */
+  batchSnapshot: Snapshot | null;
 
   // ── Diagram access ────────────────────────────
 
@@ -195,6 +197,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   maxHistorySteps: 50,
   mergeWindowMs: 500,
   isBatching: false,
+  batchSnapshot: null,
   recenterCounter: 0,
 
   // ── Project actions ───────────────────────────────────
@@ -641,8 +644,38 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ undoStack: newUndo, redoStack: [], lastOperationTime: now, lastMergeKey: mergeKey ?? null });
   },
 
-  beginBatch: () => set({ isBatching: true }),
-  endBatch: () => set({ isBatching: false, lastMergeKey: null }),
+  beginBatch: () => {
+    const state = get();
+    if (state.isBatching) return;
+    set({
+      isBatching: true,
+      batchSnapshot: {
+        diagram: JSON.parse(JSON.stringify(state.diagram)),
+        timestamp: Date.now(),
+      },
+    });
+  },
+
+  endBatch: () => {
+    const state = get();
+    if (!state.isBatching) return;
+    const baseline = state.batchSnapshot;
+    const changed = Boolean(
+      baseline
+      && JSON.stringify(baseline.diagram) !== JSON.stringify(state.diagram),
+    );
+    const undoStack = changed && baseline
+      ? [...state.undoStack, baseline].slice(-state.maxHistorySteps)
+      : state.undoStack;
+    set({
+      isBatching: false,
+      batchSnapshot: null,
+      undoStack,
+      redoStack: changed ? [] : state.redoStack,
+      lastOperationTime: changed ? Date.now() : state.lastOperationTime,
+      lastMergeKey: null,
+    });
+  },
 
   // ── Component diagram operations ───────────────────────
 

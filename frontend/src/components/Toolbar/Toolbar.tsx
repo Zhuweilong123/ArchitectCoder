@@ -167,6 +167,7 @@ const Toolbar: React.FC = () => {
     }
 
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    useDiagramStore.getState().beginBatch();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -196,6 +197,7 @@ const Toolbar: React.FC = () => {
       } catch {
         message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
       } finally {
+        useDiagramStore.getState().endBatch();
         setGlobalOptimizing(false);
       }
       return;
@@ -303,6 +305,7 @@ const Toolbar: React.FC = () => {
         message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
       }
     } finally {
+      useDiagramStore.getState().endBatch();
       setGlobalOptimizing(false);
     }
   };

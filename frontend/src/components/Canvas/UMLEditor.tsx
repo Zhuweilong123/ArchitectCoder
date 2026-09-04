@@ -7,13 +7,10 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Edge, Node } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
-import { Transform } from '@antv/x6-plugin-transform';
-import { Selection } from '@antv/x6-plugin-selection';
-import { Snapline } from '@antv/x6-plugin-snapline';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
+import { createCanvasGraph } from './core/createCanvasGraph';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -213,53 +210,22 @@ const UMLEditor: React.FC = () => {
 
     ensureShapeRegistered();
 
-    const graph = new Graph({
+    const graph = createCanvasGraph({
       container: containerRef.current,
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      background: { color: '#fafafa' },
       grid: {
         size: diagram.grid_size || 20,
         visible: true,
-        args: { color: diagram.grid_color || '#aaaaaa', thickness: diagram.grid_thickness || 1 },
+        color: diagram.grid_color || '#aaaaaa',
+        thickness: diagram.grid_thickness || 1,
       },
-      connecting: {
-        connector: { name: 'smooth' },
-        connectionPoint: 'boundary',
-        router: { name: 'normal' },
-        allowBlank: false,
-        highlight: true,
-        snap: { radius: 20 },
-        createEdge() {
-          return new Edge({
-            attrs: {
-              line: {
-                stroke: '#1890ff',
-                strokeWidth: 2,
-                targetMarker: { name: 'block', width: 12, height: 8 },
-              },
-            },
-          });
-        },
-        validateConnection({ sourceCell, targetCell }) {
-          if (!sourceCell || !targetCell) return false;
-          if (sourceCell.id === targetCell.id) return false;
-          return true;
+      connection: {
+        line: {
+          stroke: '#1890ff',
+          strokeWidth: 2,
+          targetMarker: { name: 'block', width: 12, height: 8 },
         },
       },
-      mousewheel: {
-        enabled: true,
-        modifiers: ['ctrl', 'meta'],
-        minScale: 0.1,
-        maxScale: 5,
-      },
-      panning: { enabled: true },
     });
-
-    graph.use(new History({ enabled: true }));
-    graph.use(new Transform({ resizing: true, rotating: false }));
-    graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
-    graph.use(new Snapline({ enabled: true, sharp: true }));
 
     const detachViewport = attachGraphViewport(graph, {
       container: containerRef.current,

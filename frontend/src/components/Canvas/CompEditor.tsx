@@ -6,14 +6,11 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { Graph, Node, Edge } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
-import { Transform } from '@antv/x6-plugin-transform';
-import { Selection } from '@antv/x6-plugin-selection';
-import { Snapline } from '@antv/x6-plugin-snapline';
+import { Graph, Node } from '@antv/x6';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
+import { createCanvasGraph } from './core/createCanvasGraph';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
@@ -133,45 +130,22 @@ const CompEditor: React.FC = () => {
     ensureShapesRegistered();
 
     const d = useDiagramStore.getState().diagram;
-    const graph = new Graph({
+    const graph = createCanvasGraph({
       container: containerRef.current,
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      background: { color: '#fafafa' },
       grid: {
-        size: d.grid_size || 20, visible: d.grid_visible !== false,
-        args: { color: d.grid_color || '#e0e0e0', thickness: d.grid_thickness || 1 },
+        size: d.grid_size || 20,
+        visible: d.grid_visible !== false,
+        color: d.grid_color || '#e0e0e0',
+        thickness: d.grid_thickness || 1,
       },
-      connecting: {
-        connector: { name: 'smooth' },
-        connectionPoint: 'boundary',
-        router: { name: 'normal' },
-        allowBlank: false,
+      connection: {
         allowMulti: true,
-        highlight: true,
-        snap: { radius: 20 },
-        createEdge() {
-          return new Edge({
-            attrs: {
-              line: {
-                stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
-                targetMarker: { name: 'block', width: 10, height: 6 },
-              },
-            },
-          });
-        },
-        validateConnection({ sourceCell, targetCell }) {
-          return !!(sourceCell && targetCell && sourceCell.id !== targetCell.id);
+        line: {
+          stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
+          targetMarker: { name: 'block', width: 10, height: 6 },
         },
       },
-      mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'], minScale: 0.1, maxScale: 5 },
-      panning: { enabled: true },
     });
-
-    graph.use(new History({ enabled: true }));
-    graph.use(new Transform({ resizing: true, rotating: false }));
-    graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
-    graph.use(new Snapline({ enabled: true, sharp: true }));
 
     const detachViewport = attachGraphViewport(graph, {
       container: containerRef.current,
