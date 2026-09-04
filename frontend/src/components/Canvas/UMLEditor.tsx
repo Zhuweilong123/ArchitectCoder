@@ -147,21 +147,36 @@ function ensureShapeRegistered() {
 
 // ── Helper: Generate HTML for a UML class ──────────────
 function buildClassHTML(cls: UmlClass, selected: boolean): string {
+  const visibilityClass = (visibility: string) => ({
+    '+': 'public',
+    '-': 'private',
+    '#': 'protected',
+  }[visibility] || 'package');
   const stereotypeLabel = cls.stereotype !== Stereotype.CLASS
     ? `<div class="uml-stereotype">«${escapeHtml(cls.stereotype)}»</div>` : '';
   const isAbstract = cls.stereotype === Stereotype.ABSTRACT;
   const nameStyle = isAbstract ? 'font-style: italic; text-decoration: underline;' : '';
-  const selClass = selected ? 'selected' : '';
+  const selClass = [
+    selected ? 'selected' : '',
+    `stereotype-${escapeHtml(cls.stereotype || Stereotype.CLASS)}`,
+  ].filter(Boolean).join(' ');
 
   const attrLines = cls.attributes.map((a) => {
-    const stat = a.is_static ? ' style="text-decoration: underline;"' : '';
-    return `<div class="uml-attr"${stat}>${escapeHtml(a.visibility)} ${escapeHtml(a.name)}: ${escapeHtml(a.type)}</div>`;
+    const staticClass = a.is_static ? ' static' : '';
+    const defaultValue = a.default_value ? ` = ${escapeHtml(a.default_value)}` : '';
+    return `<div class="uml-member uml-attr${staticClass}">
+      <span class="uml-visibility visibility-${visibilityClass(a.visibility)}">${escapeHtml(a.visibility)}</span>
+      <span class="uml-member-name">${escapeHtml(a.name)}</span><span class="uml-member-type">: ${escapeHtml(a.type)}${defaultValue}</span>
+    </div>`;
   }).join('');
 
   const methodLines = cls.methods.map((m) => {
-    const abs = m.is_abstract ? ' font-style: italic;' : '';
-    const stat = m.is_static ? ' text-decoration: underline;' : '';
-    return `<div class="uml-method" style="${abs}${stat}">${escapeHtml(m.visibility)} ${escapeHtml(m.name)}(${escapeHtml(m.params)}): ${escapeHtml(m.return_type)}</div>`;
+    const modifiers = [m.is_static ? 'static' : '', m.is_abstract ? 'abstract' : '']
+      .filter(Boolean).join(' ');
+    return `<div class="uml-member uml-method ${modifiers}">
+      <span class="uml-visibility visibility-${visibilityClass(m.visibility)}">${escapeHtml(m.visibility)}</span>
+      <span class="uml-member-name">${escapeHtml(m.name)}</span><span class="uml-member-type">(${escapeHtml(m.params)}): ${escapeHtml(m.return_type)}</span>
+    </div>`;
   }).join('');
 
   const providedLines = (cls.provided_interfaces || []).map((i) =>
@@ -184,9 +199,16 @@ function buildClassHTML(cls: UmlClass, selected: boolean): string {
         <div class="uml-class-name">${escapeHtml(cls.name)}</div>
       </div>
       ${ifaceHTML}
-      <div class="uml-class-attrs">${attrLines || '<div class="uml-empty">(no attributes)</div>'}</div>
+      <div class="uml-class-attrs">
+        <div class="uml-section-label">ATTRIBUTES</div>
+        ${attrLines || '<div class="uml-empty">—</div>'}
+      </div>
       <div class="uml-class-divider"></div>
-      <div class="uml-class-methods">${methodLines || '<div class="uml-empty">(no methods)</div>'}</div>
+      <div class="uml-class-methods">
+        <div class="uml-section-label">OPERATIONS</div>
+        ${methodLines || '<div class="uml-empty">—</div>'}
+      </div>
+      ${cls.note ? `<div class="uml-class-note">${escapeHtml(cls.note)}</div>` : ''}
     </div>
   `;
 }
@@ -199,13 +221,14 @@ const UMLEditor: React.FC = () => {
   const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
 
   const {
-    diagram, selectedClassId,
+    diagram, selectedClassId, selectedRelationId,
     moveClass, resizeClass, selectClass, selectRelation,
     addRelation, removeClass, removeRelation, addClass,
     undo, redo,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
+    selectedRelationId: s.selectedRelationId,
     moveClass: s.moveClass,
     resizeClass: s.resizeClass,
     selectClass: s.selectClass,
@@ -429,6 +452,12 @@ const UMLEditor: React.FC = () => {
             const node = existing as Node;
             node.setPosition(cls.position.x, cls.position.y);
             node.setSize({ width, height });
+            node.setAttrs({
+              body: {
+                stroke: isSelected ? '#2563eb' : '#cbd5e1',
+                strokeWidth: isSelected ? 2.5 : 1.5,
+              },
+            });
             if (cached !== htmlContent) {
               // X6 attr: set the 'html' attr on the 'content' selector
               node.setAttrByPath('content/html', htmlContent);
@@ -446,6 +475,10 @@ const UMLEditor: React.FC = () => {
               height,
               attrs: {
                 content: { html: htmlContent },
+                body: {
+                  stroke: isSelected ? '#2563eb' : '#cbd5e1',
+                  strokeWidth: isSelected ? 2.5 : 1.5,
+                },
               },
             });
             if (node) {
@@ -470,6 +503,9 @@ const UMLEditor: React.FC = () => {
       });
 
       diagram.relations.forEach((rel) => {
+        const isSelected = rel.id === selectedRelationId;
+        const isComposition = rel.type === RelationType.COMPOSITION;
+        const isAggregation = rel.type === RelationType.AGGREGATION;
         const labelText = [
           rel.type,
           rel.multiplicity_source ? `[${rel.multiplicity_source}]` : '',
@@ -484,13 +520,29 @@ const UMLEditor: React.FC = () => {
           ? 'block' : 'classic';
 
         const lineAttrs = {
-          stroke: '#555555',
-          strokeWidth: 2,
+          stroke: isSelected ? '#2563eb' : '#64748b',
+          strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
-          targetMarker: { name: arrowStyle, width: 12, height: 8 },
+          sourceMarker: isComposition || isAggregation
+            ? {
+                name: 'diamond',
+                width: 16,
+                height: 12,
+                fill: isComposition ? '#64748b' : '#ffffff',
+              }
+            : undefined,
+          targetMarker: {
+            name: arrowStyle,
+            width: 12,
+            height: 8,
+            fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
+              ? '#ffffff'
+              : isSelected ? '#2563eb' : '#64748b',
+          },
         };
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
+          isSelected, isComposition, isAggregation,
         ]);
 
         try {
@@ -502,6 +554,8 @@ const UMLEditor: React.FC = () => {
               edge.setSource({ cell: rel.source });
               edge.setTarget({ cell: rel.target });
               edge.setLabels(labelText ? [labelText] : []);
+              edge.setAttrByPath('line/stroke', lineAttrs.stroke);
+              edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
               edgeSignatureCache.current.set(rel.id, signature);
@@ -558,7 +612,7 @@ const UMLEditor: React.FC = () => {
       console.error('[UML Editor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.classes, diagram.relations, selectedClassId]);
+  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.

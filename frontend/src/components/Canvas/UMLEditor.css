@@ -11,29 +11,51 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 6px 8px;
+  padding: 0;
   box-sizing: border-box;
+  overflow: hidden;
+  background: #ffffff;
+  color: #1e293b;
 }
 
 .uml-class-node.selected {
-  outline: 2px solid #1890ff;
+  outline: 2px solid #2563eb;
   border-radius: 4px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .uml-stereotype {
   font-size: 10px;
-  color: #888;
+  color: #64748b;
   text-align: center;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  letter-spacing: 0.04em;
 }
 
 .uml-class-header {
   text-align: center;
-  font-weight: 600;
-  font-size: 13px;
-  padding: 2px 0;
-  color: #1a1a1a;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 10px 12px 9px;
+  color: #0f172a;
   flex-shrink: 0;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef4ff 100%);
+  border-top: 3px solid #64748b;
+}
+
+.stereotype-interface .uml-class-header {
+  border-top-color: #0f766e;
+  background: linear-gradient(180deg, #f0fdfa 0%, #e6fffb 100%);
+}
+
+.stereotype-abstract .uml-class-header {
+  border-top-color: #7c3aed;
+  background: linear-gradient(180deg, #faf5ff 0%, #f3e8ff 100%);
+}
+
+.stereotype-enum .uml-class-header {
+  border-top-color: #d97706;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
 }
 
 .uml-class-name {
@@ -48,35 +70,97 @@
 }
 
 .uml-class-ifaces {
-  padding: 2px 6px;
+  padding: 5px 10px 4px;
   font-size: 10px;
+  background: #f8fafc;
 }
 .uml-iface-row {
   margin: 1px 0;
 }
-.uml-iface.provided { color: #389e0d; margin-right: 4px; }
-.uml-iface.required { color: #cf1322; margin-right: 4px; }
+.uml-iface.provided { color: #15803d; margin-right: 4px; }
+.uml-iface.required { color: #b91c1c; margin-right: 4px; }
 
 .uml-class-attrs,
 .uml-class-methods {
   flex: 1;
   overflow: hidden;
   min-height: 0;
+  padding: 7px 10px;
 }
 
-.uml-attr,
-.uml-method {
-  padding: 1px 0;
-  white-space: nowrap;
+.uml-class-attrs {
+  padding: 7px 10px;
+}
+
+.uml-section-label {
+  margin-bottom: 4px;
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.uml-member {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 0;
+  line-height: 1.35;
+}
+
+.uml-visibility {
+  width: 12px;
+  flex: 0 0 12px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.visibility-public { color: #16a34a; }
+.visibility-private { color: #dc2626; }
+.visibility-protected { color: #d97706; }
+
+.uml-member-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #333;
+  white-space: nowrap;
+  color: #334155;
+}
+
+.uml-member-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+}
+
+.uml-member.static .uml-member-name {
+  text-decoration: underline;
+}
+
+.uml-member.abstract .uml-member-name {
+  font-style: italic;
 }
 
 .uml-empty {
-  color: #bbb;
+  color: #cbd5e1;
   font-style: italic;
   font-size: 11px;
+}
+
+.uml-class-note {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-top: 1px dashed #cbd5e1;
+  color: #64748b;
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1.35;
+  max-height: 32px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── X6 Port visibility ────────────────────────────── */
@@ -96,5 +180,15 @@
 
 .x6-edge .x6-edge-label {
   font-size: 10px;
-  fill: #666;
+  font-weight: 600;
+  fill: #475569;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.x6-edge:hover .x6-edge-label,
+.x6-edge-selected .x6-edge-label {
+  fill: #1d4ed8;
 }
