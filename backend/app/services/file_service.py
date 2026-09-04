@@ -7,11 +7,13 @@ import threading
 from datetime import datetime
 from app.models.uml import UmlDiagram, Project
 from app.core.config import get_settings
+from app.agent_base.core.knowledge_graph import get_knowledge_graph
 from app.services.project_repository import ProjectRepository, ProjectSaveResult
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 project_repository = ProjectRepository()
+knowledge_graph_provider = get_knowledge_graph(settings=settings)
 
 
 def ensure_dirs():
@@ -278,27 +280,19 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
 
     def _run():
         try:
-            from knowledge_graph.builder import GraphBuilder
-
-            # KG DB 路径: 放在 uml_dir 同级 data/ 目录
-            kg_db_path = os.path.join(
-                os.path.dirname(settings.uml_dir),
-                "data", "knowledge_graph.db",
+            stats = knowledge_graph_provider.rebuild_project(
+                project, project_id, filepath=filepath,
             )
-            kg_db_path = os.path.normpath(os.path.abspath(kg_db_path))
-
-            builder = GraphBuilder(db_path=kg_db_path)
-            try:
-                stats = builder.rebuild_project(
-                    project, project_id, filepath=filepath,
-                )
+            if stats is not None:
                 logger.info(
-                    f"[KG] Declarative incremental rebuild for '{project_id}': "
-                    f"+{stats.nodes_added} nodes, +{stats.edges_added} edges, "
-                    f"-{stats.nodes_removed} old nodes, {stats.elapsed_ms:.0f}ms"
+                    "[KG] Declarative incremental rebuild for '%s': +%s nodes, "
+                    "+%s edges, -%s old nodes, %sms",
+                    project_id,
+                    getattr(stats, "nodes_added", "?"),
+                    getattr(stats, "edges_added", "?"),
+                    getattr(stats, "nodes_removed", "?"),
+                    getattr(stats, "elapsed_ms", "?"),
                 )
-            finally:
-                builder.close()
         except Exception:
             logger.exception(f"[KG] Rebuild failed for project '{project_id}'")
 

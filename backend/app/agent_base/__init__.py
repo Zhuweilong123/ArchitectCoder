@@ -23,6 +23,11 @@ from .core.config import Config
 from .core.message import Message, MessageRole
 from .core.llm import BaseAgentsLLM
 from .core.agent import Agent
+from .core.knowledge_graph import (
+    KnowledgeGraphProvider,
+    NoOpKnowledgeGraphProvider,
+    load_knowledge_graph,
+)
 
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
@@ -36,6 +41,9 @@ __all__ = [
     "Message", "MessageRole",
     "BaseAgentsLLM",
     "Agent",
+    "KnowledgeGraphProvider",
+    "NoOpKnowledgeGraphProvider",
+    "load_knowledge_graph",
     # agents
     "SimpleAgent",
     "ReActAgent",

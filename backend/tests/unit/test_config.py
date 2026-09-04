@@ -45,6 +45,14 @@ def test_settings_exposes_pluggable_memory_defaults():
     assert settings.agent_memory_recall_max_tokens == 500
 
 
+def test_settings_exposes_pluggable_knowledge_graph_defaults():
+    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+
+    assert settings.agent_knowledge_graph_enabled is True
+    assert settings.agent_knowledge_graph_provider == "knowledge_graph.provider:create"
+    assert settings.agent_knowledge_graph_db_path == ""
+
+
 def test_settings_planner_budget_has_reasoning_headroom():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 

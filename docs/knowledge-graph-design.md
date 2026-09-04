@@ -18,11 +18,24 @@ backend/knowledge_graph/
 ├── database.py                     # SQLite 图数据库 + FTS5 全文索引
 ├── builder.py                      # GraphBuilder (设计层 + 代码层构建)
 ├── retriever.py                    # GraphRetriever (query / expand / trace / diff)
+├── provider.py                     # 默认 SQLite provider 适配器
 └── README.md                       # 本文件（迁移自旧 README）
 
 backend/app/agent_base/tools/my_tools/
-└── knowledge_graph_tools.py        # 5 个 AsyncTool (内部工具，供 explore_project 使用)
+└── knowledge_graph_v2_tools.py    # 结构化图谱工具（显式 opt-in）
 ```
+
+### 2.1 Provider boundary
+
+Application services do not import `GraphBuilder` or `GraphRetriever` directly. The stable boundary is
+`app.agent_base.core.knowledge_graph.KnowledgeGraphProvider`, loaded from
+`AGENT_KNOWLEDGE_GRAPH_PROVIDER` (`module:factory` syntax). The default implementation is
+`knowledge_graph.provider:LocalKnowledgeGraphProvider`, which adapts the existing SQLite + FTS5
+implementation. Set `AGENT_KNOWLEDGE_GRAPH_ENABLED=false` or use `noop` to disable indexing and
+retrieval without changing the agent runtime.
+
+The provider currently owns project rebuilds and diagram-oriented search used by UML scope analysis;
+the existing v2 graph tools remain an explicit local implementation for opt-in structural queries.
 
 ## 3. 数据模型
 

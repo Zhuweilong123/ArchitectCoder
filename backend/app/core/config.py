@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     agent_evals_enabled: bool = True
     agent_evals_provider: str = "app.evals.provider:create"
 
+    # Optional knowledge-graph backend.  Application services depend on the
+    # provider boundary; the default adapter keeps the existing local SQLite
+    # implementation replaceable by a remote or domain-specific backend.
+    agent_knowledge_graph_enabled: bool = True
+    agent_knowledge_graph_provider: str = "knowledge_graph.provider:create"
+    agent_knowledge_graph_db_path: str = ""
+
     # Command tools expose one Linux/POSIX contract.  Windows deployments use
     # the configured WSL distribution instead of asking the model to choose a
     # cmd/PowerShell/Linux dialect per command.

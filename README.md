@@ -186,7 +186,7 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), `AGENT_ORCHESTRATION_ENABLED`, `AGENT_ORCHESTRATOR_PROVIDER`, and the `AGENT_MEMORY_*` provider settings. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
+Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), `AGENT_ORCHESTRATION_ENABLED`, `AGENT_ORCHESTRATOR_PROVIDER`, the `AGENT_MEMORY_*` provider settings, and the `AGENT_KNOWLEDGE_GRAPH_*` provider settings. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
 
 ## API and Development Checks
 
