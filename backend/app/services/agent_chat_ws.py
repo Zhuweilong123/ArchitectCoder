@@ -60,7 +60,9 @@ from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_
 from app.services.trace_reader import reconstruct_history
 from app.services.agent_session import get_or_create
 from app.services.change_set import ChangeSet
-from app.services.run_state import RunStateError, RunStatus, get_run_store
+from app.services.run_state import (
+    RunStateError, RunStatus, get_run_store, run_status_for_completion,
+)
 from app.core.capabilities import CapabilityPolicy
 from app.services.audit_log import get_audit_logger
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
@@ -479,7 +481,28 @@ _RESUME_REQUESTS = frozenset({
 
 def _is_resume_request(message: str) -> bool:
     """Recognize an explicit reconnect/resume command."""
-    return (message or "").strip().lower() in _RESUME_REQUESTS
+    return _resume_supplement(message) is not None
+
+
+def _resume_supplement(message: str) -> str | None:
+    """Return optional guidance attached to an explicit resume command.
+
+    A delimiter is required for the extended form so ordinary messages such
+    as ``继续一下`` are not accidentally treated as recovery requests.
+    """
+    text = (message or "").strip()
+    normalized = text.lower()
+    if normalized in _RESUME_REQUESTS:
+        return ""
+    for command in sorted(_RESUME_REQUESTS, key=len, reverse=True):
+        if not normalized.startswith(command):
+            continue
+        suffix = text[len(command):]
+        if suffix and suffix[0] in " \u3000:,\uff0c\uff1a":
+            supplement = suffix[1:].strip()
+            if supplement:
+                return supplement
+    return None
 
 
 def _latest_resumable_run(session_id: str):
@@ -508,14 +531,14 @@ def _latest_resumable_run(session_id: str):
     return None
 
 
-def _resume_prompt(checkpoint: dict) -> str:
+def _resume_prompt(checkpoint: dict, supplement: str = "") -> str:
     """Turn a persisted checkpoint into an explicit continuation request."""
     original = str(checkpoint.get("request_summary") or checkpoint.get("message") or "")[:500]
     completed = checkpoint.get("completed_items") or []
     pending = checkpoint.get("pending_items") or []
     verification = checkpoint.get("verification") or []
     last_step = checkpoint.get("last_step") or ""
-    return (
+    prompt = (
         "continue the previous unfinished task. Original request: " + original
         + ". Read the current files and existing changes first, skip completed steps, "
         "and continue from the pending step; do not treat this as a new task."
@@ -523,7 +546,10 @@ def _resume_prompt(checkpoint: dict) -> str:
         + (" Pending: " + "; ".join(map(str, pending[-16:])) + "." if pending else "")
         + (" Last step: " + str(last_step) + "." if last_step else "")
         + (" Verification: " + "; ".join(map(str, verification[-16:])) + "." if verification else "")
-    )[:1800]
+    )
+    if supplement:
+        prompt += " User supplement for this continuation: " + str(supplement)[:500] + "."
+    return prompt[:1800]
 
 
 def _persist_run_checkpoint(
@@ -851,8 +877,47 @@ async def _handle_dev(
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
     ))
+    task_binding = None
+    if run_id:
+        try:
+            from app.agent_base.tools.task_system import create_task_execution
+
+            task_binding = create_task_execution(
+                scope=session_id or project_file or "default",
+                run_id=run_id,
+                owner=f"run:{run_id}",
+                subject=user_message,
+                description="Durable task state for one DevAgent execution.",
+            )
+            agent.last_run_checkpoint["task_id"] = task_binding.task_id
+            _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+            if trace_log:
+                trace_log.event(
+                    "task_binding",
+                    task_id=task_binding.task_id,
+                    status="bound",
+                )
+        except Exception:
+            # Task persistence is an execution aid. A store failure must not
+            # turn an otherwise usable chat run into a false tool failure.
+            logger.warning("[TaskSystem] Could not bind run %s", run_id, exc_info=True)
     task_tool_calls: list[dict] = []
     task_summary_written = False
+
+    def _sync_task_execution() -> None:
+        if task_binding is None:
+            return
+        try:
+            task_binding.sync(
+                todos=list(get_runtime().todos or []),
+                checkpoint=agent.last_run_checkpoint,
+            )
+        except Exception:
+            logger.warning(
+                "[TaskSystem] Could not sync task %s",
+                task_binding.task_id,
+                exc_info=True,
+            )
 
     def _write_task_summary(status: str) -> None:
         """Persist one bounded summary for every terminal execution path."""
@@ -872,6 +937,19 @@ async def _handle_dev(
                 status=status,
                 tool_call_count=len(task_tool_calls),
             )
+        if task_binding is not None:
+            try:
+                task_binding.finalize(
+                    status,
+                    checkpoint=agent.last_run_checkpoint,
+                )
+            except Exception:
+                logger.warning(
+                    "[TaskSystem] Could not finalize task %s as %s",
+                    task_binding.task_id,
+                    status,
+                    exc_info=True,
+                )
         task_summary_written = True
 
     try:
@@ -976,6 +1054,7 @@ async def _handle_dev(
                 ],
             })
             _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+            _sync_task_execution()
 
             # 记录完整工具调用与返回（在截断发给前端之前）
             if trace_log:
@@ -1103,6 +1182,7 @@ async def _handle_dev(
                 )
                 agent.last_run_checkpoint = {
                     "run_id": run_id,
+                    "task_id": task_binding.task_id if task_binding else "",
                     "status": "waiting_approval" if fallback_review_requested else terminal_status,
                     "request_summary": user_message[:500],
                     "completed_items": [
@@ -1151,9 +1231,7 @@ async def _handle_dev(
                     })
                     return
 
-                run_status = (
-                    RunStatus.SUCCEEDED if terminal_status == "completed" else RunStatus.FAILED
-                )
+                run_status = run_status_for_completion(terminal_status)
                 try:
                     from app.services.agent_metrics import get_agent_metrics
                     get_agent_metrics().record_run(
@@ -1217,7 +1295,8 @@ async def _handle_dev(
 
     except asyncio.CancelledError:
         disconnected = bool(disconnect_check and disconnect_check())
-        is_paused = disconnected
+        user_stopped = bool(stop_check())
+        is_paused = disconnected or user_stopped
         agent.last_run_checkpoint = {
             **getattr(agent, "last_run_checkpoint", {}),
             "run_id": run_id,
@@ -1225,7 +1304,10 @@ async def _handle_dev(
             "resume_available": is_paused,
             "stop_reason": (
                 "websocket disconnected; send continue to resume"
-                if is_paused else "agent task was canceled"
+                if disconnected else (
+                    "user requested stop; send continue to resume"
+                    if user_stopped else "agent task was canceled"
+                )
             ),
         }
         _write_task_summary(agent.last_run_checkpoint["status"])
@@ -1233,38 +1315,54 @@ async def _handle_dev(
             _persist_run_checkpoint(
                 run_id, run_owner, agent.last_run_checkpoint,
                 status=RunStatus.PAUSED if is_paused else RunStatus.CANCELED,
-                error="websocket disconnected" if is_paused else "agent task was canceled",
+                error=(
+                    "websocket disconnected" if disconnected else (
+                        "user requested stop" if user_stopped
+                        else "agent task was canceled"
+                    )
+                ),
             )
             _record_audit(
                 "run_paused" if is_paused else "run_canceled",
                 run_id=run_id, session_id=session_id,
-                reason="websocket disconnected" if is_paused else "agent task was canceled",
+                reason=(
+                    "websocket disconnected" if disconnected else (
+                        "user requested stop" if user_stopped
+                        else "agent task was canceled"
+                    )
+                ),
             )
         raise
     except AgentInterrupted:
+        # An explicit user stop is a recoverable pause.  A true task cancel
+        # remains canceled; the stop hook itself is only raised for the
+        # user-controlled stop path.
+        is_paused = True
         agent.last_run_checkpoint = {
             **getattr(agent, "last_run_checkpoint", {}),
             "run_id": run_id,
-            "status": "stopped",
+            "status": "paused",
+            "resume_available": True,
             "stop_reason": "user requested stop",
         }
-        _write_task_summary("stopped")
+        _write_task_summary("paused")
         if run_id:
             try:
                 get_run_store().transition(
-                    run_id, RunStatus.CANCELED,
+                    run_id, RunStatus.PAUSED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error="user requested stop",
                     metadata_patch={"checkpoint": agent.last_run_checkpoint},
                 )
             except RunStateError:
-                logger.warning("[RunState] Could not mark run %s canceled", run_id, exc_info=True)
+                logger.warning("[RunState] Could not mark run %s paused", run_id, exc_info=True)
             _record_audit(
-                "run_canceled", run_id=run_id, session_id=session_id,
+                "run_paused", run_id=run_id, session_id=session_id,
                 reason="user requested stop",
             )
         await _ws_send(websocket, {
             "event": "stopped", "reason": "User requested stop",
+            "status": "paused", "resume_available": is_paused,
         })
     except Exception as e:
         agent.last_run_checkpoint = {
@@ -1384,7 +1482,9 @@ async def agent_chat_ws(websocket: WebSocket):
                 user_message = msg.get("message", "")
                 resume_record = None
                 resume_checkpoint = {}
+                resume_supplement = ""
                 if _is_resume_request(user_message):
+                    resume_supplement = _resume_supplement(user_message) or ""
                     resumable = _latest_resumable_run(session_id)
                     if resumable is not None:
                         resume_record, resume_checkpoint = resumable
@@ -1430,7 +1530,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     continue
                 source_dir, test_dir, project_file = validated
                 effective_user_message = (
-                    _resume_prompt(resume_checkpoint)
+                    _resume_prompt(resume_checkpoint, resume_supplement)
                     if resume_checkpoint else user_message
                 )
 
@@ -1516,6 +1616,9 @@ async def agent_chat_ws(websocket: WebSocket):
                         get_run_store().transition(
                             resume_record.run_id, old_target,
                             expected={old_status},
+                            # Paused/orphaned runs no longer own a worker
+                            # lease; only a still-running run has an owner.
+                            owner_id=(resume_record.owner_id if old_status == RunStatus.RUNNING.value else ""),
                             metadata_patch={"checkpoint": consumed_checkpoint},
                         )
                     except RunStateError:
@@ -1592,7 +1695,34 @@ async def agent_chat_ws(websocket: WebSocket):
             elif msg_type == "stop":
                 stop_requested = True
                 trace_log.error(event_type="user_stop", message="用户请求停止")
-                await websocket.send_json({"event": "stopped", "reason": "User requested stop"})
+                # Cancel the background task as well as setting the hook flag.
+                # This is necessary when the Agent is waiting for a review
+                # future; otherwise it cannot observe the stop hook and the
+                # session remains locked until a review response arrives.
+                if run_task is not None and not run_task.done():
+                    run_task.cancel()
+                    try:
+                        await run_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.warning(
+                            "[AgentChat] Stopped run raised during cancellation",
+                            exc_info=True,
+                        )
+                    await websocket.send_json({
+                        "event": "stopped",
+                        "reason": "User requested stop",
+                        "status": "paused",
+                        "resume_available": True,
+                    })
+                else:
+                    await websocket.send_json({
+                        "event": "stopped",
+                        "reason": "User requested stop",
+                        "status": "paused",
+                        "resume_available": True,
+                    })
 
             # ── 人工审核回复 ──
             elif msg_type == "review_response":
@@ -1641,11 +1771,7 @@ async def agent_chat_ws(websocket: WebSocket):
                             checkpoint["status"] = post_review_status
                             if dev_agent is not None:
                                 dev_agent.last_run_checkpoint = checkpoint
-                            resolved_run_status = (
-                                RunStatus.SUCCEEDED
-                                if post_review_status == "completed"
-                                else RunStatus.FAILED
-                            )
+                            resolved_run_status = run_status_for_completion(post_review_status)
                             if reviewed_run_id:
                                 try:
                                     get_run_store().transition(
@@ -1680,7 +1806,7 @@ async def agent_chat_ws(websocket: WebSocket):
                         if reviewed_run_id:
                             try:
                                 get_run_store().transition(
-                                    reviewed_run_id, RunStatus.FAILED,
+                                    reviewed_run_id, RunStatus.PARTIAL,
                                     expected={RunStatus.WAITING_APPROVAL},
                                     owner_id=connection_owner,
                                     metadata_patch={"checkpoint": checkpoint},

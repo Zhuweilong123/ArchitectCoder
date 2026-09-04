@@ -17,9 +17,9 @@ import secrets
 import subprocess
 import threading
 import hashlib
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.agent_base.tools.base import Tool, ToolParameter
 
@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 TASK_ID_PATTERN = re.compile(r"^task_[0-9a-f]{8}$")
 VALID_STATUS = ("pending", "in_progress", "completed")
+VALID_EXECUTION_STATUS = (
+    "pending", "running", "waiting_approval", "paused", "completed", "partial",
+    "failed", "timed_out", "budget_exceeded", "canceled", "stopped",
+)
 
 VALID_WORKTREE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -44,6 +48,10 @@ class Task:
     owner: Optional[str]
     blockedBy: list[str]
     worktree: Optional[str] = None
+    # Execution result is deliberately independent from board status. A task
+    # can remain in_progress while its run ended partially or by budget stop.
+    result_status: str = "pending"
+    execution: dict[str, Any] = field(default_factory=dict)
 
 
 class TaskStore:
@@ -101,6 +109,10 @@ class TaskStore:
                 raise ValueError(f"Task file ID does not match {task_id}")
             if task.status not in VALID_STATUS:
                 raise ValueError(f"Invalid task status: {task.status}")
+            if task.result_status not in VALID_EXECUTION_STATUS:
+                raise ValueError(f"Invalid task result status: {task.result_status}")
+            if not isinstance(task.execution, dict):
+                raise ValueError("Task execution state must be an object")
             return task
 
     def list_tasks(self) -> list[Task]:
@@ -112,6 +124,96 @@ class TaskStore:
 
     def get_task_json(self, task_id: str) -> str:
         return json.dumps(asdict(self.load_task(task_id)), indent=2)
+
+    # ── agent execution binding ──────────────────────────────────────────
+
+    def bind_execution(self, task_id: str, run_id: str, owner: str) -> Task:
+        """Bind one durable task to one run without exposing task tools.
+
+        The binding is idempotent for the same run and rejects a different
+        active run, preventing a stale websocket or resume attempt from
+        overwriting the current execution state.
+        """
+        if not run_id or not owner:
+            raise ValueError("run_id and owner are required")
+        with self._lock:
+            task = self.load_task(task_id)
+            bound_run = str(task.execution.get("run_id") or "")
+            if bound_run and bound_run != run_id:
+                bound_status = str(task.execution.get("status") or "")
+                if bound_status in {"running", "waiting_approval"}:
+                    raise ValueError(f"Task {task_id} is already bound to run {bound_run}")
+            if task.status == "pending":
+                task.owner = owner
+                task.status = "in_progress"
+            elif task.owner not in {None, owner}:
+                raise ValueError(f"Task {task_id} is owned by {task.owner}")
+            task.owner = owner
+            task.result_status = "running"
+            task.execution = {
+                "run_id": run_id,
+                "owner": owner,
+                "status": "running",
+                "todo_version": int(task.execution.get("todo_version", 0) or 0),
+                "todos": list(task.execution.get("todos") or []),
+                "checkpoint": dict(task.execution.get("checkpoint") or {}),
+            }
+            self.save_task(task)
+            return task
+
+    def update_execution(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        todos: list[dict] | None = None,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> Task:
+        """Atomically persist the latest Todo/checkpoint snapshot."""
+        with self._lock:
+            task = self.load_task(task_id)
+            execution = dict(task.execution or {})
+            if execution.get("run_id") != run_id:
+                raise ValueError(f"Task {task_id} is not bound to run {run_id}")
+            if todos is not None:
+                previous_todos = execution.get("todos") or []
+                if previous_todos != todos:
+                    execution["todo_version"] = int(execution.get("todo_version", 0) or 0) + 1
+                execution["todos"] = [dict(todo) for todo in todos]
+            if checkpoint is not None:
+                execution["checkpoint"] = dict(checkpoint)
+            task.execution = execution
+            self.save_task(task)
+            return task
+
+    def finalize_execution(
+        self,
+        task_id: str,
+        run_id: str,
+        result_status: str,
+        *,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> Task:
+        """Persist a terminal result while keeping failure reasons distinct."""
+        if result_status not in VALID_EXECUTION_STATUS:
+            raise ValueError(f"Invalid task result status: {result_status}")
+        with self._lock:
+            task = self.load_task(task_id)
+            execution = dict(task.execution or {})
+            if execution.get("run_id") != run_id:
+                raise ValueError(f"Task {task_id} is not bound to run {run_id}")
+            execution["status"] = result_status
+            if checkpoint is not None:
+                execution["checkpoint"] = {
+                    **dict(checkpoint),
+                    "status": result_status,
+                }
+            task.execution = execution
+            task.result_status = result_status
+            if result_status == "completed":
+                task.status = "completed"
+            self.save_task(task)
+            return task
 
     # ── 依赖 DAG ──────────────────────────────────────
 
@@ -180,6 +282,7 @@ class TaskStore:
                 return f"Task {task_id} is blocked by unfinished dependencies"
             task.owner = owner
             task.status = "in_progress"
+            task.result_status = "running"
             self.save_task(task)
         return f"Claimed {task.id} ({task.subject})"
 
@@ -191,6 +294,7 @@ class TaskStore:
             if task.owner != owner:
                 return f"Task {task_id} is owned by {task.owner}, not {owner}"
             task.status = "completed"
+            task.result_status = "completed"
             self.save_task(task)
             unblocked = [t.subject for t in self.list_tasks()
                          if t.status == "pending" and t.blockedBy and self.can_start(t.id)]
@@ -511,6 +615,57 @@ def _default_dirs(scope: str = ""):
         scope_dir = f"{prefix}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
         return base / ".tasks" / scope_dir, base / ".worktrees" / scope_dir, base.parent
     return base / ".tasks", base / ".worktrees", base.parent  # workdir = 项目根
+
+
+class TaskExecutionBinding:
+    """Backend-only bridge from one Agent run to a durable Task record."""
+
+    def __init__(self, store: TaskStore, task_id: str, run_id: str):
+        self.store = store
+        self.task_id = task_id
+        self.run_id = run_id
+
+    def sync(
+        self,
+        *,
+        todos: list[dict] | None = None,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> None:
+        self.store.update_execution(
+            self.task_id,
+            self.run_id,
+            todos=todos,
+            checkpoint=checkpoint,
+        )
+
+    def finalize(
+        self,
+        result_status: str,
+        *,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> None:
+        self.store.finalize_execution(
+            self.task_id,
+            self.run_id,
+            result_status,
+            checkpoint=checkpoint,
+        )
+
+
+def create_task_execution(
+    *,
+    scope: str,
+    run_id: str,
+    owner: str,
+    subject: str,
+    description: str = "",
+) -> TaskExecutionBinding:
+    """Create and claim one Task for a running Agent execution."""
+    tasks_dir, _, _ = _default_dirs(scope)
+    store = TaskStore(tasks_dir)
+    task = store.create_task(subject or "Agent task", description)
+    store.bind_execution(task.id, run_id, owner)
+    return TaskExecutionBinding(store, task.id, run_id)
 
 
 def create_task_system_tools(scope: str = "") -> list[Tool]:

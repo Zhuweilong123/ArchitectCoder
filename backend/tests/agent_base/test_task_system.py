@@ -70,6 +70,46 @@ def test_complete_requires_owner_match(store):
     assert "Completed" in store.complete_task(a.id, owner="agent")
 
 
+def test_execution_binding_persists_todos_and_distinguishes_budget_stop(store):
+    task = store.create_task("repair project")
+    store.bind_execution(task.id, "run-1", "run:run-1")
+    todos = [
+        {"content": "inspect", "status": "completed"},
+        {"content": "verify", "status": "pending"},
+    ]
+    store.update_execution(
+        task.id,
+        "run-1",
+        todos=todos,
+        checkpoint={"run_id": "run-1", "pending_items": ["verify"]},
+    )
+
+    current = store.load_task(task.id)
+    assert current.status == "in_progress"
+    assert current.result_status == "running"
+    assert current.execution["todo_version"] == 1
+    assert current.execution["todos"] == todos
+
+    store.finalize_execution(
+        task.id,
+        "run-1",
+        "budget_exceeded",
+        checkpoint={"status": "completed"},
+    )
+    current = store.load_task(task.id)
+    assert current.status == "in_progress"
+    assert current.result_status == "budget_exceeded"
+    assert current.execution["status"] == "budget_exceeded"
+    assert current.execution["checkpoint"]["status"] == "budget_exceeded"
+
+
+def test_execution_binding_rejects_stale_run(store):
+    task = store.create_task("repair project")
+    store.bind_execution(task.id, "run-1", "run:run-1")
+    with pytest.raises(ValueError, match="already bound"):
+        store.bind_execution(task.id, "run-2", "run:run-2")
+
+
 def _init_git_repo(repo):
     """初始化一个最小 git 仓库，失败返回 False（用于 skip）。"""
     try:

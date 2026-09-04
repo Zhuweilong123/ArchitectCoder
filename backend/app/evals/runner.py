@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
@@ -24,6 +25,7 @@ from .models import CheckerResult, EvalCase, EvalResult
 from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
+logger = logging.getLogger(__name__)
 
 _HARD_BUDGET_STOP_REASONS = {
     "hard_limit_before_next_llm",
@@ -131,7 +133,13 @@ class EvalRunner:
             get_agent_metrics().record_run("eval_error")
             return finished
 
-        with tempfile.TemporaryDirectory(prefix=f"{run_id}_") as temp_dir:
+        # Agent tools may create POSIX-style links (for example ``venv/lib64``)
+        # inside the Windows-backed fixture. Cleanup must not erase the result
+        # record or hide the actual evaluation outcome when such a link cannot
+        # be removed by Windows.
+        with tempfile.TemporaryDirectory(
+            prefix=f"{run_id}_", ignore_cleanup_errors=True
+        ) as temp_dir:
             workspace = Path(temp_dir).resolve()
             result.workspace = str(workspace)
             result.metadata["workspace_ephemeral"] = True
@@ -173,6 +181,38 @@ class EvalRunner:
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()
+                    task_binding = None
+                    task_finalized = False
+                    if hasattr(agent, "tool_registry"):
+                        try:
+                            from app.agent_base.tools.task_system import create_task_execution
+
+                            task_subject = (case.name or "").strip() or first_prompt
+                            task_binding = create_task_execution(
+                                scope=f"eval_{case.id}",
+                                run_id=run_id,
+                                owner=f"run:{run_id}",
+                                subject=task_subject,
+                                description="Durable task state for one evaluation execution.",
+                            )
+                            result.metadata["task_id"] = task_binding.task_id
+                            tracer.event(
+                                "task_binding",
+                                task_id=task_binding.task_id,
+                                status="bound",
+                            )
+                            agent.last_run_checkpoint = {
+                                **dict(getattr(agent, "last_run_checkpoint", {}) or {}),
+                                "task_id": task_binding.task_id,
+                            }
+                        except Exception:
+                            # Task persistence is an observability aid; an unavailable
+                            # task store must not prevent the evaluation itself.
+                            logger.warning(
+                                "[TaskSystem] Could not bind evaluation run %s",
+                                run_id,
+                                exc_info=True,
+                            )
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
@@ -184,9 +224,45 @@ class EvalRunner:
                         "summary_written": False,
                     }
 
+                    def finalize_task(
+                        status: str,
+                        checkpoint: dict[str, Any] | None = None,
+                    ) -> None:
+                        nonlocal task_finalized
+                        if task_binding is None:
+                            return
+                        if task_finalized:
+                            return
+                        try:
+                            effective_checkpoint = dict(
+                                checkpoint or getattr(
+                                    agent, "last_run_checkpoint", {}
+                                ) or {}
+                            )
+                            effective_checkpoint["status"] = status
+                            task_binding.finalize(
+                                status,
+                                checkpoint=effective_checkpoint,
+                            )
+                            tracer.event(
+                                "task_binding",
+                                task_id=task_binding.task_id,
+                                status=status,
+                            )
+                            task_finalized = True
+                        except Exception:
+                            logger.warning(
+                                "[TaskSystem] Could not finalize evaluation task %s as %s",
+                                task_binding.task_id,
+                                status,
+                                exc_info=True,
+                            )
+
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
-                        from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
+                        from app.agent_base.core.hooks import (
+                            AgentRuntime, get_runtime, set_runtime, reset_runtime,
+                        )
                         from app.services.agent_chat_ws import (
                             _build_task_execution_summary,
                             _enabled_tools_context,
@@ -204,6 +280,49 @@ class EvalRunner:
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
                         production_agent = hasattr(agent, "tool_registry")
+
+                        def sync_task_binding(checkpoint: dict[str, Any]) -> None:
+                            if task_binding is None:
+                                return
+                            try:
+                                task_binding.sync(
+                                    todos=list(get_runtime().todos or []),
+                                    checkpoint=checkpoint,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "[TaskSystem] Could not sync evaluation task %s",
+                                    task_binding.task_id,
+                                    exc_info=True,
+                                )
+
+                        def sync_progress_checkpoint(
+                            step: int,
+                            details: list[dict],
+                        ) -> None:
+                            """Persist a bounded checkpoint before a turn can be interrupted."""
+                            if task_binding is None:
+                                return
+                            checkpoint = dict(
+                                getattr(agent, "last_run_checkpoint", {}) or {}
+                            )
+                            checkpoint.update({
+                                "run_id": run_id,
+                                "task_id": task_binding.task_id,
+                                "turn": active_turn["turn"],
+                                "last_step": step,
+                                "last_tools": [
+                                    {
+                                        "name": str(detail.get("name") or ""),
+                                        "status": str(detail.get("status") or ""),
+                                        "error_code": str(detail.get("error_code") or ""),
+                                    }
+                                    for detail in details[-8:]
+                                ],
+                            })
+                            active_turn["checkpoint"] = checkpoint
+                            sync_task_binding(checkpoint)
+
                         def write_turn_summary(status: str) -> None:
                             """Write one trace checkpoint for the active eval task."""
                             if not active_turn["turn"] or active_turn["summary_written"]:
@@ -277,6 +396,7 @@ class EvalRunner:
                                 async for progress in agent.arun_stream(prompt):
                                     details = progress.tool_calls_detail or []
                                     record_tool_details(progress.step, details, turn_tool_details)
+                                    sync_progress_checkpoint(progress.step, details)
                                     delta_tool_calls = sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
@@ -301,6 +421,7 @@ class EvalRunner:
                                 active_turn["checkpoint"] = dict(
                                     getattr(agent, "last_run_checkpoint", {}) or {}
                                 )
+                                sync_task_binding(active_turn["checkpoint"])
                                 write_turn_summary("completed")
                                 continue
 
@@ -346,6 +467,7 @@ class EvalRunner:
                                         for detail in details
                                     )
                                     record_tool_details(progress.step, details, turn_tool_details)
+                                    sync_progress_checkpoint(progress.step, details)
                                     turn_tool_calls += sum(
                                         detail.get("status") != "blocked" for detail in details
                                     )
@@ -393,7 +515,10 @@ class EvalRunner:
                                 "request": prompt[:500],
                                 "verification": [],
                             }
+                            if task_binding is not None:
+                                agent.last_run_checkpoint["task_id"] = task_binding.task_id
                             active_turn["checkpoint"] = dict(agent.last_run_checkpoint)
+                            sync_task_binding(active_turn["checkpoint"])
                             turn_records.append({
                                 "turn": turn_index,
                                 "prompt": prompt,
@@ -467,7 +592,20 @@ class EvalRunner:
 
                         result.metadata["turns"] = turn_records
 
-                    await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                    try:
+                        await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                    except asyncio.TimeoutError:
+                        timeout_checkpoint = dict(
+                            active_turn.get("checkpoint") or {}
+                        )
+                        timeout_checkpoint["status"] = "timed_out"
+                        timeout_checkpoint["stop_reason"] = (
+                            f"evaluation exceeded {case.max_seconds}s"
+                        )
+                        # Keep the terminal task event inside TraceSession. The
+                        # outer handler still owns rollback and result shaping.
+                        finalize_task("timed_out", timeout_checkpoint)
+                        raise
                     if change_set is not None:
                         result.metadata["change_set"] = change_set.commit()
                     if review_mgr is not None:
@@ -536,6 +674,13 @@ class EvalRunner:
                         result.status = "budget_finalized"
                     else:
                         result.status = "passed" if result.passed else "failed"
+                    finalize_task(
+                        "budget_exceeded"
+                        if budget_reasons & _HARD_BUDGET_STOP_REASONS
+                        else "completed"
+                        if result.passed
+                        else "failed"
+                    )
             except asyncio.TimeoutError:
                 if (
                     "tracer" in locals()
@@ -564,6 +709,12 @@ class EvalRunner:
                     change_set.rollback()
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {case.max_seconds}s"
+                timeout_checkpoint = dict(
+                    active_turn.get("checkpoint") if "active_turn" in locals() else {}
+                )
+                timeout_checkpoint["status"] = "timed_out"
+                timeout_checkpoint["stop_reason"] = result.error
+                finalize_task("timed_out", timeout_checkpoint)
             except Exception as exc:
                 if (
                     "tracer" in locals()
@@ -592,6 +743,12 @@ class EvalRunner:
                     change_set.rollback()
                 result.status = "error"
                 result.error = f"{type(exc).__name__}: {exc}"
+                failed_checkpoint = dict(
+                    active_turn.get("checkpoint") if "active_turn" in locals() else {}
+                )
+                failed_checkpoint["status"] = "failed"
+                failed_checkpoint["stop_reason"] = result.error
+                finalize_task("failed", failed_checkpoint)
             finally:
                 result.trace_path = str(Path(tracer.path)) if "tracer" in locals() else ""
 

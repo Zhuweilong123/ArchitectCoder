@@ -1,7 +1,7 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _latest_persisted_checkpoint,
-    _is_resume_request, _latest_resumable_run, _resume_prompt,
+    _is_resume_request, _latest_resumable_run, _resume_prompt, _resume_supplement,
     _should_archive_task_memory, _terminal_checkpoint_status,
     _todo_progress_state, DevPromptBuilder, _archive_task_to_memory,
 )
@@ -178,6 +178,8 @@ def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):
 def test_resume_request_uses_persisted_checkpoint(monkeypatch):
     assert _is_resume_request("继续")
     assert _is_resume_request(" resume ")
+    assert _is_resume_request("继续，补充：只修改源码")
+    assert _resume_supplement("继续，补充：只修改源码") == "补充：只修改源码"
     assert not _is_resume_request("继续一下")
 
     class _Record:
@@ -202,4 +204,5 @@ def test_resume_request_uses_persisted_checkpoint(monkeypatch):
     record, checkpoint = _latest_resumable_run("session-1")
     assert record.run_id == "run-paused"
     assert "inspect design and source" in _resume_prompt(checkpoint)
+    assert "只修改源码" in _resume_prompt(checkpoint, "只修改源码")
     assert _latest_resumable_run("") is None

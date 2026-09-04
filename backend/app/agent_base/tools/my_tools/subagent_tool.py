@@ -7,9 +7,8 @@ import logging
 
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.registry import ToolRegistry
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool, _kg_db_path
+from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
 from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
-from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 
 logger = logging.getLogger(__name__)
@@ -49,27 +48,17 @@ def _build_toolkit_tools(
         tools.append(SkillTool())
         return tools
 
-    # 只读类工具包共用 ReadFileTool（无 write/edit/bash）+ kg 工具子集
+    # 只读类工具包共用 ReadFileTool（无 write/edit/bash）；知识图谱工具默认禁用
+    # Read-only toolkits intentionally use only file inspection and skills.
+    # KG toolkit names remain for compatibility, but graph tools are disabled
+    # for DevAgent to avoid broad exploration and repeated reads.
     read_tool = ReadFileTool(source_dir, test_dir, design_dir)
-    kg = {t.name: t for t in create_kg_v2_tools(
-        db_path=db_path, project_file=project_file, source_dir=source_dir,
-    )}
     if kind == "read_only":
-        return [kg["find_nodes"], kg["expand_neighbors"], read_tool]
+        return [read_tool]
     if kind == "kg_analysis":
-        return [
-            kg["find_nodes"],
-            kg["expand_neighbors"],
-            kg["get_project_map"],
-            read_tool,
-        ]
+        return [read_tool, SkillTool()]
     if kind == "strategy":
-        return [
-            kg["find_nodes"],
-            kg["get_project_map"],
-            read_tool,
-            SkillTool(),
-        ]
+        return [read_tool, SkillTool()]
     raise ValueError(f"unknown toolkit: {kind}")
 
 
@@ -120,7 +109,9 @@ class SpawnSubagentTool(AsyncTool):
 
         # 每个 toolkit 一个受限子 registry。审核通道透传给子代理的 bash ——
         # 敏感命令委托子代理也不能绕过人工审核（只有 standard 包含 bash）。
-        db_path = _kg_db_path()
+        # db_path/project_file are retained in _build_toolkit_tools' signature
+        # for compatibility with callers that construct custom toolkits.
+        db_path = ""
         skills = build_skills_section()
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
