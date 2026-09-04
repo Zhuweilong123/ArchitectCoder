@@ -12,8 +12,8 @@
 
 分层架构（自上而下单向依赖，下层不感知上层）:
   L0 常量/类型   — 默认上限 + 复用 knowledge_graph.models 枚举
-  L1 数据访问     — KGContext: db_path → KnowledgeGraphDB/GraphRetriever 懒加载 + 生命周期
-  L2 领域服务     — KGService: 纯图计算 (map/locate/expand/impact/diff)，不碰 agent/序列化
+  L1 provider      — KnowledgeGraphProvider：统一索引、检索和结构化图计算能力
+  L2 领域服务     — KGService: 本地 provider 的 SQLite 图计算实现，不碰 agent/序列化
   L3 序列化       — compact_node / bounded / group_by，紧凑有界分组
   L4 工具         — 5 个 AsyncTool 子类，绑定 project_id，解析参数后调 service
   L5 工厂         — create_kg_v2_tools(...)
@@ -27,10 +27,9 @@ import logging
 import os
 from typing import Any, Callable, Optional
 
+from app.agent_base.core.knowledge_graph import KnowledgeGraphProvider, get_knowledge_graph
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
-from knowledge_graph.database import KnowledgeGraphDB
-from knowledge_graph.retriever import GraphRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ MAX_DIFF_ITEMS = 30
 
 
 # ═══════════════════════════════════════════════════════════════
-# L1 数据访问 — KGContext 生命周期 + 通用辅助
+# L1 provider 辅助 — 序列化与查询结果整理
 # ═══════════════════════════════════════════════════════════════
 
 def _normalize_project_id(project_id: str) -> str:
@@ -87,7 +86,7 @@ def _parse_json(raw: Any) -> dict:
         return {}
 
 
-def _build_file_map(db: KnowledgeGraphDB, project_id: str) -> dict:
+def _build_file_map(db: Any, project_id: str) -> dict:
     """构建 filename → 绝对路径 映射（code 节点定位源码文件用）。"""
     fmap: dict[str, str] = {}
     try:
@@ -101,41 +100,6 @@ def _build_file_map(db: KnowledgeGraphDB, project_id: str) -> dict:
     return fmap
 
 
-class KGContext:
-    """数据访问层：持有 db_path，懒加载底层存储对象并统一关闭。
-
-    diff 走 GraphRetriever（白拿代码层惰性重建 + mtime 陈旧检测），
-    其余图计算走 KnowledgeGraphDB（stats/find_nodes/get_neighbors + 裸 SQL）。
-    """
-
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._db: Optional[KnowledgeGraphDB] = None
-        self._retriever: Optional[GraphRetriever] = None
-
-    @property
-    def db(self) -> KnowledgeGraphDB:
-        if self._db is None:
-            self._db = KnowledgeGraphDB(self.db_path)
-        return self._db
-
-    @property
-    def retriever(self) -> GraphRetriever:
-        if self._retriever is None:
-            self._retriever = GraphRetriever(self.db_path)
-        return self._retriever
-
-    def close(self) -> None:
-        for obj in (self._retriever, self._db):
-            if obj is not None:
-                try:
-                    obj.close()
-                except Exception:
-                    pass
-        self._retriever = None
-        self._db = None
-
-
 # ═══════════════════════════════════════════════════════════════
 # L2 领域服务 — 纯图计算，不碰 agent/序列化
 # ═══════════════════════════════════════════════════════════════
@@ -143,7 +107,7 @@ class KGContext:
 class KGService:
     """封装 5 种理解能力的图计算逻辑，供工具层调用。"""
 
-    def __init__(self, ctx: KGContext):
+    def __init__(self, ctx: Any):
         self.ctx = ctx
 
     # ── map: 有界结构地图 ──────────────────────────────────
@@ -419,27 +383,16 @@ def bounded(items: list, cap: int) -> dict:
 # L4 工具层 — AsyncTool 子类，绑定 project_id
 # ═══════════════════════════════════════════════════════════════
 
-def _run_service(db_path: str, fn: Callable[[KGService], Any]) -> Any:
-    """在调用线程内同步执行 service 调用（供 asyncio.to_thread 使用）。
+async def _with_provider(
+    provider: KnowledgeGraphProvider,
+    fn: Callable[[], Any],
+) -> Any:
+    """把 provider 的同步图计算卸载到线程池，避免阻塞事件循环。
 
-    每次调用创建独立 context，确保连接生命周期安全（try/finally close）。
+    provider 可以是本地 SQLite 实现，也可以是远程图谱实现；工具层不感知
+    数据库连接和资源生命周期。
     """
-    ctx = KGContext(db_path)
-    try:
-        return fn(KGService(ctx))
-    finally:
-        ctx.close()
-
-
-async def _with_service(db_path: str, fn: Callable[[KGService], Any]) -> Any:
-    """把 KG service 的同步计算卸载到线程池，避免阻塞事件循环。
-
-    KG 工具内部是同步 SQLite/glob/AST 计算（`compare_design_code` 首次调用
-    还会惰性重建代码层，大项目下可能耗时数十秒）。若直接在 async 工具里
-    await 它们，会卡死事件循环，导致 WebSocket 心跳 ping/pong 无法应答、
-    前端误判「连接已断开」并取消任务。这里统一走 asyncio.to_thread。
-    """
-    return await asyncio.to_thread(_run_service, db_path, fn)
+    return await asyncio.to_thread(fn)
 
 
 class _KgTool(AsyncTool):
@@ -456,7 +409,7 @@ class _KgTool(AsyncTool):
 class KgMapTool(_KgTool):
     """项目结构地图 — 图清单/承重墙/文件统计（有界摘要）。"""
 
-    def __init__(self, db_path: str, project_id: str):
+    def __init__(self, provider: KnowledgeGraphProvider, project_id: str):
         super().__init__(
             name="get_project_map",
             description=(
@@ -466,7 +419,7 @@ class KgMapTool(_KgTool):
                 "before diving in — it is the project map, not a text search."
             ),
         )
-        self.db_path = db_path
+        self.provider = provider
         self.project_id = project_id
 
     def get_parameters(self) -> list:
@@ -480,9 +433,9 @@ class KgMapTool(_KgTool):
 
     async def _execute(self, params: dict) -> str:
         top = int(params.get("top_classes") or MAX_MAP_CLASSES)
-        result = await _with_service(
-            self.db_path,
-            lambda svc: svc.map_project(self.project_id, top),
+        result = await _with_provider(
+            self.provider,
+            lambda: self.provider.map_project(self.project_id, top),
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -490,7 +443,7 @@ class KgMapTool(_KgTool):
 class KgLocateTool(_KgTool):
     """定位节点 — BM25 检索 + 名称匹配，返回紧凑节点 + 源码文件。"""
 
-    def __init__(self, db_path: str, project_id: str):
+    def __init__(self, provider: KnowledgeGraphProvider, project_id: str):
         super().__init__(
             name="find_nodes",
             description=(
@@ -501,7 +454,7 @@ class KgLocateTool(_KgTool):
                 "symbol/string search use bash grep."
             ),
         )
-        self.db_path = db_path
+        self.provider = provider
         self.project_id = project_id
 
     def get_parameters(self) -> list:
@@ -532,9 +485,11 @@ class KgLocateTool(_KgTool):
         node_types = params.get("node_types") or None
         source = (str(params.get("source") or "").strip()) or None
         top_k = int(params.get("top_k") or DEFAULT_TOP_K)
-        result = await _with_service(
-            self.db_path,
-            lambda svc: svc.locate(self.project_id, query, node_types, source, top_k),
+        result = await _with_provider(
+            self.provider,
+            lambda: self.provider.locate(
+                self.project_id, query, node_types, source, top_k,
+            ),
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -542,7 +497,7 @@ class KgLocateTool(_KgTool):
 class KgExpandTool(_KgTool):
     """邻域展开与反向依赖影响分析 — BFS 有界。"""
 
-    def __init__(self, db_path: str, project_id: str):
+    def __init__(self, provider: KnowledgeGraphProvider, project_id: str):
         super().__init__(
             name="expand_neighbors",
             description=(
@@ -553,7 +508,7 @@ class KgExpandTool(_KgTool):
                 "dependents, transitive dependents, grouped by node type, including test files."
             ),
         )
-        self.db_path = db_path
+        self.provider = provider
         self.project_id = project_id
 
     def get_parameters(self) -> list:
@@ -599,9 +554,9 @@ class KgExpandTool(_KgTool):
                 }, ensure_ascii=False, indent=2)
             max_depth = int(params.get("max_depth") or MAX_IMPACT_DEPTH)
             max_nodes = int(params.get("max_nodes") or MAX_IMPACT_NODES)
-            result = await _with_service(
-                self.db_path,
-                lambda svc: svc.impact(
+            result = await _with_provider(
+                self.provider,
+                lambda: self.provider.impact(
                     self.project_id, str(node_ids[0]), max_depth, max_nodes,
                 ),
             )
@@ -614,9 +569,9 @@ class KgExpandTool(_KgTool):
         edge_types = params.get("edge_types") or None
         max_depth = int(params.get("max_depth") or MAX_EXPAND_DEPTH)
         max_nodes = int(params.get("max_nodes") or MAX_EXPAND_NODES)
-        result = await _with_service(
-            self.db_path,
-            lambda svc: svc.expand(
+        result = await _with_provider(
+            self.provider,
+            lambda: self.provider.expand(
                 self.project_id, node_ids, direction, edge_types, max_depth, max_nodes,
             ),
         )
@@ -626,7 +581,7 @@ class KgExpandTool(_KgTool):
 class KgDiffTool(_KgTool):
     """设计-代码一致性 — 缺失实现/多余代码/签名漂移/测试覆盖。"""
 
-    def __init__(self, db_path: str, project_id: str, source_dir: str = ""):
+    def __init__(self, provider: KnowledgeGraphProvider, project_id: str, source_dir: str = ""):
         super().__init__(
             name="compare_design_code",
             description=(
@@ -640,7 +595,7 @@ class KgDiffTool(_KgTool):
                 "On first use this may lazily index the source code layer."
             ),
         )
-        self.db_path = db_path
+        self.provider = provider
         self.project_id = project_id
         self.source_dir = source_dir
 
@@ -661,9 +616,9 @@ class KgDiffTool(_KgTool):
     async def _execute(self, params: dict) -> str:
         force = bool(params.get("force_rebuild") or False)
         max_items = int(params.get("max_items") or MAX_DIFF_ITEMS)
-        result = await _with_service(
-            self.db_path,
-            lambda svc: svc.diff(self.project_id, self.source_dir, force, max_items),
+        result = await _with_provider(
+            self.provider,
+            lambda: self.provider.diff(self.project_id, self.source_dir, force, max_items),
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -673,10 +628,11 @@ class KgDiffTool(_KgTool):
 # ═══════════════════════════════════════════════════════════════
 
 def create_kg_v2_tools(
-    db_path: str = "./data/knowledge_graph.db",
+    db_path: str | None = None,
     project_file: str = "",
     source_dir: str = "",
     include_compare: bool = False,
+    provider: KnowledgeGraphProvider | None = None,
 ) -> list[Tool]:
     """创建 KG v2 工具集（默认 3 个），project_id 由 project_file 自动绑定。
 
@@ -684,23 +640,34 @@ def create_kg_v2_tools(
     全量设计-代码漂移分析；默认不暴露它，避免探索阶段产生大体量输出。
 
     Args:
-        db_path:     知识图谱数据库路径
+        db_path:     兼容旧调用的本地 SQLite 路径；传入 provider 时忽略
         project_file:.umlproj 路径（用于推导 project_id）
         source_dir:  源码目录（kg_diff 按需索引代码层时使用）
+        provider:    已加载的知识图谱 provider；未传入时使用默认 provider
 
     Returns:
         [KgMapTool, KgLocateTool, KgExpandTool]；include_compare=True 时追加 KgDiffTool
     """
+    if provider is None:
+        if db_path is None:
+            provider = get_knowledge_graph()
+        else:
+            # Preserve the old test/embedding API while still routing every
+            # tool operation through the provider contract.
+            from knowledge_graph.provider import create as create_local_provider
+
+            provider = create_local_provider(db_path=db_path)
+
     project_id = ""
     if project_file:
         project_id = _normalize_project_id(
             os.path.splitext(os.path.basename(project_file))[0],
         )
     tools: list[Tool] = [
-        KgMapTool(db_path, project_id),
-        KgLocateTool(db_path, project_id),
-        KgExpandTool(db_path, project_id),
+        KgMapTool(provider, project_id),
+        KgLocateTool(provider, project_id),
+        KgExpandTool(provider, project_id),
     ]
     if include_compare:
-        tools.append(KgDiffTool(db_path, project_id, source_dir))
+        tools.append(KgDiffTool(provider, project_id, source_dir))
     return tools

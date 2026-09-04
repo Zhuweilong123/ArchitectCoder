@@ -10,7 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraphProvider(Protocol):
-    """Build and query a project knowledge graph."""
+    """Build and query a project knowledge graph.
+
+    The structural operations are intentionally part of the same port as
+    indexing and diagram search.  This keeps graph tools independent from a
+    particular storage engine such as SQLite.
+    """
 
     def rebuild_project(
         self, project: Any, project_id: str, filepath: str = "",
@@ -19,6 +24,43 @@ class KnowledgeGraphProvider(Protocol):
     def search_diagrams(
         self, project_id: str, queries: list[str], top_k: int = 6,
     ) -> dict[str, set[str]]: ...
+
+    def map_project(self, project_id: str, top_classes: int = 15) -> dict: ...
+
+    def locate(
+        self,
+        project_id: str,
+        pattern: str,
+        node_types: list[str] | None = None,
+        source: str | None = None,
+        top_k: int = 10,
+    ) -> dict: ...
+
+    def expand(
+        self,
+        project_id: str,
+        node_ids: list[str],
+        direction: str = "outgoing",
+        edge_types: list[str] | None = None,
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> dict: ...
+
+    def impact(
+        self,
+        project_id: str,
+        node_id: str,
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> dict: ...
+
+    def diff(
+        self,
+        project_id: str,
+        source_dir: str | None = None,
+        force_rebuild: bool = False,
+        max_items: int = 30,
+    ) -> dict: ...
 
 
 class NoOpKnowledgeGraphProvider:
@@ -31,6 +73,29 @@ class NoOpKnowledgeGraphProvider:
         self, project_id: str, queries: list[str], top_k: int = 6,
     ) -> dict[str, set[str]]:
         return {}
+
+    @staticmethod
+    def _disabled() -> dict:
+        return {"error": "knowledge graph provider is disabled"}
+
+    def map_project(self, project_id: str, top_classes: int = 15) -> dict:
+        return self._disabled()
+
+    def locate(self, project_id: str, pattern: str, node_types=None,
+               source=None, top_k: int = 10) -> dict:
+        return self._disabled()
+
+    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing",
+               edge_types=None, max_depth: int = 2, max_nodes: int = 50) -> dict:
+        return self._disabled()
+
+    def impact(self, project_id: str, node_id: str, max_depth: int = 2,
+               max_nodes: int = 50) -> dict:
+        return self._disabled()
+
+    def diff(self, project_id: str, source_dir: str | None = None,
+             force_rebuild: bool = False, max_items: int = 30) -> dict:
+        return self._disabled()
 
 
 def _load_factory(provider: str):
@@ -67,7 +132,15 @@ def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
     try:
         factory = _load_factory(provider)
         instance = factory(settings=settings, **kwargs)
-        required = ("rebuild_project", "search_diagrams")
+        required = (
+            "rebuild_project",
+            "search_diagrams",
+            "map_project",
+            "locate",
+            "expand",
+            "impact",
+            "diff",
+        )
         if not all(callable(getattr(instance, name, None)) for name in required):
             raise TypeError(
                 "knowledge graph provider must expose rebuild_project and search_diagrams"

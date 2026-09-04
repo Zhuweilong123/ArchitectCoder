@@ -17,6 +17,22 @@ class _Provider:
     def search_diagrams(self, project_id, queries, top_k=6):
         return {"overview": {queries[0]}}
 
+    def map_project(self, project_id, top_classes=15):
+        return {"project_id": project_id}
+
+    def locate(self, project_id, pattern, node_types=None, source=None, top_k=10):
+        return {"results": []}
+
+    def expand(self, project_id, node_ids, direction="outgoing", edge_types=None,
+               max_depth=2, max_nodes=50):
+        return {"results": []}
+
+    def impact(self, project_id, node_id, max_depth=2, max_nodes=50):
+        return {"total_affected": 0}
+
+    def diff(self, project_id, source_dir=None, force_rebuild=False, max_items=30):
+        return {"items": []}
+
 
 def test_disabled_knowledge_graph_uses_noop_provider():
     provider = load_knowledge_graph(
@@ -86,3 +102,26 @@ def test_uml_summary_retrieval_uses_the_provider_boundary(monkeypatch):
     uml_common._fetch_kg_hits("demo.umlproj", "User login", hits)
 
     assert hits == {"Domain": {"User(class)"}}
+
+
+def test_v2_tools_can_be_created_with_a_custom_provider():
+    import asyncio
+    import json
+
+    from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
+
+    provider = _Provider()
+    tools = create_kg_v2_tools(
+        project_file="demo.umlproj",
+        provider=provider,
+        include_compare=True,
+    )
+
+    assert [tool.name for tool in tools] == [
+        "get_project_map",
+        "find_nodes",
+        "expand_neighbors",
+        "compare_design_code",
+    ]
+    assert all(tool.provider is provider for tool in tools)
+    assert json.loads(asyncio.run(tools[0]._execute({}))) == {"project_id": "demo"}

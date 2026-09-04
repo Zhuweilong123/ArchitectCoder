@@ -4,10 +4,42 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .builder import GraphBuilder
+from .database import KnowledgeGraphDB
 from .retriever import GraphRetriever
+
+
+class _LocalKnowledgeGraphContext:
+    """Per-operation SQLite resources used by the local provider."""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._db = None
+        self._retriever = None
+
+    @property
+    def db(self) -> KnowledgeGraphDB:
+        if self._db is None:
+            self._db = KnowledgeGraphDB(self.db_path)
+        return self._db
+
+    @property
+    def retriever(self) -> GraphRetriever:
+        if self._retriever is None:
+            self._retriever = GraphRetriever(self.db_path)
+        return self._retriever
+
+    def close(self) -> None:
+        for resource in (self._retriever, self._db):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
+        self._retriever = None
+        self._db = None
 
 
 class LocalKnowledgeGraphProvider:
@@ -57,6 +89,53 @@ class LocalKnowledgeGraphProvider:
         finally:
             retriever.close()
         return hits
+
+    def _run_service(self, callback: Callable[[Any], Any]) -> Any:
+        """Run the existing local graph service behind this provider."""
+        # Imported lazily to keep the provider usable without loading Agent
+        # tool classes during application startup.
+        from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import KGService
+
+        context = _LocalKnowledgeGraphContext(self.db_path)
+        try:
+            return callback(KGService(context))
+        finally:
+            context.close()
+
+    def map_project(self, project_id: str, top_classes: int = 15) -> dict:
+        return self._run_service(
+            lambda service: service.map_project(project_id, top_classes),
+        )
+
+    def locate(self, project_id: str, pattern: str, node_types=None,
+               source=None, top_k: int = 10) -> dict:
+        return self._run_service(
+            lambda service: service.locate(
+                project_id, pattern, node_types, source, top_k,
+            ),
+        )
+
+    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing",
+               edge_types=None, max_depth: int = 2, max_nodes: int = 50) -> dict:
+        return self._run_service(
+            lambda service: service.expand(
+                project_id, node_ids, direction, edge_types, max_depth, max_nodes,
+            ),
+        )
+
+    def impact(self, project_id: str, node_id: str, max_depth: int = 2,
+               max_nodes: int = 50) -> dict:
+        return self._run_service(
+            lambda service: service.impact(project_id, node_id, max_depth, max_nodes),
+        )
+
+    def diff(self, project_id: str, source_dir: str | None = None,
+             force_rebuild: bool = False, max_items: int = 30) -> dict:
+        return self._run_service(
+            lambda service: service.diff(
+                project_id, source_dir, force_rebuild, max_items,
+            ),
+        )
 
     @staticmethod
     def _collect_diagram_hits(retriever, result, output: dict[str, set[str]]) -> None:

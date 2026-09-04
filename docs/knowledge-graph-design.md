@@ -34,8 +34,9 @@ Application services do not import `GraphBuilder` or `GraphRetriever` directly. 
 implementation. Set `AGENT_KNOWLEDGE_GRAPH_ENABLED=false` or use `noop` to disable indexing and
 retrieval without changing the agent runtime.
 
-The provider currently owns project rebuilds and diagram-oriented search used by UML scope analysis;
-the existing v2 graph tools remain an explicit local implementation for opt-in structural queries.
+The provider owns project rebuilds, diagram-oriented search used by UML scope analysis, and all
+structured operations exposed by the v2 graph tools. The v2 tools remain explicit opt-in, but their
+backend is now selected through the same provider boundary.
 
 ## 3. 数据模型
 
