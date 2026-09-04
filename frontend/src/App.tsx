@@ -2,29 +2,34 @@
  * Main application shell: toolbar, canvas, and the contextual side panel.
  */
 
-import React, { useCallback } from 'react';
+import React, { lazy, Suspense, useCallback } from 'react';
 import { Layout, Tabs, Button, Tooltip } from 'antd';
 import {
   SettingOutlined,
   DiffOutlined, CloseOutlined, FileTextOutlined,
 } from '@ant-design/icons';
-import UMLEditor from './components/Canvas/UMLEditor';
-import SeqEditor from './components/Canvas/SeqEditor';
-import CompEditor from './components/Canvas/CompEditor';
 import Toolbar from './components/Toolbar/Toolbar';
-import PropertyPanel from './components/PropertyPanel/PropertyPanel';
-import DiffViewer from './components/DiffViewer/DiffViewer';
-import TestCaseViewer from './components/TestCaseViewer/TestCaseViewer';
-import TestCodeViewer from './components/TestCodeViewer/TestCodeViewer';
-import AgentChat from './components/AgentChat/AgentChat';
-import TraceViewer from './components/TraceViewer/TraceViewer';
-import EvaluationCenter from './components/EvaluationCenter/EvaluationCenter';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { useDiagramStore } from './stores/diagramStore';
 import { t, type TranslationKey } from './i18n';
 import './App.css';
 
 const { Content } = Layout;
+
+const UMLEditor = lazy(() => import('./components/Canvas/UMLEditor'));
+const SeqEditor = lazy(() => import('./components/Canvas/SeqEditor'));
+const CompEditor = lazy(() => import('./components/Canvas/CompEditor'));
+const PropertyPanel = lazy(() => import('./components/PropertyPanel/PropertyPanel'));
+const DiffViewer = lazy(() => import('./components/DiffViewer/DiffViewer'));
+const TestCaseViewer = lazy(() => import('./components/TestCaseViewer/TestCaseViewer'));
+const TestCodeViewer = lazy(() => import('./components/TestCodeViewer/TestCodeViewer'));
+const AgentChat = lazy(() => import('./components/AgentChat/AgentChat'));
+const TraceViewer = lazy(() => import('./components/TraceViewer/TraceViewer'));
+const EvaluationCenter = lazy(() => import('./components/EvaluationCenter/EvaluationCenter'));
+
+const LoadingFallback: React.FC = () => (
+  <div className="empty-canvas" aria-live="polite">Loading...</div>
+);
 
 const App: React.FC = () => {
   const {
@@ -60,7 +65,7 @@ const App: React.FC = () => {
           <SettingOutlined />
         </Tooltip>
       ),
-      children: <PropertyPanel />,
+      children: <Suspense fallback={<LoadingFallback />}><PropertyPanel /></Suspense>,
     },
     {
       key: 'diff' as RightPanelTab,
@@ -69,7 +74,7 @@ const App: React.FC = () => {
           <DiffOutlined />
         </Tooltip>
       ),
-      children: <DiffViewer />,
+      children: <Suspense fallback={<LoadingFallback />}><DiffViewer /></Suspense>,
     },
     {
       key: 'testcase' as RightPanelTab,
@@ -78,7 +83,7 @@ const App: React.FC = () => {
           <FileTextOutlined />
         </Tooltip>
       ),
-      children: <TestCodeViewer />,
+      children: <Suspense fallback={<LoadingFallback />}><TestCodeViewer /></Suspense>,
     },
   ];
 
@@ -107,7 +112,7 @@ const App: React.FC = () => {
       <Layout className="app-main">
         <Content className="app-content">
           {showTestCaseInCanvas ? (
-            <TestCaseViewer embedded />
+            <Suspense fallback={<LoadingFallback />}><TestCaseViewer embedded /></Suspense>
           ) : !hasDiagrams ? (
             <div className="empty-canvas">
               <div className="empty-canvas-icon">⌘</div>
@@ -115,11 +120,11 @@ const App: React.FC = () => {
               <p className="empty-canvas-hint">{copy('noDiagramHint')}</p>
             </div>
           ) : diagramType === 'sequence' ? (
-            <SeqEditor key={'seq_' + activeIdx} />
+            <Suspense fallback={<LoadingFallback />}><SeqEditor key={'seq_' + activeIdx} /></Suspense>
           ) : diagramType === 'component' ? (
-            <CompEditor key={'comp_' + activeIdx} />
+            <Suspense fallback={<LoadingFallback />}><CompEditor key={'comp_' + activeIdx} /></Suspense>
           ) : (
-            <UMLEditor key={'uml_' + activeIdx} />
+            <Suspense fallback={<LoadingFallback />}><UMLEditor key={'uml_' + activeIdx} /></Suspense>
           )}
 
           <div className="status-bar">
@@ -175,9 +180,9 @@ const App: React.FC = () => {
         )}
       </Layout>
 
-      <AgentChat />
-      <TraceViewer />
-      <EvaluationCenter />
+      <Suspense fallback={null}><AgentChat /></Suspense>
+      <Suspense fallback={null}><TraceViewer /></Suspense>
+      <Suspense fallback={null}><EvaluationCenter /></Suspense>
     </Layout>
   );
 };
