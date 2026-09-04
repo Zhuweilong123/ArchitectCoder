@@ -278,8 +278,22 @@ export function processDesignUpdated(
   );
 
   // The complete snapshot is still applied to the canvas below. Only changed
-  // diagrams should be converted into review tabs and diff content.
-  const candidates = Array.isArray(changedDiagrams) ? changedDiagrams : diagrams;
+  // diagrams should be converted into review tabs and diff content. Some
+  // older producers omit changed_diagrams or send an empty list even though
+  // the complete after snapshot is present, so an empty explicit list must
+  // fall back to semantic comparison instead of suppressing the diff.
+  const providedCandidates = Array.isArray(changedDiagrams) ? changedDiagrams : [];
+  const candidateSource = providedCandidates.length > 0 ? providedCandidates : diagrams;
+  const afterByKey = new Map(
+    diagrams.map((spec) => [`${spec.type || 'class'}:${spec.name || ''}`, spec]),
+  );
+  const candidates = candidateSource.map((candidate) => {
+    const key = `${candidate.type || 'class'}:${candidate.name || ''}`;
+    // changed_diagrams is allowed to be a compact/legacy representation. If
+    // the full after snapshot contains the same diagram, use it for the diff
+    // and keep the compact list only as the change selector.
+    return afterByKey.get(key) || candidate;
+  });
 
   for (const spec of candidates) {
     const dtype = spec.type || 'class';
@@ -366,10 +380,6 @@ export function restoreOriginalsToCanvas(originals: Record<string, any>): any | 
   if (!changed) return null;
 
   const restoredProject = { ...project, diagrams };
-  useDiagramStore.setState({
-    project: restoredProject,
-    diagram: diagrams[restoredProject.active_diagram_index],
-    isModified: true,
-  });
+  useDiagramStore.getState().applyProjectUpdate(restoredProject);
   return restoredProject;
 }

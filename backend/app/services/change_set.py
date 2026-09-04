@@ -20,6 +20,11 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _read_text_preserving_newlines(path: Path) -> str:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def _atomic_write(path: Path, content: str) -> None:
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".rollback", dir=str(path.parent))
     try:
@@ -113,7 +118,10 @@ class ChangeSet:
 
         project_paths = [
             record["path"] for record in manifest
-            if record["path"].lower().endswith(".umlproj")
+            if (
+                record["path"].lower().endswith(".umlproj")
+                and os.path.isfile(record["path"])
+            )
         ]
         try:
             for project_path in dict.fromkeys(project_paths):
@@ -123,9 +131,7 @@ class ChangeSet:
                         item for item in manifest if item["path"] == project_path
                     )
                     path = Path(project_path)
-                    if not path.is_file():
-                        raise ProjectConflictError(project_path, expected, 0)
-                    if _sha256(path.read_text(encoding="utf-8")) != record["after_sha256"]:
+                    if _sha256(_read_text_preserving_newlines(path)) != record["after_sha256"]:
                         raise ProjectConflictError(
                             project_path,
                             expected,
@@ -181,7 +187,7 @@ class ChangeSet:
             path = Path(record.path)
             try:
                 if path.exists():
-                    current = path.read_text(encoding="utf-8")
+                    current = _read_text_preserving_newlines(path)
                     if _sha256(current) != record.after_sha256:
                         logger.warning(
                             "[ChangeSet] skip rollback after external change: %s",
@@ -198,6 +204,12 @@ class ChangeSet:
         return [asdict(record) for record in records]
 
     def _refresh_kg(self, project_path: str) -> None:
+        # A generic workspace change may intentionally delete a stale UML
+        # artifact.  There is no graph to refresh when the path no longer
+        # exists; importantly, this must not turn a successful deletion into a
+        # misleading FileNotFoundError log during run finalization.
+        if not os.path.isfile(project_path):
+            return
         try:
             from app.services.file_service import _rebuild_kg_async
             _rebuild_kg_async(self.project_repository.load(project_path), project_path)

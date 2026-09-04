@@ -135,8 +135,32 @@ def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
     return resolved
 
 
-def _resolve_roots(source_dir: str, test_dir: str, design_dir: str = "") -> list[str]:
-    return [d for d in (source_dir, test_dir, design_dir) if d]
+def _resolve_roots(*roots: str) -> list[str]:
+    return [root for root in roots if root]
+
+
+def _expand_workspace_alias(
+    value: str, workspace_root: str = "", source_dir: str = "",
+    test_dir: str = "", design_dir: str = "",
+) -> str:
+    """Expand stable workspace aliases before safe_path()."""
+    if not isinstance(value, str) or not value.strip() or Path(value).is_absolute():
+        return value
+    normalized = value.replace("/", os.sep).replace("\\", os.sep)
+    parts = normalized.split(os.sep)
+    aliases = {
+        "workspace": workspace_root,
+        "source": source_dir,
+        "src": source_dir,
+        "test": test_dir,
+        "tests": test_dir,
+        "design": design_dir,
+    }
+    base = aliases.get(parts[0].lower())
+    if not base:
+        return value
+    suffix = Path(*parts[1:]) if len(parts) > 1 else Path()
+    return str(Path(base) / suffix)
 
 
 def _sha256_text(text: str) -> str:
@@ -164,7 +188,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
+                 workspace_root: str = ""):
         super().__init__(
             name="read_file",
             description=(
@@ -172,12 +197,20 @@ class ReadFileTool(AsyncTool):
                 "Use offset (start line) and limit (max lines) to read a specific range."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
+        self._workspace_root = workspace_root
+        self._source_dir = source_dir
+        self._test_dir = test_dir
+        self._design_dir = design_dir
         self.read_only = True
         self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
         path = params.get("path", "")
+        path = _expand_workspace_alias(
+            path, self._workspace_root, self._source_dir,
+            self._test_dir, self._design_dir,
+        )
         try:
             fp = safe_path(path, self._roots, require_exist=True)
         except ValueError as e:
@@ -342,7 +375,8 @@ class EditFileTool(AsyncTool):
 class GlobTool(AsyncTool):
     """按 glob 模式在 workspace 内查找文件。"""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 workspace_root: str = ""):
         super().__init__(
             name="glob",
             description=(
@@ -350,7 +384,7 @@ class GlobTool(AsyncTool):
                 "(e.g. '**/*.py', 'src/*.ts'). Returns relative paths."
             ),
         )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
+        self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
         self.read_only = True
         self.can_parallel = True
 
@@ -358,11 +392,14 @@ class GlobTool(AsyncTool):
         pattern = params.get("pattern", "")
         if not self._roots:
             return "(no workspace)"
+        return self._format_matches(self._roots, pattern)
+
+    def _format_matches(self, roots: list[str], pattern: str) -> str:
         results: list[str] = []
-        for root in self._roots:
+        for root in roots:
             rp = Path(root).resolve()
             try:
-                matches = _glob.glob(pattern, root_dir=rp)
+                matches = _glob.glob(pattern, root_dir=rp, recursive=True)
             except Exception:
                 continue
             for match in matches:
@@ -398,14 +435,15 @@ class BashTool(AsyncTool):
                  timeout: float = BASH_TIMEOUT,
                  output_cap: int = BASH_OUTPUT_CAP,
                  risk_policy: RiskPolicy | None = None,
-                 command_executor: CommandExecutor | None = None):
+                 command_executor: CommandExecutor | None = None,
+                 workspace_root: str = ""):
         self._command_executor = command_executor or HostShellExecutor()
         super().__init__(
             name="bash",
             description=self._command_executor.profile.tool_description,
         )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
-        self._cwd = self._roots[0] if self._roots else ""
+        self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
+        self._cwd = workspace_root or (self._roots[0] if self._roots else "")
         self._cwd_aliases = {
             "source": os.path.abspath(source_dir) if source_dir else "",
             "test": os.path.abspath(test_dir) if test_dir else "",
@@ -455,7 +493,12 @@ class BashTool(AsyncTool):
                     return verdict  # 拒绝/超时/无通道 → 不执行
                 break  # 批准 → 继续执行
 
-        syntax_error = self._validate_shell_command(command)
+        validator = getattr(self._command_executor, "validate_shell_command", None)
+        syntax_error = (
+            validator(command)
+            if callable(validator)
+            else self._validate_shell_command(command)
+        )
         if syntax_error:
             return f"Error: {syntax_error}"
 
@@ -662,13 +705,17 @@ class BashTool(AsyncTool):
 class SearchTextTool(GrepFileTool):
     """Structured project search exposed under the stable ``search_text`` name."""
 
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = ""):
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 workspace_root: str = ""):
         # ``create_file_system_tools`` receives the design directory rather
         # than the project file. Keep the inherited bounded scanner and add
         # the design root explicitly, without widening its path boundary.
         project_file = design_dir if os.path.isfile(design_dir) else ""
-        super().__init__(source_dir, test_dir, project_file)
+        super().__init__(workspace_root or source_dir, "" if workspace_root else test_dir, project_file)
         self.design_dir = design_dir
+        self.workspace_root = workspace_root
+        self.source_dir = source_dir
+        self.test_dir = test_dir
         self.name = "search_text"
         self.description = (
             "Search project source, tests, and design files by text or regular expression. "
@@ -694,6 +741,10 @@ class SearchTextTool(GrepFileTool):
         return list(dict.fromkeys(files))
 
     def _resolve_allowed_path(self, raw_path: str) -> str | None:
+        raw_path = _expand_workspace_alias(
+            raw_path, self.workspace_root, self.source_dir,
+            self.test_dir, self.design_dir,
+        )
         resolved = super()._resolve_allowed_path(raw_path)
         if resolved:
             return resolved

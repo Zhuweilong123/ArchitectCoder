@@ -69,6 +69,52 @@ def test_submit_uml_review_metadata():
     assert pending[0]["metadata"]["original_diagrams"] == [{"name": "old"}]
 
 
+def test_submit_uml_review_resolves_workspace_relative_project_file(tmp_path):
+    project_root = tmp_path / "project"
+    design_dir = project_root / "design"
+    design_dir.mkdir(parents=True)
+    project_file = design_dir / "example.umlproj"
+    project_file.write_text(json.dumps({
+        "version": "1.0",
+        "name": "example",
+        "diagrams": [{
+            "name": "Architecture",
+            "diagram_type": "component",
+            "components": [{"id": "component_a", "name": "A"}],
+            "comp_relations": [],
+        }],
+    }), encoding="utf-8")
+
+    mgr = ReviewManager()
+    tool = SubmitUmlReviewTool(
+        manager=mgr,
+        timeout=5,
+        project_file=str(project_file),
+        workspace_root=str(project_root),
+    )
+
+    async def _scenario():
+        mgr.baseline = [{
+            "name": "Architecture",
+            "diagram_type": "component",
+            "components": [{"id": "component_a", "name": "OldA"}],
+            "comp_relations": [],
+        }]
+        task = asyncio.create_task(tool._execute({
+            "project_file": "design/example.umlproj",
+            "summary": "rename component",
+        }))
+        await asyncio.sleep(0.05)
+        pending = mgr.get_pending()
+        mgr.resolve(0, json.dumps({"decision": "accept", "feedback": ""}))
+        await task
+        return pending
+
+    pending = asyncio.run(_scenario())
+    assert pending[0]["metadata"]["diagrams"][0]["name"] == "Architecture"
+    assert pending[0]["metadata"]["changed_diagrams"]
+
+
 def test_review_id_is_not_reused_after_reset():
     mgr = ReviewManager()
     first = mgr.submit("code", title="first")

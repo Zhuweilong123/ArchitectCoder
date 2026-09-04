@@ -356,6 +356,7 @@ const AgentChat: React.FC = () => {
 
         // ── 审核已失效（重连补发后后端找不到该待审核请求）──
         case 'review_expired': {
+          useDiagramStore.getState().endBatch();
           useReviewStore.getState().expire('连接中断期间后端已取消该任务');
           setBusy(false);
           setMessages((prev) => [
@@ -372,6 +373,7 @@ const AgentChat: React.FC = () => {
 
         // ── 完成 ──
         case 'done': {
+          useDiagramStore.getState().endBatch();
           setBusy(false);
           const steps = liveStepsRef.current;
           liveStepsRef.current = [];
@@ -414,6 +416,7 @@ const AgentChat: React.FC = () => {
 
         // ── 停止 ──
         case 'stopped': {
+          useDiagramStore.getState().endBatch();
           setBusy(false);
           liveStepsRef.current = [];
           setCurrentSteps([]);
@@ -441,6 +444,7 @@ const AgentChat: React.FC = () => {
 
         // ── 错误 ──
         case 'error': {
+          useDiagramStore.getState().endBatch();
           setBusy(false);
           liveStepsRef.current = [];
           setCurrentSteps([]);
@@ -477,6 +481,7 @@ const AgentChat: React.FC = () => {
     if (!text || busy) return;
 
     connect();
+    useDiagramStore.getState().beginBatch();
     sendAgentMessage(text, {
       source_dir: sourceDir,
       test_dir: testDir,
@@ -657,6 +662,7 @@ const AgentChat: React.FC = () => {
           },
         ]);
       } else if (ev.event === 'ws_closed') {
+        useDiagramStore.getState().endBatch();
         // 非主动断开：后端不会再推送 done/error，解除"正在执行"避免永久卡住；
         // 挂起的审核随连接中断失效（后端断连时已取消任务）
         setBusy(false);

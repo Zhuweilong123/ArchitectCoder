@@ -6,15 +6,17 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { Graph, Node, Edge } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
-import { Transform } from '@antv/x6-plugin-transform';
-import { Selection } from '@antv/x6-plugin-selection';
-import { Snapline } from '@antv/x6-plugin-snapline';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { Graph, Node } from '@antv/x6';
+import { useShallow } from 'zustand/react/shallow';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
+import { createCanvasGraph } from './core/createCanvasGraph';
+import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
+import { snapCanvasPosition } from './core/snapToGrid';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -83,15 +85,15 @@ function buildCompHTML(comp: CompNode, selected: boolean): string {
 
   // UML 2.5.1 lollipop (provided) and socket (required) notation
   const provided = (comp.provided_interfaces || []).map((i) =>
-    `<div class="comp-iface provided"><span class="comp-lollipop">⊃</span> ${i}</div>`
+    `<div class="comp-iface provided"><span class="comp-lollipop">⊃</span> ${escapeHtml(i)}</div>`
   ).join('');
   const required = (comp.required_interfaces || []).map((i) =>
-    `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${i}</div>`
+    `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${escapeHtml(i)}</div>`
   ).join('');
 
   return `<div class="comp-node ${childClass} ${selClass}">
     <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
-    <div class="comp-name">${comp.name}</div>
+    <div class="comp-name">${escapeHtml(comp.name)}</div>
     ${provided ? `<div class="comp-block"><div class="comp-block-label">provided interfaces</div>${provided}</div>` : ''}
     ${required ? `<div class="comp-block"><div class="comp-block-label">required interfaces</div>${required}</div>` : ''}
   </div>`;
@@ -121,7 +123,23 @@ const CompEditor: React.FC = () => {
     addCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
     undo, redo, project, setActiveDiagram, addDiagram,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: selectActiveDiagram(s),
+    selectedComponentId: s.selectedComponentId,
+    addComponent: s.addComponent,
+    removeComponent: s.removeComponent,
+    moveComponent: s.moveComponent,
+    addCompRelation: s.addCompRelation,
+    removeCompRelation: s.removeCompRelation,
+    selectComponent: s.selectComponent,
+    selectCompRelation: s.selectCompRelation,
+    undo: s.undo,
+    redo: s.redo,
+    project: s.project,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const { setRightPanelTab } = useUiStore();
 
@@ -130,97 +148,81 @@ const CompEditor: React.FC = () => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = useDiagramStore.getState().diagram;
-    const graph = new Graph({
+    const d = getActiveDiagram();
+    const graph = createCanvasGraph({
       container: containerRef.current,
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      background: { color: '#fafafa' },
       grid: {
-        size: d.grid_size || 20, visible: d.grid_visible !== false,
-        args: { color: d.grid_color || '#e0e0e0', thickness: d.grid_thickness || 1 },
+        size: d.grid_size || 20,
+        visible: d.grid_visible !== false,
+        color: d.grid_color || '#e0e0e0',
+        thickness: d.grid_thickness || 1,
       },
-      connecting: {
-        connector: { name: 'smooth' },
-        connectionPoint: 'boundary',
-        router: { name: 'normal' },
-        allowBlank: false,
+      connection: {
         allowMulti: true,
-        highlight: true,
-        snap: { radius: 20 },
-        createEdge() {
-          return new Edge({
-            attrs: {
-              line: {
-                stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
-                targetMarker: { name: 'block', width: 10, height: 6 },
-              },
-            },
-          });
-        },
-        validateConnection({ sourceCell, targetCell }) {
-          return !!(sourceCell && targetCell && sourceCell.id !== targetCell.id);
+        line: {
+          stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
+          targetMarker: { name: 'block', width: 10, height: 6 },
         },
       },
-      mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'], minScale: 0.1, maxScale: 5 },
-      panning: { enabled: true },
     });
 
-    graph.use(new History({ enabled: true }));
-    graph.use(new Transform({ resizing: true, rotating: false }));
-    graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
-    graph.use(new Snapline({ enabled: true, sharp: true }));
-
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
-    graph.on('node:click', ({ node }) => {
-      selectComponent(node.id);
-      setRightPanelTab('properties');
-    });
-    graph.on('blank:click', () => {
-      selectComponent(null);
-      selectCompRelation(null);
-    });
-    graph.on('node:moved', ({ node }) => {
-      moveComponent(node.id, node.position().x, node.position().y);
-    });
-    graph.on('node:resized', ({ node }) => {
-      const store = useDiagramStore.getState();
-      store.updateComponent(node.id, {
-        width: node.size().width,
-        height: node.size().height,
-      });
-    });
-    graph.on('edge:click', ({ edge }) => {
-      selectCompRelation(edge.id);
-      setRightPanelTab('properties');
-    });
-    graph.on('edge:connected', ({ edge, isNew }) => {
-      if (isNew) {
-        const src = edge.getSourceCellId();
-        const tgt = edge.getTargetCellId();
-        if (src && tgt) {
+    const detachCanvasEvents = attachCanvasEventAdapter({
+      graph,
+      isInternalUpdate,
+      onNodeClick: (node) => {
+        selectComponent(node.id);
+        setRightPanelTab('properties');
+      },
+      onBlankClick: () => {
+        selectComponent(null);
+        selectCompRelation(null);
+      },
+      onNodeMoved: (node) => {
+        const position = node.position();
+        const store = useDiagramStore.getState();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
-          edge.remove();
+          node.setPosition(nextPosition.x, nextPosition.y);
           isInternalUpdate.current = false;
-          addCompRelation(src, tgt);
         }
-      }
-    });
-    graph.on('edge:mouseenter', ({ edge }) => {
-      try { edge.addTools([
-        { name: 'source-arrowhead' }, { name: 'target-arrowhead' },
+        moveComponent(node.id, nextPosition.x, nextPosition.y);
+      },
+      onNodeResized: (node) => {
+        useDiagramStore.getState().updateComponent(node.id, {
+          width: node.size().width,
+          height: node.size().height,
+        });
+      },
+      onEdgeClick: (edge) => {
+        selectCompRelation(edge.id);
+        setRightPanelTab('properties');
+      },
+      onNewEdge: (edge, sourceId, targetId) => {
+        isInternalUpdate.current = true;
+        edge.remove();
+        isInternalUpdate.current = false;
+        addCompRelation(sourceId, targetId);
+      },
+      onEdgeRemoved: (edge) => removeCompRelation(edge.id),
+      edgeTools: [
+        { name: 'source-arrowhead' },
+        { name: 'target-arrowhead' },
         { name: 'button-remove', args: { distance: -30 } },
-      ]); } catch { /* ignore */ }
-    });
-    graph.on('edge:mouseleave', ({ edge }) => {
-      try { edge.removeTools(); } catch { /* ignore */ }
-    });
-    graph.on('edge:removed', ({ edge }) => {
-      if (!isInternalUpdate.current) removeCompRelation(edge.id);
+      ],
     });
 
     // Right-click context menu on component nodes
@@ -228,7 +230,7 @@ const CompEditor: React.FC = () => {
       const evt = e.evt || e;
       evt?.preventDefault?.();
       const store = useDiagramStore.getState();
-      const comp = (store.diagram.components || []).find((c) => c.id === node.id);
+      const comp = (getActiveDiagram().components || []).find((c) => c.id === node.id);
       setCtxMenu({
         visible: true,
         x: evt?.clientX || evt?.pageX || 0,
@@ -245,7 +247,7 @@ const CompEditor: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.ctrlKey && e.key === 'c') {
         if (store.selectedComponentId) {
-          const c = (store.diagram.components || []).find((x) => x.id === store.selectedComponentId);
+          const c = (getActiveDiagram().components || []).find((x) => x.id === store.selectedComponentId);
           if (c) clipboard.current = JSON.parse(JSON.stringify(c));
         }
       } else if (e.ctrlKey && e.key === 'v') {
@@ -256,7 +258,7 @@ const CompEditor: React.FC = () => {
           }, c.parent_id || '');
           // Apply copied size and interfaces
           const store2 = useDiagramStore.getState();
-          const comps = store2.diagram.components || [];
+          const comps = getActiveDiagram().components || [];
           const pasted = comps[comps.length - 1];
           if (pasted) {
             store2.updateComponent(pasted.id, {
@@ -284,13 +286,17 @@ const CompEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graph.centerContent();
+    if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
+      graph.centerContent();
+    }
     graphRef.current = graph;
     console.log('[CompEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachCanvasEvents();
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -299,6 +305,9 @@ const CompEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevCompIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; html: string }>>(new Map());
+  const nodeSignatureCache = useRef<Map<string, string>>(new Map());
+  const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -313,7 +322,12 @@ const CompEditor: React.FC = () => {
 
       // Remove deleted
       prevCompIds.current.forEach((id) => {
-        if (!currentIds.has(id)) { try { graph.removeCell(id); } catch { /* ignore */ } htmlCache.current.delete(id); }
+        if (!currentIds.has(id)) {
+          try { graph.removeCell(id); } catch { /* ignore */ }
+          htmlCache.current.delete(id);
+          renderCache.current.delete(id);
+          nodeSignatureCache.current.delete(id);
+        }
       });
 
       // Add/update components + handle embedding
@@ -321,11 +335,20 @@ const CompEditor: React.FC = () => {
         const isChild = !!c.parent_id;
         const w = c.width || (isChild ? CHILD_WIDTH : COMP_WIDTH);
         const h = c.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT);
-        const htmlContent = buildCompHTML(c, c.id === selectedComponentId);
+        const selected = c.id === selectedComponentId;
+        const cachedRender = renderCache.current.get(c.id);
+        const htmlContent = cachedRender?.entity === c && cachedRender.selected === selected
+          ? cachedRender.html
+          : buildCompHTML(c, selected);
         const cached = htmlCache.current.get(c.id);
+        const signature = JSON.stringify([
+          htmlContent, c.x, c.y, w, h, c.parent_id || '',
+        ]);
+        renderCache.current.set(c.id, { entity: c, selected, html: htmlContent });
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {
+            if (nodeSignatureCache.current.get(c.id) === signature) return;
             const node = existing as Node;
             node.setPosition(c.x, c.y);
             node.setSize({ width: w, height: h });
@@ -338,6 +361,7 @@ const CompEditor: React.FC = () => {
               const parent = graph.getCellById(c.parent_id);
               if (parent) parent.addChild(node);
             }
+            nodeSignatureCache.current.set(c.id, signature);
           } else {
             const node = graph.addNode({
               id: c.id, shape: 'comp-component',
@@ -346,6 +370,7 @@ const CompEditor: React.FC = () => {
               attrs: { content: { html: htmlContent } },
             });
             htmlCache.current.set(c.id, htmlContent);
+            if (node) nodeSignatureCache.current.set(c.id, signature);
             if (isChild && node) {
               const parent = graph.getCellById(c.parent_id) as Node;
               if (parent) parent.addChild(node as Node);
@@ -357,11 +382,25 @@ const CompEditor: React.FC = () => {
       // Sync edges
       const existingEdges = new Set(graph.getEdges().map((e) => e.id));
       const dataEdgeIds = new Set(rels.map((r) => r.id));
-      existingEdges.forEach((id) => { if (!dataEdgeIds.has(id)) try { graph.removeCell(id); } catch { /* ignore */ } });
+      existingEdges.forEach((id) => {
+        if (!dataEdgeIds.has(id)) {
+          try { graph.removeCell(id); } catch { /* ignore */ }
+          edgeSignatureCache.current.delete(id);
+        }
+      });
 
       rels.forEach((r) => {
+        const signature = JSON.stringify([r.source, r.target]);
         try {
-          if (!existingEdges.has(r.id)) {
+          if (existingEdges.has(r.id)) {
+            if (edgeSignatureCache.current.get(r.id) === signature) return;
+            const edge = graph.getCellById(r.id) as any;
+            if (edge) {
+              edge.setSource({ cell: r.source });
+              edge.setTarget({ cell: r.target });
+              edgeSignatureCache.current.set(r.id, signature);
+            }
+          } else {
             if (!graph.getCellById(r.source)) {
               console.warn('[CompEditor] Sync edge skipped — source node missing:', r.id, r.source);
               return;
@@ -370,7 +409,7 @@ const CompEditor: React.FC = () => {
               console.warn('[CompEditor] Sync edge skipped — target node missing:', r.id, r.target);
               return;
             }
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: r.id,
               source: { cell: r.source },
               target: { cell: r.target },
@@ -381,6 +420,7 @@ const CompEditor: React.FC = () => {
                 },
               },
             });
+            if (edge) edgeSignatureCache.current.set(r.id, signature);
           }
         } catch (e) { console.warn('[CompEditor] Edge error:', r.id, e); }
       });
@@ -388,7 +428,12 @@ const CompEditor: React.FC = () => {
       prevCompIds.current = currentIds;
       isInternalUpdate.current = false;
 
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(viewport.panX || viewport.panY)
+        && viewport.zoom === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[CompEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -407,17 +452,30 @@ const CompEditor: React.FC = () => {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedComponentId]);
+  }, [diagram.components, diagram.comp_relations, selectedComponentId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
-      graph.zoomTo(diagram.zoom);
+    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
+      graph.zoomTo(viewport.zoom);
     }
-  }, [diagram.zoom]);
+  }, [viewport.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - viewport.panX) > 0.5
+      || Math.abs(translation.ty - viewport.panY) > 0.5
+    ) {
+      graph.translate(viewport.panX, viewport.panY);
+    }
+  }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
@@ -459,7 +517,7 @@ const CompEditor: React.FC = () => {
     const parent = store.selectedComponentId;
     if (parent) {
       // Create child inside selected parent
-      const parentComp = store.diagram.components?.find((c) => c.id === parent);
+      const parentComp = getActiveDiagram().components?.find((c) => c.id === parent);
       const relX = 20 + Math.random() * 80;
       const relY = 40 + Math.random() * 60;
       store.addComponent({ x: relX, y: relY }, parent);

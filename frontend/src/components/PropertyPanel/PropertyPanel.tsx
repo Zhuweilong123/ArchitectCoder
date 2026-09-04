@@ -2,7 +2,7 @@
  * Property Panel – edit properties of selected class, relation, or lifeline.
  */
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   Form, Input, Select, Switch, Button, Collapse, Space,
   Popconfirm, Empty, Divider, InputNumber,
@@ -10,12 +10,14 @@ import {
 import {
   DeleteOutlined, PlusOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   Visibility, Stereotype, RelationType,
   type UmlAttribute, type UmlMethod,
 } from '../../types/uml';
 import { MESSAGE_TYPE_LABELS } from '../../types/sequence';
+import { useDebouncedDraft } from '../../hooks/useDebouncedDraft';
 import './PropertyPanel.css';
 
 const { TextArea } = Input;
@@ -30,7 +32,29 @@ const PropertyPanel: React.FC = () => {
     updateMessage, removeMessage,
     updateComponent, removeComponent,
     project, setActiveDiagram, addDiagram,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: selectActiveDiagram(s),
+    selectedClassId: s.selectedClassId,
+    selectedRelationId: s.selectedRelationId,
+    selectedLifelineId: s.selectedLifelineId,
+    selectedMessageId: s.selectedMessageId,
+    selectedComponentId: s.selectedComponentId,
+    updateClass: s.updateClass,
+    removeClass: s.removeClass,
+    updateRelation: s.updateRelation,
+    removeRelation: s.removeRelation,
+    updateLifeline: s.updateLifeline,
+    removeLifeline: s.removeLifeline,
+    updateMessage: s.updateMessage,
+    removeMessage: s.removeMessage,
+    updateComponent: s.updateComponent,
+    removeComponent: s.removeComponent,
+    project: s.project,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+  })));
+
+  const { scheduleDraft, flushDraft, draftValue } = useDebouncedDraft();
 
   const selectedClass = diagram.classes.find((c) => c.id === selectedClassId);
   const selectedRelation = diagram.relations.find((r) => r.id === selectedRelationId);
@@ -42,6 +66,20 @@ const PropertyPanel: React.FC = () => {
   if (selectedClass) {
     const handleClassChange = (field: string, value: unknown) => {
       updateClass(selectedClass.id, { [field]: value });
+    };
+    const updateAttributeField = (index: number, field: string, value: unknown) => {
+      const liveClass = getActiveDiagram().classes.find((item) => item.id === selectedClass.id);
+      if (!liveClass?.attributes[index]) return;
+      const attributes = [...liveClass.attributes];
+      attributes[index] = { ...attributes[index], [field]: value };
+      updateClass(selectedClass.id, { attributes });
+    };
+    const updateMethodField = (index: number, field: string, value: unknown) => {
+      const liveClass = getActiveDiagram().classes.find((item) => item.id === selectedClass.id);
+      if (!liveClass?.methods[index]) return;
+      const methods = [...liveClass.methods];
+      methods[index] = { ...methods[index], [field]: value };
+      updateClass(selectedClass.id, { methods });
     };
 
     return (
@@ -60,8 +98,16 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="类名">
             <Input
-              value={selectedClass.name}
-              onChange={(e) => handleClassChange('name', e.target.value)}
+              value={draftValue(`class:${selectedClass.id}:name`, selectedClass.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:name`, value,
+                  () => updateClass(selectedClass.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:name`);
+                if (typeof value === 'string') updateClass(selectedClass.id, { name: value });
+              }}
             />
           </Form.Item>
           <Form.Item label="构造型">
@@ -73,26 +119,58 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="备注">
             <TextArea
-              value={selectedClass.note}
-              onChange={(e) => handleClassChange('note', e.target.value)}
+              value={draftValue(`class:${selectedClass.id}:note`, selectedClass.note)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:note`, value,
+                  () => updateClass(selectedClass.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:note`);
+                if (typeof value === 'string') updateClass(selectedClass.id, { note: value });
+              }}
               rows={2}
               placeholder="添加备注..."
             />
           </Form.Item>
           <Form.Item label="提供的接口 (◉ provided)">
             <TextArea
-              value={(selectedClass.provided_interfaces || []).join('\n')}
-              onChange={(e) => handleClassChange('provided_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`class:${selectedClass.id}:provided_interfaces`,
+                (selectedClass.provided_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:provided_interfaces`, value,
+                  () => updateClass(selectedClass.id, {
+                    provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:provided_interfaces`);
+                if (typeof value === 'string') updateClass(selectedClass.id, {
+                  provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2}
               placeholder="IService&#10;IRepository"
             />
           </Form.Item>
           <Form.Item label="依赖的接口 (◡ required)">
             <TextArea
-              value={(selectedClass.required_interfaces || []).join('\n')}
-              onChange={(e) => handleClassChange('required_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`class:${selectedClass.id}:required_interfaces`,
+                (selectedClass.required_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:required_interfaces`, value,
+                  () => updateClass(selectedClass.id, {
+                    required_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:required_interfaces`);
+                if (typeof value === 'string') updateClass(selectedClass.id, {
+                  required_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2}
               placeholder="IDatabase&#10;ILogger"
             />
@@ -124,24 +202,32 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={attr.name}
+                      value={draftValue(`class:${selectedClass.id}:attribute:${idx}:name`, attr.name)}
                       placeholder="名称"
                       onChange={(e) => {
-                        const attrs = [...selectedClass.attributes];
-                        attrs[idx] = { ...attrs[idx], name: e.target.value };
-                        handleClassChange('attributes', attrs);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:name`, value,
+                          () => updateAttributeField(idx, 'name', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:attribute:${idx}:name`);
+                        if (typeof value === 'string') updateAttributeField(idx, 'name', value);
                       }}
                     />
                     <span className="attr-colon">:</span>
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={attr.type}
+                      value={draftValue(`class:${selectedClass.id}:attribute:${idx}:type`, attr.type)}
                       placeholder="类型"
                       onChange={(e) => {
-                        const attrs = [...selectedClass.attributes];
-                        attrs[idx] = { ...attrs[idx], type: e.target.value };
-                        handleClassChange('attributes', attrs);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:type`, value,
+                          () => updateAttributeField(idx, 'type', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:attribute:${idx}:type`);
+                        if (typeof value === 'string') updateAttributeField(idx, 'type', value);
                       }}
                     />
                     <Switch
@@ -206,36 +292,48 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={method.name}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:name`, method.name)}
                       placeholder="方法名"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], name: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:name`, value,
+                          () => updateMethodField(idx, 'name', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:name`);
+                        if (typeof value === 'string') updateMethodField(idx, 'name', value);
                       }}
                     />
                     <span className="attr-colon">(</span>
                     <Input
                       size="small"
                       style={{ width: 70 }}
-                      value={method.params}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:params`, method.params)}
                       placeholder="参数"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], params: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:params`, value,
+                          () => updateMethodField(idx, 'params', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:params`);
+                        if (typeof value === 'string') updateMethodField(idx, 'params', value);
                       }}
                     />
                     <span className="attr-colon">):</span>
                     <Input
                       size="small"
                       style={{ width: 70 }}
-                      value={method.return_type}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:return_type`, method.return_type)}
                       placeholder="返回"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], return_type: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:return_type`, value,
+                          () => updateMethodField(idx, 'return_type', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:return_type`);
+                        if (typeof value === 'string') updateMethodField(idx, 'return_type', value);
                       }}
                     />
                     <Button
@@ -309,29 +407,61 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="源多重性">
             <Input
-              value={selectedRelation.multiplicity_source}
-              onChange={(e) => handleRelChange('multiplicity_source', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:multiplicity_source`, selectedRelation.multiplicity_source)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:multiplicity_source`, value,
+                  () => updateRelation(selectedRelation.id, { multiplicity_source: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_source`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_source: value });
+              }}
               placeholder="如: 0..1, 1..*, *"
             />
           </Form.Item>
           <Form.Item label="目标多重性">
             <Input
-              value={selectedRelation.multiplicity_target}
-              onChange={(e) => handleRelChange('multiplicity_target', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:multiplicity_target`, selectedRelation.multiplicity_target)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:multiplicity_target`, value,
+                  () => updateRelation(selectedRelation.id, { multiplicity_target: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_target`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_target: value });
+              }}
               placeholder="如: 0..1, 1..*, *"
             />
           </Form.Item>
           <Form.Item label="角色名">
             <Input
-              value={selectedRelation.role_name}
-              onChange={(e) => handleRelChange('role_name', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:role_name`, selectedRelation.role_name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:role_name`, value,
+                  () => updateRelation(selectedRelation.id, { role_name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:role_name`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { role_name: value });
+              }}
               placeholder="角色名称"
             />
           </Form.Item>
           <Form.Item label="连接备注">
             <TextArea
-              value={selectedRelation.note}
-              onChange={(e) => handleRelChange('note', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:note`, selectedRelation.note)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:note`, value,
+                  () => updateRelation(selectedRelation.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:note`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { note: value });
+              }}
               rows={2}
               placeholder="添加备注..."
             />
@@ -364,8 +494,16 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="方法名">
             <Input
-              value={selectedMessage.label}
-              onChange={(e) => updateMessage(selectedMessage.id, { label: e.target.value })}
+              value={draftValue(`message:${selectedMessage.id}:label`, selectedMessage.label)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`message:${selectedMessage.id}:label`, value,
+                  () => updateMessage(selectedMessage.id, { label: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`message:${selectedMessage.id}:label`);
+                if (typeof value === 'string') updateMessage(selectedMessage.id, { label: value });
+              }}
             />
           </Form.Item>
           <Form.Item label="消息类型">
@@ -383,8 +521,16 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="功能备注">
             <Input.TextArea
-              value={selectedMessage.note || ''}
-              onChange={(e) => updateMessage(selectedMessage.id, { note: e.target.value })}
+              value={draftValue(`message:${selectedMessage.id}:note`, selectedMessage.note || '')}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`message:${selectedMessage.id}:note`, value,
+                  () => updateMessage(selectedMessage.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`message:${selectedMessage.id}:note`);
+                if (typeof value === 'string') updateMessage(selectedMessage.id, { note: value });
+              }}
               rows={2}
               placeholder="描述此消息的业务含义..."
             />
@@ -416,15 +562,31 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="名称">
             <Input
-              value={selectedLifeline.name}
-              onChange={(e) => handleChange('name', e.target.value)}
+              value={draftValue(`lifeline:${selectedLifeline.id}:name`, selectedLifeline.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`lifeline:${selectedLifeline.id}:name`, value,
+                  () => updateLifeline(selectedLifeline.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`lifeline:${selectedLifeline.id}:name`);
+                if (typeof value === 'string') updateLifeline(selectedLifeline.id, { name: value });
+              }}
               placeholder="如: ota: OtaTask"
             />
           </Form.Item>
           <Form.Item label="关联类（可选）">
             <Input
-              value={selectedLifeline.class_ref || ''}
-              onChange={(e) => handleChange('class_ref', e.target.value)}
+              value={draftValue(`lifeline:${selectedLifeline.id}:class_ref`, selectedLifeline.class_ref || '')}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`lifeline:${selectedLifeline.id}:class_ref`, value,
+                  () => updateLifeline(selectedLifeline.id, { class_ref: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`lifeline:${selectedLifeline.id}:class_ref`);
+                if (typeof value === 'string') updateLifeline(selectedLifeline.id, { class_ref: value });
+              }}
               placeholder="UML 类图中类的名称"
             />
           </Form.Item>
@@ -457,21 +619,55 @@ const PropertyPanel: React.FC = () => {
         </div>
         <Form layout="vertical" size="small">
           <Form.Item label="名称">
-            <Input value={selectedComponent.name}
-              onChange={(e) => handleChange('name', e.target.value)} />
+            <Input
+              value={draftValue(`component:${selectedComponent.id}:name`, selectedComponent.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:name`, value,
+                  () => updateComponent(selectedComponent.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:name`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, { name: value });
+              }}
+            />
           </Form.Item>
           <Form.Item label="提供的接口（每行一个）">
             <Input.TextArea
-              value={(selectedComponent.provided_interfaces || []).join('\n')}
-              onChange={(e) => handleChange('provided_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`component:${selectedComponent.id}:provided_interfaces`,
+                (selectedComponent.provided_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:provided_interfaces`, value,
+                  () => updateComponent(selectedComponent.id, {
+                    provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:provided_interfaces`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, {
+                  provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2} placeholder="IService&#10;IRepository" />
           </Form.Item>
           <Form.Item label="依赖的接口（每行一个）">
             <Input.TextArea
-              value={(selectedComponent.required_interfaces || []).join('\n')}
-              onChange={(e) => handleChange('required_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`component:${selectedComponent.id}:required_interfaces`,
+                (selectedComponent.required_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:required_interfaces`, value,
+                  () => updateComponent(selectedComponent.id, {
+                    required_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:required_interfaces`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, {
+                  required_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2} placeholder="IDatabase&#10;ILogger" />
           </Form.Item>
         </Form>

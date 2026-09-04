@@ -7,17 +7,19 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Edge, Node } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
-import { Transform } from '@antv/x6-plugin-transform';
-import { Selection } from '@antv/x6-plugin-selection';
-import { Snapline } from '@antv/x6-plugin-snapline';
-import { useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
+import { useShallow } from 'zustand/react/shallow';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
+import { createCanvasGraph } from './core/createCanvasGraph';
+import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
+import { snapCanvasPosition } from './core/snapToGrid';
 import {
   type UmlClass,
   Stereotype, RelationType,
 } from '../../types/uml';
 import './UMLEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register UML class shape ─────────────────────────
 // Pattern follows X6's own text-block shape implementation
@@ -144,29 +146,44 @@ function ensureShapeRegistered() {
 }
 
 // ── Helper: Generate HTML for a UML class ──────────────
-function buildClassHTML(cls: UmlClass, selected: boolean): string {
+function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): string {
+  const visibilityClass = (visibility: string) => ({
+    '+': 'public',
+    '-': 'private',
+    '#': 'protected',
+  }[visibility] || 'package');
   const stereotypeLabel = cls.stereotype !== Stereotype.CLASS
-    ? `<div class="uml-stereotype">«${cls.stereotype}»</div>` : '';
+    ? `<div class="uml-stereotype">«${escapeHtml(cls.stereotype)}»</div>` : '';
   const isAbstract = cls.stereotype === Stereotype.ABSTRACT;
   const nameStyle = isAbstract ? 'font-style: italic; text-decoration: underline;' : '';
-  const selClass = selected ? 'selected' : '';
+  const selClass = [
+    selected ? 'selected' : '',
+    `stereotype-${escapeHtml(cls.stereotype || Stereotype.CLASS)}`,
+  ].filter(Boolean).join(' ');
 
   const attrLines = cls.attributes.map((a) => {
-    const stat = a.is_static ? ' style="text-decoration: underline;"' : '';
-    return `<div class="uml-attr"${stat}>${a.visibility} ${a.name}: ${a.type}</div>`;
+    const staticClass = a.is_static ? ' static' : '';
+    const defaultValue = a.default_value ? ` = ${escapeHtml(a.default_value)}` : '';
+    return `<div class="uml-member uml-attr${staticClass}">
+      <span class="uml-visibility visibility-${visibilityClass(a.visibility)}">${escapeHtml(a.visibility)}</span>
+      <span class="uml-member-name">${escapeHtml(a.name)}</span><span class="uml-member-type">: ${escapeHtml(a.type)}${defaultValue}</span>
+    </div>`;
   }).join('');
 
   const methodLines = cls.methods.map((m) => {
-    const abs = m.is_abstract ? ' font-style: italic;' : '';
-    const stat = m.is_static ? ' text-decoration: underline;' : '';
-    return `<div class="uml-method" style="${abs}${stat}">${m.visibility} ${m.name}(${m.params}): ${m.return_type}</div>`;
+    const modifiers = [m.is_static ? 'static' : '', m.is_abstract ? 'abstract' : '']
+      .filter(Boolean).join(' ');
+    return `<div class="uml-member uml-method ${modifiers}">
+      <span class="uml-visibility visibility-${visibilityClass(m.visibility)}">${escapeHtml(m.visibility)}</span>
+      <span class="uml-member-name">${escapeHtml(m.name)}</span><span class="uml-member-type">(${escapeHtml(m.params)}): ${escapeHtml(m.return_type)}</span>
+    </div>`;
   }).join('');
 
   const providedLines = (cls.provided_interfaces || []).map((i) =>
-    `<span class="uml-iface provided">◉ ${i}</span>`
+    `<span class="uml-iface provided">◉ ${escapeHtml(i)}</span>`
   ).join(' ');
   const requiredLines = (cls.required_interfaces || []).map((i) =>
-    `<span class="uml-iface required">◡ ${i}</span>`
+    `<span class="uml-iface required">◡ ${escapeHtml(i)}</span>`
   ).join(' ');
   const ifaceHTML = (providedLines || requiredLines) ? `
     <div class="uml-class-ifaces">
@@ -176,20 +193,48 @@ function buildClassHTML(cls: UmlClass, selected: boolean): string {
     <div class="uml-class-divider"></div>` : '';
 
   return `
-    <div class="uml-class-node ${selClass}">
+    <div class="uml-class-node theme-${theme} ${selClass}">
       <div class="uml-class-header" style="${nameStyle}">
         ${stereotypeLabel}
-        <div class="uml-class-name">${cls.name}</div>
+        <div class="uml-class-name">${escapeHtml(cls.name)}</div>
       </div>
       ${ifaceHTML}
-      <div class="uml-class-attrs">${attrLines || '<div class="uml-empty">(no attributes)</div>'}</div>
+      <div class="uml-class-attrs">
+        <div class="uml-section-label">ATTRIBUTES</div>
+        ${attrLines || '<div class="uml-empty">—</div>'}
+      </div>
       <div class="uml-class-divider"></div>
-      <div class="uml-class-methods">${methodLines || '<div class="uml-empty">(no methods)</div>'}</div>
+      <div class="uml-class-methods">
+        <div class="uml-section-label">OPERATIONS</div>
+        ${methodLines || '<div class="uml-empty">—</div>'}
+      </div>
+      ${cls.note ? `<div class="uml-class-note">${escapeHtml(cls.note)}</div>` : ''}
     </div>
   `;
 }
 
 // ── Component ──────────────────────────────────────────
+/** Estimate a readable minimum size without overwriting the user's manual resize. */
+function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
+  const attributeRows = Math.max(cls.attributes.length, 1);
+  const operationRows = Math.max(cls.methods.length, 1);
+  const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
+    + (cls.required_interfaces?.length ? 1 : 0);
+  const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
+  const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
+  const attributesHeight = 28 + attributeRows * 19;
+  const operationsHeight = 28 + operationRows * 19;
+  const noteHeight = cls.note ? 34 : 0;
+
+  return {
+    width: cls.size.width || 200,
+    height: Math.max(
+      cls.size.height || 150,
+      headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
+    ),
+  };
+}
+
 const UMLEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -197,13 +242,29 @@ const UMLEditor: React.FC = () => {
   const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
 
   const {
-    diagram, selectedClassId,
+    diagram, selectedClassId, selectedRelationId,
     moveClass, resizeClass, selectClass, selectRelation,
     addRelation, removeClass, removeRelation, addClass,
     undo, redo,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: selectActiveDiagram(s),
+    selectedClassId: s.selectedClassId,
+    selectedRelationId: s.selectedRelationId,
+    moveClass: s.moveClass,
+    resizeClass: s.resizeClass,
+    selectClass: s.selectClass,
+    selectRelation: s.selectRelation,
+    addRelation: s.addRelation,
+    removeClass: s.removeClass,
+    removeRelation: s.removeRelation,
+    addClass: s.addClass,
+    undo: s.undo,
+    redo: s.redo,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const setRightPanelTab = useUiStore((s) => s.setRightPanelTab);
+  const canvasTheme = useUiStore((s) => s.canvasTheme);
 
   // ── Initialize graph (once) ──────────────────────────
   useEffect(() => {
@@ -211,117 +272,81 @@ const UMLEditor: React.FC = () => {
 
     ensureShapeRegistered();
 
-    const graph = new Graph({
+    const graph = createCanvasGraph({
       container: containerRef.current,
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      background: { color: '#fafafa' },
       grid: {
         size: diagram.grid_size || 20,
         visible: true,
-        args: { color: diagram.grid_color || '#aaaaaa', thickness: diagram.grid_thickness || 1 },
+        color: diagram.grid_color || '#aaaaaa',
+        thickness: diagram.grid_thickness || 1,
       },
-      connecting: {
-        connector: { name: 'smooth' },
-        connectionPoint: 'boundary',
-        router: { name: 'normal' },
-        allowBlank: false,
-        highlight: true,
-        snap: { radius: 20 },
-        createEdge() {
-          return new Edge({
-            attrs: {
-              line: {
-                stroke: '#1890ff',
-                strokeWidth: 2,
-                targetMarker: { name: 'block', width: 12, height: 8 },
-              },
-            },
-          });
-        },
-        validateConnection({ sourceCell, targetCell }) {
-          if (!sourceCell || !targetCell) return false;
-          if (sourceCell.id === targetCell.id) return false;
-          return true;
+      connection: {
+        line: {
+          stroke: '#1890ff',
+          strokeWidth: 2,
+          targetMarker: { name: 'block', width: 12, height: 8 },
         },
       },
-      mousewheel: {
-        enabled: true,
-        modifiers: ['ctrl', 'meta'],
-        minScale: 0.1,
-        maxScale: 5,
-      },
-      panning: { enabled: true },
     });
 
-    graph.use(new History({ enabled: true }));
-    graph.use(new Transform({ resizing: true, rotating: false }));
-    graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
-    graph.use(new Snapline({ enabled: true, sharp: true }));
-
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // ── Events ───────────────────────────────────────
-    graph.on('node:click', ({ node }) => {
-      selectClass(node.id);
-      setRightPanelTab('properties');
-    });
-
-    graph.on('blank:click', () => {
-      selectClass(null);
-      selectRelation(null);
-    });
-
-    graph.on('node:moved', ({ node }) => {
-      moveClass(node.id, { x: node.position().x, y: node.position().y });
-    });
-
-    graph.on('node:resized', ({ node }) => {
-      resizeClass(node.id, {
-        width: node.size().width,
-        height: node.size().height,
-      });
-    });
-
-    graph.on('edge:click', ({ edge }) => {
-      selectRelation(edge.id);
-      setRightPanelTab('properties');
-    });
-
-    graph.on('edge:connected', ({ edge, isNew }) => {
-      if (isNew) {
-        const src = edge.getSourceCellId();
-        const tgt = edge.getTargetCellId();
-        if (src && tgt) {
+    const detachCanvasEvents = attachCanvasEventAdapter({
+      graph,
+      isInternalUpdate,
+      onNodeClick: (node) => {
+        selectClass(node.id);
+        setRightPanelTab('properties');
+      },
+      onBlankClick: () => {
+        selectClass(null);
+        selectRelation(null);
+      },
+      onNodeMoved: (node) => {
+        const position = node.position();
+        const store = useDiagramStore.getState();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
-          edge.remove();
+          node.setPosition(nextPosition.x, nextPosition.y);
           isInternalUpdate.current = false;
-          addRelation(src, tgt);
         }
-      }
-    });
-
-    graph.on('edge:mouseenter', ({ edge }) => {
-      try {
-        edge.addTools([
-          { name: 'source-arrowhead' },
-          { name: 'target-arrowhead' },
-          { name: 'button-remove', args: { distance: -40 } },
-        ]);
-      } catch { /* ignore */ }
-    });
-
-    graph.on('edge:mouseleave', ({ edge }) => {
-      try { edge.removeTools(); } catch { /* ignore */ }
-    });
-
-    graph.on('edge:removed', ({ edge }) => {
-      if (!isInternalUpdate.current) {
-        removeRelation(edge.id);
-      }
+        moveClass(node.id, nextPosition);
+      },
+      onNodeResized: (node) => {
+        resizeClass(node.id, {
+          width: node.size().width,
+          height: node.size().height,
+        });
+      },
+      onEdgeClick: (edge) => {
+        selectRelation(edge.id);
+        setRightPanelTab('properties');
+      },
+      onNewEdge: (edge, sourceId, targetId) => {
+        isInternalUpdate.current = true;
+        edge.remove();
+        isInternalUpdate.current = false;
+        addRelation(sourceId, targetId);
+      },
+      onEdgeRemoved: (edge) => removeRelation(edge.id),
+      edgeTools: [
+        { name: 'source-arrowhead' },
+        { name: 'target-arrowhead' },
+        { name: 'button-remove', args: { distance: -40 } },
+      ],
     });
 
     // Keyboard shortcuts
@@ -333,7 +358,7 @@ const UMLEditor: React.FC = () => {
       if (e.ctrlKey && e.key === 'c') {
         // Copy selected class
         if (store.selectedClassId) {
-          const cls = store.diagram.classes.find((c) => c.id === store.selectedClassId);
+          const cls = getActiveDiagram().classes.find((c) => c.id === store.selectedClassId);
           if (cls) {
             clipboard.current = { classes: [JSON.parse(JSON.stringify(cls))], relations: [] };
             console.log('[UMLEditor] Copied:', cls.name);
@@ -346,7 +371,8 @@ const UMLEditor: React.FC = () => {
           store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
           // Apply copied size, attributes, methods
           const store2 = useDiagramStore.getState();
-          const lastAdded = store2.diagram.classes[store2.diagram.classes.length - 1];
+          const activeDiagram = getActiveDiagram();
+          const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
           if (lastAdded) {
             store2.updateClass(lastAdded.id, {
               name: cls.name,
@@ -383,13 +409,17 @@ const UMLEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graph.centerContent();
+    if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
+      graph.centerContent();
+    }
     graphRef.current = graph;
     console.log('[UML Editor] Initialized. Shape registered:', shapeRegistered);
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachCanvasEvents();
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -398,6 +428,14 @@ const UMLEditor: React.FC = () => {
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, {
+    entity: UmlClass;
+    selected: boolean;
+    theme: CanvasTheme;
+    html: string;
+  }>>(new Map());
+  const nodeSignatureCache = useRef<Map<string, string>>(new Map());
+  const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -413,27 +451,52 @@ const UMLEditor: React.FC = () => {
         if (!currentIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          renderCache.current.delete(id);
+          nodeSignatureCache.current.delete(id);
         }
       });
 
       // Add or update nodes
       diagram.classes.forEach((cls) => {
         const isSelected = cls.id === selectedClassId;
-        const htmlContent = buildClassHTML(cls, isSelected);
+        const cachedRender = renderCache.current.get(cls.id);
+        const htmlContent = cachedRender?.entity === cls
+          && cachedRender.selected === isSelected
+          && cachedRender.theme === canvasTheme
+          ? cachedRender.html
+          : buildClassHTML(cls, isSelected, canvasTheme);
         const cached = htmlCache.current.get(cls.id);
+        const { width, height } = getClassNodeSize(cls);
+        const signature = JSON.stringify([
+          htmlContent, cls.position.x, cls.position.y, width, height,
+        ]);
+        renderCache.current.set(cls.id, {
+          entity: cls,
+          selected: isSelected,
+          theme: canvasTheme,
+          html: htmlContent,
+        });
 
         try {
           const existing = graph.getCellById(cls.id);
           if (existing && existing.isNode()) {
+            if (nodeSignatureCache.current.get(cls.id) === signature) return;
             // Update existing node
             const node = existing as Node;
             node.setPosition(cls.position.x, cls.position.y);
-            node.setSize(cls.size);
+            node.setSize({ width, height });
+            node.setAttrs({
+              body: {
+                stroke: isSelected ? '#2563eb' : '#cbd5e1',
+                strokeWidth: isSelected ? 2.5 : 1.5,
+              },
+            });
             if (cached !== htmlContent) {
               // X6 attr: set the 'html' attr on the 'content' selector
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(cls.id, htmlContent);
             }
+            nodeSignatureCache.current.set(cls.id, signature);
           } else {
             // Add new node
             const node = graph.addNode({
@@ -441,14 +504,19 @@ const UMLEditor: React.FC = () => {
               shape: 'uml-class',
               x: cls.position.x,
               y: cls.position.y,
-              width: cls.size.width || 200,
-              height: cls.size.height || 150,
+              width,
+              height,
               attrs: {
                 content: { html: htmlContent },
+                body: {
+                  stroke: isSelected ? '#2563eb' : '#cbd5e1',
+                  strokeWidth: isSelected ? 2.5 : 1.5,
+                },
               },
             });
             if (node) {
               htmlCache.current.set(cls.id, htmlContent);
+              nodeSignatureCache.current.set(cls.id, signature);
             }
           }
         } catch (e) {
@@ -463,10 +531,14 @@ const UMLEditor: React.FC = () => {
       existingEdgeIds.forEach((id) => {
         if (!diagramEdgeIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
+          edgeSignatureCache.current.delete(id);
         }
       });
 
       diagram.relations.forEach((rel) => {
+        const isSelected = rel.id === selectedRelationId;
+        const isComposition = rel.type === RelationType.COMPOSITION;
+        const isAggregation = rel.type === RelationType.AGGREGATION;
         const labelText = [
           rel.type,
           rel.multiplicity_source ? `[${rel.multiplicity_source}]` : '',
@@ -481,20 +553,45 @@ const UMLEditor: React.FC = () => {
           ? 'block' : 'classic';
 
         const lineAttrs = {
-          stroke: '#555555',
-          strokeWidth: 2,
+          stroke: isSelected ? '#2563eb' : '#64748b',
+          strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
-          targetMarker: { name: arrowStyle, width: 12, height: 8 },
+          sourceMarker: isComposition || isAggregation
+            ? {
+                name: 'diamond',
+                width: 16,
+                height: 12,
+                fill: isComposition ? '#64748b' : '#ffffff',
+              }
+            : undefined,
+          targetMarker: {
+            name: arrowStyle,
+            width: 12,
+            height: 8,
+            fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
+              ? '#ffffff'
+              : isSelected ? '#2563eb' : '#64748b',
+          },
         };
+        const signature = JSON.stringify([
+          rel.source, rel.target, labelText, isDashed, arrowStyle,
+          isSelected, isComposition, isAggregation,
+        ]);
 
         try {
           if (existingEdgeIds.has(rel.id)) {
+            if (edgeSignatureCache.current.get(rel.id) === signature) return;
             // Update existing edge
             const edge = graph.getCellById(rel.id) as Edge;
             if (edge) {
+              edge.setSource({ cell: rel.source });
+              edge.setTarget({ cell: rel.target });
               edge.setLabels(labelText ? [labelText] : []);
+              edge.setAttrByPath('line/stroke', lineAttrs.stroke);
+              edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
+              edgeSignatureCache.current.set(rel.id, signature);
             }
           } else {
             // Add new edge — skip if source or target class doesn't exist on canvas
@@ -506,13 +603,14 @@ const UMLEditor: React.FC = () => {
               console.warn('[UML Editor] Sync edge skipped — target node missing:', rel.id, rel.target);
               return;
             }
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: rel.id,
               source: { cell: rel.source },
               target: { cell: rel.target },
               labels: labelText ? [labelText] : undefined,
               attrs: { line: lineAttrs },
             });
+            if (edge) edgeSignatureCache.current.set(rel.id, signature);
           }
         } catch (e) {
           console.warn('[UML Editor] Sync edge error:', rel.id, e);
@@ -522,7 +620,12 @@ const UMLEditor: React.FC = () => {
       prevClassIds.current = currentIds;
       isInternalUpdate.current = false;
 
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(viewport.panX || viewport.panY)
+        && viewport.zoom === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[UMLEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -542,17 +645,30 @@ const UMLEditor: React.FC = () => {
       console.error('[UML Editor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedClassId]);
+  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
-      graph.zoomTo(diagram.zoom);
+    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
+      graph.zoomTo(viewport.zoom);
     }
-  }, [diagram.zoom]);
+  }, [viewport.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - viewport.panX) > 0.5
+      || Math.abs(translation.ty - viewport.panY) > 0.5
+    ) {
+      graph.translate(viewport.panX, viewport.panY);
+    }
+  }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {
@@ -622,7 +738,7 @@ const UMLEditor: React.FC = () => {
           <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
-      <div ref={containerRef} className="uml-canvas-container" />
+      <div ref={containerRef} className={`uml-canvas-container theme-${canvasTheme}`} />
     </div>
   );
 };

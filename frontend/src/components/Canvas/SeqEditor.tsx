@@ -5,17 +5,18 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Graph, Node, Edge } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
-import { Transform } from '@antv/x6-plugin-transform';
-import { Selection } from '@antv/x6-plugin-selection';
-import { Snapline } from '@antv/x6-plugin-snapline';
+import { useShallow } from 'zustand/react/shallow';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
+import { createCanvasGraph } from './core/createCanvasGraph';
+import { snapCanvasPosition } from './core/snapToGrid';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -103,7 +104,7 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
   return `<div class="seq-lifeline-node ${selClass}">
-    <div class="seq-lifeline-name">${lifeline.name}</div>
+    <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
       <div class="seq-lifeline-dash"></div>
       ${bars}
@@ -125,11 +126,23 @@ const SeqEditor: React.FC = () => {
   const clipboard = useRef<any>(null);
 
   const {
-    diagram, project, selectedLifelineId, selectedMessageId,
+    diagram, selectedLifelineId, selectedMessageId,
     addLifeline, removeLifeline, moveLifeline,
     selectLifeline, selectMessage,
     undo, redo,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: selectActiveDiagram(s),
+    selectedLifelineId: s.selectedLifelineId,
+    selectedMessageId: s.selectedMessageId,
+    addLifeline: s.addLifeline,
+    removeLifeline: s.removeLifeline,
+    moveLifeline: s.moveLifeline,
+    selectLifeline: s.selectLifeline,
+    selectMessage: s.selectMessage,
+    undo: s.undo,
+    redo: s.redo,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const { setRightPanelTab } = useUiStore();
 
@@ -143,28 +156,24 @@ const SeqEditor: React.FC = () => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = useDiagramStore.getState().diagram;
-    const graph = new Graph({
+    const d = getActiveDiagram();
+    const graph = createCanvasGraph({
       container: containerRef.current,
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      background: { color: '#fafafa' },
       grid: {
-        size: d.grid_size || 20, visible: d.grid_visible !== false,
-        args: { color: d.grid_color || '#e0e0e0', thickness: d.grid_thickness || 1 },
+        size: d.grid_size || 20,
+        visible: d.grid_visible !== false,
+        color: d.grid_color || '#e0e0e0',
+        thickness: d.grid_thickness || 1,
       },
-      mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'], minScale: 0.1, maxScale: 5 },
-      panning: { enabled: true },
     });
 
-    graph.use(new History({ enabled: true }));
-    graph.use(new Transform({ resizing: true, rotating: false }));
-    graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
-    graph.use(new Snapline({ enabled: true, sharp: true }));
-
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // Click-to-click message creation (lifelines only)
@@ -212,10 +221,22 @@ const SeqEditor: React.FC = () => {
       if (node.shape === 'seq-fragment' && !isInternalUpdate.current) {
         fragMoved = true;
         const h = node.size().height;
+        const store = useDiagramStore.getState();
+        const position = node.position();
+        const nextPosition = snapCanvasPosition(
+          { x: position.x, y: position.y },
+          getActiveDiagram().snap_to_grid,
+          getActiveDiagram().grid_size,
+        );
+        if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
+          isInternalUpdate.current = true;
+          node.setPosition(nextPosition.x, nextPosition.y);
+          isInternalUpdate.current = false;
+        }
         useDiagramStore.getState().updateFragment(node.id, {
-          x: node.position().x,
-          y_start: node.position().y,
-          y_end: node.position().y + h,
+          x: nextPosition.x,
+          y_start: nextPosition.y,
+          y_end: nextPosition.y + h,
         } as any);
       }
     });
@@ -247,7 +268,20 @@ const SeqEditor: React.FC = () => {
     });
 
     graph.on('node:moved', ({ node }) => {
-      moveLifeline(node.id, node.position().x);
+      if (isInternalUpdate.current || node.shape !== 'seq-lifeline') return;
+      const position = node.position();
+      const store = useDiagramStore.getState();
+      const nextPosition = snapCanvasPosition(
+        { x: position.x, y: position.y },
+        getActiveDiagram().snap_to_grid,
+        getActiveDiagram().grid_size,
+      );
+      if (position.x !== nextPosition.x) {
+        isInternalUpdate.current = true;
+        node.setPosition(nextPosition.x, position.y);
+        isInternalUpdate.current = false;
+      }
+      moveLifeline(node.id, nextPosition.x);
     });
 
     graph.on('edge:click', ({ edge }) => {
@@ -257,12 +291,14 @@ const SeqEditor: React.FC = () => {
 
     // Save edge Y position when dragged
     graph.on('edge:change:source', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       if (typeof (current as any)?.y === 'number') {
         const store = useDiagramStore.getState();
         store.updateMessage(edge.id, { y: (current as any).y } as any);
       }
     });
     graph.on('edge:change:target', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       if (typeof (current as any)?.y === 'number') {
         const store = useDiagramStore.getState();
         store.updateMessage(edge.id, { y: (current as any).y } as any);
@@ -270,6 +306,7 @@ const SeqEditor: React.FC = () => {
     });
     // Also capture vertex moves for self-messages
     graph.on('edge:change:vertices', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       const store = useDiagramStore.getState();
       const src = edge.getSource();
       const srcY = typeof (src as any)?.y === 'number' ? (src as any).y : edge.getSourcePoint()?.y;
@@ -286,7 +323,7 @@ const SeqEditor: React.FC = () => {
 
       if (e.ctrlKey && e.key === 'c') {
         if (store.selectedLifelineId) {
-          const ll = (store.diagram.lifelines || []).find((l) => l.id === store.selectedLifelineId);
+          const ll = (getActiveDiagram().lifelines || []).find((l) => l.id === store.selectedLifelineId);
           if (ll) clipboard.current = JSON.parse(JSON.stringify(ll));
         }
       } else if (e.ctrlKey && e.key === 'v') {
@@ -295,7 +332,7 @@ const SeqEditor: React.FC = () => {
           store.addLifeline(c.x + 30);
           // Apply copied name
           const store2 = useDiagramStore.getState();
-          const lls = store2.diagram.lifelines || [];
+          const lls = getActiveDiagram().lifelines || [];
           const pasted = lls[lls.length - 1];
           if (pasted) {
             store2.updateLifeline(pasted.id, {
@@ -327,12 +364,15 @@ const SeqEditor: React.FC = () => {
     document.addEventListener('keydown', handleKeyDown);
 
     graphRef.current = graph;
-    graph.centerContent();
+    if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
+      graph.centerContent();
+    }
     console.log('[SeqEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       document.removeEventListener('keydown', handleKeyDown);
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -341,6 +381,10 @@ const SeqEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; html: string }>>(new Map());
+  const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
+  const messageSignatureCache = useRef<Map<string, string>>(new Map());
+  const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -358,6 +402,8 @@ const SeqEditor: React.FC = () => {
         if (!currentLIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          renderCache.current.delete(id);
+          lifelineSignatureCache.current.delete(id);
         }
       });
 
@@ -376,11 +422,20 @@ const SeqEditor: React.FC = () => {
 
       // Add/update lifelines (coordinate validation handled by store)
       lifelines.forEach((ll) => {
-        const htmlContent = buildLifelineHTML(ll, ll.id === selectedLifelineId);
+        const selected = ll.id === selectedLifelineId;
+        const cachedRender = renderCache.current.get(ll.id);
+        const htmlContent = cachedRender?.entity === ll && cachedRender.selected === selected
+          ? cachedRender.html
+          : buildLifelineHTML(ll, selected);
         const cached = htmlCache.current.get(ll.id);
+        const signature = JSON.stringify([
+          htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
+        ]);
+        renderCache.current.set(ll.id, { entity: ll, selected, html: htmlContent });
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
+            if (lifelineSignatureCache.current.get(ll.id) === signature) return;
             const node = existing as Node;
             node.setPosition(ll.x, LIFELINE_Y);
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
@@ -388,8 +443,9 @@ const SeqEditor: React.FC = () => {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(ll.id, htmlContent);
             }
+            lifelineSignatureCache.current.set(ll.id, signature);
           } else {
-            graph.addNode({
+            const node = graph.addNode({
               id: ll.id,
               shape: 'seq-lifeline',
               x: ll.x, y: LIFELINE_Y,
@@ -397,6 +453,7 @@ const SeqEditor: React.FC = () => {
               attrs: { content: { html: htmlContent } },
             });
             htmlCache.current.set(ll.id, htmlContent);
+            if (node) lifelineSignatureCache.current.set(ll.id, signature);
           }
         } catch (e) {
           console.warn('[SeqEditor] Sync lifeline error:', ll.name, e);
@@ -409,6 +466,7 @@ const SeqEditor: React.FC = () => {
       graphEdgeIds.forEach((id) => {
         if (!dataMsgIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
+          messageSignatureCache.current.delete(id);
         }
       });
 
@@ -447,10 +505,14 @@ const SeqEditor: React.FC = () => {
           strokeDasharray: strokeDash,
           targetMarker: { name: 'block', width: 10, height: 6 },
         };
+        const signature = JSON.stringify([
+          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, strokeColor, strokeDash,
+        ]);
 
         try {
           const existing = graph.getCellById(msg.id);
           if (existing && existing.isEdge()) {
+            if (messageSignatureCache.current.get(msg.id) === signature) return;
             // Update existing edge: positions, vertices, style, label
             const edge = existing as Edge;
             edge.setSource({ x: fromX, y: msgY });
@@ -472,6 +534,7 @@ const SeqEditor: React.FC = () => {
             }] : []);
             edge.setAttrByPath('line/stroke', strokeColor);
             edge.setAttrByPath('line/strokeDasharray', strokeDash);
+            messageSignatureCache.current.set(msg.id, signature);
             return;
           }
 
@@ -487,7 +550,7 @@ const SeqEditor: React.FC = () => {
             : undefined;
 
           if (isSelf) {
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: msg.id,
               source: { x: srcLL.x + LIFELINE_WIDTH, y: msgY },
               target: { x: srcLL.x + LIFELINE_WIDTH, y: msgY + 24 },
@@ -499,14 +562,16 @@ const SeqEditor: React.FC = () => {
               connector: { name: 'rounded' },
               attrs: { line: lineAttrs },
             });
+            if (edge) messageSignatureCache.current.set(msg.id, signature);
           } else {
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: msg.id,
               source: { x: fromX, y: msgY },
               target: { x: toX, y: msgY },
               labels: edgeLabel,
               attrs: { line: lineAttrs },
             });
+            if (edge) messageSignatureCache.current.set(msg.id, signature);
           }
         } catch (e) {
           console.warn('[SeqEditor] Sync message error:', msg.id, e);
@@ -520,6 +585,7 @@ const SeqEditor: React.FC = () => {
       graph.getNodes().forEach((n) => {
         if (n.shape === 'seq-fragment' && !fragIds.has(n.id)) {
           try { graph.removeCell(n.id); } catch { /* ignore */ }
+          fragmentSignatureCache.current.delete(n.id);
         }
       });
       // Add/update fragments
@@ -531,8 +597,13 @@ const SeqEditor: React.FC = () => {
         const w = f.width || 280;
         const yStart = Math.max(f.y_start || 80, 80);  // ensure fragment clears toolbar
         const h = Math.max(60, (f.y_end || (yStart + 120)) - yStart);
+        const stroke = f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
+        const dash = f.type === 'opt' ? '4,2' : '';
+        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash]);
         try {
           const existing = graph.getCellById(f.id);
+          if (existing && existing.isNode()
+            && fragmentSignatureCache.current.get(f.id) === signature) return;
           if (existing && existing.isNode()) {
             (existing as Node).setPosition(f.x || 80, yStart);
             existing.setSize({ width: w, height: h });
@@ -546,10 +617,10 @@ const SeqEditor: React.FC = () => {
           // Always update label + style
           const fn = graph.getCellById(f.id) as Node;
           if (fn) {
-            fn.setAttrByPath('labelText/html', `<span>${label}</span>`);
-            fn.setAttrByPath('body/stroke', f.type === 'alt' ? '#722ed1' :
-              f.type === 'loop' ? '#1890ff' : '#555');
-            fn.setAttrByPath('body/strokeDasharray', f.type === 'opt' ? '4,2' : '');
+            fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
+            fn.setAttrByPath('body/stroke', stroke);
+            fn.setAttrByPath('body/strokeDasharray', dash);
+            fragmentSignatureCache.current.set(f.id, signature);
           }
         } catch (e) { /* ignore */ }
       });
@@ -558,7 +629,12 @@ const SeqEditor: React.FC = () => {
       isInternalUpdate.current = false;
 
       // Center viewport as soon as the first elements appear
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(viewport.panX || viewport.panY)
+        && viewport.zoom === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[SeqEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -578,17 +654,30 @@ const SeqEditor: React.FC = () => {
       console.error('[SeqEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedLifelineId]);
+  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    if (Math.abs(graph.zoom() - diagram.zoom) > 0.001) {
-      graph.zoomTo(diagram.zoom);
+    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
+      graph.zoomTo(viewport.zoom);
     }
-  }, [diagram.zoom]);
+  }, [viewport.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - viewport.panX) > 0.5
+      || Math.abs(translation.ty - viewport.panY) > 0.5
+    ) {
+      graph.translate(viewport.panX, viewport.panY);
+    }
+  }, [viewport.panX, viewport.panY]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
@@ -636,13 +725,13 @@ const SeqEditor: React.FC = () => {
 
   const handleAddFragment = useCallback((type: FragmentType) => {
     const store = useDiagramStore.getState();
-    const msgs = store.diagram.messages || [];
+    const msgs = getActiveDiagram().messages || [];
     const y = msgs.length > 0
       ? Math.max(...msgs.map((m) => (m.y || 100))) + 60
       : 200;
     store.addFragment(y);
     // Set the fragment type
-    const frags = store.diagram.fragments || [];
+    const frags = getActiveDiagram().fragments || [];
     if (frags.length > 0) {
       store.updateFragment(frags[frags.length - 1].id, {
         type,

@@ -39,11 +39,48 @@ class CapabilityPolicy:
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return f"Tool '{name}' is not enabled for this run"
 
-        if name == "bash":
+        if name in {"bash", "shell"}:
             command = parameters.get("command", "")
             if not isinstance(command, str) or not command.strip():
                 return "command must be a non-empty string"
             return self._check_command(command)
+
+        if name == "run_program":
+            program = parameters.get("program", "")
+            args = parameters.get("args", [])
+            if not isinstance(program, str) or not program.strip():
+                return "program must be a non-empty string"
+            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                return "args must be a list of strings"
+            return self._check_command(" ".join([program, *args]))
+
+        if name == "run_task":
+            target = parameters.get("target")
+            if target is not None:
+                if not isinstance(target, str) or not target.strip():
+                    return "target must be a non-empty string"
+                return self._check_path(target)
+            return None
+
+        if name in {"apply_changes", "apply_patch"}:
+            changes = parameters.get("changes")
+            if changes is None:
+                changes = parameters.get("patches", [])
+            if not isinstance(changes, list) or not changes:
+                return "changes must be a non-empty list"
+            for change in changes:
+                if not isinstance(change, dict):
+                    return "each change must be an object"
+                for key in ("path", "from", "to"):
+                    value = change.get(key)
+                    if value is None:
+                        continue
+                    if not isinstance(value, str) or not value.strip():
+                        return f"each change {key} must be a non-empty string"
+                    error = self._check_path(value)
+                    if error:
+                        return error
+            return None
 
         if name in {"read_file", "write_file", "edit_file"}:
             path = parameters.get("path", "")

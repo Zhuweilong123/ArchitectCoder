@@ -17,7 +17,8 @@ import {
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
   BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
 } from '@ant-design/icons';
-import { useDiagramStore } from '../../stores/diagramStore';
+import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram } from '../../types/uml';
 import {
@@ -58,7 +59,31 @@ const Toolbar: React.FC = () => {
     toggleGrid, setGridSize, setGridColor, setGridThickness,
     setCurrentFilepath, currentFilepath, currentWorkspacePath,
     currentWorkspaceSafe, setCurrentWorkspacePath,
-  } = useDiagramStore();
+  } = useDiagramStore(useShallow((s) => ({
+    diagram: selectActiveDiagram(s),
+    project: s.project,
+    isModified: s.isModified,
+    undoStack: s.undoStack,
+    redoStack: s.redoStack,
+    undo: s.undo,
+    redo: s.redo,
+    setProject: s.setProject,
+    newProject: s.newProject,
+    setActiveDiagram: s.setActiveDiagram,
+    addDiagram: s.addDiagram,
+    removeDiagram: s.removeDiagram,
+    markSaved: s.markSaved,
+    toggleGrid: s.toggleGrid,
+    setGridSize: s.setGridSize,
+    setGridColor: s.setGridColor,
+    setGridThickness: s.setGridThickness,
+    setCurrentFilepath: s.setCurrentFilepath,
+    currentFilepath: s.currentFilepath,
+    currentWorkspacePath: s.currentWorkspacePath,
+    currentWorkspaceSafe: s.currentWorkspaceSafe,
+    setCurrentWorkspacePath: s.setCurrentWorkspacePath,
+  })));
+  const viewport = useDiagramStore((s) => s.viewport);
 
   const {
     selectedLanguage,
@@ -66,7 +91,7 @@ const Toolbar: React.FC = () => {
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    projectRoot, sourceDir, testDir, interfaceLanguage,
+    projectRoot, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
     setProjectRoot, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
@@ -134,7 +159,7 @@ const Toolbar: React.FC = () => {
 
   // ── Global optimize handler (SSE 流式 / REST 非流式) ─────────
   const handleGlobalOptimize = async () => {
-    const proj = useDiagramStore.getState().project;
+    const proj = useDiagramStore.getState().getProjectSnapshot();
 
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
@@ -152,7 +177,7 @@ const Toolbar: React.FC = () => {
           ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
           : `${projName}.umlproj`;
         const result = await saveProject(
-          { ...useDiagramStore.getState().project, name: projName },
+          { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
           targetPath,
           currentWorkspacePath ? currentWorkspaceSafe : true,
         );
@@ -167,6 +192,7 @@ const Toolbar: React.FC = () => {
     }
 
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    useDiagramStore.getState().beginBatch();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -196,6 +222,7 @@ const Toolbar: React.FC = () => {
       } catch {
         message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
       } finally {
+        useDiagramStore.getState().endBatch();
         setGlobalOptimizing(false);
       }
       return;
@@ -303,6 +330,7 @@ const Toolbar: React.FC = () => {
         message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
       }
     } finally {
+      useDiagramStore.getState().endBatch();
       setGlobalOptimizing(false);
     }
   };
@@ -620,13 +648,14 @@ const Toolbar: React.FC = () => {
     }
     try {
       // 若工程名仍是默认值，则用当前文件路径的文件名同步工程名
-      let proj = project;
+      let proj = useDiagramStore.getState().getProjectSnapshot();
       const curName = (currentFilepath || '').replace(/[\\/]+/g, '/').split('/').pop() || '';
       const curBase = curName.replace(/\.umlproj$/i, '').replace(/\.uml$/i, '');
       if ((!proj.name || proj.name === 'Untitled') && curBase) {
         proj = { ...proj, name: curBase };
         setProject(proj);
       }
+      proj = useDiagramStore.getState().getProjectSnapshot();
       const targetPath = currentFilepath ||
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
@@ -670,7 +699,7 @@ const Toolbar: React.FC = () => {
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
         : filename;
       const result = await saveProject(
-        { ...project, name: projName },
+        { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
       );
@@ -702,8 +731,8 @@ const Toolbar: React.FC = () => {
   };
 
   // ── View controls ───────────────────────────────────
-  const handleZoomIn = () => useDiagramStore.getState().setZoom(diagram.zoom * 1.2);
-  const handleZoomOut = () => useDiagramStore.getState().setZoom(diagram.zoom / 1.2);
+  const handleZoomIn = () => useDiagramStore.getState().setZoom(viewport.zoom * 1.2);
+  const handleZoomOut = () => useDiagramStore.getState().setZoom(viewport.zoom / 1.2);
   const handleZoomReset = () => useDiagramStore.getState().setZoom(1.0);
 
   const saveMenuItems = [
@@ -1011,13 +1040,25 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>
-        <span className="zoom-label">{Math.round(diagram.zoom * 100)}%</span>
+            <span className="zoom-label">{Math.round(viewport.zoom * 100)}%</span>
         <Tooltip title={copy('zoomIn')}>
           <Button icon={<ZoomInOutlined />} onClick={handleZoomIn} />
         </Tooltip>
         <Tooltip title={copy('resetZoom')}>
           <Button icon={<ExpandOutlined />} onClick={handleZoomReset} />
         </Tooltip>
+        <Select
+          size="small"
+          value={canvasTheme}
+          onChange={setCanvasTheme}
+          aria-label={interfaceLanguage === 'en' ? 'Canvas theme' : '画布主题'}
+          options={[
+            { value: 'light', label: interfaceLanguage === 'en' ? 'Light' : '浅色' },
+            { value: 'dark', label: interfaceLanguage === 'en' ? 'Dark' : '深色' },
+            { value: 'blueprint', label: interfaceLanguage === 'en' ? 'Blueprint' : '蓝图' },
+          ]}
+          style={{ width: 104, marginLeft: 8 }}
+        />
       </div>
       </div>
 

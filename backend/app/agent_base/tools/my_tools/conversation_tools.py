@@ -84,6 +84,7 @@ def create_conversation_tools(
     command_executor=None,
     include_subagent: bool = False,
     include_task_system: bool = False,
+    workspace_root: str = "",
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -95,9 +96,9 @@ def create_conversation_tools(
         # Conversation agents always use the configured production command
         # environment. Standalone low-level file-tool tests may inject the
         # compatibility adapter explicitly instead.
-        from app.agent_base.execution import build_linux_command_executor
+        from app.runtime import build_command_executor
         from backend.config import get_settings
-        command_executor = build_linux_command_executor(get_settings())
+        command_executor = build_command_executor(get_settings())
 
     # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
     # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
@@ -110,16 +111,24 @@ def create_conversation_tools(
         )
 
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
-    from .file_system_tools import create_file_system_tools
+    from .foundation_tools import create_foundation_tools
     from backend.config import get_settings
     # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
     design_dir = (os.path.dirname(os.path.abspath(project_file))
                   if project_file else os.path.abspath(get_settings().uml_dir))
-    tools.extend(create_file_system_tools(
+    if not workspace_root:
+        configured = [path for path in (source_dir, test_dir, design_dir) if path]
+        if configured:
+            try:
+                workspace_root = os.path.commonpath([os.path.abspath(path) for path in configured])
+            except ValueError:
+                workspace_root = os.path.abspath(configured[0])
+    tools.extend(create_foundation_tools(
         source_dir, test_dir, design_dir,
         review_manager=review_mgr, progress=progress,
         change_set=change_set,
         command_executor=command_executor,
+        workspace_root=workspace_root,
     ))
 
     # todo_write：会话任务列表
@@ -164,6 +173,7 @@ def create_conversation_tools(
         from app.agent_base.tools.review import SubmitUmlReviewTool
         tools.append(SubmitUmlReviewTool(
             manager=review_mgr, progress=progress, project_file=project_file,
+            workspace_root=workspace_root,
         ))
 
     return tools, review_mgr

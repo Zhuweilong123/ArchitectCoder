@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 import secrets
 from typing import Dict, Any, List, Optional
 
@@ -233,7 +234,7 @@ class SubmitUmlReviewTool(Tool):
     """
 
     def __init__(self, manager: ReviewManager, timeout: float = 300.0,
-                 progress=None, project_file: str = ""):
+                 progress=None, project_file: str = "", workspace_root: str = ""):
         super().__init__(
             name="submit_uml_review",
             description=(
@@ -249,6 +250,49 @@ class SubmitUmlReviewTool(Tool):
         self.timeout = timeout
         self.progress = progress
         self.project_file = project_file
+        self.workspace_root = workspace_root
+
+    def _resolve_project_file(self, value: str) -> str:
+        """Resolve model-supplied project paths against the runtime workspace.
+
+        The model commonly receives paths relative to the configured project
+        root (for example ``design/example.umlproj``), while the backend
+        process may run from the repository root.  Review payload generation
+        must use the same path semantics as the other workspace tools instead
+        of depending on the backend process cwd.
+        """
+        if not value:
+            return ""
+
+        raw = Path(value).expanduser()
+        if raw.is_absolute():
+            return str(raw.resolve())
+
+        roots: list[Path] = []
+        if self.workspace_root:
+            roots.append(Path(self.workspace_root))
+        if self.project_file:
+            configured = Path(self.project_file)
+            if configured.is_absolute():
+                roots.append(configured.resolve().parent.parent)
+        roots.append(Path.cwd())
+
+        seen: set[str] = set()
+        for root in roots:
+            resolved_root = root.resolve()
+            root_key = str(resolved_root).casefold()
+            if root_key in seen:
+                continue
+            seen.add(root_key)
+            candidate = (resolved_root / raw).resolve()
+            if candidate.is_file():
+                return str(candidate)
+
+        # Preserve a deterministic path for the error/fallback metadata even
+        # when the file is missing; callers can then distinguish it from an
+        # intentionally omitted project_file.
+        base = Path(self.workspace_root).resolve() if self.workspace_root else Path.cwd()
+        return str((base / raw).resolve())
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
@@ -287,7 +331,9 @@ class SubmitUmlReviewTool(Tool):
         import os as _os
 
         summary = parameters.get("summary", "")
-        project_file = parameters.get("project_file", "") or self.project_file
+        project_file = self._resolve_project_file(
+            parameters.get("project_file", "") or self.project_file
+        )
         title = summary or "UML diff review"
 
         # ── 主路径：框架自己 load before/after（模型只负责改 + 报文件路径 + 摘要）──

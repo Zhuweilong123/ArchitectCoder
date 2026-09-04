@@ -114,10 +114,10 @@ class Settings(BaseSettings):
     agent_knowledge_graph_provider: str = "extensions.knowledge_graph:create"
     agent_knowledge_graph_db_path: str = ""
 
-    # Command tools expose one Linux/POSIX contract.  Windows deployments use
-    # the configured WSL distribution instead of asking the model to choose a
-    # cmd/PowerShell/Linux dialect per command.
-    agent_command_environment: Literal["auto", "wsl", "native_linux"] = "auto"
+    # Command execution is selected by the runtime.  ``auto`` uses the native
+    # host environment; WSL is an explicit compatibility option for projects
+    # that require Linux on Windows.
+    agent_command_environment: Literal["auto", "native_windows", "native_posix", "native_linux", "wsl"] = "auto"
     agent_wsl_distribution: str = ""
     agent_wsl_executable: str = "wsl.exe"
     # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
