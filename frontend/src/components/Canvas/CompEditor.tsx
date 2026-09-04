@@ -292,6 +292,7 @@ const CompEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevCompIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; html: string }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
@@ -308,8 +309,12 @@ const CompEditor: React.FC = () => {
 
       // Remove deleted
       prevCompIds.current.forEach((id) => {
-        if (!currentIds.has(id)) { try { graph.removeCell(id); } catch { /* ignore */ } htmlCache.current.delete(id); }
-        if (!currentIds.has(id)) nodeSignatureCache.current.delete(id);
+        if (!currentIds.has(id)) {
+          try { graph.removeCell(id); } catch { /* ignore */ }
+          htmlCache.current.delete(id);
+          renderCache.current.delete(id);
+          nodeSignatureCache.current.delete(id);
+        }
       });
 
       // Add/update components + handle embedding
@@ -317,11 +322,16 @@ const CompEditor: React.FC = () => {
         const isChild = !!c.parent_id;
         const w = c.width || (isChild ? CHILD_WIDTH : COMP_WIDTH);
         const h = c.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT);
-        const htmlContent = buildCompHTML(c, c.id === selectedComponentId);
+        const selected = c.id === selectedComponentId;
+        const cachedRender = renderCache.current.get(c.id);
+        const htmlContent = cachedRender?.entity === c && cachedRender.selected === selected
+          ? cachedRender.html
+          : buildCompHTML(c, selected);
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
           htmlContent, c.x, c.y, w, h, c.parent_id || '',
         ]);
+        renderCache.current.set(c.id, { entity: c, selected, html: htmlContent });
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {

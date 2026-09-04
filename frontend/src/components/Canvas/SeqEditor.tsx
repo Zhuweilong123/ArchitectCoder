@@ -356,6 +356,7 @@ const SeqEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; html: string }>>(new Map());
   const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
   const messageSignatureCache = useRef<Map<string, string>>(new Map());
   const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
@@ -376,6 +377,7 @@ const SeqEditor: React.FC = () => {
         if (!currentLIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          renderCache.current.delete(id);
           lifelineSignatureCache.current.delete(id);
         }
       });
@@ -395,11 +397,16 @@ const SeqEditor: React.FC = () => {
 
       // Add/update lifelines (coordinate validation handled by store)
       lifelines.forEach((ll) => {
-        const htmlContent = buildLifelineHTML(ll, ll.id === selectedLifelineId);
+        const selected = ll.id === selectedLifelineId;
+        const cachedRender = renderCache.current.get(ll.id);
+        const htmlContent = cachedRender?.entity === ll && cachedRender.selected === selected
+          ? cachedRender.html
+          : buildLifelineHTML(ll, selected);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
         ]);
+        renderCache.current.set(ll.id, { entity: ll, selected, html: htmlContent });
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {

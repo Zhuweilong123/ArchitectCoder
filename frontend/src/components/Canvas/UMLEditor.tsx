@@ -369,6 +369,7 @@ const UMLEditor: React.FC = () => {
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const renderCache = useRef<Map<string, { entity: UmlClass; selected: boolean; html: string }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
@@ -386,6 +387,7 @@ const UMLEditor: React.FC = () => {
         if (!currentIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          renderCache.current.delete(id);
           nodeSignatureCache.current.delete(id);
         }
       });
@@ -393,13 +395,17 @@ const UMLEditor: React.FC = () => {
       // Add or update nodes
       diagram.classes.forEach((cls) => {
         const isSelected = cls.id === selectedClassId;
-        const htmlContent = buildClassHTML(cls, isSelected);
+        const cachedRender = renderCache.current.get(cls.id);
+        const htmlContent = cachedRender?.entity === cls && cachedRender.selected === isSelected
+          ? cachedRender.html
+          : buildClassHTML(cls, isSelected);
         const cached = htmlCache.current.get(cls.id);
         const width = cls.size.width || 200;
         const height = cls.size.height || 150;
         const signature = JSON.stringify([
           htmlContent, cls.position.x, cls.position.y, width, height,
         ]);
+        renderCache.current.set(cls.id, { entity: cls, selected: isSelected, html: htmlContent });
 
         try {
           const existing = graph.getCellById(cls.id);
