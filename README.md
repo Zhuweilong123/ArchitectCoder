@@ -41,7 +41,7 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 
 ### AI Development Assistant
 
-The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.1, the main loop remains a direct ReAct workflow, with optional task orchestration and a bounded read-only strategy worker available through a pluggable provider:
+The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.2, the main loop remains a direct ReAct workflow, with optional task orchestration and a bounded read-only strategy worker available through a pluggable provider:
 
 - **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
 - **Task planning**: `todo_write` maintains a session task list — plan before multi-step work, update status as you go
@@ -145,24 +145,26 @@ ArchitectCoder/
 │   ├── package.json
 │   └── vite.config.ts
 ├── backend/                        # FastAPI backend
+│   ├── config/                      # Settings and AgentConfig
 │   ├── app/
 │   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace/metrics/evals)
-│   │   ├── core/                   # Config / auth / security
+│   │   ├── core/                   # Authentication / security
 │   │   ├── models/                 # Pydantic data models
 │   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
-│   │   ├── evals/                  # DevAgent evaluation runtime
 │   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
 │   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py
 │   ├── evals/                      # Versioned evaluation cases and fixtures
-│   ├── examples/                   # Optional BaseAgent examples
-│   ├── knowledge_graph/            # Knowledge Graph system (SQLite + FTS5)
-│   ├── memory_system/              # Cross-session memory system (SQLite + FTS5 + jieba)
 │   ├── tests/                      # Unit and integration tests
 │   ├── requirements.txt
 │   └── .env
 ├── docs/                           # Design docs, evaluation baseline, and system archives
 ├── extensions/                     # Unified provider implementations and entry points
+│   ├── orchestration/              # Orchestration providers
+│   ├── memory/                     # Memory providers
+│   ├── trace/                      # Trace providers
+│   ├── evals/                      # Evaluation providers and CLI
+│   └── knowledge_graph/            # Knowledge graph providers
 ├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
 ├── project/                        # Project code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
@@ -175,9 +177,15 @@ ArchitectCoder/
 
 All plugin implementation code is physically kept under `extensions/`:
 `orchestration/`, `memory/`, `trace/`, `evals/`, and `knowledge_graph/`.
-The similarly named directories under `backend/` are compatibility facades or
-stable core contracts only; the main flow loads implementations through the
-central plugin manager.
+The main flow loads implementations through the central plugin manager, while
+stable ports and generic runtime infrastructure remain under `backend/app/`.
+Application and Agent configuration are centralized under `backend/config/`.
+
+Each extension exposes a `module:factory` entry point, for example
+`extensions.memory:create`. Plugins can be enabled, disabled, or replaced by
+setting the corresponding `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` variables in
+`backend/.env`. See [Plugin Architecture Design Archive](docs/plugin-architecture-design.md)
+for the complete design, lifecycle, fallback behavior, and ownership rules.
 
 ## Quick Start
 
@@ -194,7 +202,7 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Provider entry points are managed through `backend/app/agent_base/core/plugins.py` and stored under `extensions/`. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
+Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Configuration definitions are centralized in `backend/config/settings.py` and `backend/config/agent_config.py`; provider entry points are managed through `backend/app/agent_base/core/plugins.py` and implemented under `extensions/`. Set a plugin enabled flag to `false`, or set its provider to `none`, `noop`, or `disabled`, to turn it off. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
 
 ## API and Development Checks
 
