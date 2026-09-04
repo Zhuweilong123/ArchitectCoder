@@ -83,6 +83,7 @@ export interface DiagramState {
   /** Viewport is kept separate so pan/zoom does not invalidate diagram content subscriptions. */
   viewport: ViewportState;
   selectedClassId: string | null;
+  selectedClassIds: string[];
   selectedRelationId: string | null;
   isModified: boolean;
   currentFilepath: string | null;
@@ -133,6 +134,9 @@ export interface DiagramState {
   moveClass: (id: string, position: Position) => void;
   resizeClass: (id: string, size: Size) => void;
   selectClass: (id: string | null) => void;
+  selectClasses: (ids: string[]) => void;
+  alignClasses: (direction: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
+  distributeClasses: (axis: 'horizontal' | 'vertical') => void;
 
   // ── Relation operations ────────────────────────
 
@@ -220,6 +224,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   project: _initialProject,
   viewport: _viewportFromDiagram(_initialDiagram),
   selectedClassId: null,
+  selectedClassIds: [],
   selectedRelationId: null,
   selectedLifelineId: null,
   selectedMessageId: null,
@@ -294,6 +299,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       project,
       viewport: _viewportFromDiagram(_activeDiagram(project)),
       selectedClassId: null,
+      selectedClassIds: [],
       selectedRelationId: null,
       isModified: false,
       currentFilepath: null,
@@ -310,6 +316,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         project: { ...state.project, active_diagram_index: index },
         viewport: _viewportFromDiagram(state.project.diagrams[index]),
         selectedClassId: null,
+        selectedClassIds: [],
         selectedRelationId: null,
         selectedLifelineId: null,
         selectedMessageId: null,
@@ -336,6 +343,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       },
       viewport: _viewportFromDiagram(newD),
       selectedClassId: null,
+      selectedClassIds: [],
       selectedRelationId: null,
       isModified: true,
       undoStack: [],
@@ -452,6 +460,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       selectedClassId: newClass.id,
+      selectedClassIds: [newClass.id],
       selectedRelationId: null,
       isModified: true,
     });
@@ -468,6 +477,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       selectedClassId: state.selectedClassId === id ? null : state.selectedClassId,
+      selectedClassIds: state.selectedClassIds.filter((classId) => classId !== id),
       isModified: true,
     });
   },
@@ -501,7 +511,101 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  selectClass: (id) => set({ selectedClassId: id, selectedRelationId: null }),
+  selectClass: (id) => set({
+    selectedClassId: id,
+    selectedClassIds: id ? [id] : [],
+    selectedRelationId: null,
+  }),
+
+  selectClasses: (ids) => {
+    const state = get();
+    const availableIds = new Set(_activeDiagram(state.project).classes.map((cls) => cls.id));
+    const selectedClassIds = [...new Set(ids)].filter((id) => availableIds.has(id));
+    set({
+      selectedClassId: selectedClassIds[0] || null,
+      selectedClassIds,
+      selectedRelationId: null,
+    });
+  },
+
+  alignClasses: (direction) => {
+    const state = get();
+    const selectedIds = state.selectedClassIds.length > 1
+      ? state.selectedClassIds
+      : state.selectedClassId ? [state.selectedClassId] : [];
+    const classes = _activeDiagram(state.project).classes.filter((cls) => selectedIds.includes(cls.id));
+    if (classes.length < 2) return;
+
+    const minX = Math.min(...classes.map((cls) => cls.position.x));
+    const minY = Math.min(...classes.map((cls) => cls.position.y));
+    const maxRight = Math.max(...classes.map((cls) => cls.position.x + cls.size.width));
+    const maxBottom = Math.max(...classes.map((cls) => cls.position.y + cls.size.height));
+    const centerX = (minX + maxRight) / 2;
+    const centerY = (minY + maxBottom) / 2;
+
+    const project = _updateActiveDiagram(state.project, (diagram) => ({
+      ...diagram,
+      classes: diagram.classes.map((cls) => {
+        if (!selectedIds.includes(cls.id)) return cls;
+        const position = { ...cls.position };
+        if (direction === 'left') position.x = minX;
+        if (direction === 'center') position.x = centerX - cls.size.width / 2;
+        if (direction === 'right') position.x = maxRight - cls.size.width;
+        if (direction === 'top') position.y = minY;
+        if (direction === 'middle') position.y = centerY - cls.size.height / 2;
+        if (direction === 'bottom') position.y = maxBottom - cls.size.height;
+        return { ...cls, position };
+      }),
+    }));
+    get().pushSnapshot(`align_${direction}`);
+    set({ project, isModified: true });
+  },
+
+  distributeClasses: (axis) => {
+    const state = get();
+    const selectedIds = state.selectedClassIds.length > 2
+      ? state.selectedClassIds
+      : state.selectedClassId ? [state.selectedClassId] : [];
+    const classes = _activeDiagram(state.project).classes
+      .filter((cls) => selectedIds.includes(cls.id))
+      .sort((a, b) => axis === 'horizontal'
+        ? a.position.x - b.position.x
+        : a.position.y - b.position.y);
+    if (classes.length < 3) return;
+
+    const start = axis === 'horizontal' ? classes[0].position.x : classes[0].position.y;
+    const last = classes[classes.length - 1];
+    const end = axis === 'horizontal'
+      ? last.position.x + last.size.width
+      : last.position.y + last.size.height;
+    const totalSize = classes.reduce((sum, cls) => sum + (
+      axis === 'horizontal' ? cls.size.width : cls.size.height
+    ), 0);
+    const gap = (end - start - totalSize) / (classes.length - 1);
+    const positions = new Map<string, number>();
+    let cursor = start;
+    classes.forEach((cls) => {
+      positions.set(cls.id, cursor);
+      cursor += (axis === 'horizontal' ? cls.size.width : cls.size.height) + gap;
+    });
+
+    const project = _updateActiveDiagram(state.project, (diagram) => ({
+      ...diagram,
+      classes: diagram.classes.map((cls) => {
+        const coordinate = positions.get(cls.id);
+        if (coordinate === undefined) return cls;
+        return {
+          ...cls,
+          position: {
+            ...cls.position,
+            ...(axis === 'horizontal' ? { x: coordinate } : { y: coordinate }),
+          },
+        };
+      }),
+    }));
+    get().pushSnapshot(`distribute_${axis}`);
+    set({ project, isModified: true });
+  },
 
   // ── Relation operations ────────────────────────────────
 
@@ -544,7 +648,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  selectRelation: (id) => set({ selectedRelationId: id, selectedClassId: null }),
+  selectRelation: (id) => set({
+    selectedRelationId: id,
+    selectedClassId: null,
+    selectedClassIds: [],
+  }),
 
   // ── Sequence diagram operations ────────────────────────
 

@@ -16,6 +16,8 @@ export interface CanvasGraphOptions {
   connection?: {
     line: Record<string, unknown>;
     allowMulti?: boolean;
+    router?: Record<string, unknown>;
+    connector?: Record<string, unknown>;
   };
 }
 
@@ -34,9 +36,9 @@ export function createCanvasGraph(options: CanvasGraphOptions): Graph {
     },
     ...(connection ? {
       connecting: {
-        connector: { name: 'smooth' },
+        connector: connection.connector ?? { name: 'smooth' },
         connectionPoint: 'boundary',
-        router: { name: 'normal' },
+        router: connection.router ?? { name: 'normal' },
         allowBlank: false,
         allowMulti: connection.allowMulti ?? false,
         highlight: true,
@@ -64,7 +66,12 @@ export function createCanvasGraph(options: CanvasGraphOptions): Graph {
 
   graph.use(new History({ enabled: true }));
   graph.use(new Transform({ resizing: true, rotating: false }));
-  graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
+  graph.use(new Selection({
+    enabled: true,
+    rubberband: true,
+    multipleSelectionModifiers: 'shift',
+    showNodeSelectionBox: true,
+  }));
   graph.use(new Snapline({ enabled: true, sharp: true }));
   return graph;
 }

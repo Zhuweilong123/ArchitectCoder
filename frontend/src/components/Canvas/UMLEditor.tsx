@@ -242,13 +242,14 @@ const UMLEditor: React.FC = () => {
   const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
 
   const {
-    diagram, selectedClassId, selectedRelationId,
+    diagram, selectedClassId, selectedClassIds, selectedRelationId,
     moveClass, resizeClass, selectClass, selectRelation,
     addRelation, removeClass, removeRelation, addClass,
-    undo, redo,
+    undo, redo, selectClasses, alignClasses, distributeClasses,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
+    selectedClassIds: s.selectedClassIds,
     selectedRelationId: s.selectedRelationId,
     moveClass: s.moveClass,
     resizeClass: s.resizeClass,
@@ -260,6 +261,9 @@ const UMLEditor: React.FC = () => {
     addClass: s.addClass,
     undo: s.undo,
     redo: s.redo,
+    selectClasses: s.selectClasses,
+    alignClasses: s.alignClasses,
+    distributeClasses: s.distributeClasses,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
@@ -286,6 +290,8 @@ const UMLEditor: React.FC = () => {
           strokeWidth: 2,
           targetMarker: { name: 'block', width: 12, height: 8 },
         },
+        router: { name: 'orth' },
+        connector: { name: 'rounded' },
       },
     });
 
@@ -305,6 +311,12 @@ const UMLEditor: React.FC = () => {
       onNodeClick: (node) => {
         selectClass(node.id);
         setRightPanelTab('properties');
+      },
+      onSelectionChanged: (cells) => {
+        const classIds = cells
+          .filter((cell) => cell.isNode() && cell.shape === 'uml-class')
+          .map((cell) => cell.id);
+        selectClasses(classIds);
       },
       onBlankClick: () => {
         selectClass(null);
@@ -573,6 +585,24 @@ const UMLEditor: React.FC = () => {
               : isSelected ? '#2563eb' : '#64748b',
           },
         };
+        const edgeLabels = labelText ? [{
+          attrs: {
+            text: {
+              text: labelText,
+              fontSize: 10,
+              fontWeight: 600,
+              fill: isSelected ? '#1d4ed8' : '#475569',
+            },
+            rect: {
+              fill: '#ffffff',
+              stroke: isSelected ? '#93c5fd' : '#cbd5e1',
+              strokeWidth: 1,
+              rx: 4,
+              ry: 4,
+            },
+          },
+          position: { distance: 0.5, offset: -10 },
+        }] : [];
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
           isSelected, isComposition, isAggregation,
@@ -586,11 +616,22 @@ const UMLEditor: React.FC = () => {
             if (edge) {
               edge.setSource({ cell: rel.source });
               edge.setTarget({ cell: rel.target });
-              edge.setLabels(labelText ? [labelText] : []);
+              edge.setLabels(edgeLabels);
+              edge.setRouter({ name: 'orth' });
+              edge.setConnector({ name: 'rounded' });
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
+              edge.setAttrByPath(
+                'line/sourceMarker/name',
+                lineAttrs.sourceMarker?.name || 'none',
+              );
+              edge.setAttrByPath(
+                'line/sourceMarker/fill',
+                lineAttrs.sourceMarker?.fill || 'none',
+              );
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
+              edge.setAttrByPath('line/targetMarker/fill', lineAttrs.targetMarker.fill);
               edgeSignatureCache.current.set(rel.id, signature);
             }
           } else {
@@ -607,7 +648,9 @@ const UMLEditor: React.FC = () => {
               id: rel.id,
               source: { cell: rel.source },
               target: { cell: rel.target },
-              labels: labelText ? [labelText] : undefined,
+              labels: edgeLabels,
+              router: { name: 'orth' },
+              connector: { name: 'rounded' },
               attrs: { line: lineAttrs },
             });
             if (edge) edgeSignatureCache.current.set(rel.id, signature);
@@ -722,6 +765,28 @@ const UMLEditor: React.FC = () => {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {selectedClassIds.length >= 2 && (
+        <div style={{
+          position: 'absolute', top: showToolbar ? 44 : 8, left: 8, zIndex: 100,
+          display: 'flex', alignItems: 'center', gap: 3,
+          background: 'var(--canvas-toolbar-bg, #ffffff)',
+          border: '1px solid var(--canvas-toolbar-border, #d9e1ec)',
+          borderRadius: 6, padding: '4px 6px',
+          boxShadow: '0 2px 8px rgba(15,23,42,0.12)',
+        }}>
+          <span style={{ fontSize: 11, color: '#64748b', marginRight: 3 }}>
+            {selectedClassIds.length} selected
+          </span>
+          <Button size="small" type="text" title="Align left" onClick={() => alignClasses('left')}>L</Button>
+          <Button size="small" type="text" title="Align center" onClick={() => alignClasses('center')}>C</Button>
+          <Button size="small" type="text" title="Align right" onClick={() => alignClasses('right')}>R</Button>
+          <Button size="small" type="text" title="Align top" onClick={() => alignClasses('top')}>T</Button>
+          <Button size="small" type="text" title="Align middle" onClick={() => alignClasses('middle')}>M</Button>
+          <Button size="small" type="text" title="Align bottom" onClick={() => alignClasses('bottom')}>B</Button>
+          <Button size="small" type="text" title="Distribute horizontally" onClick={() => distributeClasses('horizontal')}>↔</Button>
+          <Button size="small" type="text" title="Distribute vertically" onClick={() => distributeClasses('vertical')}>↕</Button>
+        </div>
+      )}
       {showToolbar && (
         <div style={{
           position: 'absolute', top: 8, left: 8, zIndex: 100,

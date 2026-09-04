@@ -1,4 +1,4 @@
-import type { Edge, Graph, Node } from '@antv/x6';
+import type { Cell, Edge, Graph, Node } from '@antv/x6';
 
 interface MutableFlag {
   current: boolean;
@@ -8,6 +8,7 @@ export interface CanvasEventAdapterOptions {
   graph: Graph;
   isInternalUpdate: MutableFlag;
   onNodeClick?: (node: Node) => void;
+  onSelectionChanged?: (cells: Cell[]) => void;
   onBlankClick?: () => void;
   onNodeMoved?: (node: Node) => void;
   onNodeResized?: (node: Node) => void;
@@ -26,6 +27,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     graph,
     isInternalUpdate,
     onNodeClick,
+    onSelectionChanged,
     onBlankClick,
     onNodeMoved,
     onNodeResized,
@@ -36,6 +38,9 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   } = options;
 
   const handleNodeClick = ({ node }: { node: Node }) => onNodeClick?.(node);
+  const handleSelectionChanged = ({ selected }: { selected: Cell[] }) => {
+    onSelectionChanged?.(selected || []);
+  };
   const handleBlankClick = () => onBlankClick?.();
   const handleNodeMoved = ({ node }: { node: Node }) => {
     if (!isInternalUpdate.current) onNodeMoved?.(node);
@@ -63,6 +68,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   };
 
   graph.on('node:click', handleNodeClick);
+  graph.on('selection:changed', handleSelectionChanged);
   graph.on('blank:click', handleBlankClick);
   graph.on('node:moved', handleNodeMoved);
   graph.on('node:resized', handleNodeResized);
@@ -76,6 +82,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
 
   return () => {
     graph.off('node:click', handleNodeClick);
+    graph.off('selection:changed', handleSelectionChanged);
     graph.off('blank:click', handleBlankClick);
     graph.off('node:moved', handleNodeMoved);
     graph.off('node:resized', handleNodeResized);
