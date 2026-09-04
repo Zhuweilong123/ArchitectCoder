@@ -259,42 +259,65 @@ const CompEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (e.ctrlKey && e.key === 'c') {
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
+      if (modifier && key === 'c') {
         if (store.selectedComponentId) {
           const c = (getActiveDiagram().components || []).find((x) => x.id === store.selectedComponentId);
           if (c) clipboard.current = JSON.parse(JSON.stringify(c));
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
         if (clipboard.current) {
           const c = clipboard.current;
-          store.addComponent({
-            x: c.x + 30, y: c.y + 30
-          }, c.parent_id || '');
-          // Apply copied size and interfaces
-          const store2 = useDiagramStore.getState();
-          const comps = getActiveDiagram().components || [];
-          const pasted = comps[comps.length - 1];
-          if (pasted) {
-            store2.updateComponent(pasted.id, {
-              width: c.width, height: c.height,
-              provided_interfaces: [...(c.provided_interfaces || [])],
-              required_interfaces: [...(c.required_interfaces || [])],
-            });
+          store.beginBatch();
+          try {
+            store.addComponent({
+              x: c.x + 30, y: c.y + 30
+            }, c.parent_id || '');
+            // Apply copied size and interfaces
+            const store2 = useDiagramStore.getState();
+            const comps = getActiveDiagram().components || [];
+            const pasted = comps[comps.length - 1];
+            if (pasted) {
+              store2.updateComponent(pasted.id, {
+                width: c.width, height: c.height,
+                provided_interfaces: [...(c.provided_interfaces || [])],
+                required_interfaces: [...(c.required_interfaces || [])],
+              });
+            }
+          } finally {
+            store.endBatch();
           }
         }
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
-      else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
+      } else if (modifier && key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
+      else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
+      else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectComponent(null);
+        selectCompRelation(null);
+      }
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         const cells = graph.getSelectedCells();
-        if (cells.length > 0) {
+        const nodeIds = cells.filter((cell) => cell.isNode()).map((cell) => cell.id);
+        const edgeIds = cells.filter((cell) => cell.isEdge()).map((cell) => cell.id);
+        if (nodeIds.length === 0 && store.selectedComponentId) nodeIds.push(store.selectedComponentId);
+        if (edgeIds.length === 0 && store.selectedCompRelationId) edgeIds.push(store.selectedCompRelationId);
+        if (nodeIds.length > 0 || edgeIds.length > 0) {
           e.preventDefault();
           isInternalUpdate.current = true;
-          cells.forEach((cell) => {
-            if (cell.isNode()) store.removeComponent(cell.id);
-            else if (cell.isEdge()) store.removeCompRelation(cell.id);
-            cell.remove();
-          });
+          store.beginBatch();
+          try {
+            nodeIds.forEach((id) => store.removeComponent(id));
+            edgeIds.forEach((id) => store.removeCompRelation(id));
+          } finally {
+            store.endBatch();
+          }
+          graph.cleanSelection();
           isInternalUpdate.current = false;
+          selectComponent(null);
+          selectCompRelation(null);
         }
       }
     };

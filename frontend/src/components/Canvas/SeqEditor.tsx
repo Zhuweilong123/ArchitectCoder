@@ -320,44 +320,66 @@ const SeqEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
 
-      if (e.ctrlKey && e.key === 'c') {
+      if (modifier && key === 'c') {
         if (store.selectedLifelineId) {
           const ll = (getActiveDiagram().lifelines || []).find((l) => l.id === store.selectedLifelineId);
           if (ll) clipboard.current = JSON.parse(JSON.stringify(ll));
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
         if (clipboard.current) {
           const c = clipboard.current;
-          store.addLifeline(c.x + 30);
-          // Apply copied name
-          const store2 = useDiagramStore.getState();
-          const lls = getActiveDiagram().lifelines || [];
-          const pasted = lls[lls.length - 1];
-          if (pasted) {
-            store2.updateLifeline(pasted.id, {
-              name: c.name, class_ref: c.class_ref,
-              activations: [...(c.activations || [])],
-            });
+          store.beginBatch();
+          try {
+            store.addLifeline(c.x + 30);
+            // Apply copied name
+            const store2 = useDiagramStore.getState();
+            const lls = getActiveDiagram().lifelines || [];
+            const pasted = lls[lls.length - 1];
+            if (pasted) {
+              store2.updateLifeline(pasted.id, {
+                name: c.name, class_ref: c.class_ref,
+                activations: [...(c.activations || [])],
+              });
+            }
+          } finally {
+            store.endBatch();
           }
         }
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+      } else if (modifier && key === 'z' && !e.shiftKey) {
         e.preventDefault(); store.undo();
-      } else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      } else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault(); store.redo();
+      } else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectLifeline(null);
+        selectMessage(null);
+        (graph as any).__selectedFragment = null;
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // Delete selected element
         const fragId = (graph as any).__selectedFragment;
-        if (fragId) {
+        const targetIds = {
+          fragment: fragId || '',
+          message: store.selectedMessageId || '',
+          lifeline: store.selectedLifelineId || '',
+        };
+        if (targetIds.fragment || targetIds.message || targetIds.lifeline) {
           e.preventDefault();
-          store.removeFragment(fragId);
+          store.beginBatch();
+          try {
+            if (targetIds.fragment) store.removeFragment(targetIds.fragment);
+            else if (targetIds.message) store.removeMessage(targetIds.message);
+            else if (targetIds.lifeline) store.removeLifeline(targetIds.lifeline);
+          } finally {
+            store.endBatch();
+          }
+          selectLifeline(null);
+          selectMessage(null);
           (graph as any).__selectedFragment = null;
-        } else if (store.selectedMessageId) {
-          e.preventDefault();
-          store.removeMessage(store.selectedMessageId);
-        } else if (store.selectedLifelineId) {
-          e.preventDefault();
-          store.removeLifeline(store.selectedLifelineId);
         }
       }
     };
