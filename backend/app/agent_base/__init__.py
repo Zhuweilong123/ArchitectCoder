@@ -27,6 +27,7 @@ from .core.agent import Agent
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
 from .tools import Tool, ToolParameter, ToolRegistry, ToolChain, ToolChainManager, AsyncToolExecutor
+from .execution import ToolExecutor
 
 __all__ = [
     # core
@@ -45,4 +46,5 @@ __all__ = [
     "ToolRegistry",
     "ToolChain", "ToolChainManager",
     "AsyncToolExecutor",
+    "ToolExecutor",
 ]
