@@ -238,7 +238,7 @@ class SubmitUmlReviewTool(Tool):
             name="submit_uml_review",
             description=(
                 "Submit the updated UML design for human diff review. Call this "
-                "after modifying the design. Pass project_file (the .umlproj path) "
+                "after modifying the design. Pass project_file (the design project path) "
                 "and a one-sentence summary; the tool loads the before/after "
                 "diagrams itself and pushes them to the frontend DiffViewer. It "
                 "pauses until the user accepts or rejects, then returns the "
@@ -255,7 +255,7 @@ class SubmitUmlReviewTool(Tool):
             ToolParameter(
                 name="project_file",
                 type="string",
-                description="Path to the .umlproj project file. The tool loads the updated diagrams from it (before is captured by the framework).",
+                description="Path to the design project file. The tool loads the updated diagrams from it (before is captured by the framework).",
                 required=False,
             ),
             ToolParameter(

@@ -5,11 +5,15 @@ import logging
 import os
 import threading
 from datetime import datetime
-from app.models.uml import UmlDiagram, Project, create_default_project
+from app.models.uml import UmlDiagram, Project
 from app.core.config import get_settings
+from app.agent_base.core.knowledge_graph import get_knowledge_graph
+from app.services.project_repository import ProjectRepository, ProjectSaveResult
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+project_repository = ProjectRepository()
+knowledge_graph_provider = get_knowledge_graph(settings=settings)
 
 
 def ensure_dirs():
@@ -142,7 +146,45 @@ def export_markdown(diagram: UmlDiagram) -> str:
 # ── Project file operations (.umlproj) ──────────────────
 
 
-def save_project(project: Project, filepath: str | None = None) -> str:
+def save_project_with_result(
+    project: Project,
+    filepath: str | None = None,
+    *,
+    expected_revision: int | None = None,
+) -> ProjectSaveResult:
+    """Persist a project through the repository and return its new revision."""
+    ensure_dirs()
+    result = project_repository.save(
+        project,
+        filepath,
+        expected_revision=expected_revision,
+    )
+    logger.info(
+        "[Project] Saved project '%s' (%d diagrams, revision=%d) -> %s",
+        result.project.name,
+        len(result.project.diagrams),
+        result.revision,
+        result.filepath,
+    )
+    _rebuild_kg_async(result.project, result.filepath)
+    return result
+
+
+def save_project(
+    project: Project,
+    filepath: str | None = None,
+    *,
+    expected_revision: int | None = None,
+) -> str:
+    """Backward-compatible facade returning only the filepath."""
+    return save_project_with_result(
+        project,
+        filepath,
+        expected_revision=expected_revision,
+    ).filepath
+
+
+def _legacy_save_project(project: Project, filepath: str | None = None) -> str:
     """Save a Project to a .umlproj JSON file. Returns the filepath."""
     ensure_dirs()
     if not filepath:
@@ -158,6 +200,20 @@ def save_project(project: Project, filepath: str | None = None) -> str:
 
 
 def load_project(filepath: str) -> Project:
+    """Load a project through the repository boundary."""
+    ensure_dirs()
+    project = project_repository.load(filepath)
+    logger.info(
+        "[Project] Loaded project '%s' (%d diagrams, revision=%d) from %s",
+        project.name,
+        len(project.diagrams),
+        project.revision,
+        filepath,
+    )
+    return project
+
+
+def _legacy_load_project(filepath: str) -> Project:
     """Load a Project from a .umlproj JSON file.
 
     Also handles legacy .uml files by wrapping them in a Project container.
@@ -184,6 +240,13 @@ def load_project(filepath: str) -> Project:
 
 
 def list_projects() -> list[dict]:
+    """List projects through the repository boundary."""
+    files = project_repository.list_projects()
+    logger.debug("[Project] Listed %d .umlproj projects", len(files))
+    return files
+
+
+def _legacy_list_projects() -> list[dict]:
     """List all saved Projects (.umlproj files)."""
     ensure_dirs()
     files = []
@@ -217,25 +280,19 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
 
     def _run():
         try:
-            from knowledge_graph.builder import GraphBuilder
-
-            # KG DB 路径: 放在 uml_dir 同级 data/ 目录
-            kg_db_path = os.path.join(
-                os.path.dirname(settings.uml_dir),
-                "data", "knowledge_graph.db",
+            stats = knowledge_graph_provider.rebuild_project(
+                project, project_id, filepath=filepath,
             )
-            kg_db_path = os.path.normpath(os.path.abspath(kg_db_path))
-
-            builder = GraphBuilder(db_path=kg_db_path)
-            try:
-                stats = builder.rebuild_project(project, project_id)
+            if stats is not None:
                 logger.info(
-                    f"[KG] Declarative incremental rebuild for '{project_id}': "
-                    f"+{stats.nodes_added} nodes, +{stats.edges_added} edges, "
-                    f"-{stats.nodes_removed} old nodes, {stats.elapsed_ms:.0f}ms"
+                    "[KG] Declarative incremental rebuild for '%s': +%s nodes, "
+                    "+%s edges, -%s old nodes, %sms",
+                    project_id,
+                    getattr(stats, "nodes_added", "?"),
+                    getattr(stats, "edges_added", "?"),
+                    getattr(stats, "nodes_removed", "?"),
+                    getattr(stats, "elapsed_ms", "?"),
                 )
-            finally:
-                builder.close()
         except Exception:
             logger.exception(f"[KG] Rebuild failed for project '{project_id}'")
 

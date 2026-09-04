@@ -230,12 +230,32 @@ class ReActAgent(Agent):
             str(m.get("content") or "")
             for m in messages
             if m.get("role") == "summary"
+            and (m.get("metadata") or {}).get("kind") != "task_execution"
         )
         self._history = [
             Message(m.get("content", ""), m.get("role", "user"))
             for m in messages
             if m.get("role") in ("user", "assistant")
+            or (
+                m.get("role") == "summary"
+                and (m.get("metadata") or {}).get("kind") == "task_execution"
+            )
         ]
+
+    def append_task_summary(self, summary: str) -> None:
+        """Keep a bounded internal checkpoint for the next turn.
+
+        Tool calls/results are intentionally not added to chat history.  A
+        compact task summary is kept beside the completed user/assistant pair
+        and converted to a system message only when building model input.
+        """
+        value = str(summary or "").strip()
+        if not value:
+            return
+        # Keep the checkpoint adjacent to the user/assistant pair that
+        # produced it.  It is converted to a model-valid system message by
+        # ContextBudgetManager and remains hidden from the user-facing chat.
+        self._history.append(Message(value, "summary"))
 
     # ═══════════════════════════════════════════════════════
     # Public API
@@ -365,7 +385,7 @@ class ReActAgent(Agent):
         4. yield ReActProgress → 追加 assistant + tool 消息
         5. 重复直到模型返回纯文本或达到 max_steps
         """
-        from app.services.chat_trace import trace_span
+        from app.trace.tracing import trace_span
 
         allowed_tools = kwargs.pop("allowed_tools", None)
         initial_token_usage = max(0, int(kwargs.pop("initial_token_usage", 0) or 0))
@@ -373,9 +393,13 @@ class ReActAgent(Agent):
         # Preserve caller-provided tool order for stable schemas/cache keys;
         # use a set only for membership checks below. This is unrelated to
         # model selection, which is fixed for the session.
-        tool_specs = (
+        full_tool_specs = (
             self.tool_registry.get_openai_specs_for(allowed_tools)
             if allowed_tools is not None else self.tool_registry.get_openai_specs()
+        )
+        compact_tool_specs = (
+            self.tool_registry.get_openai_specs_for(allowed_tools, compact=True)
+            if allowed_tools is not None else self.tool_registry.get_openai_specs(compact=True)
         )
         compacted = self.context_budget.prepare_history(
             self._history, self._history_summary,
@@ -387,7 +411,7 @@ class ReActAgent(Agent):
             input_text,
             context=context,
             history_summary=self._history_summary,
-            tools=tool_specs,
+            tools=full_tool_specs,
         )
         messages = built.messages
         current_user_index = built.current_user_index
@@ -415,7 +439,6 @@ class ReActAgent(Agent):
         no_tool_call_streak = 0
         _turn_recorded = False
         tool_call_count = 0
-        repeated_calls: dict[str, int] = {}
         started_at = time.monotonic()
         # Planning and read-only exploration happen immediately before this
         # loop. Count their measured usage against the same task budget so a
@@ -452,7 +475,9 @@ class ReActAgent(Agent):
 
                 remaining_tokens = self.max_total_tokens - total_tokens
                 finalization_mode = remaining_tokens <= self.token_finalization_reserve_tokens
-                active_tool_specs = [] if finalization_mode else tool_specs
+                active_tool_specs = [] if finalization_mode else (
+                    compact_tool_specs if tool_call_count else full_tool_specs
+                )
                 if finalization_mode:
                     messages.append({
                         "role": "system",
@@ -542,6 +567,10 @@ class ReActAgent(Agent):
                     )
                 logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
                 if time.monotonic() - started_at >= self.max_run_seconds:
+                    self.last_context_report.update({
+                        "token_budget_used": total_tokens,
+                        "token_budget_stop_reason": "time_limit",
+                    })
                     final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
@@ -567,6 +596,10 @@ class ReActAgent(Agent):
                             timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
                         )
                     except asyncio.TimeoutError:
+                        self.last_context_report.update({
+                            "token_budget_used": total_tokens,
+                            "token_budget_stop_reason": "llm_timeout",
+                        })
                         final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
                         self.add_message(Message(input_text, "user"))
                         self.add_message(Message(final_answer, "assistant"))
@@ -744,8 +777,6 @@ class ReActAgent(Agent):
                         parsed_calls.append((tc, tool_name, fn.get("arguments", ""), err_obs))
                         continue
 
-                    call_key = f"{tool_name}:{json.dumps(tool_args, ensure_ascii=False, sort_keys=True)}"
-                    next_repetition = repeated_calls.get(call_key, 0) + 1
                     blocked: str | None = None
                     if allowed_set is not None and tool_name not in allowed_set:
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
@@ -753,18 +784,14 @@ class ReActAgent(Agent):
                     elif tool_call_count >= self.max_tool_calls:
                         blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
-                    elif next_repetition > self.max_repeated_tool_calls:
-                        blocked = ("Repeated identical tool call blocked by circuit breaker. "
-                                   "Use a different input or provide the current result.")
                     else:
-                        repeated_calls[call_key] = next_repetition
                         tool_call_count += 1
                     parsed_calls.append((tc, tool_name, tool_args, blocked))
 
                 async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
                     if blocked is not None:
                         return blocked, blocked, ToolResult(status="blocked", data=blocked,
-                                                            error_code="POLICY_BLOCKED")
+                                                            error_code="POLICY_BLOCKED"), 0.0
                     # Check the planning gate immediately before execution.
                     # A preceding todo_write in the same response can therefore
                     # establish the plan before business tools run.
@@ -775,25 +802,27 @@ class ReActAgent(Agent):
                                    "Call todo_write first with the task checklist.")
                         return blocked, blocked, ToolResult(
                             status="blocked", data=blocked, error_code="POLICY_BLOCKED",
-                        )
+                        ), 0.0
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
                         HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args),
+                                    tool_name=tool_name, tool_input=tool_args,
+                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
                     )
                     if veto is not None:
                         return veto, veto, ToolResult(status="blocked", data=veto,
-                                                      error_code="HOOK_VETO")
+                                                      error_code="HOOK_VETO"), 0.0
                     with trace_span(f"{self.name}/{tool_name}"):
                         started_tool = time.monotonic()
                         result = await self.tool_registry.aexecute_tool_result_with_params(
                             tool_name, tool_args,
                         )
+                    duration_ms = (time.monotonic() - started_tool) * 1000
                     try:
                         from app.services.agent_metrics import get_agent_metrics
                         get_agent_metrics().record_tool(
                             tool_name, result.status,
-                            (time.monotonic() - started_tool) * 1000,
+                            duration_ms,
                         )
                     except Exception:
                         pass
@@ -802,9 +831,17 @@ class ReActAgent(Agent):
                         HookEvent.TOOL_AFTER,
                         HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
                                     tool_name=tool_name, tool_input=tool_args,
-                                    tool_output=observation_full),
+                                    tool_output=observation_full,
+                                    tool_status=result.status,
+                                    error_code=result.error_code,
+                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
                     )
-                    return observation_full, fed if fed is not None else observation_full, result
+                    return (
+                        observation_full,
+                        fed if fed is not None else observation_full,
+                        result,
+                        duration_ms,
+                    )
 
                 executable = [item for item in parsed_calls if item[3] is None]
                 parallel = len(executable) > 1 and all(
@@ -825,8 +862,9 @@ class ReActAgent(Agent):
                         observation_full = observation_fed = blocked
                         result = ToolResult(status="blocked", data=blocked,
                                              error_code="INVALID_ARGUMENTS")
+                        duration_ms = 0.0
                     else:
-                        observation_full, observation_fed, result = execution
+                        observation_full, observation_fed, result, duration_ms = execution
                     if isinstance(tool_args, str):
                         observation_full = observation_fed = execution[0]
                     evidence = evidence_ledger.record(
@@ -854,6 +892,7 @@ class ReActAgent(Agent):
                         "status": result.status,
                         "error_code": result.error_code,
                         "retryable": result.retryable,
+                        "duration_ms": round(duration_ms, 1),
                         "evidence": evidence.to_dict(),
                     })
                     logger.info("  🔧 %s(%s) → %s", tool_name,
@@ -1020,6 +1059,8 @@ class ReActAgent(Agent):
                 self.add_message(Message(input_text, "user"))
                 self.add_message(Message(final_answer, "assistant"))
             logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
+            self.last_context_report.setdefault("token_budget_used", total_tokens)
+            self.last_context_report.setdefault("token_budget_stop_reason", "model_answer")
         finally:
             try:
                 get_hooks().trigger(

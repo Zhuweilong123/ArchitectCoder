@@ -38,7 +38,7 @@ ReActAgent 循环
 ## 4. trace 记录格式
 
 - **文件**：`temp/chat_log/trace_{session_id}.jsonl`。
-- **写入**：`backend/app/services/chat_trace.py` 的 `ChatTraceLogger`；全局 hook 在 `backend/app/agent_base/core/llm.py` 的 `_trace_hook` 注册/路由。
+- **写入**：`backend/app/trace/chat_trace.py` 的 `ChatTraceLogger`；核心 Trace Port 与全局 hook 位于 `backend/app/trace/tracing.py`，LLM 通过 `_trace_hook` 转发。
 - **事件类型**：
 
 | event_type | 含义 |
@@ -58,14 +58,14 @@ ReActAgent 循环
 
 ### 5.1 M1 — TraceViewer（可视化查看/调试）
 
-- **后端** `backend/app/services/trace_reader.py`：`list_traces()` / `read_trace()`（复用 `chat_trace._chat_log_dir`，防路径穿越）。
+- **后端** `backend/app/trace/trace_reader.py`：`list_traces()` / `read_trace()`（复用 JSONL adapter 的目录策略，防路径穿越）。
 - **后端** `backend/app/api/trace.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`。
 - **前端** `frontend/src/components/TraceViewer/`：Drawer，左会话列表 + 右时间轴；按 `user_message` 分轮次、按 `span_id` 配对 LLM/工具；支持「自动播放」逐条高亮滚动。
 - **入口**：Toolbar「Trace」按钮 → `uiStore.traceVisible`。
 
 ### 5.2 M2 — 确定性回放引擎
 
-- **后端** `backend/app/services/replay.py`：
+- **后端** `backend/app/trace/replay.py`：
   - `ReplayLLM` — 假 LLM，实现 `ainvoke_with_tools` / `ainvoke`，游标顺序 pop 记录的 `llm_response`。
   - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema；`graceful`（rerun 专用）耗尽时返回占位而非抛错。
   - `replay_agent_session(session_id, *, mode="mock", until_turn=None, tool_policy="readonly")` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
@@ -189,10 +189,11 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/services/chat_trace.py` | trace 记录（ChatTraceLogger / TraceSession / trace_span / 全局 hook；user_message 带 source_dir/test_dir） |
+| `backend/app/trace/chat_trace.py` | JSONL trace 记录（ChatTraceLogger；user_message 带 source_dir/test_dir） |
+| `backend/app/trace/tracing.py` | Trace Port、Provider loader、TraceSession、span 与全局 hook |
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
-| `backend/app/services/trace_reader.py` | 读取解析 JSONL（list / read） |
-| `backend/app/services/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
+| `backend/app/trace/trace_reader.py` | 读取解析 JSONL（list / read） |
+| `backend/app/trace/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
 | `backend/app/api/trace.py` | `/api/trace/*` 端点 |
 | `backend/app/services/agent_chat_ws.py` | agent 对话 WS，记录 tool_call/result/done，补 `start()` |
 | `frontend/src/components/TraceViewer/` | 前端查看/回放 UI |

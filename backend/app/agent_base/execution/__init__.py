@@ -9,6 +9,7 @@ from .linux import (
     build_linux_command_executor,
     resolve_linux_command_environment,
 )
+from .tool_executor import ToolExecutor
 
 __all__ = [
     "CommandExecutor",
@@ -18,4 +19,5 @@ __all__ = [
     "WslBashExecutor",
     "build_linux_command_executor",
     "resolve_linux_command_environment",
+    "ToolExecutor",
 ]

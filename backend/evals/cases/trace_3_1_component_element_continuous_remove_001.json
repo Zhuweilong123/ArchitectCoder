@@ -69,6 +69,61 @@
           "type": "file_contains",
           "path": "src/radar_sim/__init__.py",
           "text": "ModeControlComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "TransmitWaveformGenComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "EchoSimulationComp component"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "PulseCompressionComp component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/mode_control.py",
+          "text": "ModeControlCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/transmit.py",
+          "text": "TransmitWaveformGenCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/echo.py",
+          "text": "EchoSimulationCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/pulse_compression.py",
+          "text": "PulseCompressionCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "ModeControlCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "TransmitWaveformGenCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "EchoSimulationCompElement component"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "src/radar_sim/__init__.py",
+          "text": "PulseCompressionCompElement component"
         }
       ]
     },
@@ -110,11 +165,91 @@
       "type": "pytest",
       "path": "test",
       "timeout": 60
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/mode_control.py",
+      "text": "ModeControlComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/transmit.py",
+      "text": "TransmitWaveformGenComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/echo.py",
+      "text": "EchoSimulationComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/pulse_compression.py",
+      "text": "PulseCompressionComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "ModeControlComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "TransmitWaveformGenComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "EchoSimulationComp component"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "PulseCompressionComp component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/mode_control.py",
+      "text": "ModeControlCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/transmit.py",
+      "text": "TransmitWaveformGenCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/echo.py",
+      "text": "EchoSimulationCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/pulse_compression.py",
+      "text": "PulseCompressionCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "ModeControlCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "TransmitWaveformGenCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "EchoSimulationCompElement component"
+    },
+    {
+      "type": "file_not_contains",
+      "path": "src/radar_sim/__init__.py",
+      "text": "PulseCompressionCompElement component"
     }
   ],
   "max_seconds": 300,
   "max_tool_calls": 100,
-  "max_total_tokens": 100000,
+  "max_total_tokens": 500000,
   "metadata": {
     "suite": "trace-3.1",
     "capability": "continuous_conversation_prompt_optimization",
@@ -134,6 +269,7 @@
     "conversation_mode": "continuous",
     "require_auto_approval": true,
     "expected_status_fast_path": true,
-    "baseline_comparable": true
+    "baseline_comparable": true,
+    "convergence_tool_steps": 8
   }
 }

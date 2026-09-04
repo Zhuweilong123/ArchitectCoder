@@ -138,7 +138,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ### 4.5 InterruptibleAgent — 可中断包装器
 
 每轮 ReAct 步骤前检查 `should_stop()` 回调。前端 WebSocket 发送 `{"type": "stop"}`
-→ 下一轮循环检测并终止。
+→ 当前运行保存 checkpoint 并进入 `paused`，后续可通过“继续”恢复。
 
 ## 5. 工具系统
 
@@ -192,7 +192,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
   供 demo / 测试 / 未来按需接入使用。
 - **`file_search_tools.py` / `knowledge_graph_v2_tools.py`**：
-  文件搜索与知识图谱工具，已由 `conversation_tools.py` 统一接入生产工具工厂。
+  文件搜索工具接入生产工具工厂；知识图谱实现保留供测试与显式 opt-in，当前默认不注册到
+  DevAgent，也不注入子代理工具包。
 
 ## 7. 运行时架构
 
@@ -209,7 +210,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
   │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
   ├── 审核拦截 → submit_uml_review / bash 敏感命令 → 暂停 → 人工响应 → 继续
-  └── 中断控制 → stop 消息 → 优雅终止
+  └── 中断控制 → stop 消息 → 保存 checkpoint → paused / 可恢复
 ```
 
 ### 7.2 WebSocket 协议
@@ -224,7 +225,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
   {"event": "progress", "step": 1, "actions": [...], "thought": "...", "tool_calls_detail": [...]}
   {"event": "request_review", "review_id": 0, "review_type": "bash_command", "title": "...", "question": "..."}
   {"event": "done", "result": "..."}
-  {"event": "stopped", "reason": "User requested stop"}
+  {"event": "stopped", "reason": "User requested stop", "status": "paused", "resume_available": true}
   {"event": "error", "message": "..."}
   {"event": "design_updated", "diagrams": [...], "saved_to": "..."}   # optimize_uml 落盘后触发
   {"event": "design_element", ...}                                     # 设计元素级更新

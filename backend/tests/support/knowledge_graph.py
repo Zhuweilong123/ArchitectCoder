@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.agent_base.tools.my_tools.knowledge_graph_v2_tools import create_kg_v2_tools
+from extensions.knowledge_graph.tools import create_kg_v2_tools
 from app.models.uml import (
     Project,
     RelationType,
@@ -14,7 +14,7 @@ from app.models.uml import (
     UmlMethod,
     UmlRelation,
 )
-from knowledge_graph.builder import GraphBuilder
+from extensions.knowledge_graph.builder import GraphBuilder
 
 
 def build_knowledge_graph(tmp_path: Path) -> tuple[str, str, str]:
@@ -68,10 +68,11 @@ def build_knowledge_graph(tmp_path: Path) -> tuple[str, str, str]:
     return db_path, str(source_dir), project_id
 
 
-def knowledge_graph_tools(db_path: str, source_dir: str):
+def knowledge_graph_tools(db_path: str, source_dir: str, include_compare: bool = False):
     project_file = str(Path(source_dir).parent / "proj.umlproj")
     return create_kg_v2_tools(
         db_path=db_path,
         project_file=project_file,
         source_dir=source_dir,
+        include_compare=include_compare,
     )

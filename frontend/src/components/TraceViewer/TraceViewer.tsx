@@ -32,7 +32,9 @@ interface ToolItem { kind: 'tool'; call: TraceEvent; result?: TraceEvent; }
 interface StepItem { kind: 'step'; event: TraceEvent; }
 interface DoneItem { kind: 'done'; event: TraceEvent; }
 interface ErrorItem { kind: 'error'; event: TraceEvent; }
-type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem;
+interface SummaryItem { kind: 'summary'; event: TraceEvent; }
+interface ReviewItem { kind: 'review'; event: TraceEvent; }
+type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem;
 
 interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
 
@@ -135,6 +137,13 @@ function buildTurns(events: TraceEvent[]): Turn[] {
         break;
       case 'error':
         cur.items.push({ kind: 'error', event: ev });
+        break;
+      case 'task_summary':
+        cur.items.push({ kind: 'summary', event: ev });
+        break;
+      case 'review_request':
+      case 'review_response':
+        cur.items.push({ kind: 'review', event: ev });
         break;
       default:
         // session_start / session_end / review_* / kg_inject：暂不在时间轴单独渲染
@@ -298,6 +307,10 @@ function renderStep(ev: TraceEvent): React.ReactNode {
 }
 
 function renderDone(ev: TraceEvent): React.ReactNode {
+  const runtime = ev.runtime && typeof ev.runtime === 'object' ? ev.runtime : null;
+  const runtimeEntries = runtime
+    ? Object.entries(runtime).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    : [];
   return (
     <div className="trace-card trace-done">
       <div className="trace-card-head">
@@ -305,6 +318,83 @@ function renderDone(ev: TraceEvent): React.ReactNode {
         <span className="trace-title">完成</span>
       </div>
       <div className="trace-thought">{truncate(String(ev.answer || ''), 2000)}</div>
+      {runtime?.token_budget_stop_reason ? (
+        <Tag color={String(runtime.token_budget_stop_reason).includes('budget') ? 'orange' : 'blue'}>
+          {String(runtime.token_budget_stop_reason)}
+        </Tag>
+      ) : null}
+      {runtimeEntries.length > 0 ? (
+        <Collapse
+          ghost
+          items={[{
+            key: 'runtime',
+            label: '运行信息',
+            children: <pre className="trace-pre">{truncate(pretty(runtime), 5000)}</pre>,
+          }]}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function statusColor(status: string): string {
+  if (['completed', 'success', 'accepted'].includes(status)) return 'green';
+  if (['partial', 'waiting_approval', 'pending'].includes(status)) return 'orange';
+  if (['failed', 'timed_out', 'budget_exceeded', 'stopped'].includes(status)) return 'red';
+  return 'blue';
+}
+
+function renderTaskSummary(ev: TraceEvent): React.ReactNode {
+  const status = String(ev.status || 'unknown');
+  return (
+    <div className="trace-card trace-summary">
+      <div className="trace-card-head">
+        <SyncOutlined className="trace-icon" />
+        <span className="trace-title">任务执行摘要</span>
+        <Tag color={statusColor(status)}>{status}</Tag>
+        {ev.tool_call_count != null ? <Tag>{ev.tool_call_count} 次工具调用</Tag> : null}
+      </div>
+      <pre className="trace-pre">{truncate(String(ev.summary || ''), 6000)}</pre>
+    </div>
+  );
+}
+
+function renderReview(ev: TraceEvent): React.ReactNode {
+  const isResponse = ev.event_type === 'review_response';
+  const rawResponse = String(ev.response || '');
+  let parsedResponse: Record<string, any> | null = null;
+  if (isResponse) {
+    try {
+      const parsed = JSON.parse(rawResponse);
+      if (parsed && typeof parsed === 'object') parsedResponse = parsed;
+    } catch {
+      // Older traces may contain plain-text review responses.
+    }
+  }
+  const decision = String(parsedResponse?.decision || '');
+  return (
+    <div className="trace-card trace-review">
+      <div className="trace-card-head">
+        {isResponse
+          ? <CheckCircleOutlined className="trace-icon done" />
+          : <WarningOutlined className="trace-icon" />}
+        <span className="trace-title">{isResponse ? '审核响应' : '审核请求'}</span>
+        {ev.review_type ? <Tag>{String(ev.review_type)}</Tag> : null}
+        {decision ? <Tag color={statusColor(decision)}>{decision}</Tag> : null}
+        {ev.review_id != null ? <span className="trace-meta">#{ev.review_id}</span> : null}
+      </div>
+      {!isResponse ? (
+        <div>
+          {ev.title ? <div className="trace-thought">{String(ev.title)}</div> : null}
+          {ev.question ? <pre className="trace-pre">{truncate(String(ev.question), 2000)}</pre> : null}
+          {ev.content ? <Collapse ghost items={[{
+            key: 'review-content', label: '审核内容',
+            children: <pre className="trace-pre">{truncate(String(ev.content), 5000)}</pre>,
+          }]} /> : null}
+        </div>
+      ) : (
+        <pre className="trace-pre">{truncate(parsedResponse ? pretty(parsedResponse) : rawResponse, 3000)}</pre>
+      )}
     </div>
   );
 }
@@ -328,6 +418,8 @@ function renderItem(item: Item): React.ReactNode {
     case 'step': return renderStep(item.event);
     case 'done': return renderDone(item.event);
     case 'error': return renderError(item.event);
+    case 'summary': return renderTaskSummary(item.event);
+    case 'review': return renderReview(item.event);
   }
 }
 

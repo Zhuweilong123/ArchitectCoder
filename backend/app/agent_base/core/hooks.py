@@ -24,6 +24,8 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -52,6 +54,9 @@ class HookContext:
     agent_name: str
     tool_name: Optional[str] = None
     tool_input: Optional[dict] = None
+    tool_status: Optional[str] = None       # TOOL_AFTER result status
+    error_code: Optional[str] = None        # TOOL_AFTER normalized error code
+    max_repeated_tool_calls: int = 3        # TOOL_BEFORE policy supplied by agent
     tool_output: Optional[str] = None      # 仅 TOOL_AFTER
     messages: Optional[list] = None        # 仅 LLM_BEFORE / LLM_AFTER
     llm_response: Optional[dict] = None    # 仅 LLM_AFTER
@@ -73,6 +78,11 @@ class AgentRuntime:
     requires_todo_plan: bool = False
     requires_acceptance_todos: bool = False
     strategy_subagent_used: bool = False
+    # Per-run convergence state.  Hooks own these counters so the ReAct loop
+    # does not need to encode policy for repeated calls or repeated failures.
+    repeated_tool_calls: dict[str, int] = field(default_factory=dict)
+    repeated_tool_failures: dict[str, int] = field(default_factory=dict)
+    repeated_tool_failure_codes: dict[str, str] = field(default_factory=dict)
 
 
 def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
@@ -117,6 +127,77 @@ def reset_runtime(token) -> None:
 
 
 Hook = Callable[[HookContext], Optional[str]]
+
+
+def _tool_call_key(tool_name: Optional[str], tool_input: Optional[dict]) -> str:
+    """Build a stable, bounded-enough fingerprint for one tool invocation."""
+    try:
+        encoded = json.dumps(tool_input or {}, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        encoded = repr(tool_input)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+    return f"{tool_name or ''}:{digest}"
+
+
+class RepeatedToolCallHook:
+    """Stop identical calls and repeated identical failures at the hook boundary.
+
+    The first guard preserves the agent's configurable identical-call limit.
+    The second guard is stricter for a failing call: after two failures with
+    the same normalized input, the next attempt receives a capability fact
+    instead of executing the same failing operation again.  A changed input
+    has a different fingerprint and remains eligible for a corrective retry.
+    """
+
+    def __call__(self, ctx: HookContext) -> Optional[str]:
+        runtime = get_runtime()
+        if ctx.event == HookEvent.RUN_START:
+            runtime.repeated_tool_calls.clear()
+            runtime.repeated_tool_failures.clear()
+            runtime.repeated_tool_failure_codes.clear()
+            return None
+
+        if not ctx.tool_name or ctx.event not in (HookEvent.TOOL_BEFORE, HookEvent.TOOL_AFTER):
+            return None
+
+        key = _tool_call_key(ctx.tool_name, ctx.tool_input)
+        if ctx.event == HookEvent.TOOL_BEFORE:
+            failure_code = runtime.repeated_tool_failure_codes.get(key)
+            failure_key = f"{key}:{failure_code or 'TOOL_ERROR'}"
+            failure_count = runtime.repeated_tool_failures.get(failure_key, 0)
+            if failure_count >= 2:
+                failure_code = runtime.repeated_tool_failure_codes.get(key) or "TOOL_ERROR"
+                return (
+                    "Repeated tool failure blocked after 2 identical failures. "
+                    f"Tool '{ctx.tool_name}' returned the same failure for the same input; "
+                    f"error_code={failure_code}. Change the input or choose a different "
+                    "capability instead of retrying it."
+                )
+
+            call_count = runtime.repeated_tool_calls.get(key, 0)
+            max_calls = max(1, int(getattr(ctx, "max_repeated_tool_calls", 3) or 3))
+            if call_count >= max_calls:
+                return (
+                    "Repeated identical tool call blocked by circuit breaker. "
+                    "Use a different input or provide the current result."
+                )
+            runtime.repeated_tool_calls[key] = call_count + 1
+            return None
+
+        if ctx.tool_status == "error":
+            failure_code = ctx.error_code or "TOOL_ERROR"
+            failure_key = f"{key}:{failure_code}"
+            runtime.repeated_tool_failures[failure_key] = (
+                runtime.repeated_tool_failures.get(failure_key, 0) + 1
+            )
+            runtime.repeated_tool_failure_codes[key] = failure_code
+        else:
+            # A successful retry proves that the previous failure was transient
+            # and must not poison later work with the same input.
+            failure_code = runtime.repeated_tool_failure_codes.pop(key, None)
+            if failure_code:
+                runtime.repeated_tool_failures.pop(f"{key}:{failure_code}", None)
+        return None
 
 
 class HookRegistry:
@@ -252,6 +333,10 @@ def _register_default_hooks() -> None:
     get_hooks().register(HookEvent.LLM_BEFORE, _interrupt_hook, priority=100)
     get_hooks().register(HookEvent.LLM_BEFORE, _todo_reminder_hook, priority=50)
     get_hooks().register(HookEvent.TOOL_BEFORE, _interrupt_hook, priority=100)
+    repeated_call_hook = RepeatedToolCallHook()
+    get_hooks().register(HookEvent.RUN_START, repeated_call_hook, priority=90)
+    get_hooks().register(HookEvent.TOOL_BEFORE, repeated_call_hook, priority=90)
+    get_hooks().register(HookEvent.TOOL_AFTER, repeated_call_hook, priority=90)
     get_hooks().register(
         HookEvent.TOOL_AFTER,
         # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀

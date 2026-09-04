@@ -23,10 +23,22 @@ from .core.config import Config
 from .core.message import Message, MessageRole
 from .core.llm import BaseAgentsLLM
 from .core.agent import Agent
+from .core.knowledge_graph import (
+    KnowledgeGraphProvider,
+    NoOpKnowledgeGraphProvider,
+    load_knowledge_graph,
+)
+from .core.plugins import (
+    PluginManager,
+    PluginSpec,
+    PluginState,
+    get_plugin_manager,
+)
 
 from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
 
 from .tools import Tool, ToolParameter, ToolRegistry, ToolChain, ToolChainManager, AsyncToolExecutor
+from .execution import ToolExecutor
 
 __all__ = [
     # core
@@ -35,6 +47,13 @@ __all__ = [
     "Message", "MessageRole",
     "BaseAgentsLLM",
     "Agent",
+    "KnowledgeGraphProvider",
+    "NoOpKnowledgeGraphProvider",
+    "load_knowledge_graph",
+    "PluginManager",
+    "PluginSpec",
+    "PluginState",
+    "get_plugin_manager",
     # agents
     "SimpleAgent",
     "ReActAgent",
@@ -45,4 +64,5 @@ __all__ = [
     "ToolRegistry",
     "ToolChain", "ToolChainManager",
     "AsyncToolExecutor",
+    "ToolExecutor",
 ]

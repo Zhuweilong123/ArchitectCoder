@@ -26,16 +26,20 @@ class RunStatus(str, Enum):
     WAITING_APPROVAL = "waiting_approval"
     PAUSED = "paused"
     SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    BUDGET_EXCEEDED = "budget_exceeded"
     CANCELED = "canceled"
     ORPHANED = "orphaned"
 
 
 TERMINAL_STATUSES = frozenset({
     RunStatus.SUCCEEDED.value,
+    RunStatus.PARTIAL.value,
     RunStatus.FAILED.value,
     RunStatus.TIMED_OUT.value,
+    RunStatus.BUDGET_EXCEEDED.value,
     RunStatus.CANCELED.value,
 })
 
@@ -45,21 +49,37 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
         RunStatus.WAITING_APPROVAL.value,
         RunStatus.PAUSED.value,
         RunStatus.SUCCEEDED.value,
+        RunStatus.PARTIAL.value,
         RunStatus.FAILED.value,
         RunStatus.TIMED_OUT.value,
+        RunStatus.BUDGET_EXCEEDED.value,
         RunStatus.CANCELED.value,
         RunStatus.ORPHANED.value,
     }),
     RunStatus.WAITING_APPROVAL.value: frozenset({
         RunStatus.RUNNING.value,
         RunStatus.PAUSED.value,
+        RunStatus.PARTIAL.value,
         RunStatus.FAILED.value,
+        RunStatus.BUDGET_EXCEEDED.value,
         RunStatus.CANCELED.value,
         RunStatus.ORPHANED.value,
     }),
     RunStatus.PAUSED.value: frozenset({RunStatus.RUNNING.value, RunStatus.CANCELED.value}),
     RunStatus.ORPHANED.value: frozenset({RunStatus.QUEUED.value, RunStatus.CANCELED.value}),
 }
+
+
+def run_status_for_completion(completion_status: str) -> RunStatus:
+    """Map an Agent result without collapsing distinct stop causes."""
+    return {
+        "completed": RunStatus.SUCCEEDED,
+        "partial": RunStatus.PARTIAL,
+        "timed_out": RunStatus.TIMED_OUT,
+        "budget_exceeded": RunStatus.BUDGET_EXCEEDED,
+        "canceled": RunStatus.CANCELED,
+        "stopped": RunStatus.CANCELED,
+    }.get(completion_status, RunStatus.FAILED)
 
 
 class RunStateError(RuntimeError):

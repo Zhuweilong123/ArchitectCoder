@@ -82,7 +82,7 @@ class ReflectionAgent(Agent):
         """
         logger.info("🤖 %s 开始处理", self.name)
 
-        from app.services.chat_trace import trace_span
+        from app.trace.tracing import trace_span
 
         # Phase 1: 初始生成 — 原始 prompt 就是第一条 user 消息
         with trace_span(f"{self.name}/initial"):

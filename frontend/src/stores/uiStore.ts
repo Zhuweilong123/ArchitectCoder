@@ -44,6 +44,7 @@ interface UiState {
   testCaseData: string; // Excel test case summary for pipeline Stage 5
 
   // Project directories (shared by Agent chat, etc.)
+  projectRoot: string;
   sourceDir: string;
   testDir: string;
 
@@ -91,6 +92,7 @@ interface UiState {
   setShowTestCaseInCanvas: (v: boolean) => void;
   setTestCaseData: (data: string) => void;
 
+  setProjectRoot: (dir: string) => void;
   setSourceDir: (dir: string) => void;
   setTestDir: (dir: string) => void;
 
@@ -130,6 +132,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   optimizationConsistencyReport: [],
   showTestCaseInCanvas: false,
   testCaseData: '',
+  projectRoot: localStorage.getItem('projectRoot') || 'project',
   sourceDir: localStorage.getItem('sourceDir') || '',
   testDir: localStorage.getItem('testDir') || '',
   fileDialogVisible: false,
@@ -223,6 +226,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   setShowTestCaseInCanvas: (v) => set({ showTestCaseInCanvas: v }),
   setTestCaseData: (data) => set({ testCaseData: data }),
 
+  setProjectRoot: (dir) => {
+    localStorage.setItem('projectRoot', dir);
+    set({ projectRoot: dir });
+  },
   setSourceDir: (dir) => {
     localStorage.setItem('sourceDir', dir);
     set({ sourceDir: dir });

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.evals.paths import baseline_path, cases_dir, data_root, fixtures_dir, projects_dir
+from extensions.evals.paths import baseline_path, cases_dir, data_root, fixtures_dir, projects_dir
 
 
 def test_evaluation_data_paths_are_repo_local_and_separate_from_runtime_code():

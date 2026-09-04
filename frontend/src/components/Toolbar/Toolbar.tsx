@@ -54,6 +54,7 @@ const Toolbar: React.FC = () => {
     diagram, project, isModified, undoStack, redoStack,
     undo, redo, setProject, newProject, setActiveDiagram, addDiagram,
     removeDiagram,
+    markSaved,
     toggleGrid, setGridSize, setGridColor, setGridThickness,
     setCurrentFilepath, currentFilepath, currentWorkspacePath,
     currentWorkspaceSafe, setCurrentWorkspacePath,
@@ -65,8 +66,8 @@ const Toolbar: React.FC = () => {
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    sourceDir, testDir, interfaceLanguage,
-    setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
+    projectRoot, sourceDir, testDir, interfaceLanguage,
+    setProjectRoot, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -119,12 +120,6 @@ const Toolbar: React.FC = () => {
     const prefix = `${base}/`;
     return target.startsWith(prefix) ? target.slice(prefix.length) : pathBaseName(target);
   };
-  const activePath = currentFilepath || currentWorkspacePath;
-  const activePathRoot = activePath ? pathDirName(currentWorkspacePath || activePath) : '';
-  const activePathLabel = activePath && activePathRoot
-    ? relativePath(activePath, activePathRoot)
-    : (activePath ? pathBaseName(activePath) : '');
-
   // ── Save As dialog ──────────────────────────────────
   const [saveAsVisible, setSaveAsVisible] = useState(false);
   const [saveFilename, setSaveFilename] = useState('');
@@ -163,6 +158,7 @@ const Toolbar: React.FC = () => {
         );
         projectFile = result.filepath;
         setCurrentFilepath(result.filepath);
+        markSaved(result.revision);
       } catch {
         message.error({ content: '优化前需要先保存项目文件', key: 'globalOpt' });
         setGlobalOptimizing(false);
@@ -351,18 +347,20 @@ const Toolbar: React.FC = () => {
 
   // ── Project directory selection (for AI Agent) ──
   const [projDirBrowseVisible, setProjDirBrowseVisible] = useState(false);
-  const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'source' | 'test'>('source');
+  const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'project' | 'source' | 'test'>('project');
   const [projDirBrowseResult, setProjDirBrowseResult] = useState<BrowseResult | null>(null);
   const [projDirBrowsePath, setProjDirBrowsePath] = useState('');
 
-  const handleBrowseDirFor = useCallback(async (target: 'source' | 'test', path?: string) => {
+  const handleBrowseDirFor = useCallback(async (target: 'project' | 'source' | 'test', path?: string) => {
     setProjDirBrowseTarget(target);
     try {
       // 默认从当前设置的值开始浏览，无设置则用当前工作目录
       const initialPath = path || (
-        target === 'source'
-          ? (sourceDir || '.')
-          : (testDir || '.')
+        target === 'project'
+          ? (projectRoot || 'project')
+          : target === 'source'
+            ? (sourceDir || '.')
+            : (testDir || '.')
       );
       const result = await browseDirectory(initialPath, false);
       setProjDirBrowseResult(result);
@@ -371,9 +369,13 @@ const Toolbar: React.FC = () => {
     } catch {
       message.error('加载目录失败');
     }
-  }, []);
+  }, [projectRoot, sourceDir, testDir]);
 
   const handleProjDirSelect = useCallback((dirPath: string) => {
+    if (projDirBrowseTarget === 'project') {
+      void handleProjectFolderSelect(dirPath);
+      return;
+    }
     if (projDirBrowseTarget === 'source') {
       setSourceDir(dirPath);
     } else {
@@ -406,6 +408,13 @@ const Toolbar: React.FC = () => {
     }
   };
 
+  const handleBrowseDesign = () => {
+    const designPath = projectRoot
+      ? `${normalizePath(projectRoot)}/design`
+      : (currentFilepath ? pathDirName(currentFilepath) : '');
+    void handleOpen(designPath || undefined, true);
+  };
+
   const handleNavigateTo = (targetPath: string) => {
     browseUnsafe.current = true;
     setPathInput(targetPath);
@@ -425,6 +434,11 @@ const Toolbar: React.FC = () => {
   const handleSelectCurrentFolder = async () => {
     const folder = browseData?.current;
     if (!folder) return;
+    const childDirNames = new Set((browseData?.dirs || []).map((item) => item.name.toLowerCase()));
+    if (['design', 'src', 'test'].some((name) => childDirNames.has(name))) {
+      await handleProjectFolderSelect(folder);
+      return;
+    }
     const safe = !browseUnsafe.current;
     const projectFiles = (browseData.files || []).filter((item) => item.type === 'project');
     const diagramFiles = (browseData.files || []).filter((item) =>
@@ -488,7 +502,7 @@ const Toolbar: React.FC = () => {
 
   };
 
-  const handleOpenFile = async (path: string, isProject: boolean) => {
+  const handleOpenFile = async (path: string, isProject: boolean, notify = true) => {
     try {
       if (isProject) {
         const safe = !browseUnsafe.current;
@@ -498,7 +512,7 @@ const Toolbar: React.FC = () => {
         setCurrentWorkspacePath(pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
-        message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
+        if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
       } else {
         const safe = !browseUnsafe.current;
         const d = await openDiagram(path, safe);
@@ -515,12 +529,88 @@ const Toolbar: React.FC = () => {
         setCurrentWorkspacePath(pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
-        message.success('文件已打开');
+        if (notify) message.success('文件已打开');
       }
     } catch {
-      message.error('打开文件失败');
+      if (useDiagramStore.getState().currentFilepath === path) {
+        setCurrentFilepath(null);
+      }
+      if (notify) message.error('打开文件失败');
     }
   };
+
+  // Restore the last design after a page refresh. The path is persisted by
+  // diagramStore; loading the file here restores the actual project content.
+  const restoreAttempted = useRef(false);
+  useEffect(() => {
+    if (restoreAttempted.current || !currentFilepath) return;
+    restoreAttempted.current = true;
+    browseUnsafe.current = true;
+    void handleOpenFile(currentFilepath, /\.umlproj$/i.test(currentFilepath), false);
+    // The restore is intentionally performed once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Selecting a project root is a single user action. Resolve its conventional
+  // child directories and, when unambiguous, open the only design project.
+  async function handleProjectFolderSelect(dirPath: string) {
+    const root = normalizePath(dirPath);
+    if (!root) return;
+
+    setProjDirBrowseVisible(false);
+    browseUnsafe.current = true;
+    setProjectRoot(root);
+    setCurrentWorkspacePath(root, false);
+    currentFileSafe.current = false;
+    setCurrentFilepath(null);
+
+    try {
+      const rootResult = await browseDirectory(root, false);
+      const childDirs = new Map(
+        (rootResult.dirs || []).map((item) => [item.name.toLowerCase(), item.path]),
+      );
+      const designDir = childDirs.get('design') || '';
+      const sourcePath = childDirs.get('src') || '';
+      const testPath = childDirs.get('test') || '';
+      setSourceDir(sourcePath);
+      setTestDir(testPath);
+
+      const designResult = designDir
+        ? await browseDirectory(designDir, false)
+        : null;
+      const designFiles = (designResult?.files || []).filter((item) =>
+        item.type === 'project'
+        || item.name.toLowerCase().endsWith('.umlproj')
+        || item.name.toLowerCase().endsWith('.uml'),
+      );
+
+      if (designFiles.length === 1) {
+        const designFile = designFiles[0];
+        await handleOpenFile(designFile.path, designFile.type === 'project' || designFile.name.toLowerCase().endsWith('.umlproj'));
+        // Opening the design file sets its own folder as workspace. Keep the
+        // project root as the workspace so subsequent saves use project scope.
+        setProjectRoot(root);
+        setCurrentWorkspacePath(root, false);
+        currentFileSafe.current = false;
+        message.success(`已加载项目目录，并打开设计文件: ${designFile.name}`);
+      } else {
+        newProject(pathBaseName(root) || 'Untitled');
+        setCurrentFilepath(null);
+        setCurrentWorkspacePath(root, false);
+        if (designFiles.length > 1) {
+          message.info(`项目目录已加载，design 中有 ${designFiles.length} 个设计文件，请手动选择`);
+        } else {
+          message.success('项目目录已加载，未找到唯一设计文件');
+        }
+      }
+    } catch {
+      setSourceDir('');
+      setTestDir('');
+      newProject(pathBaseName(root) || 'Untitled');
+      setCurrentWorkspacePath(root, false);
+      message.error('项目目录加载失败，已保留项目根目录');
+    }
+  }
 
   // Quick save (always saves as .umlproj project)
   const handleSave = async () => {
@@ -541,6 +631,7 @@ const Toolbar: React.FC = () => {
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
       const result = await saveProject(proj, targetPath, targetSafe);
+      markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
@@ -583,6 +674,7 @@ const Toolbar: React.FC = () => {
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
       );
+      markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
@@ -628,27 +720,35 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('newProject')}>
           <Button icon={<FileAddOutlined />} onClick={handleNew} />
         </Tooltip>
-        <Tooltip title={copy('open')}>
-          <Button icon={<FolderOpenOutlined />} onClick={() => handleOpen()} />
+        <Tooltip title={interfaceLanguage === 'en'
+          ? 'Load a project folder and sync its design/src/test subdirectories.'
+          : '\u52a0\u8f7d\u9879\u76ee\u6839\u76ee\u5f55\uff0c\u5e76\u81ea\u52a8\u540c\u6b65 design/src/test \u5b50\u76ee\u5f55\u3002'}>
+          <Tag
+            icon={<FolderOpenOutlined />}
+            color={projectRoot ? 'purple' : 'default'}
+            style={{ cursor: 'pointer', margin: 0, fontSize: 12, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            onClick={() => handleBrowseDirFor('project')}
+          >
+            {interfaceLanguage === 'en' ? 'Project folder' : '\u9879\u76ee\u76ee\u5f55'}{projectRoot ? ': ' + projectRoot.split(/[/\\]/).slice(-2).join('/') : ''}
+          </Tag>
         </Tooltip>
+        {projectRoot && (
+          <Tooltip title={interfaceLanguage === 'en' ? 'Clear project folder' : '\u6e05\u9664\u9879\u76ee\u76ee\u5f55'}>
+            <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => {
+              setProjectRoot('');
+              setSourceDir('');
+              setTestDir('');
+              setCurrentFilepath(null);
+              setCurrentWorkspacePath(null, true);
+            }} style={{ padding: 0, minWidth: 18, height: 18 }} />
+          </Tooltip>
+        )}
 
         <Dropdown menu={{ items: saveMenuItems }} trigger={['click']}>
           <Button icon={<SaveOutlined />}>
             {isModified ? '● ' : ''}{copy('save')} <DownOutlined />
           </Button>
         </Dropdown>
-        {activePath && (
-          <Tooltip title={activePath}>
-            <Tag
-              icon={<FolderOpenOutlined />}
-              color="blue"
-              style={{ maxWidth: 260, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-            >
-              {activePathLabel}
-            </Tag>
-          </Tooltip>
-        )}
-
         <Divider type="vertical" />
 
         {/* Diagram dropdowns — grouped by type */}
@@ -774,9 +874,26 @@ const Toolbar: React.FC = () => {
       <div className="toolbar-right"><SettingsPopover /></div>
       </div>
 
-      {/* Row 2: Project directories shared by Agent and other tools */}
+      {/* Row 2: Design, source and test directories */}
       <div className="toolbar-row" style={{ padding: '2px 0' }}>
         <div className="toolbar-left" style={{ gap: 10, flexWrap: 'wrap', width: '100%' }}>
+          <Tooltip title={interfaceLanguage === 'en'
+            ? 'Choose a design project from the project design folder.'
+            : '\u9009\u62e9 design \u76ee\u5f55\u4e2d\u7684\u8bbe\u8ba1\u6587\u4ef6\u3002'}>
+            <Tag
+              icon={<ProjectOutlined />}
+              color={currentFilepath ? 'purple' : 'default'}
+              style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              onClick={handleBrowseDesign}
+            >
+              {interfaceLanguage === 'en' ? 'Design' : '\u8bbe\u8ba1'}{currentFilepath ? ': ' + pathBaseName(currentFilepath) : ''}
+            </Tag>
+          </Tooltip>
+          {currentFilepath && (
+            <Tooltip title={interfaceLanguage === 'en' ? 'Clear design file' : '\u6e05\u9664\u8bbe\u8ba1\u6587\u4ef6'}>
+              <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setCurrentFilepath(null)} style={{ padding: 0, minWidth: 18, height: 18 }} />
+            </Tooltip>
+          )}
           <Tooltip title={interfaceLanguage === 'en'
             ? 'Select a source directory for incremental AI-assisted development.'
             : '选择源码目录，用于基于已有代码进行增量开发。'}>
@@ -1165,7 +1282,7 @@ const Toolbar: React.FC = () => {
 
       {/* ── Project Directory Browse Modal ─────────── */}
       <Modal
-        title={`选择${projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
+        title={`选择${projDirBrowseTarget === 'project' ? '项目' : projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
         open={projDirBrowseVisible}
         onCancel={() => setProjDirBrowseVisible(false)}
         footer={null}

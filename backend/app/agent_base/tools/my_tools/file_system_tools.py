@@ -280,7 +280,9 @@ class EditFileTool(AsyncTool):
             name="edit_file",
             description=(
                 "Replace the first occurrence of old_text with new_text in a file. "
-                "Use for precise, small edits without rewriting the whole file."
+                "Use this for known exact renames and small edits before trying bash. "
+                "It preserves the rest of the file; verify the replacement with read_file "
+                "or a focused test, and do not use Python or sed as an edit workaround."
             ),
         )
         self._roots = _resolve_roots(source_dir, test_dir, design_dir)
@@ -327,8 +329,8 @@ class EditFileTool(AsyncTool):
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
-                        "old_text": {"type": "string", "description": "Exact text to replace."},
-                        "new_text": {"type": "string", "description": "Replacement text."},
+                        "old_text": {"type": "string", "description": "Exact text to replace; copy it from the file rather than guessing."},
+                        "new_text": {"type": "string", "description": "Replacement text; keep the surrounding file content unchanged."},
                         "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents lost updates."},
                     },
                     "required": ["path", "old_text", "new_text"],
@@ -709,64 +711,6 @@ class SearchTextTool(GrepFileTool):
         return candidate
 
 
-class DeletePathTool(Tool):
-    """Delete an explicit workspace file, with opt-in safe directory removal."""
-
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
-                 change_set=None):
-        super().__init__(
-            name="delete_path",
-            description=(
-                "Delete one explicit file inside the workspace. Directories are refused unless "
-                "recursive=true; protected and workspace-root paths are always refused."
-            ),
-        )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
-        self._change_set = change_set
-
-    def get_parameters(self):
-        from app.agent_base.tools.base import ToolParameter
-        return [
-            ToolParameter(name="path", type="string", description="Explicit workspace-relative or absolute path.", required=True),
-            ToolParameter(name="recursive", type="boolean", description="Allow deleting a directory tree; default false.", required=False, default=False),
-        ]
-
-    def run(self, parameters):
-        raw_path = str(parameters.get("path", "")).strip()
-        if not raw_path:
-            return "Error: path must be a non-empty string"
-        try:
-            target = safe_path(raw_path, self._roots, require_exist=True)
-        except ValueError as exc:
-            return f"Error: {exc}"
-        if not target.exists():
-            return f"Error: path not found: {raw_path}"
-        if target in {Path(root).resolve() for root in self._roots}:
-            return "Error: deleting a workspace root is not allowed"
-        if any(part in {".git", ".ssh"} or part.startswith(".env") for part in target.parts):
-            return "Error: deleting protected paths is not allowed"
-        recursive = bool(parameters.get("recursive", False))
-        if target.is_dir() and not recursive:
-            return "Error: target is a directory; set recursive=true explicitly"
-        before = ""
-        if target.is_file():
-            try:
-                before = target.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                before = ""
-        try:
-            if self._change_set is not None and target.is_file():
-                self._change_set.record(str(target), True, before, "")
-            if target.is_dir():
-                import shutil
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-        except OSError as exc:
-            return f"Error: delete failed: {exc}"
-        return f"Deleted: {raw_path}"
-
-
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
                              review_manager=None, progress=None, change_set=None,
                              bash_timeout: float = BASH_TIMEOUT,
@@ -783,7 +727,6 @@ def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_di
         EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
         GlobTool(source_dir, test_dir, design_dir),
         SearchTextTool(source_dir, test_dir, design_dir),
-        DeletePathTool(source_dir, test_dir, design_dir, change_set=change_set),
         BashTool(source_dir, test_dir, design_dir,
                  review_manager=review_manager, progress=progress,
                  timeout=bash_timeout, output_cap=bash_output_cap,

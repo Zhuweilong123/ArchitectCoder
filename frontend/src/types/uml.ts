@@ -158,6 +158,8 @@ export function createDefaultRelation(source: string, target: string): UmlRelati
 
 export interface Project {
   version: string;
+  /** Monotonic server-side revision used for optimistic saves. */
+  revision?: number;
   name: string;
   diagrams: UmlDiagram[];
   active_diagram_index: number;
@@ -166,6 +168,7 @@ export interface Project {
 export function createDefaultProject(name = 'Untitled'): Project {
   return {
     version: '1.0',
+    revision: 0,
     name,
     diagrams: [],
     active_diagram_index: 0,

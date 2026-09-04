@@ -1,7 +1,7 @@
 import json
 
 from app.services.audit_log import AuditLogger
-from app.services.chat_trace import ChatTraceLogger
+from extensions.trace.chat_trace import ChatTraceLogger
 
 
 def test_audit_log_is_durable_and_redacts_sensitive_values(tmp_path):
@@ -20,7 +20,7 @@ def test_audit_log_is_durable_and_redacts_sensitive_values(tmp_path):
 
 
 def test_trace_events_include_active_run_id(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
     trace = ChatTraceLogger("session-1")
     trace.set_run_id("run-1")
     trace.start()

@@ -173,16 +173,17 @@ def test_standard_toolkit_full_editing(tmp_path):
 def test_read_only_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["read_only"].list_tools()
-    assert {"find_nodes", "expand_neighbors", "read_file"} <= set(names)
+    assert names == ["read_file"]
+    assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"write_file", "edit_file", "bash"} & set(names))
 
 
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert {"find_nodes", "analyze_impact", "get_project_map",
-            "compare_design_code", "read_file"} <= set(names)
-    assert not ({"write_file", "edit_file", "bash", "expand_neighbors"} & set(names))
+    assert set(names) == {"read_file", "skill"}
+    assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
+    assert not ({"write_file", "edit_file", "bash"} & set(names))
 
 
 def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
@@ -193,7 +194,8 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), max_steps=6, single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert {"read_file", "find_nodes", "get_project_map", "compare_design_code", "skill"} <= set(names)
+    assert set(names) == {"read_file", "skill"}
+    assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"write_file", "edit_file", "bash", "glob"} & set(names))
     schema = tool.to_openai_schema()
     assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]
@@ -216,3 +218,29 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
     assert "summary text" in result
     assert llm.last_model is None
+
+
+def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
+    class _BudgetLLM(_MockLLM):
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.count += 1
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": f"c{self.count}",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": json.dumps({"pattern": "*.py"})},
+                }],
+                "usage": {"total_tokens": 60},
+            }
+
+    llm = _BudgetLLM()
+    tool = SpawnSubagentTool(
+        llm=llm, source_dir=str(tmp_path), max_steps=10, max_total_tokens=100,
+    )
+
+    result = asyncio.run(tool._execute({"description": "find files"}))
+
+    assert "budget exceeded" in result
+    assert tool.last_token_usage == 120
+    assert llm.count == 2

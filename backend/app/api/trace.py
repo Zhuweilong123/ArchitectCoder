@@ -9,8 +9,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.services.trace_reader import list_traces, read_trace, reconstruct_history, summarize_trace
-from app.services.replay import replay_agent_session, ReplayExhausted
+from app.trace.tracing import load_trace
+from extensions.trace.replay import replay_agent_session, ReplayExhausted
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +20,13 @@ router = APIRouter(prefix="/api/trace", tags=["trace"])
 @router.get("/list")
 async def list_trace_endpoint():
     """列出所有 trace 文件，按修改时间倒序。"""
-    return {"traces": list_traces()}
+    return {"traces": load_trace().query().list_traces()}
 
 
 @router.get("/{session_id}")
 async def read_trace_endpoint(session_id: str):
     """读取单个 session 的完整事件流。"""
-    result = read_trace(session_id)
+    result = load_trace().query().read_trace(session_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return result
@@ -35,7 +35,7 @@ async def read_trace_endpoint(session_id: str):
 @router.get("/{session_id}/history")
 async def trace_history_endpoint(session_id: str):
     """返回该 session 的对话历史（结论级：user + assistant），供会话恢复。"""
-    history = reconstruct_history(session_id)
+    history = load_trace().query().reconstruct_history(session_id)
     if history is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return {"session_id": session_id, "history": history}
@@ -44,7 +44,7 @@ async def trace_history_endpoint(session_id: str):
 @router.get("/{session_id}/summary")
 async def trace_summary_endpoint(session_id: str):
     """Return aggregate Prompt/runtime counters without trace payloads."""
-    summary = summarize_trace(session_id)
+    summary = load_trace().query().summarize_trace(session_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return summary

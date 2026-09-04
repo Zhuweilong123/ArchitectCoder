@@ -10,8 +10,9 @@ from fastapi.responses import PlainTextResponse
 from app.models.uml import UmlDiagram, Project, create_default_project, ExportRequest
 from app.services.file_service import (
     save_diagram, load_diagram, list_diagrams, export_markdown,
-    save_project, load_project, list_projects,
+    save_project_with_result, load_project, list_projects,
 )
+from app.services.project_repository import ProjectConflictError
 from app.core.config import get_settings
 from app.core.auth import require_auth
 from app.core.security import safe_path, resolve_path, sanitize_path_segment
@@ -228,7 +229,12 @@ async def save_review(req: ReviewRequest):
 
 
 @router.post("/save-project", dependencies=[Depends(require_auth)])
-async def save_project_endpoint(project: Project, filename: str = "", safe: bool = True):
+async def save_project_endpoint(
+    project: Project,
+    filename: str = "",
+    safe: bool = True,
+    expected_revision: int | None = None,
+):
     """Save a Project to a .umlproj file.
 
     If filename looks like a full path (contains : or /), use it directly after
@@ -253,9 +259,27 @@ async def save_project_endpoint(project: Project, filename: str = "", safe: bool
                 safe_name += ".umlproj"
                 filepath = os.path.join(get_settings().uml_dir, safe_name)
     try:
-        filepath = save_project(project, filepath)
-        logger.info(f"[API] Project saved: {filepath}")
-        return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath)}
+        result = save_project_with_result(
+            project,
+            filepath,
+            expected_revision=expected_revision,
+        )
+        logger.info(f"[API] Project saved: {result.filepath}")
+        return {
+            "success": True,
+            "filepath": result.filepath,
+            "filename": os.path.basename(result.filepath),
+            "revision": result.revision,
+        }
+    except ProjectConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Project has changed since it was loaded",
+                "expected_revision": exc.expected_revision,
+                "actual_revision": exc.actual_revision,
+            },
+        ) from exc
     except Exception as e:
         logger.error(f"[API] Failed to save project: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -7,8 +7,12 @@ from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.task_system import _default_dirs
-from app.services.chat_trace import ChatTraceLogger, EVT_SESSION_END
-from app.services.trace_reader import reconstruct_history, summarize_trace
+from extensions.trace.chat_trace import (
+    ChatTraceLogger,
+    EVT_SESSION_END,
+    EVT_TASK_SUMMARY,
+)
+from extensions.trace.trace_reader import reconstruct_history, summarize_trace
 
 
 class _Echo(Tool):
@@ -34,7 +38,7 @@ class _LoopLLM:
 
 
 def test_trace_close_writes_session_end(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("trace-test")
     tracer.start()
     tracer.close()
@@ -43,7 +47,7 @@ def test_trace_close_writes_session_end(tmp_path, monkeypatch):
 
 
 def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("strict-json-test")
     tracer.llm_request(
         provider="test", model="test",
@@ -63,12 +67,22 @@ def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypa
 
     assert events[0]["system_prompt"] == "stable prompt"
     assert events[0]["messages"][0]["content"].startswith("## Budget finalization")
+    assert events[0]["prompt_structure"] == {
+        "total_messages": 3,
+        "stable_system_prompt": True,
+        "conversation_messages": 2,
+        "role_sequence": ["system", "system", "user"],
+        "task_execution_summary_count": 0,
+        "conversation_checkpoint_count": 0,
+        "tool_call_message_count": 0,
+        "tool_result_message_count": 0,
+    }
     assert events[1]["value"] is None
 
 
 def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("checkpoint-test")
     tracer.start()
     tracer.user_message("old question")
@@ -92,9 +106,73 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
     assert checkpoint["triggered_by"] == ["tool_call_count"]
 
 
+def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
+    tracer = ChatTraceLogger("task-summary-test")
+    tracer.start()
+    tracer.user_message("continue the task")
+    tracer.task_summary(
+        summary="## Task execution checkpoint\n- Status: partial\n- Pending: run pytest",
+        status="partial",
+        tool_call_count=3,
+    )
+    tracer.done(answer="部分完成")
+    tracer.close()
+
+    history = reconstruct_history("task-summary-test")
+
+    summary_index = next(
+        index for index, item in enumerate(history)
+        if item.get("role") == "summary"
+    )
+    assert summary_index == 2
+    assert "Status: partial" in history[summary_index]["content"]
+    assert "Pending: run pytest" in history[summary_index]["content"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "trace_task-summary-test.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    event = next(item for item in events if item["event_type"] == EVT_TASK_SUMMARY)
+    assert event["status"] == "partial"
+    assert event["tool_call_count"] == 3
+
+
+def test_task_execution_summaries_stay_with_their_task(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
+    tracer = ChatTraceLogger("task-summary-association-test")
+    tracer.start()
+    tracer.user_message("first task")
+    tracer.task_summary(
+        summary="## Task execution checkpoint\n- Task: first task\n- Result: first result",
+        status="completed",
+        tool_call_count=1,
+    )
+    tracer.done(answer="first answer")
+    tracer.user_message("second task")
+    tracer.task_summary(
+        summary="## Task execution checkpoint\n- Task: second task\n- Pending: second verification",
+        status="partial",
+        tool_call_count=2,
+    )
+    tracer.done(answer="second answer")
+    tracer.close()
+
+    history = reconstruct_history("task-summary-association-test")
+
+    assert [item["role"] for item in history] == [
+        "user", "assistant", "summary", "user", "assistant", "summary",
+    ]
+    assert "first task" in history[2]["content"]
+    assert "second task" not in history[2]["content"]
+    assert "second task" in history[5]["content"]
+    assert "first task" not in history[5]["content"]
+
+
 def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.services.chat_trace._chat_log_dir", lambda: str(tmp_path))
-    monkeypatch.setattr("app.services.trace_reader._trace_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("summary-test")
     tracer.start()
     tracer.user_message("run a task")
@@ -115,7 +193,9 @@ def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tm
         usage={"prompt_tokens": 25, "completion_tokens": 5, "total_tokens": 30},
     )
     tool_span = tracer.tool_call(step=1, tool_name="read_file", arguments={})
-    tracer.tool_result(span_id=tool_span, tool_name="read_file", observation="ok")
+    tracer.tool_result(
+        span_id=tool_span, tool_name="read_file", observation="ok", duration_ms=12.5,
+    )
     tracer.done(answer="final answer")
     tracer.close()
 
@@ -126,6 +206,11 @@ def test_trace_summary_aggregates_prompt_and_runtime_counters_without_content(tm
         "prompt_tokens": 25, "completion_tokens": 5, "total_tokens": 30,
     }
     assert summary["tool_calls"] == 1
+    assert summary["runtime"] == {
+        "llm_duration_ms": 0.0,
+        "tool_duration_ms": 12.5,
+        "max_tool_duration_ms": 12.5,
+    }
     assert summary["prompt"] == {
         "builds": 1,
         "versions": {"devagent-3.1": 1},

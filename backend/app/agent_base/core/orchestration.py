@@ -8,7 +8,6 @@ disabled or unavailable.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -82,41 +81,25 @@ class _ResilientOrchestrator:
 
 
 def _load_factory(provider: str):
-    module_name, separator, attribute = provider.partition(":")
-    if not separator or not module_name or not attribute:
-        raise ValueError("orchestrator provider must use 'module:factory' syntax")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    if not callable(factory):
-        raise TypeError(f"orchestrator provider is not callable: {provider}")
-    return factory
+    """Compatibility hook; actual loading remains owned by PluginManager."""
+    from .plugins import PluginManager
+
+    return PluginManager._load_factory(provider)
 
 
 def load_orchestrator(*, llm, settings, **kwargs) -> OrchestrationPort:
-    """Load an optional provider without making the core depend on its package."""
+    """Load orchestration through the central extension manager."""
+    from .plugins import get_plugin_manager
 
-    if not getattr(settings, "agent_orchestration_enabled", True):
+    instance = get_plugin_manager().load(
+        "orchestration",
+        settings=settings,
+        kwargs={"llm": llm, **kwargs},
+        factory_loader=_load_factory,
+    )
+    if instance is None:
         return NoOpOrchestrator()
-    provider = str(
-        getattr(
-            settings,
-            "agent_orchestrator_provider",
-            "app.agent_base.orchestration.provider:create",
-        )
-        or ""
-    ).strip()
-    if not provider or provider.lower() in {"none", "noop", "disabled"}:
-        return NoOpOrchestrator()
-    try:
-        factory = _load_factory(provider)
-        instance = factory(llm=llm, settings=settings, **kwargs)
-        if not hasattr(instance, "prepare"):
-            raise TypeError("orchestrator provider must expose prepare()")
-        return _ResilientOrchestrator(instance)
-    except Exception:
-        # Plugin failures must not take down ordinary chat or development work.
-        logger.warning("[Orchestration] provider unavailable; using no-op", exc_info=True)
-        return NoOpOrchestrator()
+    return _ResilientOrchestrator(instance)
 
 
 def apply_runtime_directives(directives: RuntimeDirectives) -> None:

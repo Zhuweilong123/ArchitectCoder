@@ -76,7 +76,7 @@
 cd backend
 python -c "
 import asyncio
-from app.services.replay import replay_agent_session
+from extensions.trace.replay import replay_agent_session
 
 async def main():
     r = await replay_agent_session('20260813_232810', mode='mock')  # 或 mode='rerun'

@@ -1,6 +1,8 @@
 """知识图谱 v2 工具集单元测试（无需 LLM）。"""
 from tests.support.knowledge_graph import build_knowledge_graph, knowledge_graph_tools
 from tests.support.tool_helpers import run_json_tool, tool_by_name
+from app.models.uml import Project, UmlClass, UmlDiagram, UmlMethod
+from extensions.knowledge_graph.builder import GraphBuilder
 
 _run = run_json_tool
 _tool_by_name = tool_by_name
@@ -75,13 +77,24 @@ def test_kg_expand(tmp_path):
     assert "truncated" in result["results"]
 
 
+def test_kg_expand_schema_exposes_impact_mode(tmp_path):
+    db_path, source_dir, _ = _build_kg(tmp_path)
+    tool = _tool_by_name(_tools(db_path, source_dir), "expand_neighbors")
+    props = tool.to_openai_schema()["function"]["parameters"]["properties"]
+    assert "mode" in props
+    assert "impact" in props["mode"]["description"]
+
+
 def test_kg_impact(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
     tools = _tools(db_path, source_dir)
     # Order 设计类节点：被 User（association）与 b.py（implements）依赖
     located = _run(_tool_by_name(tools, "find_nodes"), {"query": "Order", "node_types": ["class"], "source": "design"})
     order = next(h for h in located["results"] if h["name"] == "Order")
-    result = _run(_tool_by_name(tools, "analyze_impact"), {"node_id": order["id"]})
+    result = _run(_tool_by_name(tools, "expand_neighbors"), {
+        "node_ids": [order["id"]],
+        "mode": "impact",
+    })
     assert "error" not in result
     assert result["target"]["name"] == "Order"
     assert result["total_affected"] >= 1
@@ -92,14 +105,75 @@ def test_kg_impact(tmp_path):
 
 def test_kg_diff(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
-    result = _run(_tool_by_name(_tools(db_path, source_dir), "compare_design_code"), {})
+    result = _run(_tool_by_name(
+        _tools(db_path, source_dir, include_compare=True), "compare_design_code",
+    ), {})
     assert "error" not in result
     summary = result["summary"]
     # User/Order 均被实现 → 无缺失；Admin 无设计 → extra_code
     assert summary["missing_implementations"] == 0
     assert summary["extra_code"] >= 1
     assert "total_design_classes" in summary
+    assert result["schema_version"] == 2
     assert "items" in result
+    diff_items = result["items"]["items"]
+    extra = next(item for item in diff_items if item["category"] == "extra_code")
+    code_ref = extra["detail"]["code_ref"]
+    assert code_ref["file"]
+    assert code_ref["start_line"] <= code_ref["end_line"]
+    assert code_ref["read_hint"]["offset"] == code_ref["start_line"] - 1
+    assert code_ref["read_hint"]["limit"] == code_ref["end_line"] - code_ref["start_line"] + 1
+
+
+def test_kg_diff_method_level_locations(tmp_path):
+    db_path = str(tmp_path / "kg.db")
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "product.py").write_text(
+        "class Product:\n"
+        "    def lookup(self, value: int) -> str:\n"
+        "        return str(value)\n",
+        encoding="utf-8",
+    )
+
+    project_file = str(tmp_path / "proj.umlproj")
+    project = Project(name="proj", diagrams=[UmlDiagram(
+        name="Domain",
+        diagram_type="class",
+        classes=[UmlClass(
+            id="product",
+            name="Product",
+            methods=[UmlMethod(
+                name="lookup",
+                params="value: str",
+                return_type="int",
+            )],
+        )],
+    )])
+    builder = GraphBuilder(db_path=db_path)
+    builder.build_from_project(project, "proj", filepath=project_file)
+    builder.build_from_source_dir(str(source_dir), "proj")
+    builder.close()
+
+    result = _run(_tool_by_name(
+        _tools(db_path, source_dir, include_compare=True), "compare_design_code",
+    ), {})
+    assert "error" not in result
+    mismatch = next(item for item in result["items"]["items"] if item["category"] == "mismatch")
+    differences = mismatch["detail"]["differences"]
+    params = next(diff for diff in differences if diff["type"] == "params_mismatch")
+    returns = next(diff for diff in differences if diff["type"] == "return_type_mismatch")
+
+    assert params["design_ref"]["json_pointer"].endswith("/methods/0")
+    assert params["code_ref"]["method"] == "lookup"
+    assert params["code_ref"]["start_line"] == 2
+    assert params["code_ref"]["read_hint"] == {
+        "path": params["code_ref"]["file"],
+        "offset": 1,
+        "limit": 2,
+    }
+    assert returns["design"] == "int"
+    assert returns["code"] == "str"
 
 
 def test_to_openai_schema(tmp_path):
@@ -117,4 +191,10 @@ def test_factory_wiring(tmp_path):
     db_path, source_dir, _ = _build_kg(tmp_path)
     tools = _tools(db_path, source_dir)
     names = [t.name for t in tools]
-    assert names == ["get_project_map", "find_nodes", "expand_neighbors", "analyze_impact", "compare_design_code"]
+    assert names == ["get_project_map", "find_nodes", "expand_neighbors"]
+    opt_in_names = [
+        tool.name for tool in _tools(db_path, source_dir, include_compare=True)
+    ]
+    assert opt_in_names == [
+        "get_project_map", "find_nodes", "expand_neighbors", "compare_design_code",
+    ]

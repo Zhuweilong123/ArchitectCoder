@@ -60,6 +60,14 @@ def _as_message(value: Any) -> dict[str, Any]:
     return {"role": _role(value), "content": _content(value)}
 
 
+def _as_model_history_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Convert internal history-only roles to valid model message roles."""
+    result = dict(message)
+    if result.get("role") == "summary":
+        result["role"] = "system"
+    return result
+
+
 def _message_tokens(message: dict[str, Any], counter: TokenCounter) -> int:
     # Include tool call metadata because it is sent to the model as part of
     # the request even when the visible content is empty.
@@ -278,10 +286,11 @@ class ContextBudgetManager:
         history_messages: list[dict[str, Any]] = []
         history_total = 0
         for message in reversed(normalized_history):
-            cost = _message_tokens(message, self.token_counter)
+            model_message = _as_model_history_message(message)
+            cost = _message_tokens(model_message, self.token_counter)
             if history_messages and history_total + cost > self.budget.max_history_tokens:
                 break
-            history_messages.append(message)
+            history_messages.append(model_message)
             history_total += cost
         messages.extend(reversed(history_messages))
 
@@ -473,7 +482,13 @@ class ContextBudgetManager:
         retaining a small paired checkpoint.
         """
         for index, message in enumerate(messages):
-            if index == 0 or index == current_user_index or message.get("role") == "system":
+            removable_summary = (
+                message.get("role") == "system"
+                and str(message.get("content") or "").startswith("## Task execution checkpoint")
+            )
+            if index == 0 or index == current_user_index or (
+                message.get("role") == "system" and not removable_summary
+            ):
                 continue
             if message.get("role") == "assistant" and message.get("tool_calls"):
                 call_ids = {

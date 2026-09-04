@@ -64,9 +64,8 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - **运行与归档**：评测中心支持按套件一键运行、实时查看批次和结果，并将已完成批次或基线快照一键归档到 `temp/evals/archives/`。CLI 可运行全部用例或指定套件：
 
   ```bash
-  cd backend
-  python -m app.evals.cli
-  python -m app.evals.cli --suite p0
+  python -m extensions.evals.cli
+  python -m extensions.evals.cli --suite p0
   ```
 
   CLI 在存在失败或超时时返回非零退出码；这表示评测结果未全通过，不代表评测框架启动失败。
@@ -192,7 +191,7 @@ npm run dev                           # http://localhost:3000
 - 对话 Agent 使用 WebSocket：`/api/ws/chat`。
 - API 文档：启动后访问 `http://localhost:8001/api/docs`。
 - 单元测试：`cd backend && python -m pytest -q`。
-- 评测全部 DevAgent 用例：`cd backend && python -m app.evals.cli`。
+- 评测全部 DevAgent 用例：在仓库根目录运行 `python -m extensions.evals.cli`。
 - 前端生产构建：`cd frontend && npm run build`。
 
 评测和运行日志写入 `temp/`，该目录及生成代码、数据库均为运行时产物，不提交到仓库。

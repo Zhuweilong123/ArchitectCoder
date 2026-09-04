@@ -42,7 +42,7 @@ from app.services.uml_common import (
 from app.services.layout_engine import auto_layout
 from app.core.json_utils import clean_llm_json_response
 from app.services.file_service import load_project
-from app.services.chat_trace import trace_span, TraceSession, get_trace_hook
+from app.trace.tracing import trace_span, TraceSession, get_trace_hook
 
 logger = logging.getLogger(__name__)
 

@@ -24,6 +24,7 @@ import os
 import sys
 from pathlib import Path as _Path
 from app.core.json_utils import clean_llm_json_response
+from app.agent_base.core.knowledge_graph import get_knowledge_graph
 
 def _build_reference_index(diagrams: list[dict]) -> dict:
     """Build a structured cross-diagram reference index for prompt injection and post-validation.
@@ -277,64 +278,16 @@ def _fetch_kg_hits(project_file: str, instructions: str,
     确保不同表达方式都能命中实体。"""
     try:
         project_id = os.path.splitext(os.path.basename(project_file))[0]
-        _settings = get_settings()
-        kg_db = os.path.normpath(os.path.abspath(
-            os.path.join(os.path.dirname(_settings.uml_dir), "data", "knowledge_graph.db"),
-        ))
-        if not os.path.isfile(kg_db):
-            return
-        from knowledge_graph.retriever import GraphRetriever
-        _retriever = GraphRetriever(db_path=kg_db)
-        try:
-            # ── 多粒度搜索：全指令 + 2-3 词短词组 ──
-            queries = [instructions]
-            words = instructions.split()
-            if len(words) >= 2:
-                queries.extend([" ".join(words[i:i+3]) for i in range(0, len(words), 2)])
-            # 去重但保序
-            seen = set()
-            queries = [q for q in queries if q and not (q in seen or seen.add(q))]
-            queries = queries[:5]  # 最多 5 条
-
-            for query in queries:
-                _results = _retriever.db.search_bm25(
-                    project_id=project_id,
-                    query=query,
-                    top_k=6,
-                )
-                for _r in _results:
-                    # 如果实体本身是 diagram，直接加入
-                    if _r.node.node_type.value == "diagram":
-                        out.setdefault(_r.node.name, set()).add(
-                            f"{_r.node.name}({_r.node.node_type.value})"
-                        )
-                    # 沿所有 incoming edges 反向查找，直到找到 diagram
-                    # （fragment 用 'fragments' 边，不是 'contains'，所以不限 edge_type）
-                    _to_find = {(_r.node.id, _r.node.name, _r.node.node_type.value)}
-                    _seen_ids = set()
-                    while _to_find:
-                        _cur_id, _cur_name, _cur_type = _to_find.pop()
-                        if _cur_id in _seen_ids:
-                            continue
-                        _seen_ids.add(_cur_id)
-                        # 反向查找，不限制 edge_type（fragment 用 'fragments' 边，不是 'contains'）
-                        _incoming = _retriever.db.conn.execute(
-                            "SELECT e.source_id, s.name, s.node_type FROM kg_edges e "
-                            "JOIN kg_nodes s ON e.source_id = s.id "
-                            "WHERE e.target_id = ?",
-                            (_cur_id,),
-                        ).fetchall()
-                        for _src_id, _src_name, _src_type in _incoming:
-                            if _src_type == "diagram":
-                                out.setdefault(_src_name, set()).add(
-                                    f"{_cur_name}({_cur_type})"
-                                )
-                            elif _src_type == "project":
-                                pass  # 继续往上走找到 diagram
-                            else:
-                                _to_find.add((_src_id, _src_name, _src_type))
-        finally:
-            _retriever.close()
+        # 多粒度搜索：全指令 + 2-3 词短词组；查询细节由 provider 实现。
+        queries = [instructions]
+        words = instructions.split()
+        if len(words) >= 2:
+            queries.extend([" ".join(words[i:i+3]) for i in range(0, len(words), 2)])
+        seen = set()
+        queries = [q for q in queries if q and not (q in seen or seen.add(q))][:5]
+        matches = get_knowledge_graph().search_diagrams(project_id, queries, top_k=6)
+        for diagram_name, reasons in matches.items():
+            out.setdefault(diagram_name, set()).update(reasons)
     except Exception:
         pass  # KG 不可用时静默退化
 
@@ -348,7 +301,7 @@ def _build_project_summary(
 ) -> str:
     """构建轻量项目摘要（<800 chars），供 Phase 1 scope 分析用。
 
-    如果 project_file 存在且 knowledge_graph.db 可用，会用 BM25 搜索
+    如果 project_file 存在且知识图谱 provider 可用，会搜索
     instructions 关键词，把匹配到的实体名附加到对应图条目后面，
     帮助 Phase 1 LLM 在不明确的指令下精确定位目标图。
     """

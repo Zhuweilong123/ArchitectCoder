@@ -1,7 +1,7 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.agent_chat_ws import (
     _checkpoint_answer, _latest_persisted_checkpoint,
-    _is_resume_request, _latest_resumable_run, _resume_prompt,
+    _is_resume_request, _latest_resumable_run, _resume_prompt, _resume_supplement,
     _should_archive_task_memory, _terminal_checkpoint_status,
     _todo_progress_state, DevPromptBuilder, _archive_task_to_memory,
 )
@@ -69,25 +69,31 @@ def test_memory_archive_requires_completed_mutation_evidence():
 
 
 def test_prompt_builder_reports_dynamic_sections_without_content():
-    builder = DevPromptBuilder()
+    builder = DevPromptBuilder(
+        source_dir="src", test_dir="tests", design_dir="design"
+    )
 
     import asyncio
     context = asyncio.run(builder.build_context("", "src", "tests", "run pytest"))
 
-    assert "Source directory: src" in context
+    assert "Source directory: src" in builder.system_prompt
+    assert "Test directory: tests" in builder.system_prompt
+    assert "Design directory: design" in builder.system_prompt
+    assert "Source directory: src" not in context
     assert builder.static_prompt_report["estimated_tokens"] > 0
-    assert builder.last_context_report["sections"]["workspace"]["chars"] > 0
+    assert "workspace" not in builder.last_context_report["sections"]
     assert "memory" not in builder.last_context_report["sections"]
 
 
-def test_prompt_builder_always_includes_project_workspace():
+def test_prompt_builder_keeps_design_workspace_without_project_file_prompting():
     import asyncio
 
     builder = DevPromptBuilder()
     context = asyncio.run(builder.build_context("project.umlproj", "src", "tests", "你好"))
-    assert "Source directory: src" in context
-    assert "Test directory: tests" in context
-    assert "Current project file: project.umlproj" in context
+    assert "Source directory: src" not in context
+    assert "Test directory: tests" not in context
+    assert "Design directory:" not in context
+    assert "Current project file:" not in context
 
 
 def test_prompt_builder_uses_injected_memory_port_without_manager_dependency():
@@ -140,13 +146,19 @@ def test_memory_archive_helper_only_depends_on_memory_port():
 
 
 def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():
-    builder = DevPromptBuilder()
+    builder = DevPromptBuilder(
+        source_dir="src", test_dir="tests", design_dir="design"
+    )
 
-    assert builder.prompt_version == "3.1"
+    assert builder.prompt_version == "3.1-r4"
     assert "instead of redesigning" in builder.system_prompt
     assert "focused existing test early" in builder.system_prompt
     assert "Do not modify UML unless requested" in builder.system_prompt
-    assert "known canonical .umlproj" in builder.system_prompt
+    assert "known canonical design artifact" in builder.system_prompt
+    assert "call spawn_subagent once" in builder.system_prompt
+    assert "Source directory: src" in builder.system_prompt
+    assert "Test directory: tests" in builder.system_prompt
+    assert "Design directory: design" in builder.system_prompt
     assert set(builder.static_prompt_report) == {"chars", "estimated_tokens"}
 
 
@@ -166,6 +178,8 @@ def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):
 def test_resume_request_uses_persisted_checkpoint(monkeypatch):
     assert _is_resume_request("继续")
     assert _is_resume_request(" resume ")
+    assert _is_resume_request("继续，补充：只修改源码")
+    assert _resume_supplement("继续，补充：只修改源码") == "补充：只修改源码"
     assert not _is_resume_request("继续一下")
 
     class _Record:
@@ -190,4 +204,5 @@ def test_resume_request_uses_persisted_checkpoint(monkeypatch):
     record, checkpoint = _latest_resumable_run("session-1")
     assert record.run_id == "run-paused"
     assert "inspect design and source" in _resume_prompt(checkpoint)
+    assert "只修改源码" in _resume_prompt(checkpoint, "只修改源码")
     assert _latest_resumable_run("") is None

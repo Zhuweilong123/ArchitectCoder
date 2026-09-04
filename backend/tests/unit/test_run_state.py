@@ -7,6 +7,7 @@ from app.services.run_state import (
     RunConflict,
     RunStatus,
     RunStore,
+    run_status_for_completion,
 )
 
 
@@ -79,3 +80,14 @@ def test_expired_run_requires_explicit_resume(tmp_path):
     queued = store.resume(run.run_id)
     assert queued.status == RunStatus.QUEUED.value
     assert store.claim(run.run_id, "worker-2").attempt == 2
+
+
+@pytest.mark.parametrize("completion_status, expected", [
+    ("completed", RunStatus.SUCCEEDED),
+    ("partial", RunStatus.PARTIAL),
+    ("timed_out", RunStatus.TIMED_OUT),
+    ("budget_exceeded", RunStatus.BUDGET_EXCEEDED),
+    ("failed", RunStatus.FAILED),
+])
+def test_completion_statuses_remain_distinct(completion_status, expected):
+    assert run_status_for_completion(completion_status) is expected

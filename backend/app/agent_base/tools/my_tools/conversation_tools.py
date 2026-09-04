@@ -180,6 +180,7 @@ def create_conversation_tools(
             review_manager=review_mgr, progress=progress,
             toolkits=("strategy",),
             max_steps=6,
+            max_total_tokens=get_settings().agent_subagent_max_total_tokens,
             single_use=True,
         ))
 
@@ -189,11 +190,15 @@ def create_conversation_tools(
 
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）
-    from .knowledge_graph_v2_tools import create_kg_v2_tools
-    tools.extend(create_kg_v2_tools(
-        db_path=_kg_db_path(),
-        project_file=project_file, source_dir=source_dir,
-    ))
+    # Knowledge-graph tools are intentionally disabled for DevAgent. The
+    # implementation remains available for direct opt-in and its own tests,
+    # but it is not exposed in the default conversation tool registry. This
+    # avoids broad graph exploration and repeated reads during normal tasks.
+    # from extensions.knowledge_graph.tools import create_kg_v2_tools
+    # tools.extend(create_kg_v2_tools(
+    #     db_path=_kg_db_path(),
+    #     project_file=project_file, source_dir=source_dir,
+    # ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool

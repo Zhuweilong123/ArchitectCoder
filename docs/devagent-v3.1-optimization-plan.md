@@ -1044,8 +1044,8 @@ the uppercase variable name below and takes effect after the backend restarts.
 | `AGENT_EVIDENCE_MAX_RECORDS` | `128` | Maximum structured evidence records retained during a run; the effective value is never below the tool-call limit. |
 | `AGENT_FORCE_FINAL_SUMMARY_ON_STEP_LIMIT` | `true` | Issue one tool-free summary request after the productive-step limit. |
 | `AGENT_FINAL_SUMMARY_MAX_TOKENS` | `3000` | Output cap for that final summary request. |
-| `AGENT_ORCHESTRATION_ENABLED` | `true` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
-| `AGENT_ORCHESTRATOR_PROVIDER` | `app.agent_base.orchestration.provider:create` | `module:factory` provider path; `none`/`noop` disables it. |
+| `AGENT_ORCHESTRATION_ENABLED` | `false` | Enable the optional orchestration provider. `false` uses the zero-cost NoOp path. |
+| `AGENT_ORCHESTRATOR_PROVIDER` | `extensions.orchestration:create` | `module:factory` provider path; `none`/`noop` disables it. |
 | `AGENT_PLANNER_MAX_TOKENS` | `3000` | Planner completion cap, including reasoning headroom for JSON output. |
 | `AGENT_PLANNER_TIMEOUT_SECONDS` | `30` | Planner request timeout. |
 | `AGENT_EXPLORER_MAX_STEPS` | `6` | Maximum read-only strategy-worker steps. |
@@ -1074,9 +1074,9 @@ analysis and runtime tuning.
 - 跨设计/源码/测试的任务最多启动一个 `strategy` 子代理。该子代理使用独立消息上下文和只读工具包，禁止写文件、执行命令及递归派生；
 - 探索完成后主 Agent 移除宽泛的图谱发现工具，只保留读取、修改、验证和审核能力，避免重复探索；
 - 规划结果写入当前 `AgentRuntime` 的 Todo/验收契约，复杂任务必须保留分析、执行、验证证据；
-- 规划器和子代理的实际 usage 汇总为 `token_overhead`，通过 `initial_token_usage` 纳入同一轮 ReAct 的 `max_total_tokens`，不再隐式扩展任务预算；
+- 规划器和子代理的实际 usage 单独记为 `token_overhead`，仅用于 Trace 与评测汇总；主 Agent 每个用户任务独立使用 200k 预算，不通过 `initial_token_usage` 继承编排器或其他轮次的消耗；
 - `agent_base/core/orchestration.py` 提供稳定的 `OrchestrationPort`、`OrchestrationRequest`、`OrchestrationPreparation`、动态 Loader 和零开销 `NoOpOrchestrator`；主流程不再依赖具体 provider；
-- `agent_base/orchestration/provider.py` 是当前 LLM 编排 provider 适配器。通过 `AGENT_ORCHESTRATOR_PROVIDER` 动态加载，provider 缺失、禁用或初始化失败时自动退化为 NoOp；
+- `extensions/orchestration/provider.py` 是当前 LLM 编排 provider 适配器。通过 `AGENT_ORCHESTRATOR_PROVIDER` 动态加载，provider 缺失、禁用或初始化失败时自动退化为 NoOp；
 - `agent_chat_ws.py` 只负责生命周期和 trace 事件，编排策略、契约和 worker 工具集分别位于独立模块，删除 provider 包无需修改主流程代码。
 
 该实现刻意不引入模型路由、正则意图分类、持久化 teammate 总线或 worktree 隔离；这些机制会增加链路和缓存变体，和当前“单主 Agent + 可选短生命周期只读 worker”的简洁架构不一致。
@@ -1087,7 +1087,7 @@ analysis and runtime tuning.
 `MemoryManager`：
 
 - `agent_base/core/memory.py` 定义稳定的 `MemoryPort`、召回/归档请求与结果、动态 provider loader，以及异常隔离的 `NoOpMemory`/resilient wrapper；禁用、缺失或初始化失败时自动降级为空记忆。
-- `memory_system/provider.py` 将现有 SQLite/BM25 `MemoryManager` 封装为 `SQLiteMemoryProvider`，保留原有提取、去重、召回和强化策略；工具步骤在进入异步归档前进行有界摘要，避免把完整工具输出带入记忆提取上下文。
+- `extensions/memory/provider.py` 将现有 SQLite/BM25 `MemoryManager` 封装为 `SQLiteMemoryProvider`，保留原有提取、去重、召回和强化策略；工具步骤在进入异步归档前进行有界摘要，避免把完整工具输出带入记忆提取上下文。
 - `DevPromptBuilder` 只依赖 `MemoryPort`。新任务召回通过端口返回有界 context 和不透明 memory id，主流程按原语义强化已注入条目；任务完成后的归档通过同一端口异步执行，失败不影响用户响应。
 - `_create_dev_agent` 在会话创建时动态加载 provider，并将其同时注入 PromptBuilder 和 Agent；移除后续 provider 无需修改 WebSocket 主循环。
 
@@ -1096,7 +1096,7 @@ analysis and runtime tuning.
 | Environment variable | Default | Purpose |
 |---|---:|---|
 | `AGENT_MEMORY_ENABLED` | `true` | 总开关；关闭后使用零开销 NoOp。 |
-| `AGENT_MEMORY_PROVIDER` | `memory_system.provider:create` | `module:factory` provider 路径；`none`/`noop` 禁用。 |
+| `AGENT_MEMORY_PROVIDER` | `extensions.memory:create` | `module:factory` provider 路径；`none`/`noop` 禁用。 |
 | `AGENT_MEMORY_DB_PATH` | 空 | SQLite 路径；为空时按 `uml_dir` 推导 `data/memories.db`。 |
 | `AGENT_MEMORY_RECALL_TOP_K` | `3` | 默认召回条数上限。 |
 | `AGENT_MEMORY_RECALL_MAX_TOKENS` | `500` | 召回注入的 token 上限。 |
@@ -1104,3 +1104,9 @@ analysis and runtime tuning.
 
 该边界支持后续替换为远程、向量或租户隔离存储，而不改变 Agent、Prompt
 或工具流程；provider 的存储/LLM 异常均 fail-open，不增加任务主链路失败面。
+
+### 15.9 预算语义备注（2026-09-03）
+
+预算边界保持分离：每个用户任务的主 Agent 独立使用 200k token 预算；planner
+和子代理的 usage 作为 `token_overhead` 单独记录，不通过 `initial_token_usage` 扣减主 Agent 预算。
+多轮评测的累计 Token 仅用于结果汇总，不作为后续轮次的初始预算。

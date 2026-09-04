@@ -4,8 +4,8 @@ from app.models.uml import (
     SeqLifeline, SeqMessage, SeqFragment, CompNode, CompRelation,
     Stereotype, RelationType,
 )
-from knowledge_graph.builder import GraphBuilder
-from knowledge_graph.database import KnowledgeGraphDB
+from extensions.knowledge_graph.builder import GraphBuilder
+from extensions.knowledge_graph.database import KnowledgeGraphDB
 
 
 def _class_diagram():

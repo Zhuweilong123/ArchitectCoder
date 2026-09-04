@@ -3,6 +3,14 @@
 import os
 import sys
 import logging
+from pathlib import Path
+
+# Extensions are repository-level packages. Add the repository root before
+# importing API modules so ``python -m app.main`` works from ``backend/``.
+_REPOSITORY_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPOSITORY_ROOT not in sys.path:
+    sys.path.insert(0, _REPOSITORY_ROOT)
+
 os.environ.setdefault("PYTHONUTF8", "1")
 sys.dont_write_bytecode = True  # Never generate __pycache__
 
