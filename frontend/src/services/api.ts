@@ -168,11 +168,14 @@ export async function saveReview(review: {
 export async function saveProject(
   project: Project, filename?: string, safe = true,
 ): Promise<{
-  success: boolean; filepath: string; filename: string;
+  success: boolean; filepath: string; filename: string; revision: number;
 }> {
   const params = new URLSearchParams();
   if (filename) params.set('filename', filename);
   params.set('safe', String(safe));
+  if (project.revision !== undefined) {
+    params.set('expected_revision', String(project.revision));
+  }
   const { data } = await api.post(`/files/save-project?${params.toString()}`, project);
   return data;
 }

@@ -189,6 +189,7 @@ class Project(BaseModel):
     """
     model_config = {"extra": "ignore"}
     version: str = "1.0"
+    revision: int = Field(default=0, ge=0)
     name: str = "Untitled"
     diagrams: list[UmlDiagram] = Field(default_factory=list)
     active_diagram_index: int = 0

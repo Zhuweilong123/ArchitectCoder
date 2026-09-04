@@ -54,6 +54,7 @@ const Toolbar: React.FC = () => {
     diagram, project, isModified, undoStack, redoStack,
     undo, redo, setProject, newProject, setActiveDiagram, addDiagram,
     removeDiagram,
+    markSaved,
     toggleGrid, setGridSize, setGridColor, setGridThickness,
     setCurrentFilepath, currentFilepath, currentWorkspacePath,
     currentWorkspaceSafe, setCurrentWorkspacePath,
@@ -157,6 +158,7 @@ const Toolbar: React.FC = () => {
         );
         projectFile = result.filepath;
         setCurrentFilepath(result.filepath);
+        markSaved(result.revision);
       } catch {
         message.error({ content: '优化前需要先保存项目文件', key: 'globalOpt' });
         setGlobalOptimizing(false);
@@ -629,6 +631,7 @@ const Toolbar: React.FC = () => {
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
       const result = await saveProject(proj, targetPath, targetSafe);
+      markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
@@ -671,6 +674,7 @@ const Toolbar: React.FC = () => {
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
       );
+      markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);

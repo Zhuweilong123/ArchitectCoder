@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     agent_memory_recall_max_tokens: int = 500
     agent_memory_archive_max_tokens: int = 3000
 
+    # Optional trace backend.  The Agent core only depends on the tracing
+    # port; the default JSONL provider remains compatible with existing logs.
+    agent_trace_enabled: bool = True
+    agent_trace_provider: str = "app.trace.chat_trace:create"
+
+    # Optional evaluation backend.  The local Eval MVP is the default;
+    # external CI or hosted evaluation services can implement the same port.
+    agent_evals_enabled: bool = True
+    agent_evals_provider: str = "app.evals.provider:create"
+
     # Command tools expose one Linux/POSIX contract.  Windows deployments use
     # the configured WSL distribution instead of asking the model to choose a
     # cmd/PowerShell/Linux dialect per command.

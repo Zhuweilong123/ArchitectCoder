@@ -1,4 +1,4 @@
-"""Backward-compatible imports for the agent runtime session API."""
+"""Runtime lifecycle abstractions for agent sessions and runs."""
 
 from app.runtime.agent_runtime import (
     AgentRuntime,

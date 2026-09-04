@@ -5,11 +5,13 @@ import logging
 import os
 import threading
 from datetime import datetime
-from app.models.uml import UmlDiagram, Project, create_default_project
+from app.models.uml import UmlDiagram, Project
 from app.core.config import get_settings
+from app.services.project_repository import ProjectRepository, ProjectSaveResult
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+project_repository = ProjectRepository()
 
 
 def ensure_dirs():
@@ -142,7 +144,45 @@ def export_markdown(diagram: UmlDiagram) -> str:
 # ── Project file operations (.umlproj) ──────────────────
 
 
-def save_project(project: Project, filepath: str | None = None) -> str:
+def save_project_with_result(
+    project: Project,
+    filepath: str | None = None,
+    *,
+    expected_revision: int | None = None,
+) -> ProjectSaveResult:
+    """Persist a project through the repository and return its new revision."""
+    ensure_dirs()
+    result = project_repository.save(
+        project,
+        filepath,
+        expected_revision=expected_revision,
+    )
+    logger.info(
+        "[Project] Saved project '%s' (%d diagrams, revision=%d) -> %s",
+        result.project.name,
+        len(result.project.diagrams),
+        result.revision,
+        result.filepath,
+    )
+    _rebuild_kg_async(result.project, result.filepath)
+    return result
+
+
+def save_project(
+    project: Project,
+    filepath: str | None = None,
+    *,
+    expected_revision: int | None = None,
+) -> str:
+    """Backward-compatible facade returning only the filepath."""
+    return save_project_with_result(
+        project,
+        filepath,
+        expected_revision=expected_revision,
+    ).filepath
+
+
+def _legacy_save_project(project: Project, filepath: str | None = None) -> str:
     """Save a Project to a .umlproj JSON file. Returns the filepath."""
     ensure_dirs()
     if not filepath:
@@ -158,6 +198,20 @@ def save_project(project: Project, filepath: str | None = None) -> str:
 
 
 def load_project(filepath: str) -> Project:
+    """Load a project through the repository boundary."""
+    ensure_dirs()
+    project = project_repository.load(filepath)
+    logger.info(
+        "[Project] Loaded project '%s' (%d diagrams, revision=%d) from %s",
+        project.name,
+        len(project.diagrams),
+        project.revision,
+        filepath,
+    )
+    return project
+
+
+def _legacy_load_project(filepath: str) -> Project:
     """Load a Project from a .umlproj JSON file.
 
     Also handles legacy .uml files by wrapping them in a Project container.
@@ -184,6 +238,13 @@ def load_project(filepath: str) -> Project:
 
 
 def list_projects() -> list[dict]:
+    """List projects through the repository boundary."""
+    files = project_repository.list_projects()
+    logger.debug("[Project] Listed %d .umlproj projects", len(files))
+    return files
+
+
+def _legacy_list_projects() -> list[dict]:
     """List all saved Projects (.umlproj files)."""
     ensure_dirs()
     files = []

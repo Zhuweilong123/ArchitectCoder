@@ -17,7 +17,7 @@ from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.core.config import get_settings
 from app.services.agent_metrics import get_agent_metrics
-from app.services.chat_trace import TraceSession
+from app.trace.tracing import TraceSession
 
 from .checkers import build_checkers
 from .fixture_materializer import materialize_fixture

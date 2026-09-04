@@ -385,7 +385,7 @@ class ReActAgent(Agent):
         4. yield ReActProgress → 追加 assistant + tool 消息
         5. 重复直到模型返回纯文本或达到 max_steps
         """
-        from app.services.chat_trace import trace_span
+        from app.trace.tracing import trace_span
 
         allowed_tools = kwargs.pop("allowed_tools", None)
         initial_token_usage = max(0, int(kwargs.pop("initial_token_usage", 0) or 0))

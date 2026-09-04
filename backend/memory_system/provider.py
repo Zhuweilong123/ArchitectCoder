@@ -83,7 +83,7 @@ class SQLiteMemoryProvider:
             async def extract(prompt: str) -> str:
                 # Keep background extraction visible in trace without making
                 # it part of the foreground Agent turn.
-                from app.services.chat_trace import trace_span
+                from app.trace.tracing import trace_span
                 with trace_span("MemoryArchive"):
                     return await self.llm.ainvoke(
                         [{"role": "user", "content": prompt}],

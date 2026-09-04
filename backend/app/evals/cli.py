@@ -6,8 +6,7 @@ import argparse
 import asyncio
 import json
 
-from .registry import load_cases
-from .runner import EvalRunner
+from app.agent_base.core.evals import load_evals
 
 
 def _parse_args() -> argparse.Namespace:
@@ -20,7 +19,8 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    cases = load_cases()
+    provider = load_evals(results_path=args.results or None)
+    cases = {case.id: case for case in provider.list_cases()}
     selected = list(cases.values())
     if args.suite:
         selected = [case for case in selected if case.metadata.get("suite") == args.suite]
@@ -32,12 +32,11 @@ async def _run(args: argparse.Namespace) -> int:
         selected = selected[:args.limit]
 
     print(json.dumps({"event": "eval_round_start", "cases": len(selected)}, ensure_ascii=False))
-    runner = EvalRunner(args.results or None)
     failures = 0
     for case in selected:
         print(json.dumps({"event": "case_start", "case_id": case.id}, ensure_ascii=False), flush=True)
         try:
-            result = await runner.run_case(case)
+            result = await provider.run_case(case)
             if not result.passed:
                 failures += 1
             print(json.dumps({

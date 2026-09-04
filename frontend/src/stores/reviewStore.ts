@@ -114,7 +114,8 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const filepath = useDiagramStore.getState().currentFilepath;
       if (restoredProject && filepath) {
         try {
-          await saveProject(restoredProject, filepath, false);
+          const result = await saveProject(restoredProject, filepath, false);
+          useDiagramStore.getState().markSaved(result.revision);
         } catch (error) {
           console.error('[ReviewStore] failed to persist rejected UML changes:', error);
           message.error('拒绝优化后恢复项目失败，未通知 Agent 继续执行');

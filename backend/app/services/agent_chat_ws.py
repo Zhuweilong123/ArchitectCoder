@@ -56,9 +56,16 @@ from app.agent_base.core.memory import (
     load_memory,
 )
 from app.agent_base.execution import build_linux_command_executor
-from app.services.chat_trace import ChatTraceLogger, push_trace_hook, pop_trace_hook
-from app.services.trace_reader import reconstruct_history
-from app.services.agent_session import get_or_create
+from app.trace.tracing import (
+    TraceSessionRequest,
+    TraceSink,
+    current_trace_spans,
+    load_trace,
+    pop_trace_hook,
+    push_trace_hook,
+)
+from app.trace.trace_reader import reconstruct_history
+from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.change_set import ChangeSet
 from app.services.run_state import (
     RunStateError, RunStatus, get_run_store, run_status_for_completion,
@@ -87,8 +94,6 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
     由 llm.py 的 _trace_hook() 调用，签名: (kind, **kwargs)。
     kind: 'llm_request' | 'llm_response'
     """
-    from app.services.chat_trace import current_trace_spans
-
     tracer = _TRACE_BRIDGE.get()
     if tracer is None:
         return None
@@ -154,12 +159,12 @@ def _history_structure(agent: ReActAgent | None) -> dict:
     }
 
 
-_TRACE_BRIDGE: contextvars.ContextVar[ChatTraceLogger | None] = contextvars.ContextVar(
+_TRACE_BRIDGE: contextvars.ContextVar[TraceSink | None] = contextvars.ContextVar(
     "agent_chat_trace_bridge", default=None,
 )
 
 
-def _set_trace_bridge(tracer: ChatTraceLogger | None):
+def _set_trace_bridge(tracer: TraceSink | None):
     _TRACE_BRIDGE.set(tracer)
 
 
@@ -767,7 +772,7 @@ async def _handle_dev(
     user_message: str,
     websocket: WebSocket,
     stop_check,
-    trace_log: ChatTraceLogger | None = None,
+    trace_log: TraceSink | None = None,
     project_file: str = "",
     source_dir: str = "",
     test_dir: str = "",
@@ -1424,7 +1429,8 @@ async def agent_chat_ws(websocket: WebSocket):
     if session.agent is None:
         restore_history = reconstruct_history(session_id)
     if session.trace_log is None:
-        trace_log = ChatTraceLogger(session_id=session_id)
+        trace_provider = load_trace(settings=get_settings())
+        trace_log = trace_provider.create(TraceSessionRequest(session_id=session_id))
         trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
     else:
         trace_log = session.trace_log
@@ -1571,7 +1577,7 @@ async def agent_chat_ws(websocket: WebSocket):
                         "message": "Agent is still processing the previous request",
                     })
                     continue
-                if not session.try_claim_run(connection_owner):
+                if not agent_runtime.try_claim_run(session_id, connection_owner):
                     await websocket.send_json({
                         "event": "error",
                         "message": "This session is already running on another connection",
@@ -1593,7 +1599,7 @@ async def agent_chat_ws(websocket: WebSocket):
                     ),
                 )
                 if run.status != RunStatus.QUEUED.value:
-                    session.release_run(connection_owner)
+                    agent_runtime.release_run(session_id, connection_owner)
                     await _ws_send(websocket, {
                         "event": "error",
                         "message": "This request has already been accepted",
@@ -1688,7 +1694,7 @@ async def agent_chat_ws(websocket: WebSocket):
                 ))
                 run_task.add_done_callback(_consume_task_exception)
                 run_task.add_done_callback(
-                    lambda _task: session.release_run(connection_owner)
+                    lambda _task: agent_runtime.release_run(session_id, connection_owner)
                 )
 
             # ── 停止对话 ──
@@ -1887,7 +1893,7 @@ async def agent_chat_ws(websocket: WebSocket):
                             ))
                             run_task.add_done_callback(_consume_task_exception)
                             run_task.add_done_callback(
-                                lambda _task: session.release_run(connection_owner)
+                                lambda _task: agent_runtime.release_run(session_id, connection_owner)
                             )
 
             # ── 心跳 ──
@@ -1938,6 +1944,6 @@ async def agent_chat_ws(websocket: WebSocket):
         # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
         # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
         session.touch()
-        session.release_run(connection_owner)
+        agent_runtime.release_run(session_id, connection_owner)
         pop_trace_hook(trace_hook_handler)
         _set_trace_bridge(None)

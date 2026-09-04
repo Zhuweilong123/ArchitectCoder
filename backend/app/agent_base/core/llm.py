@@ -109,8 +109,8 @@ async def _await_with_retry(fn, *, max_retries: int = 2, on_error=None):
 # 延迟导入避免循环依赖。
 def _trace_hook(kind, *args, **kwargs):
     try:
-        from app.services.chat_trace import _safe_hook
-        return _safe_hook(kind, *args, **kwargs)
+        from app.trace.tracing import emit_trace
+        return emit_trace(kind, *args, **kwargs)
     except Exception:
         return None
 
