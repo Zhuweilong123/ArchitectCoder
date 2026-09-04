@@ -13,11 +13,13 @@ import { Selection } from '@antv/x6-plugin-selection';
 import { Snapline } from '@antv/x6-plugin-snapline';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
 import {
   type UmlClass,
   Stereotype, RelationType,
 } from '../../types/uml';
 import './UMLEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register UML class shape ─────────────────────────
 // Pattern follows X6's own text-block shape implementation
@@ -146,27 +148,27 @@ function ensureShapeRegistered() {
 // ── Helper: Generate HTML for a UML class ──────────────
 function buildClassHTML(cls: UmlClass, selected: boolean): string {
   const stereotypeLabel = cls.stereotype !== Stereotype.CLASS
-    ? `<div class="uml-stereotype">«${cls.stereotype}»</div>` : '';
+    ? `<div class="uml-stereotype">«${escapeHtml(cls.stereotype)}»</div>` : '';
   const isAbstract = cls.stereotype === Stereotype.ABSTRACT;
   const nameStyle = isAbstract ? 'font-style: italic; text-decoration: underline;' : '';
   const selClass = selected ? 'selected' : '';
 
   const attrLines = cls.attributes.map((a) => {
     const stat = a.is_static ? ' style="text-decoration: underline;"' : '';
-    return `<div class="uml-attr"${stat}>${a.visibility} ${a.name}: ${a.type}</div>`;
+    return `<div class="uml-attr"${stat}>${escapeHtml(a.visibility)} ${escapeHtml(a.name)}: ${escapeHtml(a.type)}</div>`;
   }).join('');
 
   const methodLines = cls.methods.map((m) => {
     const abs = m.is_abstract ? ' font-style: italic;' : '';
     const stat = m.is_static ? ' text-decoration: underline;' : '';
-    return `<div class="uml-method" style="${abs}${stat}">${m.visibility} ${m.name}(${m.params}): ${m.return_type}</div>`;
+    return `<div class="uml-method" style="${abs}${stat}">${escapeHtml(m.visibility)} ${escapeHtml(m.name)}(${escapeHtml(m.params)}): ${escapeHtml(m.return_type)}</div>`;
   }).join('');
 
   const providedLines = (cls.provided_interfaces || []).map((i) =>
-    `<span class="uml-iface provided">◉ ${i}</span>`
+    `<span class="uml-iface provided">◉ ${escapeHtml(i)}</span>`
   ).join(' ');
   const requiredLines = (cls.required_interfaces || []).map((i) =>
-    `<span class="uml-iface required">◡ ${i}</span>`
+    `<span class="uml-iface required">◡ ${escapeHtml(i)}</span>`
   ).join(' ');
   const ifaceHTML = (providedLines || requiredLines) ? `
     <div class="uml-class-ifaces">
@@ -179,7 +181,7 @@ function buildClassHTML(cls: UmlClass, selected: boolean): string {
     <div class="uml-class-node ${selClass}">
       <div class="uml-class-header" style="${nameStyle}">
         ${stereotypeLabel}
-        <div class="uml-class-name">${cls.name}</div>
+        <div class="uml-class-name">${escapeHtml(cls.name)}</div>
       </div>
       ${ifaceHTML}
       <div class="uml-class-attrs">${attrLines || '<div class="uml-empty">(no attributes)</div>'}</div>
@@ -259,9 +261,13 @@ const UMLEditor: React.FC = () => {
     graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
     graph.use(new Snapline({ enabled: true, sharp: true }));
 
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: diagram.zoom || 1,
+      panX: diagram.pan_x || 0,
+      panY: diagram.pan_y || 0,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // ── Events ───────────────────────────────────────
@@ -276,10 +282,12 @@ const UMLEditor: React.FC = () => {
     });
 
     graph.on('node:moved', ({ node }) => {
+      if (isInternalUpdate.current) return;
       moveClass(node.id, { x: node.position().x, y: node.position().y });
     });
 
     graph.on('node:resized', ({ node }) => {
+      if (isInternalUpdate.current) return;
       resizeClass(node.id, {
         width: node.size().width,
         height: node.size().height,
@@ -292,6 +300,7 @@ const UMLEditor: React.FC = () => {
     });
 
     graph.on('edge:connected', ({ edge, isNew }) => {
+      if (isInternalUpdate.current) return;
       if (isNew) {
         const src = edge.getSourceCellId();
         const tgt = edge.getTargetCellId();
@@ -383,13 +392,16 @@ const UMLEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graph.centerContent();
+    if (!(diagram.pan_x || diagram.pan_y) && (diagram.zoom || 1) === 1) {
+      graph.centerContent();
+    }
     graphRef.current = graph;
     console.log('[UML Editor] Initialized. Shape registered:', shapeRegistered);
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -522,7 +534,12 @@ const UMLEditor: React.FC = () => {
       prevClassIds.current = currentIds;
       isInternalUpdate.current = false;
 
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(diagram.pan_x || diagram.pan_y)
+        && (diagram.zoom || 1) === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[UMLEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -542,7 +559,7 @@ const UMLEditor: React.FC = () => {
       console.error('[UML Editor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedClassId]);
+  }, [diagram.classes, diagram.relations, selectedClassId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -553,6 +570,19 @@ const UMLEditor: React.FC = () => {
       graph.zoomTo(diagram.zoom);
     }
   }, [diagram.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - diagram.pan_x) > 0.5
+      || Math.abs(translation.ty - diagram.pan_y) > 0.5
+    ) {
+      graph.translate(diagram.pan_x, diagram.pan_y);
+    }
+  }, [diagram.pan_x, diagram.pan_y]);
 
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {

@@ -13,8 +13,10 @@ import { Selection } from '@antv/x6-plugin-selection';
 import { Snapline } from '@antv/x6-plugin-snapline';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -83,15 +85,15 @@ function buildCompHTML(comp: CompNode, selected: boolean): string {
 
   // UML 2.5.1 lollipop (provided) and socket (required) notation
   const provided = (comp.provided_interfaces || []).map((i) =>
-    `<div class="comp-iface provided"><span class="comp-lollipop">⊃</span> ${i}</div>`
+    `<div class="comp-iface provided"><span class="comp-lollipop">⊃</span> ${escapeHtml(i)}</div>`
   ).join('');
   const required = (comp.required_interfaces || []).map((i) =>
-    `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${i}</div>`
+    `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${escapeHtml(i)}</div>`
   ).join('');
 
   return `<div class="comp-node ${childClass} ${selClass}">
     <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
-    <div class="comp-name">${comp.name}</div>
+    <div class="comp-name">${escapeHtml(comp.name)}</div>
     ${provided ? `<div class="comp-block"><div class="comp-block-label">provided interfaces</div>${provided}</div>` : ''}
     ${required ? `<div class="comp-block"><div class="comp-block-label">required interfaces</div>${required}</div>` : ''}
   </div>`;
@@ -171,9 +173,13 @@ const CompEditor: React.FC = () => {
     graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
     graph.use(new Snapline({ enabled: true, sharp: true }));
 
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: d.zoom || 1,
+      panX: d.pan_x || 0,
+      panY: d.pan_y || 0,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     graph.on('node:click', ({ node }) => {
@@ -185,9 +191,11 @@ const CompEditor: React.FC = () => {
       selectCompRelation(null);
     });
     graph.on('node:moved', ({ node }) => {
+      if (isInternalUpdate.current) return;
       moveComponent(node.id, node.position().x, node.position().y);
     });
     graph.on('node:resized', ({ node }) => {
+      if (isInternalUpdate.current) return;
       const store = useDiagramStore.getState();
       store.updateComponent(node.id, {
         width: node.size().width,
@@ -199,6 +207,7 @@ const CompEditor: React.FC = () => {
       setRightPanelTab('properties');
     });
     graph.on('edge:connected', ({ edge, isNew }) => {
+      if (isInternalUpdate.current) return;
       if (isNew) {
         const src = edge.getSourceCellId();
         const tgt = edge.getTargetCellId();
@@ -284,13 +293,16 @@ const CompEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graph.centerContent();
+    if (!(d.pan_x || d.pan_y) && (d.zoom || 1) === 1) {
+      graph.centerContent();
+    }
     graphRef.current = graph;
     console.log('[CompEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -388,7 +400,12 @@ const CompEditor: React.FC = () => {
       prevCompIds.current = currentIds;
       isInternalUpdate.current = false;
 
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(diagram.pan_x || diagram.pan_y)
+        && (diagram.zoom || 1) === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[CompEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -407,7 +424,7 @@ const CompEditor: React.FC = () => {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedComponentId]);
+  }, [diagram.components, diagram.comp_relations, selectedComponentId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -418,6 +435,19 @@ const CompEditor: React.FC = () => {
       graph.zoomTo(diagram.zoom);
     }
   }, [diagram.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - diagram.pan_x) > 0.5
+      || Math.abs(translation.ty - diagram.pan_y) > 0.5
+    ) {
+      graph.translate(diagram.pan_x, diagram.pan_y);
+    }
+  }, [diagram.pan_x, diagram.pan_y]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {

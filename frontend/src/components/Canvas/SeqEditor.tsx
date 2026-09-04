@@ -13,9 +13,11 @@ import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore } from '../../stores/uiStore';
+import { attachGraphViewport } from './graphViewport';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
+import { escapeHtml } from '../../utils/safeHtml';
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -103,7 +105,7 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
   return `<div class="seq-lifeline-node ${selClass}">
-    <div class="seq-lifeline-name">${lifeline.name}</div>
+    <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
       <div class="seq-lifeline-dash"></div>
       ${bars}
@@ -162,9 +164,13 @@ const SeqEditor: React.FC = () => {
     graph.use(new Selection({ enabled: true, rubberband: true, showNodeSelectionBox: true }));
     graph.use(new Snapline({ enabled: true, sharp: true }));
 
-    // Write Ctrl+wheel zoom back to the store so the toolbar % and saved project stay in sync.
-    graph.on('scale', ({ sx }) => {
-      useDiagramStore.getState().setZoom(sx);
+    const detachViewport = attachGraphViewport(graph, {
+      container: containerRef.current,
+      zoom: d.zoom || 1,
+      panX: d.pan_x || 0,
+      panY: d.pan_y || 0,
+      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
+      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // Click-to-click message creation (lifelines only)
@@ -247,6 +253,7 @@ const SeqEditor: React.FC = () => {
     });
 
     graph.on('node:moved', ({ node }) => {
+      if (isInternalUpdate.current || node.shape !== 'seq-lifeline') return;
       moveLifeline(node.id, node.position().x);
     });
 
@@ -257,12 +264,14 @@ const SeqEditor: React.FC = () => {
 
     // Save edge Y position when dragged
     graph.on('edge:change:source', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       if (typeof (current as any)?.y === 'number') {
         const store = useDiagramStore.getState();
         store.updateMessage(edge.id, { y: (current as any).y } as any);
       }
     });
     graph.on('edge:change:target', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       if (typeof (current as any)?.y === 'number') {
         const store = useDiagramStore.getState();
         store.updateMessage(edge.id, { y: (current as any).y } as any);
@@ -270,6 +279,7 @@ const SeqEditor: React.FC = () => {
     });
     // Also capture vertex moves for self-messages
     graph.on('edge:change:vertices', ({ edge, current }) => {
+      if (isInternalUpdate.current) return;
       const store = useDiagramStore.getState();
       const src = edge.getSource();
       const srcY = typeof (src as any)?.y === 'number' ? (src as any).y : edge.getSourcePoint()?.y;
@@ -327,12 +337,15 @@ const SeqEditor: React.FC = () => {
     document.addEventListener('keydown', handleKeyDown);
 
     graphRef.current = graph;
-    graph.centerContent();
+    if (!(d.pan_x || d.pan_y) && (d.zoom || 1) === 1) {
+      graph.centerContent();
+    }
     console.log('[SeqEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       document.removeEventListener('keydown', handleKeyDown);
+      detachViewport();
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -546,7 +559,7 @@ const SeqEditor: React.FC = () => {
           // Always update label + style
           const fn = graph.getCellById(f.id) as Node;
           if (fn) {
-            fn.setAttrByPath('labelText/html', `<span>${label}</span>`);
+            fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
             fn.setAttrByPath('body/stroke', f.type === 'alt' ? '#722ed1' :
               f.type === 'loop' ? '#1890ff' : '#555');
             fn.setAttrByPath('body/strokeDasharray', f.type === 'opt' ? '4,2' : '');
@@ -558,7 +571,12 @@ const SeqEditor: React.FC = () => {
       isInternalUpdate.current = false;
 
       // Center viewport as soon as the first elements appear
-      if (!_didFirstSync.current && graph.getNodes().length > 0) {
+      if (
+        !_didFirstSync.current
+        && graph.getNodes().length > 0
+        && !(diagram.pan_x || diagram.pan_y)
+        && (diagram.zoom || 1) === 1
+      ) {
         _didFirstSync.current = true;
         console.log('[SeqEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
         setTimeout(() => {
@@ -578,7 +596,7 @@ const SeqEditor: React.FC = () => {
       console.error('[SeqEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram, selectedLifelineId]);
+  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -589,6 +607,19 @@ const SeqEditor: React.FC = () => {
       graph.zoomTo(diagram.zoom);
     }
   }, [diagram.zoom]);
+
+  // Restore persisted translation when switching diagrams or loading a project.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const translation = graph.translate();
+    if (
+      Math.abs(translation.tx - diagram.pan_x) > 0.5
+      || Math.abs(translation.ty - diagram.pan_y) > 0.5
+    ) {
+      graph.translate(diagram.pan_x, diagram.pan_y);
+    }
+  }, [diagram.pan_x, diagram.pan_y]);
 
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {

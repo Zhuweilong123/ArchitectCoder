@@ -7,6 +7,7 @@ import type { SeqLifeline, SeqMessage } from '../types/sequence';
 import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
+import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -199,14 +200,22 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // ── Project actions ───────────────────────────────────
 
   setProject: (project) => {
-    console.debug('[Store] setProject:', project.name, project.diagrams.length, 'diagrams');
+    const normalizedProject = normalizeProject(project);
+    const activeDiagram = _activeDiagram(normalizedProject);
+    const hasStoredViewport = Boolean(
+      activeDiagram.pan_x || activeDiagram.pan_y || activeDiagram.zoom !== 1,
+    );
+    console.debug('[Store] setProject:', normalizedProject.name, normalizedProject.diagrams.length, 'diagrams');
     set({
-      project,
-      diagram: _activeDiagram(project),
+      project: normalizedProject,
+      diagram: activeDiagram,
       isModified: false,
       undoStack: [],
       redoStack: [],
-      recenterCounter: get().recenterCounter + 1,
+      // A persisted viewport must win over the default auto-center pass.
+      recenterCounter: hasStoredViewport
+        ? get().recenterCounter
+        : get().recenterCounter + 1,
     });
   },
 
@@ -296,11 +305,16 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       }
     }
 
-    const lastIdx = diagrams.length - 1;
-    console.debug('[Store] addDiagramsFromSpec:', specs.length, 'specs →', diagrams.length, 'diagrams');
+    const normalizedProject = normalizeProject({
+      ...state.project,
+      diagrams,
+      active_diagram_index: diagrams.length - 1,
+    });
+    const lastIdx = normalizedProject.diagrams.length - 1;
+    console.debug('[Store] addDiagramsFromSpec:', specs.length, 'specs →', normalizedProject.diagrams.length, 'diagrams');
     set({
-      project: { ...state.project, diagrams, active_diagram_index: lastIdx >= 0 ? lastIdx : 0 },
-      diagram: lastIdx >= 0 ? diagrams[lastIdx] : createDefaultDiagram(),
+      project: normalizedProject,
+      diagram: lastIdx >= 0 ? normalizedProject.diagrams[lastIdx] : createDefaultDiagram(),
       selectedClassId: null, selectedRelationId: null,
       isModified: true, undoStack: [], redoStack: [],
     });
@@ -328,8 +342,9 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // ── Legacy diagram actions ────────────────────────────
 
   setDiagram: (diagram) => {
-    console.debug('[Store] setDiagram: updating active diagram', diagram.name);
-    const project = _updateActiveDiagram(get().project, () => diagram);
+    const normalizedDiagram = normalizeDiagram(diagram);
+    console.debug('[Store] setDiagram: updating active diagram', normalizedDiagram.name);
+    const project = _updateActiveDiagram(get().project, () => normalizedDiagram);
     set({ project, diagram: _activeDiagram(project), isModified: true });
   },
 
