@@ -121,18 +121,42 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="提供的接口 (◉ provided)">
             <TextArea
-              value={(selectedClass.provided_interfaces || []).join('\n')}
-              onChange={(e) => handleClassChange('provided_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`class:${selectedClass.id}:provided_interfaces`,
+                (selectedClass.provided_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:provided_interfaces`, value,
+                  () => updateClass(selectedClass.id, {
+                    provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:provided_interfaces`);
+                if (typeof value === 'string') updateClass(selectedClass.id, {
+                  provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2}
               placeholder="IService&#10;IRepository"
             />
           </Form.Item>
           <Form.Item label="依赖的接口 (◡ required)">
             <TextArea
-              value={(selectedClass.required_interfaces || []).join('\n')}
-              onChange={(e) => handleClassChange('required_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`class:${selectedClass.id}:required_interfaces`,
+                (selectedClass.required_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:required_interfaces`, value,
+                  () => updateClass(selectedClass.id, {
+                    required_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:required_interfaces`);
+                if (typeof value === 'string') updateClass(selectedClass.id, {
+                  required_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2}
               placeholder="IDatabase&#10;ILogger"
             />
@@ -576,16 +600,40 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="提供的接口（每行一个）">
             <Input.TextArea
-              value={(selectedComponent.provided_interfaces || []).join('\n')}
-              onChange={(e) => handleChange('provided_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`component:${selectedComponent.id}:provided_interfaces`,
+                (selectedComponent.provided_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:provided_interfaces`, value,
+                  () => updateComponent(selectedComponent.id, {
+                    provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:provided_interfaces`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, {
+                  provided_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2} placeholder="IService&#10;IRepository" />
           </Form.Item>
           <Form.Item label="依赖的接口（每行一个）">
             <Input.TextArea
-              value={(selectedComponent.required_interfaces || []).join('\n')}
-              onChange={(e) => handleChange('required_interfaces',
-                e.target.value.split('\n').filter((s: string) => s.trim()))}
+              value={draftValue(`component:${selectedComponent.id}:required_interfaces`,
+                (selectedComponent.required_interfaces || []).join('\n'))}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:required_interfaces`, value,
+                  () => updateComponent(selectedComponent.id, {
+                    required_interfaces: value.split('\n').filter((s) => s.trim()),
+                  }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:required_interfaces`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, {
+                  required_interfaces: value.split('\n').filter((s) => s.trim()),
+                });
+              }}
               rows={2} placeholder="IDatabase&#10;ILogger" />
           </Form.Item>
         </Form>
