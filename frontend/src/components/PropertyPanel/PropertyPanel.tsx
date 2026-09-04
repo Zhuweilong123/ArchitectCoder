@@ -67,6 +67,20 @@ const PropertyPanel: React.FC = () => {
     const handleClassChange = (field: string, value: unknown) => {
       updateClass(selectedClass.id, { [field]: value });
     };
+    const updateAttributeField = (index: number, field: string, value: unknown) => {
+      const liveClass = useDiagramStore.getState().diagram.classes.find((item) => item.id === selectedClass.id);
+      if (!liveClass?.attributes[index]) return;
+      const attributes = [...liveClass.attributes];
+      attributes[index] = { ...attributes[index], [field]: value };
+      updateClass(selectedClass.id, { attributes });
+    };
+    const updateMethodField = (index: number, field: string, value: unknown) => {
+      const liveClass = useDiagramStore.getState().diagram.classes.find((item) => item.id === selectedClass.id);
+      if (!liveClass?.methods[index]) return;
+      const methods = [...liveClass.methods];
+      methods[index] = { ...methods[index], [field]: value };
+      updateClass(selectedClass.id, { methods });
+    };
 
     return (
       <div className="property-panel">
@@ -188,24 +202,32 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={attr.name}
+                      value={draftValue(`class:${selectedClass.id}:attribute:${idx}:name`, attr.name)}
                       placeholder="名称"
                       onChange={(e) => {
-                        const attrs = [...selectedClass.attributes];
-                        attrs[idx] = { ...attrs[idx], name: e.target.value };
-                        handleClassChange('attributes', attrs);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:name`, value,
+                          () => updateAttributeField(idx, 'name', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:attribute:${idx}:name`);
+                        if (typeof value === 'string') updateAttributeField(idx, 'name', value);
                       }}
                     />
                     <span className="attr-colon">:</span>
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={attr.type}
+                      value={draftValue(`class:${selectedClass.id}:attribute:${idx}:type`, attr.type)}
                       placeholder="类型"
                       onChange={(e) => {
-                        const attrs = [...selectedClass.attributes];
-                        attrs[idx] = { ...attrs[idx], type: e.target.value };
-                        handleClassChange('attributes', attrs);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:type`, value,
+                          () => updateAttributeField(idx, 'type', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:attribute:${idx}:type`);
+                        if (typeof value === 'string') updateAttributeField(idx, 'type', value);
                       }}
                     />
                     <Switch
@@ -270,36 +292,48 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       size="small"
                       style={{ width: 80 }}
-                      value={method.name}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:name`, method.name)}
                       placeholder="方法名"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], name: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:name`, value,
+                          () => updateMethodField(idx, 'name', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:name`);
+                        if (typeof value === 'string') updateMethodField(idx, 'name', value);
                       }}
                     />
                     <span className="attr-colon">(</span>
                     <Input
                       size="small"
                       style={{ width: 70 }}
-                      value={method.params}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:params`, method.params)}
                       placeholder="参数"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], params: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:params`, value,
+                          () => updateMethodField(idx, 'params', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:params`);
+                        if (typeof value === 'string') updateMethodField(idx, 'params', value);
                       }}
                     />
                     <span className="attr-colon">):</span>
                     <Input
                       size="small"
                       style={{ width: 70 }}
-                      value={method.return_type}
+                      value={draftValue(`class:${selectedClass.id}:method:${idx}:return_type`, method.return_type)}
                       placeholder="返回"
                       onChange={(e) => {
-                        const methods = [...selectedClass.methods];
-                        methods[idx] = { ...methods[idx], return_type: e.target.value };
-                        handleClassChange('methods', methods);
+                        const value = e.target.value;
+                        scheduleDraft(`class:${selectedClass.id}:method:${idx}:return_type`, value,
+                          () => updateMethodField(idx, 'return_type', value));
+                      }}
+                      onBlur={() => {
+                        const value = flushDraft(`class:${selectedClass.id}:method:${idx}:return_type`);
+                        if (typeof value === 'string') updateMethodField(idx, 'return_type', value);
                       }}
                     />
                     <Button
