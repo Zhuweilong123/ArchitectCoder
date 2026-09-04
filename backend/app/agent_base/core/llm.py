@@ -19,6 +19,7 @@ import logging
 import time
 from typing import Optional, Iterator, AsyncIterator
 from openai import OpenAI, AsyncOpenAI
+from app.llm import LLMRequest, OpenAICompatibleGateway
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,7 @@ class BaseAgentsLLM:
         # 5. 构建客户端
         self._client: OpenAI | None = None
         self._async_client: AsyncOpenAI | None = None
+        self.gateway: OpenAICompatibleGateway | None = None
         if self.api_key is not None:
             self._client = OpenAI(
                 api_key=self.api_key or "not-needed",
@@ -247,6 +249,13 @@ class BaseAgentsLLM:
                 api_key=self.api_key or "not-needed",
                 base_url=self.base_url,
                 timeout=self.timeout,
+            )
+            self.gateway = OpenAICompatibleGateway(
+                api_key=self.api_key or "not-needed",
+                base_url=self.base_url,
+                model=self.model,
+                timeout=self.timeout,
+                client=self._async_client,
             )
 
         logger.info(
@@ -439,11 +448,16 @@ class BaseAgentsLLM:
                               timeout=call_kwargs.get("timeout")) or ""
         _t0 = time.monotonic()
         try:
-            response = await _await_with_retry(
-                lambda: self._async_client.chat.completions.create(**call_kwargs),
-            )
-            content = response.choices[0].message.content or ""
-            usage = _usage_dict(getattr(response, "usage", None))
+            response = await self.gateway.complete(LLMRequest(
+                messages=messages,
+                model=call_kwargs["model"],
+                temperature=call_kwargs.get("temperature", self.temperature),
+                max_tokens=call_kwargs.get("max_tokens"),
+                json_mode=bool(call_kwargs.get("response_format")),
+                timeout=call_kwargs.get("timeout"),
+            ))
+            content = response.content
+            usage = response.usage.to_dict() if response.usage else None
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
@@ -475,15 +489,22 @@ class BaseAgentsLLM:
                               max_tokens=call_kwargs.get("max_tokens")) or ""
         _t0 = time.monotonic()
         _full = ""
+        stream_usage = None
         try:
-            stream = await self._async_client.chat.completions.create(**call_kwargs)
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    _full += delta
-                    yield delta
+            async for chunk in self.gateway.stream(LLMRequest(
+                messages=messages,
+                model=call_kwargs["model"],
+                temperature=call_kwargs.get("temperature", self.temperature),
+                max_tokens=call_kwargs.get("max_tokens"),
+                timeout=kwargs.get("timeout"),
+            )):
+                if chunk.text:
+                    _full += chunk.text
+                    yield chunk.text
+                if chunk.usage is not None:
+                    stream_usage = chunk.usage.to_dict()
             _trace_hook("llm_response", span_id=span_id, content=_full,
-                        usage=_usage_dict(getattr(stream, "usage", None)),
+                        usage=stream_usage,
                         duration_ms=(time.monotonic() - _t0) * 1000)
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content=_full, error=_err_repr(exc),
@@ -526,33 +547,26 @@ class BaseAgentsLLM:
                               tools=tools or None, tool_choice=tool_choice if tools else None) or ""
         _t0 = time.monotonic()
         try:
-            response = await _await_with_retry(
-                lambda: self._async_client.chat.completions.create(**call_kwargs),
-            )
+            response = await self.gateway.complete(LLMRequest(
+                messages=messages,
+                model=call_kwargs["model"],
+                temperature=call_kwargs.get("temperature", self.temperature),
+                max_tokens=call_kwargs.get("max_tokens"),
+                tools=tools or None,
+                tool_choice=tool_choice,
+                timeout=kwargs.get("timeout"),
+            ))
         except Exception as exc:
             _trace_hook("llm_response", span_id=span_id, content="", error=_err_repr(exc),
                         duration_ms=(time.monotonic() - _t0) * 1000)
             raise
-        msg = response.choices[0].message
         # Return usage to the ReAct loop as well as recording it in trace.
         # Without this field the configured token budget cannot accumulate.
         result: dict = {
-            "content": msg.content,
-            "tool_calls": None,
-            "usage": _usage_dict(getattr(response, "usage", None)),
+            "content": response.content or None,
+            "tool_calls": response.tool_calls,
+            "usage": response.usage.to_dict() if response.usage else None,
         }
-        if msg.tool_calls:
-            result["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
         _trace_hook("llm_response", span_id=span_id, content=result["content"] or "",
                     tool_calls=result["tool_calls"],
                     usage=result["usage"],
