@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import platform
+
 from app.agent_base.assembly import DevPromptBuilder
 from app.agent_base.tools.registry import ToolRegistry
 from app.services.change_set import ChangeSet
@@ -32,10 +35,10 @@ def test_runtime_context_is_embedded_in_static_prompt(tmp_path):
         environment_context=context,
     ).system_prompt
 
-    assert "Host OS: windows" in prompt
-    assert "Execution OS: windows" in prompt
-    assert "Shell: powershell" in prompt
-    assert "Execution mode: windows-powershell" in prompt
+    assert f"Host OS: {platform.system().lower()}" in prompt
+    assert f"Execution OS: {context.execution_os}" in prompt
+    assert f"Shell: {context.shell}" in prompt
+    assert f"Execution mode: {context.execution_mode}" in prompt
     assert prompt.count(str(tmp_path)) == 1
 
 
@@ -90,8 +93,8 @@ def test_foundation_tools_use_project_root_with_named_directory_aliases(tmp_path
     listed = asyncio.run(_tool(tools, "list_files")._execute({
         "path": "workspace", "pattern": "**/*.py",
     }))
-    assert "src\\main.py" in listed
-    assert "test\\test_main.py" in listed
+    assert os.path.join("src", "main.py") in listed
+    assert os.path.join("test", "test_main.py") in listed
 
     content = asyncio.run(_tool(tools, "read_file")._execute({
         "path": "src\\main.py",
