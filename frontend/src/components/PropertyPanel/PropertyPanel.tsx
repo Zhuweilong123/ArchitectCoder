@@ -2,7 +2,7 @@
  * Property Panel – edit properties of selected class, relation, or lifeline.
  */
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   Form, Input, Select, Switch, Button, Collapse, Space,
   Popconfirm, Empty, Divider, InputNumber,
@@ -17,6 +17,7 @@ import {
   type UmlAttribute, type UmlMethod,
 } from '../../types/uml';
 import { MESSAGE_TYPE_LABELS } from '../../types/sequence';
+import { useDebouncedDraft } from '../../hooks/useDebouncedDraft';
 import './PropertyPanel.css';
 
 const { TextArea } = Input;
@@ -53,6 +54,8 @@ const PropertyPanel: React.FC = () => {
     addDiagram: s.addDiagram,
   })));
 
+  const { scheduleDraft, flushDraft, draftValue } = useDebouncedDraft();
+
   const selectedClass = diagram.classes.find((c) => c.id === selectedClassId);
   const selectedRelation = diagram.relations.find((r) => r.id === selectedRelationId);
   const selectedLifeline = (diagram.lifelines || []).find((l) => l.id === selectedLifelineId);
@@ -81,8 +84,16 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="类名">
             <Input
-              value={selectedClass.name}
-              onChange={(e) => handleClassChange('name', e.target.value)}
+              value={draftValue(`class:${selectedClass.id}:name`, selectedClass.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:name`, value,
+                  () => updateClass(selectedClass.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:name`);
+                if (typeof value === 'string') updateClass(selectedClass.id, { name: value });
+              }}
             />
           </Form.Item>
           <Form.Item label="构造型">
@@ -94,8 +105,16 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="备注">
             <TextArea
-              value={selectedClass.note}
-              onChange={(e) => handleClassChange('note', e.target.value)}
+              value={draftValue(`class:${selectedClass.id}:note`, selectedClass.note)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`class:${selectedClass.id}:note`, value,
+                  () => updateClass(selectedClass.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`class:${selectedClass.id}:note`);
+                if (typeof value === 'string') updateClass(selectedClass.id, { note: value });
+              }}
               rows={2}
               placeholder="添加备注..."
             />
@@ -330,29 +349,61 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="源多重性">
             <Input
-              value={selectedRelation.multiplicity_source}
-              onChange={(e) => handleRelChange('multiplicity_source', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:multiplicity_source`, selectedRelation.multiplicity_source)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:multiplicity_source`, value,
+                  () => updateRelation(selectedRelation.id, { multiplicity_source: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_source`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_source: value });
+              }}
               placeholder="如: 0..1, 1..*, *"
             />
           </Form.Item>
           <Form.Item label="目标多重性">
             <Input
-              value={selectedRelation.multiplicity_target}
-              onChange={(e) => handleRelChange('multiplicity_target', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:multiplicity_target`, selectedRelation.multiplicity_target)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:multiplicity_target`, value,
+                  () => updateRelation(selectedRelation.id, { multiplicity_target: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_target`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_target: value });
+              }}
               placeholder="如: 0..1, 1..*, *"
             />
           </Form.Item>
           <Form.Item label="角色名">
             <Input
-              value={selectedRelation.role_name}
-              onChange={(e) => handleRelChange('role_name', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:role_name`, selectedRelation.role_name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:role_name`, value,
+                  () => updateRelation(selectedRelation.id, { role_name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:role_name`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { role_name: value });
+              }}
               placeholder="角色名称"
             />
           </Form.Item>
           <Form.Item label="连接备注">
             <TextArea
-              value={selectedRelation.note}
-              onChange={(e) => handleRelChange('note', e.target.value)}
+              value={draftValue(`relation:${selectedRelation.id}:note`, selectedRelation.note)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`relation:${selectedRelation.id}:note`, value,
+                  () => updateRelation(selectedRelation.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`relation:${selectedRelation.id}:note`);
+                if (typeof value === 'string') updateRelation(selectedRelation.id, { note: value });
+              }}
               rows={2}
               placeholder="添加备注..."
             />
@@ -385,8 +436,16 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="方法名">
             <Input
-              value={selectedMessage.label}
-              onChange={(e) => updateMessage(selectedMessage.id, { label: e.target.value })}
+              value={draftValue(`message:${selectedMessage.id}:label`, selectedMessage.label)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`message:${selectedMessage.id}:label`, value,
+                  () => updateMessage(selectedMessage.id, { label: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`message:${selectedMessage.id}:label`);
+                if (typeof value === 'string') updateMessage(selectedMessage.id, { label: value });
+              }}
             />
           </Form.Item>
           <Form.Item label="消息类型">
@@ -404,8 +463,16 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="功能备注">
             <Input.TextArea
-              value={selectedMessage.note || ''}
-              onChange={(e) => updateMessage(selectedMessage.id, { note: e.target.value })}
+              value={draftValue(`message:${selectedMessage.id}:note`, selectedMessage.note || '')}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`message:${selectedMessage.id}:note`, value,
+                  () => updateMessage(selectedMessage.id, { note: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`message:${selectedMessage.id}:note`);
+                if (typeof value === 'string') updateMessage(selectedMessage.id, { note: value });
+              }}
               rows={2}
               placeholder="描述此消息的业务含义..."
             />
@@ -437,15 +504,31 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="名称">
             <Input
-              value={selectedLifeline.name}
-              onChange={(e) => handleChange('name', e.target.value)}
+              value={draftValue(`lifeline:${selectedLifeline.id}:name`, selectedLifeline.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`lifeline:${selectedLifeline.id}:name`, value,
+                  () => updateLifeline(selectedLifeline.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`lifeline:${selectedLifeline.id}:name`);
+                if (typeof value === 'string') updateLifeline(selectedLifeline.id, { name: value });
+              }}
               placeholder="如: ota: OtaTask"
             />
           </Form.Item>
           <Form.Item label="关联类（可选）">
             <Input
-              value={selectedLifeline.class_ref || ''}
-              onChange={(e) => handleChange('class_ref', e.target.value)}
+              value={draftValue(`lifeline:${selectedLifeline.id}:class_ref`, selectedLifeline.class_ref || '')}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`lifeline:${selectedLifeline.id}:class_ref`, value,
+                  () => updateLifeline(selectedLifeline.id, { class_ref: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`lifeline:${selectedLifeline.id}:class_ref`);
+                if (typeof value === 'string') updateLifeline(selectedLifeline.id, { class_ref: value });
+              }}
               placeholder="UML 类图中类的名称"
             />
           </Form.Item>
@@ -478,8 +561,18 @@ const PropertyPanel: React.FC = () => {
         </div>
         <Form layout="vertical" size="small">
           <Form.Item label="名称">
-            <Input value={selectedComponent.name}
-              onChange={(e) => handleChange('name', e.target.value)} />
+            <Input
+              value={draftValue(`component:${selectedComponent.id}:name`, selectedComponent.name)}
+              onChange={(e) => {
+                const value = e.target.value;
+                scheduleDraft(`component:${selectedComponent.id}:name`, value,
+                  () => updateComponent(selectedComponent.id, { name: value }));
+              }}
+              onBlur={() => {
+                const value = flushDraft(`component:${selectedComponent.id}:name`);
+                if (typeof value === 'string') updateComponent(selectedComponent.id, { name: value });
+              }}
+            />
           </Form.Item>
           <Form.Item label="提供的接口（每行一个）">
             <Input.TextArea
