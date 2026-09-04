@@ -356,6 +356,9 @@ const SeqEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
+  const messageSignatureCache = useRef<Map<string, string>>(new Map());
+  const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -373,6 +376,7 @@ const SeqEditor: React.FC = () => {
         if (!currentLIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          lifelineSignatureCache.current.delete(id);
         }
       });
 
@@ -393,9 +397,13 @@ const SeqEditor: React.FC = () => {
       lifelines.forEach((ll) => {
         const htmlContent = buildLifelineHTML(ll, ll.id === selectedLifelineId);
         const cached = htmlCache.current.get(ll.id);
+        const signature = JSON.stringify([
+          htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
+        ]);
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
+            if (lifelineSignatureCache.current.get(ll.id) === signature) return;
             const node = existing as Node;
             node.setPosition(ll.x, LIFELINE_Y);
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
@@ -403,8 +411,9 @@ const SeqEditor: React.FC = () => {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(ll.id, htmlContent);
             }
+            lifelineSignatureCache.current.set(ll.id, signature);
           } else {
-            graph.addNode({
+            const node = graph.addNode({
               id: ll.id,
               shape: 'seq-lifeline',
               x: ll.x, y: LIFELINE_Y,
@@ -412,6 +421,7 @@ const SeqEditor: React.FC = () => {
               attrs: { content: { html: htmlContent } },
             });
             htmlCache.current.set(ll.id, htmlContent);
+            if (node) lifelineSignatureCache.current.set(ll.id, signature);
           }
         } catch (e) {
           console.warn('[SeqEditor] Sync lifeline error:', ll.name, e);
@@ -424,6 +434,7 @@ const SeqEditor: React.FC = () => {
       graphEdgeIds.forEach((id) => {
         if (!dataMsgIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
+          messageSignatureCache.current.delete(id);
         }
       });
 
@@ -462,10 +473,14 @@ const SeqEditor: React.FC = () => {
           strokeDasharray: strokeDash,
           targetMarker: { name: 'block', width: 10, height: 6 },
         };
+        const signature = JSON.stringify([
+          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, strokeColor, strokeDash,
+        ]);
 
         try {
           const existing = graph.getCellById(msg.id);
           if (existing && existing.isEdge()) {
+            if (messageSignatureCache.current.get(msg.id) === signature) return;
             // Update existing edge: positions, vertices, style, label
             const edge = existing as Edge;
             edge.setSource({ x: fromX, y: msgY });
@@ -487,6 +502,7 @@ const SeqEditor: React.FC = () => {
             }] : []);
             edge.setAttrByPath('line/stroke', strokeColor);
             edge.setAttrByPath('line/strokeDasharray', strokeDash);
+            messageSignatureCache.current.set(msg.id, signature);
             return;
           }
 
@@ -502,7 +518,7 @@ const SeqEditor: React.FC = () => {
             : undefined;
 
           if (isSelf) {
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: msg.id,
               source: { x: srcLL.x + LIFELINE_WIDTH, y: msgY },
               target: { x: srcLL.x + LIFELINE_WIDTH, y: msgY + 24 },
@@ -514,14 +530,16 @@ const SeqEditor: React.FC = () => {
               connector: { name: 'rounded' },
               attrs: { line: lineAttrs },
             });
+            if (edge) messageSignatureCache.current.set(msg.id, signature);
           } else {
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: msg.id,
               source: { x: fromX, y: msgY },
               target: { x: toX, y: msgY },
               labels: edgeLabel,
               attrs: { line: lineAttrs },
             });
+            if (edge) messageSignatureCache.current.set(msg.id, signature);
           }
         } catch (e) {
           console.warn('[SeqEditor] Sync message error:', msg.id, e);
@@ -535,6 +553,7 @@ const SeqEditor: React.FC = () => {
       graph.getNodes().forEach((n) => {
         if (n.shape === 'seq-fragment' && !fragIds.has(n.id)) {
           try { graph.removeCell(n.id); } catch { /* ignore */ }
+          fragmentSignatureCache.current.delete(n.id);
         }
       });
       // Add/update fragments
@@ -546,8 +565,13 @@ const SeqEditor: React.FC = () => {
         const w = f.width || 280;
         const yStart = Math.max(f.y_start || 80, 80);  // ensure fragment clears toolbar
         const h = Math.max(60, (f.y_end || (yStart + 120)) - yStart);
+        const stroke = f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
+        const dash = f.type === 'opt' ? '4,2' : '';
+        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash]);
         try {
           const existing = graph.getCellById(f.id);
+          if (existing && existing.isNode()
+            && fragmentSignatureCache.current.get(f.id) === signature) return;
           if (existing && existing.isNode()) {
             (existing as Node).setPosition(f.x || 80, yStart);
             existing.setSize({ width: w, height: h });
@@ -562,9 +586,9 @@ const SeqEditor: React.FC = () => {
           const fn = graph.getCellById(f.id) as Node;
           if (fn) {
             fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
-            fn.setAttrByPath('body/stroke', f.type === 'alt' ? '#722ed1' :
-              f.type === 'loop' ? '#1890ff' : '#555');
-            fn.setAttrByPath('body/strokeDasharray', f.type === 'opt' ? '4,2' : '');
+            fn.setAttrByPath('body/stroke', stroke);
+            fn.setAttrByPath('body/strokeDasharray', dash);
+            fragmentSignatureCache.current.set(f.id, signature);
           }
         } catch (e) { /* ignore */ }
       });

@@ -302,6 +302,8 @@ const CompEditor: React.FC = () => {
   // ── Sync diagram → graph ───────────────────────────
   const prevCompIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const nodeSignatureCache = useRef<Map<string, string>>(new Map());
+  const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -317,6 +319,7 @@ const CompEditor: React.FC = () => {
       // Remove deleted
       prevCompIds.current.forEach((id) => {
         if (!currentIds.has(id)) { try { graph.removeCell(id); } catch { /* ignore */ } htmlCache.current.delete(id); }
+        if (!currentIds.has(id)) nodeSignatureCache.current.delete(id);
       });
 
       // Add/update components + handle embedding
@@ -326,9 +329,13 @@ const CompEditor: React.FC = () => {
         const h = c.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT);
         const htmlContent = buildCompHTML(c, c.id === selectedComponentId);
         const cached = htmlCache.current.get(c.id);
+        const signature = JSON.stringify([
+          htmlContent, c.x, c.y, w, h, c.parent_id || '',
+        ]);
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {
+            if (nodeSignatureCache.current.get(c.id) === signature) return;
             const node = existing as Node;
             node.setPosition(c.x, c.y);
             node.setSize({ width: w, height: h });
@@ -341,6 +348,7 @@ const CompEditor: React.FC = () => {
               const parent = graph.getCellById(c.parent_id);
               if (parent) parent.addChild(node);
             }
+            nodeSignatureCache.current.set(c.id, signature);
           } else {
             const node = graph.addNode({
               id: c.id, shape: 'comp-component',
@@ -349,6 +357,7 @@ const CompEditor: React.FC = () => {
               attrs: { content: { html: htmlContent } },
             });
             htmlCache.current.set(c.id, htmlContent);
+            if (node) nodeSignatureCache.current.set(c.id, signature);
             if (isChild && node) {
               const parent = graph.getCellById(c.parent_id) as Node;
               if (parent) parent.addChild(node as Node);
@@ -360,11 +369,25 @@ const CompEditor: React.FC = () => {
       // Sync edges
       const existingEdges = new Set(graph.getEdges().map((e) => e.id));
       const dataEdgeIds = new Set(rels.map((r) => r.id));
-      existingEdges.forEach((id) => { if (!dataEdgeIds.has(id)) try { graph.removeCell(id); } catch { /* ignore */ } });
+      existingEdges.forEach((id) => {
+        if (!dataEdgeIds.has(id)) {
+          try { graph.removeCell(id); } catch { /* ignore */ }
+          edgeSignatureCache.current.delete(id);
+        }
+      });
 
       rels.forEach((r) => {
+        const signature = JSON.stringify([r.source, r.target]);
         try {
-          if (!existingEdges.has(r.id)) {
+          if (existingEdges.has(r.id)) {
+            if (edgeSignatureCache.current.get(r.id) === signature) return;
+            const edge = graph.getCellById(r.id) as any;
+            if (edge) {
+              edge.setSource({ cell: r.source });
+              edge.setTarget({ cell: r.target });
+              edgeSignatureCache.current.set(r.id, signature);
+            }
+          } else {
             if (!graph.getCellById(r.source)) {
               console.warn('[CompEditor] Sync edge skipped — source node missing:', r.id, r.source);
               return;
@@ -373,7 +396,7 @@ const CompEditor: React.FC = () => {
               console.warn('[CompEditor] Sync edge skipped — target node missing:', r.id, r.target);
               return;
             }
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: r.id,
               source: { cell: r.source },
               target: { cell: r.target },
@@ -384,6 +407,7 @@ const CompEditor: React.FC = () => {
                 },
               },
             });
+            if (edge) edgeSignatureCache.current.set(r.id, signature);
           }
         } catch (e) { console.warn('[CompEditor] Edge error:', r.id, e); }
       });

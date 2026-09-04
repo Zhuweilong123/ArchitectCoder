@@ -391,6 +391,8 @@ const UMLEditor: React.FC = () => {
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
+  const nodeSignatureCache = useRef<Map<string, string>>(new Map());
+  const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
 
   useEffect(() => {
@@ -406,6 +408,7 @@ const UMLEditor: React.FC = () => {
         if (!currentIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
           htmlCache.current.delete(id);
+          nodeSignatureCache.current.delete(id);
         }
       });
 
@@ -414,19 +417,26 @@ const UMLEditor: React.FC = () => {
         const isSelected = cls.id === selectedClassId;
         const htmlContent = buildClassHTML(cls, isSelected);
         const cached = htmlCache.current.get(cls.id);
+        const width = cls.size.width || 200;
+        const height = cls.size.height || 150;
+        const signature = JSON.stringify([
+          htmlContent, cls.position.x, cls.position.y, width, height,
+        ]);
 
         try {
           const existing = graph.getCellById(cls.id);
           if (existing && existing.isNode()) {
+            if (nodeSignatureCache.current.get(cls.id) === signature) return;
             // Update existing node
             const node = existing as Node;
             node.setPosition(cls.position.x, cls.position.y);
-            node.setSize(cls.size);
+            node.setSize({ width, height });
             if (cached !== htmlContent) {
               // X6 attr: set the 'html' attr on the 'content' selector
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(cls.id, htmlContent);
             }
+            nodeSignatureCache.current.set(cls.id, signature);
           } else {
             // Add new node
             const node = graph.addNode({
@@ -434,14 +444,15 @@ const UMLEditor: React.FC = () => {
               shape: 'uml-class',
               x: cls.position.x,
               y: cls.position.y,
-              width: cls.size.width || 200,
-              height: cls.size.height || 150,
+              width,
+              height,
               attrs: {
                 content: { html: htmlContent },
               },
             });
             if (node) {
               htmlCache.current.set(cls.id, htmlContent);
+              nodeSignatureCache.current.set(cls.id, signature);
             }
           }
         } catch (e) {
@@ -456,6 +467,7 @@ const UMLEditor: React.FC = () => {
       existingEdgeIds.forEach((id) => {
         if (!diagramEdgeIds.has(id)) {
           try { graph.removeCell(id); } catch { /* ignore */ }
+          edgeSignatureCache.current.delete(id);
         }
       });
 
@@ -479,15 +491,22 @@ const UMLEditor: React.FC = () => {
           strokeDasharray: isDashed ? '5,5' : '',
           targetMarker: { name: arrowStyle, width: 12, height: 8 },
         };
+        const signature = JSON.stringify([
+          rel.source, rel.target, labelText, isDashed, arrowStyle,
+        ]);
 
         try {
           if (existingEdgeIds.has(rel.id)) {
+            if (edgeSignatureCache.current.get(rel.id) === signature) return;
             // Update existing edge
             const edge = graph.getCellById(rel.id) as Edge;
             if (edge) {
+              edge.setSource({ cell: rel.source });
+              edge.setTarget({ cell: rel.target });
               edge.setLabels(labelText ? [labelText] : []);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
+              edgeSignatureCache.current.set(rel.id, signature);
             }
           } else {
             // Add new edge — skip if source or target class doesn't exist on canvas
@@ -499,13 +518,14 @@ const UMLEditor: React.FC = () => {
               console.warn('[UML Editor] Sync edge skipped — target node missing:', rel.id, rel.target);
               return;
             }
-            graph.addEdge({
+            const edge = graph.addEdge({
               id: rel.id,
               source: { cell: rel.source },
               target: { cell: rel.target },
               labels: labelText ? [labelText] : undefined,
               attrs: { line: lineAttrs },
             });
+            if (edge) edgeSignatureCache.current.set(rel.id, signature);
           }
         } catch (e) {
           console.warn('[UML Editor] Sync edge error:', rel.id, e);
