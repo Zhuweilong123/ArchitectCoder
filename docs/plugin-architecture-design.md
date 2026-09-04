@@ -3,7 +3,8 @@
 > Version: v3.2
 > Status: Implemented baseline
 > Date: 2026-09-04
-> Related commit: `fa3b507` (`v3.2: Centralize Configuration Management`)
+> Related commits: `fa3b507` (`v3.2: Centralize Configuration Management`),
+> `9c439ed` (`feat: expose knowledge graph tools through plugin switch`)
 
 ## 1. Purpose
 
@@ -42,12 +43,18 @@ backend/
 │   ├── agent_config.py     # Agent instance configuration
 │   └── __init__.py         # Unified configuration exports
 ├── app/
-│   ├── agent_base/core/
-│   │   ├── plugins.py      # Central plugin lifecycle manager
-│   │   ├── memory.py       # Memory port and fallback
-│   │   ├── evals.py        # Evals port and fallback
-│   │   ├── orchestration.py # Orchestration port and fallback
-│   │   └── knowledge_graph.py # Knowledge-graph port and fallback
+│   ├── agent_base/
+│   │   ├── assembly.py     # Production Agent composition boundary
+│   │   ├── execution_summary.py # Transport-neutral run summaries
+│   │   └── core/
+│   │       ├── plugins.py      # Central plugin lifecycle manager
+│   │       ├── memory.py       # Memory port and fallback
+│   │       ├── evals.py        # Evals port and fallback
+│   │       ├── orchestration.py # Orchestration port and fallback
+│   │       └── knowledge_graph.py # Knowledge-graph port and fallback
+│   ├── services/
+│   │   ├── agent_execution.py # Transport-neutral Agent execution
+│   │   └── agent_chat_ws.py   # WebSocket session/transport adapter
 │   └── trace/
 │       └── tracing.py      # Trace port and runtime session bridge
 └── .env                    # Local runtime configuration, not committed
@@ -62,6 +69,13 @@ extensions/
 
 The `backend` layer owns stable contracts, generic runtime infrastructure and
 the central manager. The `extensions` layer owns operational plugin logic.
+
+Agent construction is centralized in `app/agent_base/assembly.py`, so the
+interactive WebSocket adapter and the Evals adapter share the same production
+tool, memory, prompt, and budget assembly. A single Agent run is coordinated
+by `app/services/agent_execution.py` through an injected async `send(payload)`
+callback; it does not depend on FastAPI or WebSocket types. The WebSocket
+module owns session state, message parsing, and transport events only.
 
 `backend/app/trace` is intentionally retained as the Trace port because the
 core Agent runtime needs the session lifecycle, event bridge and coroutine
@@ -122,7 +136,7 @@ than importing every extension during application startup.
 
 | Slot | Core port | Default provider | Default enabled state |
 |---|---|---|---|
-| orchestration | `load_orchestrator` | `extensions.orchestration:create` | false |
+| orchestration | `load_orchestrator` | `extensions.orchestration:create` | true |
 | memory | `load_memory` | `extensions.memory:create` | true |
 | trace | `load_trace` | `extensions.trace:create` | true |
 | evals | `load_evals` | `extensions.evals:create` | true |
@@ -182,6 +196,11 @@ single Agent object's runtime options.
 The runtime values are loaded from `backend/.env` when the backend starts from
 its normal working directory. Environment variables override the defaults in
 `backend/config/settings.py`.
+
+The checked-in `backend/.env.example` uses a conservative runtime profile:
+orchestration and knowledge-graph plugins are disabled there by default, while
+the other three plugin slots remain enabled. A local `backend/.env` can enable
+either feature without changing the code defaults.
 
 The five plugin slots use these settings:
 
@@ -308,7 +327,7 @@ After the v3.2 decoupling and configuration relocation, the backend full test
 suite passed:
 
 ```text
-270 passed
+271 passed
 ```
 
 The test suite includes Agent, orchestration, memory, Trace, Evals,
