@@ -129,7 +129,7 @@ const SeqEditor: React.FC = () => {
     diagram, selectedLifelineId, selectedMessageId,
     addLifeline, removeLifeline, moveLifeline,
     selectLifeline, selectMessage,
-    undo, redo,
+    undo, redo, arrangeSequence,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedLifelineId: s.selectedLifelineId,
@@ -141,6 +141,7 @@ const SeqEditor: React.FC = () => {
     selectMessage: s.selectMessage,
     undo: s.undo,
     redo: s.redo,
+    arrangeSequence: s.arrangeSequence,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
@@ -794,6 +795,11 @@ const SeqEditor: React.FC = () => {
           <Tooltip title="添加生命线">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>生命线</Button>
           </Tooltip>
+          {(diagram.lifelines || []).length > 0 && (
+            <Tooltip title="均匀排列生命线并整理消息时间轴">
+              <Button size="small" onClick={arrangeSequence}>整理</Button>
+            </Tooltip>
+          )}
           <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>片段:</span>
           {(Object.keys(FRAGMENT_LABELS) as FragmentType[]).map((t) => (
             <Tooltip key={t} title={`添加 ${FRAGMENT_LABELS[t]} 片段`}>

@@ -161,6 +161,7 @@ export interface DiagramState {
   addMessage: (from: string, to: string) => void;
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
+  arrangeSequence: () => void;
 
   // ── Fragment operations (UML 2.5.1) ───────────
   addFragment: (y?: number) => void;
@@ -871,6 +872,58 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       return { ...d, messages };
     });
     set({ project, isModified: true });
+  },
+
+  arrangeSequence: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    const lifelines = [...(diagram.lifelines || [])]
+      .sort((a, b) => a.x - b.x || a.id.localeCompare(b.id));
+    const messages = [...(diagram.messages || [])]
+      .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id));
+    if (lifelines.length === 0 && messages.length === 0) return;
+
+    const lifelineX = new Map<string, number>();
+    lifelines.forEach((lifeline, index) => lifelineX.set(lifeline.id, 160 + index * 220));
+
+    const oldMessageY = new Map(messages.map((message) => [
+      message.id,
+      message.y || 150 + message.order * 40,
+    ]));
+    const messageY = new Map<string, number>();
+    const arrangedMessages = messages.map((message, index) => {
+      const y = 190 + index * 45;
+      messageY.set(message.id, y);
+      return { ...message, y, order: index + 1 };
+    });
+
+    const arrangedFragments = (diagram.fragments || []).map((fragment) => {
+      const containedMessages = messages.filter((message) => {
+        const y = oldMessageY.get(message.id) || 0;
+        return y >= fragment.y_start && y <= fragment.y_end;
+      });
+      if (containedMessages.length === 0) return fragment;
+      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || 190));
+      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || 190));
+      return {
+        ...fragment,
+        y_start: Math.max(80, Math.min(fragment.y_start, minMessageY - 24)),
+        y_end: Math.max(fragment.y_end, maxMessageY + 36),
+      };
+    });
+
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      lifelines: (activeDiagram.lifelines || []).map((lifeline) => ({
+        ...lifeline,
+        x: lifelineX.get(lifeline.id) ?? lifeline.x,
+      })),
+      messages: arrangedMessages,
+      fragments: arrangedFragments,
+    }));
+    get().pushSnapshot('arrange_sequence');
+    set({ project, isModified: true });
+    get().triggerRecenter();
   },
 
   // ── Fragment operations (UML 2.5.1) ─────────────────────
