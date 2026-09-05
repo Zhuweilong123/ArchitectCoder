@@ -1,6 +1,6 @@
 ---
 name: uml-design-guide
-description: UML 2.5.1 data-model schemas, naming conventions, diagram semantics and cross-diagram consistency rules for authoring ArchitectCoder class, sequence and component diagrams.
+description: UML 2.5.1 schemas, semantics, validation and cross-diagram consistency for creating, reviewing, repairing and optimizing ArchitectCoder .umlproj files and LLM class, sequence and component diagram outputs.
 ---
 
 # UML 2.5.1 Design Guide
@@ -85,7 +85,9 @@ description: UML 2.5.1 data-model schemas, naming conventions, diagram semantics
 
 ## 示例文件
 
-每个 `*_example.md` 只包含可解析的完整图示例。示例是模式参考，不替代跨图规则；跨图项目必须按 `cross_diagram_guide.md` 补齐 `component_id`、`class_ref` 和接口关系。
+每个单图 `*_example.md` 只包含可解析的完整图示例。多图任务额外加载 `cross_diagram_example.md` 了解案例结构；需要在设计器中查看时，打开同目录下的 `cross_diagram_example.umlproj`。其中 `.umlproj` 是唯一案例数据源，Markdown 只保存说明和引用检查清单。
+
+不要把跨图案例复制到每个单图指南中：类图、时序图、组件图指南负责单图语义，`cross_diagram_guide.md` 和 `cross_diagram_example.md` 负责跨图引用与一致性。
 
 ## 通用规则
 

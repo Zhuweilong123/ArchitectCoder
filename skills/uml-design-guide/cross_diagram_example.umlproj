@@ -1,0 +1,355 @@
+{
+  "version": "1.0",
+  "revision": 0,
+  "name": "small_auth_system",
+  "diagrams": [
+    {
+      "version": "1.0",
+      "name": "Web Authentication Architecture",
+      "diagram_type": "component",
+      "component_id": "",
+      "classes": [],
+      "relations": [],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [
+        {
+          "id": "comp_web",
+          "name": "WebApp",
+          "x": 80.0,
+          "y": 180.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [],
+          "required_interfaces": ["IAuthService"]
+        },
+        {
+          "id": "comp_auth",
+          "name": "AuthService",
+          "x": 380.0,
+          "y": 180.0,
+          "width": 220.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": ["IAuthService"],
+          "required_interfaces": ["IUserRepository"]
+        },
+        {
+          "id": "comp_db",
+          "name": "UserRepository",
+          "x": 720.0,
+          "y": 180.0,
+          "width": 220.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": ["IUserRepository"],
+          "required_interfaces": []
+        }
+      ],
+      "comp_relations": [
+        {
+          "id": "crel_web_auth",
+          "source": "comp_web",
+          "target": "comp_auth",
+          "type": "dependency"
+        },
+        {
+          "id": "crel_auth_db",
+          "source": "comp_auth",
+          "target": "comp_db",
+          "type": "dependency"
+        }
+      ],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "AuthService Class Model",
+      "diagram_type": "class",
+      "component_id": "comp_auth",
+      "classes": [
+        {
+          "id": "class_auth_contract",
+          "name": "IAuthService",
+          "stereotype": "interface",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "login",
+              "return_type": "AuthResult",
+              "params": "username: string, password: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": true
+            }
+          ],
+          "position": { "x": 100.0, "y": 80.0 },
+          "size": { "width": 240.0, "height": 130.0 },
+          "note": "认证服务对外暴露的契约",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_auth_service",
+          "name": "AuthService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "login",
+              "return_type": "AuthResult",
+              "params": "username: string, password: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "verifyPassword",
+              "return_type": "bool",
+              "params": "password: string, user: User",
+              "visibility": "-",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": { "x": 100.0, "y": 300.0 },
+          "size": { "width": 260.0, "height": 160.0 },
+          "note": "处理登录请求，并依赖 IUserRepository 查询用户",
+          "provided_interfaces": ["IAuthService"],
+          "required_interfaces": ["IUserRepository"]
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_auth_realizes_contract",
+          "source": "class_auth_service",
+          "target": "class_auth_contract",
+          "type": "realization",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "AuthService 实现 IAuthService"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "UserRepository Class Model",
+      "diagram_type": "class",
+      "component_id": "comp_db",
+      "classes": [
+        {
+          "id": "class_user_repo_contract",
+          "name": "IUserRepository",
+          "stereotype": "interface",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "findByUsername",
+              "return_type": "User?",
+              "params": "username: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": true
+            }
+          ],
+          "position": { "x": 100.0, "y": 80.0 },
+          "size": { "width": 260.0, "height": 130.0 },
+          "note": "用户查询仓储契约",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_user_repository",
+          "name": "UserRepository",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "findByUsername",
+              "return_type": "User?",
+              "params": "username: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": { "x": 100.0, "y": 300.0 },
+          "size": { "width": 260.0, "height": 130.0 },
+          "note": "从用户存储中按用户名查询用户",
+          "provided_interfaces": ["IUserRepository"],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_repo_realizes_contract",
+          "source": "class_user_repository",
+          "target": "class_user_repo_contract",
+          "type": "realization",
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "UserRepository 实现 IUserRepository"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Login Flow",
+      "diagram_type": "sequence",
+      "component_id": "comp_auth",
+      "classes": [],
+      "relations": [],
+      "lifelines": [
+        {
+          "id": "life_user",
+          "name": "User",
+          "class_ref": "",
+          "x": 100.0,
+          "activations": []
+        },
+        {
+          "id": "life_web",
+          "name": "WebApp",
+          "class_ref": "",
+          "x": 300.0,
+          "activations": []
+        },
+        {
+          "id": "life_auth",
+          "name": ":AuthService",
+          "class_ref": "class_auth_service",
+          "x": 520.0,
+          "activations": []
+        },
+        {
+          "id": "life_repo",
+          "name": ":UserRepository",
+          "class_ref": "class_user_repository",
+          "x": 760.0,
+          "activations": []
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_submit_login",
+          "from_lifeline": "life_user",
+          "to_lifeline": "life_web",
+          "label": "submitLogin(username, password)",
+          "type": "simple",
+          "order": 1,
+          "y": 190.0,
+          "note": "用户提交登录表单"
+        },
+        {
+          "id": "msg_login",
+          "from_lifeline": "life_web",
+          "to_lifeline": "life_auth",
+          "label": "login(username, password)",
+          "type": "sync",
+          "order": 2,
+          "y": 235.0,
+          "note": "WebApp 调用认证服务"
+        },
+        {
+          "id": "msg_find_user",
+          "from_lifeline": "life_auth",
+          "to_lifeline": "life_repo",
+          "label": "findByUsername(username)",
+          "type": "sync",
+          "order": 3,
+          "y": 280.0,
+          "note": "按用户名查询用户记录"
+        },
+        {
+          "id": "msg_return_user",
+          "from_lifeline": "life_repo",
+          "to_lifeline": "life_auth",
+          "label": "return user",
+          "type": "return",
+          "order": 4,
+          "y": 325.0,
+          "note": "返回用户记录或空值"
+        },
+        {
+          "id": "msg_verify_password",
+          "from_lifeline": "life_auth",
+          "to_lifeline": "life_auth",
+          "label": "verifyPassword(password, user)",
+          "type": "self",
+          "order": 5,
+          "y": 370.0,
+          "note": "校验密码是否匹配"
+        },
+        {
+          "id": "msg_return_auth",
+          "from_lifeline": "life_auth",
+          "to_lifeline": "life_web",
+          "label": "return authToken",
+          "type": "return",
+          "order": 6,
+          "y": 415.0,
+          "note": "认证成功后返回令牌"
+        }
+      ],
+      "fragments": [
+        {
+          "id": "frag_user_exists",
+          "type": "opt",
+          "label": "[user exists]",
+          "x": 480.0,
+          "width": 340.0,
+          "y_start": 305.0,
+          "y_end": 395.0
+        }
+      ],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    }
+  ],
+  "active_diagram_index": 0
+}

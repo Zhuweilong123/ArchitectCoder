@@ -70,7 +70,11 @@ class BatchTodoLLM:
                 "tool_calls": [
                     {"id": "todo", "type": "function", "function": {
                         "name": "todo_write",
-                        "arguments": json.dumps({"todos": [{"content": "echo", "status": "in_progress"}]}),
+                        "arguments": json.dumps({"todos": [
+                            {"content": "inspect", "status": "completed"},
+                            {"content": "echo", "status": "in_progress"},
+                            {"content": "verify", "status": "pending"},
+                        ]}),
                     }},
                     {"id": "echo", "type": "function", "function": {
                         "name": "echo", "arguments": json.dumps({"text": "x"}),

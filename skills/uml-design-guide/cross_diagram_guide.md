@@ -281,3 +281,9 @@ LLM 在生成时应在 `consistency_report` 中标记覆盖率不足的组件。
 - **未关联组件的图**：根据图的内容设置合适的 `component_id`
 - **引用不存在的 ID**：修正为实际存在的 ID
 - **组件覆盖率不足**（❌/⚠️）：为缺少图的组件生成类图或时序图
+
+## 7. 推荐跨图案例
+
+需要阅读一个完整但规模较小的跨图参考时，加载 `cross_diagram_example.md`；需要在设计器中查看时，打开同目录下的 `cross_diagram_example.umlproj`。`.umlproj` 是唯一案例数据源，Markdown 只提供说明和检查清单。该案例包含一个组件图、两个组件类图和一个跨组件登录时序图，覆盖 `component_id`、`class_ref`、接口匹配、`realization`、`dependency`、`return`、`self` 和 `opt` 片段。
+
+该案例是通用结构模板，不应替代具体领域设计，也不应复制到每个单图指南中。

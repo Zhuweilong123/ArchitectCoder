@@ -156,9 +156,14 @@ def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():
     assert builder.prompt_version == "3.1-r4"
     assert "instead of redesigning" in builder.system_prompt
     assert "focused existing test early" in builder.system_prompt
-    assert "Do not modify UML unless requested" in builder.system_prompt
-    assert "known canonical design artifact" in builder.system_prompt
-    assert "call spawn_subagent once" in builder.system_prompt
+    assert "create 3-5 concise todos" in builder.system_prompt
+    assert "inspect context → update UML" in builder.system_prompt
+    assert "design-impacting or implementation-only" in builder.system_prompt
+    assert "do not modify business code before acceptance" in builder.system_prompt
+    assert "submit human review" in builder.system_prompt
+    assert "Use a subagent only when the task genuinely benefits" in builder.system_prompt
+    assert "## Skills" in builder.system_prompt
+    assert "uml-design-guide:" in builder.system_prompt
     assert "## Workspace" not in builder.system_prompt
     assert builder.system_prompt.count("## Runtime environment") == 1
     assert "Workspace layout:" in builder.system_prompt

@@ -44,7 +44,7 @@ def _detect_existing_types(diagrams: list[dict]) -> set[str]:
 
 
 def _load_example(name: str) -> str:
-    """加载单份示例文件的 Markdown 内容。name 为简名如 'class_diagram'。"""
+    """加载单份示例说明文件的 Markdown 内容。name 为简名如 'class_diagram'。"""
     ef = _GUIDE_DIR / f"{name}_example.md"
     return ef.read_text(encoding="utf-8") if ef.exists() else ""
 
@@ -284,12 +284,16 @@ def _build_global_prompt(
         if gkey in guides_needed:
             content = _load_guide(gfile)
             if content:
-                # 按需加载示例：项目已有该类型图 → 跳过示例，省 token
-                if gkey in ("class", "sequence", "component") and gkey not in existing_types:
+                # 单图示例只在项目尚无该类型图时加载；跨图案例在需要 cross guide 时加载。
+                should_load_example = (
+                    (gkey in ("class", "sequence", "component") and gkey not in existing_types)
+                    or gkey == "cross"
+                )
+                if should_load_example:
                     example = _load_example(gfile)
                     if example:
                         content += "\n\n" + example
-                        _logger.info("[prompt] Appended %s example — project has no existing %s diagram", gkey, gkey)
+                        _logger.info("[prompt] Appended %s example", gkey)
                 guide_parts.append(content)
     global_guide = "\n\n".join(guide_parts) if guide_parts else ""
 
