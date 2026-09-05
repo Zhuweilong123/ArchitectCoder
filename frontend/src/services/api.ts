@@ -351,6 +351,20 @@ export interface EvalArchive {
   summary: EvalSummary;
 }
 
+export interface EvalPerformanceRun {
+  result_id: string;
+  file_name: string;
+  source_path: string;
+  version: string;
+  suite: string;
+  started_at: string;
+  finished_at: string;
+  result_count: number;
+  summary: EvalSummary;
+  archived: boolean;
+  results?: EvalResult[];
+}
+
 export async function listEvalCases(): Promise<EvalCaseInfo[]> {
   const { data } = await api.get('/evals/cases');
   return data.cases;
@@ -403,6 +417,23 @@ export async function archiveEvalBatch(batchId: string, note = ''): Promise<{
 export async function listEvalArchives(limit = 20): Promise<EvalArchive[]> {
   const { data } = await api.get('/evals/archives', { params: { limit } });
   return data.archives;
+}
+
+export async function listEvalPerformanceResults(limit = 20): Promise<EvalPerformanceRun[]> {
+  const { data } = await api.get('/evals/performance', { params: { limit } });
+  return data.results;
+}
+
+export async function getEvalPerformanceResult(resultId: string): Promise<EvalPerformanceRun> {
+  const { data } = await api.get('/evals/performance/detail', { params: { result_id: resultId } });
+  return data;
+}
+
+export async function archiveEvalPerformanceResult(resultId: string, version = '', note = ''): Promise<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}> {
+  const { data } = await api.post('/evals/performance/archive', { result_id: resultId, version, note }, { timeout: 15000 });
+  return data;
 }
 
 export interface TraceReplayStepToolCall {

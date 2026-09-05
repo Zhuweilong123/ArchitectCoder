@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.agent_base.core.evals import (
     EvalArchiveRequest,
     EvalBatchRequest,
+    EvalPerformanceArchiveRequest,
     load_evals,
 )
 
@@ -122,6 +123,31 @@ async def run_eval(request: EvalRunRequest):
 @router.get("/results")
 async def list_results(limit: int = 100):
     return {"results": load_evals().list_results(limit)}
+
+
+@router.get("/performance")
+async def list_performance_results(limit: int = 20):
+    return {"results": load_evals().list_performance_results(limit)}
+
+
+@router.get("/performance/detail")
+async def get_performance_result(result_id: str):
+    result = load_evals().get_performance_result(result_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="performance result not found")
+    return result
+
+
+@router.post("/performance/archive")
+async def archive_performance_result(request: EvalPerformanceArchiveRequest):
+    try:
+        return load_evals().archive_performance_result(request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="performance result not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/runs")

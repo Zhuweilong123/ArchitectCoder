@@ -446,6 +446,8 @@ class ReActAgent(Agent):
         total_tokens = initial_token_usage
         soft_budget_notified = False
         convergence_compaction_active = False
+        convergence_directive_added = False
+        last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
         ended_by_model_answer = False
         evidence_ledger = EvidenceLedger(max_records=self.evidence_max_records)
         self.last_evidence_summary = []
@@ -556,6 +558,25 @@ class ReActAgent(Agent):
                             "token_budget_used": total_tokens,
                             "keep_recent_steps": retained_react_steps,
                         })
+                if convergence_reasons and not convergence_directive_added:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Convergence checkpoint\n"
+                            "The productive exploration threshold has been reached. Stop broad discovery now. "
+                            "If the requested change is not applied, make the smallest scoped edit next; "
+                            "if it is applied, run the focused existing verification next; for analysis-only "
+                            "requests, provide the evidence-based answer now. Do not reread files or repeat "
+                            "searches already covered by the evidence unless a specific missing range is required. "
+                            "After that minimum action, finish with a concise status and remaining uncertainty."
+                        ),
+                    })
+                    convergence_directive_added = True
+                    self.last_context_report["convergence_directive_added"] = {
+                        "triggered_by": convergence_reasons,
+                        "triggered_at_tool_calls": tool_call_count,
+                        "token_budget_used": total_tokens,
+                    }
                 messages, dropped = self.context_budget.fit_messages(
                     messages,
                     tools=active_tool_specs,
@@ -911,6 +932,31 @@ class ReActAgent(Agent):
                         "tool_call_id": tr["tool_call_id"],
                         "content": tr["content"],
                     })
+
+                failed_tools = tuple(sorted(
+                    (
+                        str(detail.get("name") or "tool"),
+                        str(detail.get("error_code") or "TOOL_ERROR"),
+                    )
+                    for detail in details
+                    if detail.get("status") != "success"
+                ))
+                if failed_tools and failed_tools != last_failure_directive_signature:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Recovery checkpoint\n"
+                            "The previous tool round reported a failure "
+                            f"({', '.join(name + ':' + code for name, code in failed_tools)}). "
+                            "Treat the failure output as primary evidence. Do not repeat the same "
+                            "call or resume broad discovery. For a repair task, inspect only the "
+                            "reported target, apply the smallest corrective change, and run the "
+                            "focused existing verification immediately. For an analysis-only task, "
+                            "use a different read or report the limitation. After recovery, finish "
+                            "with the verified result and remaining uncertainty."
+                        ),
+                    })
+                    last_failure_directive_signature = failed_tools
 
                 # This response was already paid for and its tools were
                 # selected before the hard limit was observed.  Execute them

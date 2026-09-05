@@ -1,17 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Divider, Empty, List, Modal, Progress,
+  Alert, Button, Card, Col, Divider, Empty, Input, List, Modal, Progress,
   Row, Select, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import {
-  FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
+  EyeOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import {
   archiveEvalBaseline, archiveEvalBatch, getEvalBatch, listEvalArchives, listEvalCases,
   getEvalBaseline, listEvalTrends, startEvalBatch,
   getEvalRepository,
-  type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalRepositoryInfo, type EvalTrend,
+  archiveEvalPerformanceResult, getEvalPerformanceResult, listEvalPerformanceResults,
+  type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalPerformanceRun,
+  type EvalRepositoryInfo, type EvalTrend,
 } from '../../services/api';
 import './EvaluationCenter.css';
 
@@ -49,6 +51,12 @@ const EvaluationCenter: React.FC = () => {
   const [repository, setRepository] = useState<EvalRepositoryInfo | null>(null);
   const [trends, setTrends] = useState<EvalTrend[]>([]);
   const [archives, setArchives] = useState<EvalArchive[]>([]);
+  const [performanceRuns, setPerformanceRuns] = useState<EvalPerformanceRun[]>([]);
+  const [performanceVisible, setPerformanceVisible] = useState(false);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+  const [performanceArchiving, setPerformanceArchiving] = useState(false);
+  const [selectedPerformance, setSelectedPerformance] = useState<EvalPerformanceRun | null>(null);
+  const [performanceVersion, setPerformanceVersion] = useState('');
   const [suite, setSuite] = useState('baseline');
   const [batch, setBatch] = useState<EvalBatch | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,12 +73,13 @@ const EvaluationCenter: React.FC = () => {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [caseList, trendList, archiveList] = await Promise.all([
-        listEvalCases(), listEvalTrends(), listEvalArchives(),
+      const [caseList, trendList, archiveList, performanceList] = await Promise.all([
+        listEvalCases(), listEvalTrends(), listEvalArchives(), listEvalPerformanceResults(),
       ]);
       setCases(caseList);
       setTrends(trendList);
       setArchives(archiveList);
+      setPerformanceRuns(performanceList);
       setRepository(await getEvalRepository());
       try {
         setBaseline(await getEvalBaseline());
@@ -81,6 +90,52 @@ const EvaluationCenter: React.FC = () => {
       message.error(`评测数据加载失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openPerformance = async () => {
+    setPerformanceVisible(true);
+    setPerformanceLoading(true);
+    try {
+      setPerformanceRuns(await listEvalPerformanceResults());
+    } catch (error: any) {
+      message.error(`性能结果加载失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setPerformanceLoading(false);
+    }
+  };
+
+  const selectPerformance = async (run: EvalPerformanceRun) => {
+    setPerformanceLoading(true);
+    try {
+      const detail = await getEvalPerformanceResult(run.result_id);
+      setSelectedPerformance(detail);
+      setPerformanceVersion(detail.version);
+    } catch (error: any) {
+      message.error(`性能结果详情加载失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setPerformanceLoading(false);
+    }
+  };
+
+  const archivePerformance = async () => {
+    if (!selectedPerformance || !selectedPerformance.results?.length) return;
+    setPerformanceArchiving(true);
+    try {
+      await archiveEvalPerformanceResult(
+        selectedPerformance.result_id,
+        performanceVersion,
+        `${performanceVersion || selectedPerformance.file_name} 性能评测归档`,
+      );
+      await refresh();
+      const updated = await listEvalPerformanceResults();
+      setPerformanceRuns(updated);
+      setSelectedPerformance({ ...selectedPerformance, archived: true });
+      message.success('性能评测已归档');
+    } catch (error: any) {
+      message.error(`性能评测归档失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setPerformanceArchiving(false);
     }
   };
 
@@ -173,6 +228,7 @@ const EvaluationCenter: React.FC = () => {
             一键运行
           </Button>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+          <Button icon={<EyeOutlined />} onClick={openPerformance}>性能结果</Button>
           <Button icon={<FileDoneOutlined />} onClick={archiveBatch} loading={archiving} disabled={(!batch && !baseline) || !!batch && ['running', 'queued'].includes(batch.status)}>
             一键归档
           </Button>
@@ -242,6 +298,68 @@ const EvaluationCenter: React.FC = () => {
           <Table size="small" rowKey="case_id" pagination={{ pageSize: 8 }} columns={resultColumns} dataSource={batch.results} />
         </>
       )}
+
+      <Modal
+        title={<Space><EyeOutlined />性能评测结果</Space>}
+        open={performanceVisible}
+        onCancel={() => setPerformanceVisible(false)}
+        footer={null}
+        width={1220}
+        styles={{ body: { maxHeight: 'calc(100vh - 180px)', overflowY: 'auto' } }}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="先查看独立 performance JSONL 结果，再由你决定是否生成正式归档快照。"
+          description="归档后会写入 temp/evals/archives，并出现在下方的‘已归档’列表中；原始结果文件不会被覆盖。"
+          style={{ marginBottom: 12 }}
+        />
+        <Table
+          size="small"
+          rowKey="result_id"
+          loading={performanceLoading}
+          dataSource={performanceRuns}
+          pagination={{ pageSize: 6 }}
+          rowClassName={(row) => selectedPerformance?.result_id === row.result_id ? 'evaluation-selected-row' : ''}
+          columns={[
+            { title: '版本', dataIndex: 'version', key: 'version', render: (v: string) => v || <Text type="secondary">未标记</Text> },
+            { title: '结果文件', dataIndex: 'source_path', key: 'source_path', ellipsis: true },
+            { title: '执行时间', dataIndex: 'started_at', key: 'started_at', render: fmtTime },
+            { title: '用例数', dataIndex: 'result_count', key: 'result_count', width: 75 },
+            { title: '通过率', key: 'pass_rate', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.pass_rate * 100).toFixed(1)}%` },
+            { title: '平均得分', key: 'score', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.average_score * 100).toFixed(1)}%` },
+            { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
+            { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
+            { title: '归档', key: 'archived', render: (_: unknown, row: EvalPerformanceRun) => row.archived ? <Tag color="success">已归档</Tag> : <Tag>未归档</Tag> },
+            { title: '操作', key: 'action', width: 90, render: (_: unknown, row: EvalPerformanceRun) => <Button size="small" onClick={() => selectPerformance(row)}>查看</Button> },
+          ]}
+        />
+
+        {selectedPerformance && (
+          <Card
+            size="small"
+            title={<Space>{selectedPerformance.version || selectedPerformance.file_name}{selectedPerformance.archived ? <Tag color="success">已归档</Tag> : <Tag>待归档</Tag>}</Space>}
+            style={{ marginTop: 12 }}
+            extra={!selectedPerformance.archived && <Button type="primary" icon={<FileDoneOutlined />} onClick={archivePerformance} loading={performanceArchiving}>确认归档</Button>}
+          >
+            <Row gutter={[12, 12]} className="evaluation-stat-row">
+              <Col xs={12} sm={8} md={4}><Statistic title="用例数" value={selectedPerformance.summary.total} /></Col>
+              <Col xs={12} sm={8} md={4}><Statistic title="通过率" value={selectedPerformance.summary.pass_rate} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
+              <Col xs={12} sm={8} md={4}><Statistic title="平均得分" value={selectedPerformance.summary.average_score} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
+              <Col xs={12} sm={8} md={4}><Statistic title="平均耗时" value={fmtDuration(selectedPerformance.summary.average_duration_ms)} /></Col>
+              <Col xs={12} sm={8} md={4}><Statistic title="总 Token" value={selectedPerformance.summary.total_tokens} /></Col>
+              <Col xs={12} sm={8} md={4}><Statistic title="工具调用" value={selectedPerformance.summary.total_tool_calls} /></Col>
+            </Row>
+            {!selectedPerformance.archived && (
+              <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+                <Text type="secondary">归档版本（可修改）</Text>
+                <Input value={performanceVersion} onChange={(event) => setPerformanceVersion(event.target.value)} placeholder="例如 3.3.1" />
+              </Space>
+            )}
+            <Table size="small" rowKey="case_id" pagination={{ pageSize: 8 }} columns={resultColumns} dataSource={selectedPerformance.results || []} scroll={{ x: 950 }} />
+          </Card>
+        )}
+      </Modal>
 
       <Divider orientation="left">版本趋势</Divider>
       {trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (

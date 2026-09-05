@@ -340,10 +340,22 @@ def _register_default_hooks() -> None:
     get_hooks().register(
         HookEvent.TOOL_AFTER,
         # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀
-        # Keep iterative tool history compact.  A 1200-character observation
-        # still includes a focused pytest failure and a typical source method,
-        # while substantially reducing repeated prompt context in long runs.
-        TruncateHook(max_chars=1200, per_tool={"skill": 20000}),
+        # Keep iterative tool history compact without forcing the model to
+        # reopen ordinary source files just because a useful read window was
+        # clipped. Recent evaluation traces showed 20-48 repeated ``read_file``
+        # calls in a single task: the old 1200-character cap commonly cut a
+        # 30-line method in half. Source reads are still bounded, while
+        # focused searches and task output retain a moderate cap. The full
+        # observation remains in ChatTrace for audit.
+        TruncateHook(
+            max_chars=1200,
+            per_tool={
+                "read_file": 6000,
+                "search_text": 4000,
+                "run_task": 6000,
+                "skill": 20000,
+            },
+        ),
         priority=0,
     )
 

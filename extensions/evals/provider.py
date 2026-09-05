@@ -60,6 +60,27 @@ class LocalEvalProvider:
     def list_archives(self, limit: int = 20):
         return get_batch_manager().list_archives(limit)
 
+    def list_performance_results(self, limit: int = 20):
+        from .batches import _eval_root
+        from .performance import list_performance_results
+
+        return list_performance_results(_eval_root(), limit)
+
+    def get_performance_result(self, result_id: str):
+        from .batches import _eval_root
+        from .performance import get_performance_result
+
+        return get_performance_result(_eval_root(), result_id)
+
+    def archive_performance_result(self, request):
+        from .batches import _eval_root, get_batch_manager
+        from .performance import archive_performance_result
+
+        return archive_performance_result(
+            _eval_root(), request.result_id, request.version, request.note,
+            get_batch_manager()._write_archive,
+        )
+
 
 def create(*, settings=None, **kwargs):
     return LocalEvalProvider(settings=settings, **kwargs)

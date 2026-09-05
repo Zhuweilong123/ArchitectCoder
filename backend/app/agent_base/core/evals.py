@@ -31,6 +31,14 @@ class EvalArchiveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class EvalPerformanceArchiveRequest(BaseModel):
+    """Request for importing one persisted performance JSONL as a snapshot."""
+
+    result_id: str = Field(min_length=1, max_length=300)
+    version: str = Field(default="", max_length=100)
+    note: str = Field(default="", max_length=500)
+
+
 class EvalProvider(Protocol):
     """Provider contract for case execution and result management."""
 
@@ -57,6 +65,12 @@ class EvalProvider(Protocol):
     def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]: ...
 
     def list_archives(self, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def get_performance_result(self, result_id: str) -> dict[str, Any] | None: ...
+
+    def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
 
 
 class NoOpEvalProvider:
@@ -97,6 +111,15 @@ class NoOpEvalProvider:
 
     def list_archives(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
+
+    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]:
+        return []
+
+    def get_performance_result(self, result_id: str) -> dict[str, Any] | None:
+        return None
+
+    def archive_performance_result(self, request: Any) -> dict[str, Any]:
+        raise RuntimeError("evaluation provider is disabled")
 
 
 class _ResilientEvalProvider:
@@ -151,6 +174,7 @@ def load_evals(*, settings=None, **kwargs) -> EvalProvider:
 __all__ = [
     "EvalArchiveRequest",
     "EvalBatchRequest",
+    "EvalPerformanceArchiveRequest",
     "EvalProvider",
     "NoOpEvalProvider",
     "load_evals",
