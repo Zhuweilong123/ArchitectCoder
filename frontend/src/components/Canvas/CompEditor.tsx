@@ -9,14 +9,27 @@ import { PlusOutlined } from '@ant-design/icons';
 import { Graph, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
-import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
+import {
+  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid,
+} from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
+
+const componentThemeVisuals: Record<CanvasTheme, {
+  surface: string;
+  accent: string;
+}> = {
+  light: { surface: '#fffaf1', accent: '#b7791f' },
+  dark: { surface: '#172033', accent: '#60a5fa' },
+  blueprint: { surface: '#f6fbff', accent: '#0284c7' },
+};
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -42,7 +55,7 @@ function ensureShapesRegistered() {
       },
     ],
     attrs: {
-      body: { stroke: '#d48806', strokeWidth: 2, fill: '#fffbe6', rx: 6, ry: 6 },
+      body: { stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffaf1', rx: 8, ry: 8 },
       fo: { refWidth: '100%', refHeight: '100%' },
       content: { html: '' },
     },
@@ -51,22 +64,22 @@ function ensureShapesRegistered() {
         top: {
           position: { name: 'top' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         right: {
           position: { name: 'right' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         bottom: {
           position: { name: 'bottom' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         left: {
           position: { name: 'left' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
       },
       items: [{ id: 'pt', group: 'top' }, { id: 'pr', group: 'right' }, { id: 'pb', group: 'bottom' }, { id: 'pl', group: 'left' }],
@@ -78,7 +91,7 @@ function ensureShapesRegistered() {
 
 // ── HTML builder ─────────────────────────────────────
 
-function buildCompHTML(comp: CompNode, selected: boolean): string {
+function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme): string {
   const isChild = !!comp.parent_id;
   const selClass = selected ? 'selected' : '';
   const childClass = isChild ? 'child' : '';
@@ -91,7 +104,7 @@ function buildCompHTML(comp: CompNode, selected: boolean): string {
     `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${escapeHtml(i)}</div>`
   ).join('');
 
-  return `<div class="comp-node ${childClass} ${selClass}">
+  return `<div class="comp-node theme-${theme} ${childClass} ${selClass}">
     <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
     <div class="comp-name">${escapeHtml(comp.name)}</div>
     ${provided ? `<div class="comp-block"><div class="comp-block-label">provided interfaces</div>${provided}</div>` : ''}
@@ -106,11 +119,27 @@ const COMP_HEIGHT = 160;
 const CHILD_WIDTH = 150;
 const CHILD_HEIGHT = 100;
 
+interface ComponentClipboard {
+  components: CompNode[];
+  relations: CompRelation[];
+}
+
+function getCompNodeSize(comp: CompNode): { width: number; height: number } {
+  const isChild = !!comp.parent_id;
+  const interfaceCount = (comp.provided_interfaces || []).length
+    + (comp.required_interfaces || []).length;
+  const minHeight = 76 + (interfaceCount > 0 ? 24 + interfaceCount * 18 : 0);
+  return {
+    width: comp.width || (isChild ? CHILD_WIDTH : COMP_WIDTH),
+    height: Math.max(comp.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT), minHeight),
+  };
+}
+
 const CompEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
-  const clipboard = useRef<any>(null);
+  const clipboard = useRef<ComponentClipboard | null>(null);
 
   // ── Context menu state ──────────────────────────────
   const [ctxMenu, setCtxMenu] = useState<{
@@ -118,11 +147,11 @@ const CompEditor: React.FC = () => {
   }>({ visible: false, x: 0, y: 0, compId: '', compName: '' });
 
   const {
-    diagram, selectedComponentId,
+    diagram, selectedComponentId, selectedCompRelationId,
     addComponent, removeComponent, moveComponent,
-    addCompRelation, removeCompRelation,
+    addCompRelation, updateCompRelation, removeCompRelation,
     selectComponent, selectCompRelation,
-    undo, redo, project, setActiveDiagram, addDiagram,
+    undo, redo, project, setActiveDiagram, addDiagram, autoLayoutComponents,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedComponentId: s.selectedComponentId,
@@ -130,6 +159,7 @@ const CompEditor: React.FC = () => {
     removeComponent: s.removeComponent,
     moveComponent: s.moveComponent,
     addCompRelation: s.addCompRelation,
+    updateCompRelation: s.updateCompRelation,
     removeCompRelation: s.removeCompRelation,
     selectComponent: s.selectComponent,
     selectCompRelation: s.selectCompRelation,
@@ -138,10 +168,12 @@ const CompEditor: React.FC = () => {
     project: s.project,
     setActiveDiagram: s.setActiveDiagram,
     addDiagram: s.addDiagram,
+    autoLayoutComponents: s.autoLayoutComponents,
+    selectedCompRelationId: s.selectedCompRelationId,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const { setRightPanelTab, canvasTheme } = useUiStore();
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
@@ -160,19 +192,12 @@ const CompEditor: React.FC = () => {
       connection: {
         allowMulti: true,
         line: {
-          stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
+          stroke: '#b7791f', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
+        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+        connector: { name: 'rounded' },
       },
-    });
-
-    const detachViewport = attachGraphViewport(graph, {
-      container: containerRef.current,
-      zoom: viewport.zoom,
-      panX: viewport.panX,
-      panY: viewport.panY,
-      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
-      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     const detachCanvasEvents = attachCanvasEventAdapter({
@@ -211,6 +236,13 @@ const CompEditor: React.FC = () => {
         selectCompRelation(edge.id);
         setRightPanelTab('properties');
       },
+      onEdgeEndpointChanged: (edge) => {
+        if (!(getActiveDiagram().comp_relations || []).some((relation) => relation.id === edge.id)) return;
+        const source = edge.getSourceCellId();
+        const target = edge.getTargetCellId();
+        if (!source || !target || source === target) return;
+        updateCompRelation(edge.id, { source, target });
+      },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
         edge.remove();
@@ -245,42 +277,117 @@ const CompEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (e.ctrlKey && e.key === 'c') {
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
+      if (modifier && key === 'c') {
         if (store.selectedComponentId) {
-          const c = (getActiveDiagram().components || []).find((x) => x.id === store.selectedComponentId);
-          if (c) clipboard.current = JSON.parse(JSON.stringify(c));
-        }
-      } else if (e.ctrlKey && e.key === 'v') {
-        if (clipboard.current) {
-          const c = clipboard.current;
-          store.addComponent({
-            x: c.x + 30, y: c.y + 30
-          }, c.parent_id || '');
-          // Apply copied size and interfaces
-          const store2 = useDiagramStore.getState();
-          const comps = getActiveDiagram().components || [];
-          const pasted = comps[comps.length - 1];
-          if (pasted) {
-            store2.updateComponent(pasted.id, {
-              width: c.width, height: c.height,
-              provided_interfaces: [...(c.provided_interfaces || [])],
-              required_interfaces: [...(c.required_interfaces || [])],
+          const activeDiagram = getActiveDiagram();
+          const components = activeDiagram.components || [];
+          const copiedIds = new Set([store.selectedComponentId]);
+          let changed = true;
+          while (changed) {
+            changed = false;
+            components.forEach((component) => {
+              if (component.parent_id && copiedIds.has(component.parent_id) && !copiedIds.has(component.id)) {
+                copiedIds.add(component.id);
+                changed = true;
+              }
             });
           }
+          clipboard.current = {
+            components: JSON.parse(JSON.stringify(components.filter((component) => copiedIds.has(component.id)))),
+            relations: JSON.parse(JSON.stringify(
+              (activeDiagram.comp_relations || []).filter(
+                (relation) => copiedIds.has(relation.source) && copiedIds.has(relation.target)
+              )
+            )),
+          };
+          console.log('[CompEditor] Copied component subtree:', copiedIds.size);
         }
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
-      else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
+        if (clipboard.current?.components.length) {
+          const copied = clipboard.current;
+          store.beginBatch();
+          try {
+            const idMap = new Map<string, string>();
+            const pending = [...copied.components];
+            const copiedIds = new Set(copied.components.map((component) => component.id));
+            while (pending.length > 0) {
+              const index = pending.findIndex((component) => (
+                !component.parent_id
+                || idMap.has(component.parent_id)
+                || !copiedIds.has(component.parent_id)
+              ));
+              const component = pending.splice(index >= 0 ? index : 0, 1)[0];
+              const newParentId = component.parent_id ? idMap.get(component.parent_id) || '' : '';
+              store.addComponent({ x: component.x + 30, y: component.y + 30 }, newParentId);
+
+              const activeComponents = getActiveDiagram().components || [];
+              const pasted = activeComponents[activeComponents.length - 1];
+              if (!pasted) continue;
+              idMap.set(component.id, pasted.id);
+              const store2 = useDiagramStore.getState();
+              store2.updateComponent(pasted.id, {
+                name: component.name,
+                width: component.width,
+                height: component.height,
+                provided_interfaces: [...(component.provided_interfaces || [])],
+                required_interfaces: [...(component.required_interfaces || [])],
+              });
+            }
+
+            copied.relations.forEach((relation) => {
+              const source = idMap.get(relation.source);
+              const target = idMap.get(relation.target);
+              if (!source || !target) return;
+              store.addCompRelation(source, target);
+              const relations = getActiveDiagram().comp_relations || [];
+              const pastedRelation = relations[relations.length - 1];
+              if (pastedRelation && pastedRelation.type !== relation.type) {
+                useDiagramStore.getState().updateCompRelation(pastedRelation.id, { type: relation.type });
+              }
+            });
+          } finally {
+            store.endBatch();
+          }
+          clipboard.current = {
+            components: copied.components.map((component) => ({
+              ...component,
+              x: component.x + 30,
+              y: component.y + 30,
+            })),
+            relations: copied.relations.map((relation) => ({ ...relation })),
+          };
+        }
+      } else if (modifier && key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
+      else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
+      else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectComponent(null);
+        selectCompRelation(null);
+      }
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         const cells = graph.getSelectedCells();
-        if (cells.length > 0) {
+        const nodeIds = cells.filter((cell) => cell.isNode()).map((cell) => cell.id);
+        const edgeIds = cells.filter((cell) => cell.isEdge()).map((cell) => cell.id);
+        if (nodeIds.length === 0 && store.selectedComponentId) nodeIds.push(store.selectedComponentId);
+        if (edgeIds.length === 0 && store.selectedCompRelationId) edgeIds.push(store.selectedCompRelationId);
+        if (nodeIds.length > 0 || edgeIds.length > 0) {
           e.preventDefault();
           isInternalUpdate.current = true;
-          cells.forEach((cell) => {
-            if (cell.isNode()) store.removeComponent(cell.id);
-            else if (cell.isEdge()) store.removeCompRelation(cell.id);
-            cell.remove();
-          });
+          store.beginBatch();
+          try {
+            nodeIds.forEach((id) => store.removeComponent(id));
+            edgeIds.forEach((id) => store.removeCompRelation(id));
+          } finally {
+            store.endBatch();
+          }
+          graph.cleanSelection();
           isInternalUpdate.current = false;
+          selectComponent(null);
+          selectCompRelation(null);
         }
       }
     };
@@ -290,35 +397,42 @@ const CompEditor: React.FC = () => {
       graph.centerContent();
     }
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     console.log('[CompEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
       detachCanvasEvents();
-      detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useCanvasGraphViewport(graphRef, containerRef, viewport);
+
   // ── Sync diagram → graph ───────────────────────────
   const prevCompIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; theme: CanvasTheme; html: string }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
       const comps = diagram.components || [];
       const rels = diagram.comp_relations || [];
       const currentIds = new Set(comps.map((c) => c.id));
+      const themeChanged = renderedTheme.current !== canvasTheme;
+      const themeVisuals = componentThemeVisuals[canvasTheme];
 
       // Remove deleted
       prevCompIds.current.forEach((id) => {
@@ -333,26 +447,33 @@ const CompEditor: React.FC = () => {
       // Add/update components + handle embedding
       comps.forEach((c) => {
         const isChild = !!c.parent_id;
-        const w = c.width || (isChild ? CHILD_WIDTH : COMP_WIDTH);
-        const h = c.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT);
+        const { width: w, height: h } = getCompNodeSize(c);
         const selected = c.id === selectedComponentId;
-        const cachedRender = renderCache.current.get(c.id);
-        const htmlContent = cachedRender?.entity === c && cachedRender.selected === selected
-          ? cachedRender.html
-          : buildCompHTML(c, selected);
+        // Theme is part of the rendered HTML. Always rebuild this small HTML
+        // fragment so a theme change can never reuse a stale node fragment.
+        const htmlContent = buildCompHTML(c, selected, canvasTheme);
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
-          htmlContent, c.x, c.y, w, h, c.parent_id || '',
+          htmlContent, c.x, c.y, w, h, c.parent_id || '', canvasTheme,
         ]);
-        renderCache.current.set(c.id, { entity: c, selected, html: htmlContent });
+        renderCache.current.set(c.id, { entity: c, selected, theme: canvasTheme, html: htmlContent });
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {
-            if (nodeSignatureCache.current.get(c.id) === signature) return;
+            // A theme change must refresh every node, even if an older cache
+            // entry accidentally reports the same layout signature.
+            if (!themeChanged && nodeSignatureCache.current.get(c.id) === signature) return;
             const node = existing as Node;
             node.setPosition(c.x, c.y);
             node.setSize({ width: w, height: h });
-            if (cached !== htmlContent) {
+            node.setAttrs({
+              body: {
+                fill: themeVisuals.surface,
+                stroke: selected ? '#2563eb' : themeVisuals.accent,
+                strokeWidth: selected ? 2.5 : 1.5,
+              },
+            });
+            if (themeChanged || cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(c.id, htmlContent);
             }
@@ -367,7 +488,14 @@ const CompEditor: React.FC = () => {
               id: c.id, shape: 'comp-component',
               x: c.x, y: c.y,
               width: w, height: h,
-              attrs: { content: { html: htmlContent } },
+              attrs: {
+                content: { html: htmlContent },
+                body: {
+                  fill: themeVisuals.surface,
+                  stroke: selected ? '#2563eb' : themeVisuals.accent,
+                  strokeWidth: selected ? 2.5 : 1.5,
+                },
+              },
             });
             htmlCache.current.set(c.id, htmlContent);
             if (node) nodeSignatureCache.current.set(c.id, signature);
@@ -389,16 +517,63 @@ const CompEditor: React.FC = () => {
         }
       });
 
+      const componentRects = comps.map((component) => ({
+        id: component.id,
+        x: component.x,
+        y: component.y,
+        width: component.width || COMP_WIDTH,
+        height: component.height || COMP_HEIGHT,
+      }));
       rels.forEach((r) => {
-        const signature = JSON.stringify([r.source, r.target]);
+        const selected = r.id === selectedCompRelationId;
+        const stroke = selected
+          ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+          : r.type === 'delegation'
+            ? (canvasTheme === 'dark' ? '#4ade80' : '#389e0d')
+            : (canvasTheme === 'dark' ? '#fbbf24' : '#b7791f');
+        const dash = r.type === 'delegation' ? '' : '6,4';
+        const labelColor = canvasTheme === 'dark' ? '#f8fafc' : stroke;
+        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+        const labelBorder = canvasTheme === 'dark' ? '#475569' : '#e2e8f0';
+        const lineAttrs = {
+          stroke, strokeWidth: selected ? 2.5 : 2, strokeDasharray: dash,
+          targetMarker: { name: 'block', width: 10, height: 6, fill: stroke, stroke },
+        };
+        const labels = [{
+          attrs: {
+            text: { text: r.type, fontSize: 10, fontWeight: 600, fill: labelColor },
+            rect: { fill: labelBackground, stroke: labelBorder, strokeWidth: 0.8, rx: 4, ry: 4 },
+          },
+          position: { distance: 0.5, offset: -10 },
+        }];
+        const vertices = getParallelEdgeVertices(r, rels, componentRects);
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 18,
+          fill: 'none',
+          pointerEvents: 'stroke',
+        };
+        const edgeSignature = JSON.stringify([r.source, r.target, r.type, selected, canvasTheme, vertices]);
         try {
           if (existingEdges.has(r.id)) {
-            if (edgeSignatureCache.current.get(r.id) === signature) return;
+            if (edgeSignatureCache.current.get(r.id) === edgeSignature) return;
             const edge = graph.getCellById(r.id) as any;
             if (edge) {
               edge.setSource({ cell: r.source });
               edge.setTarget({ cell: r.target });
-              edgeSignatureCache.current.set(r.id, signature);
+              edge.setVertices(vertices);
+              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
+              edge.setConnector({ name: 'rounded' });
+              edge.setLabels(labels);
+              edge.setAttrByPath('line/stroke', stroke);
+              edge.setAttrByPath('line/strokeWidth', selected ? 2.5 : 2);
+              edge.setAttrByPath('line/strokeDasharray', dash);
+              edge.setAttrByPath('line/targetMarker/fill', stroke);
+              edge.setAttrByPath('line/targetMarker/stroke', stroke);
+              edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+              edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+              edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
+              edgeSignatureCache.current.set(r.id, edgeSignature);
             }
           } else {
             if (!graph.getCellById(r.source)) {
@@ -413,18 +588,21 @@ const CompEditor: React.FC = () => {
               id: r.id,
               source: { cell: r.source },
               target: { cell: r.target },
+              vertices,
               attrs: {
-                line: {
-                  stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
-                  targetMarker: { name: 'block', width: 10, height: 6 },
-                },
+                line: lineAttrs,
+                wrap: interactionAttrs,
               },
+              labels,
+              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+              connector: { name: 'rounded' },
             });
-            if (edge) edgeSignatureCache.current.set(r.id, signature);
+            if (edge) edgeSignatureCache.current.set(r.id, edgeSignature);
           }
         } catch (e) { console.warn('[CompEditor] Edge error:', r.id, e); }
       });
 
+      renderedTheme.current = canvasTheme;
       prevCompIds.current = currentIds;
       isInternalUpdate.current = false;
 
@@ -439,58 +617,27 @@ const CompEditor: React.FC = () => {
         setTimeout(() => {
           const g = graphRef.current;
           if (!g) return;
-          g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-          const sidebarW = useUiStore.getState().rightPanelWidth;
-          const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-          const visibleW = g.options.width - sidebarW;
-          if (bbox.width < visibleW - 40) {
-            g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-          }
+          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
         }, 200);
       }
     } catch (err) {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.components, diagram.comp_relations, selectedComponentId]);
+  }, [diagram.components, diagram.comp_relations, selectedComponentId, selectedCompRelationId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
-      graph.zoomTo(viewport.zoom);
-    }
-  }, [viewport.zoom]);
-
-  // Restore persisted translation when switching diagrams or loading a project.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const translation = graph.translate();
-    if (
-      Math.abs(translation.tx - viewport.panX) > 0.5
-      || Math.abs(translation.ty - viewport.panY) > 0.5
-    ) {
-      graph.translate(viewport.panX, viewport.panY);
-    }
-  }, [viewport.panX, viewport.panY]);
-
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;
     if (!graph) return;
-    try {
-      if (diagram.grid_visible !== false) {
-        graph.showGrid();
-        graph.setGridSize(diagram.grid_size || 20);
-        graph.drawGrid({ size: diagram.grid_size || 20,
-          args: { color: diagram.grid_color || '#e0e0e0', thickness: diagram.grid_thickness || 1 } });
-      } else {
-        graph.hideGrid();
-      }
-    } catch (e) { /* ignore */ }
+    syncCanvasGrid(graph, {
+      visible: diagram.grid_visible !== false,
+      size: diagram.grid_size || 20,
+      color: diagram.grid_color || '#e0e0e0',
+      thickness: diagram.grid_thickness || 1,
+    });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
 
   // ── Auto-center on recenter trigger ───────────────
@@ -500,13 +647,7 @@ const CompEditor: React.FC = () => {
     setTimeout(() => {
       const g = graphRef.current;
       if (!g) return;
-      g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-      const sidebarW = useUiStore.getState().rightPanelWidth;
-      const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-      const visibleW = g.options.width - sidebarW;
-      if (bbox.width < visibleW - 40) {
-        g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-      }
+      centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
     }, 100);
   }, [recenterCounter]);
 
@@ -539,6 +680,11 @@ const CompEditor: React.FC = () => {
           <Tooltip title="选中组件时创建子组件，未选中时创建顶层组件">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddComponent}>组件</Button>
           </Tooltip>
+          {(diagram.components || []).length >= 2 && (
+            <Tooltip title="按依赖关系排列组件，并整理子组件层级">
+              <Button size="small" onClick={autoLayoutComponents}>整理</Button>
+            </Tooltip>
+          )}
           <Button size="small" type="text" onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>
@@ -548,7 +694,7 @@ const CompEditor: React.FC = () => {
           <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
-      <div ref={containerRef} className="comp-canvas-container" />
+      <div ref={containerRef} className={`comp-canvas-container theme-${canvasTheme}`} />
 
       {/* Component right-click context menu */}
       {ctxMenu.visible && (() => {
@@ -573,7 +719,7 @@ const CompEditor: React.FC = () => {
               {/* Header — component name */}
               <div style={{
                 padding: '6px 12px', fontSize: 13, fontWeight: 600,
-                color: '#d48806', borderBottom: '1px solid #f0f0f0', marginBottom: 4,
+                color: '#9a6b2f', borderBottom: '1px solid #f0f0f0', marginBottom: 4,
               }}>
                 📦 {ctxMenu.compName}
               </div>

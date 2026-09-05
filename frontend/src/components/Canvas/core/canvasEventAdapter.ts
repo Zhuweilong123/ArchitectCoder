@@ -1,4 +1,4 @@
-import type { Edge, Graph, Node } from '@antv/x6';
+import type { Cell, Edge, Graph, Node } from '@antv/x6';
 
 interface MutableFlag {
   current: boolean;
@@ -8,10 +8,12 @@ export interface CanvasEventAdapterOptions {
   graph: Graph;
   isInternalUpdate: MutableFlag;
   onNodeClick?: (node: Node) => void;
+  onSelectionChanged?: (cells: Cell[]) => void;
   onBlankClick?: () => void;
   onNodeMoved?: (node: Node) => void;
   onNodeResized?: (node: Node) => void;
   onEdgeClick?: (edge: Edge) => void;
+  onEdgeEndpointChanged?: (edge: Edge) => void;
   onNewEdge?: (edge: Edge, sourceId: string, targetId: string) => void;
   onEdgeRemoved?: (edge: Edge) => void;
   edgeTools?: Parameters<Edge['addTools']>[0];
@@ -26,16 +28,21 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     graph,
     isInternalUpdate,
     onNodeClick,
+    onSelectionChanged,
     onBlankClick,
     onNodeMoved,
     onNodeResized,
     onEdgeClick,
+    onEdgeEndpointChanged,
     onNewEdge,
     onEdgeRemoved,
     edgeTools,
   } = options;
 
   const handleNodeClick = ({ node }: { node: Node }) => onNodeClick?.(node);
+  const handleSelectionChanged = ({ selected }: { selected: Cell[] }) => {
+    onSelectionChanged?.(selected || []);
+  };
   const handleBlankClick = () => onBlankClick?.();
   const handleNodeMoved = ({ node }: { node: Node }) => {
     if (!isInternalUpdate.current) onNodeMoved?.(node);
@@ -44,6 +51,9 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     if (!isInternalUpdate.current) onNodeResized?.(node);
   };
   const handleEdgeClick = ({ edge }: { edge: Edge }) => onEdgeClick?.(edge);
+  const handleEdgeEndpointChanged = ({ edge }: { edge: Edge }) => {
+    if (!isInternalUpdate.current) onEdgeEndpointChanged?.(edge);
+  };
   const handleEdgeConnected = ({ edge, isNew }: { edge: Edge; isNew?: boolean }) => {
     if (isInternalUpdate.current || !isNew) return;
     const sourceId = edge.getSourceCellId();
@@ -63,10 +73,13 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   };
 
   graph.on('node:click', handleNodeClick);
+  graph.on('selection:changed', handleSelectionChanged);
   graph.on('blank:click', handleBlankClick);
   graph.on('node:moved', handleNodeMoved);
   graph.on('node:resized', handleNodeResized);
   graph.on('edge:click', handleEdgeClick);
+  graph.on('edge:change:source', handleEdgeEndpointChanged);
+  graph.on('edge:change:target', handleEdgeEndpointChanged);
   graph.on('edge:connected', handleEdgeConnected);
   if (edgeTools) {
     graph.on('edge:mouseenter', handleEdgeMouseEnter);
@@ -76,10 +89,13 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
 
   return () => {
     graph.off('node:click', handleNodeClick);
+    graph.off('selection:changed', handleSelectionChanged);
     graph.off('blank:click', handleBlankClick);
     graph.off('node:moved', handleNodeMoved);
     graph.off('node:resized', handleNodeResized);
     graph.off('edge:click', handleEdgeClick);
+    graph.off('edge:change:source', handleEdgeEndpointChanged);
+    graph.off('edge:change:target', handleEdgeEndpointChanged);
     graph.off('edge:connected', handleEdgeConnected);
     if (edgeTools) {
       graph.off('edge:mouseenter', handleEdgeMouseEnter);

@@ -23,8 +23,8 @@ class TodoWriteTool(Tool):
             name="todo_write",
             description=(
                 "Create and manage a task list for the current session. "
-                "Use for multi-step tasks to track progress. todos is a list "
-                "of {content, status}; complex planning tasks additionally require "
+                "Use for multi-step tasks to track progress with 3-5 concise todos. "
+                "todos is a list of {content, status}; complex planning tasks additionally require "
                 "{kind, acceptance} for every item, including one verification item."
             ),
         )
@@ -80,8 +80,8 @@ class TodoWriteTool(Tool):
         requires_plan = runtime.requires_todo_plan or requires_contract
         if requires_contract and not 3 <= len(todos) <= 5:
             return "Error: acceptance-driven plans require 3 to 5 todos"
-        if requires_plan and not requires_contract and not 1 <= len(todos) <= 3:
-            return "Error: task plans require 1 to 3 concise todos"
+        if requires_plan and not requires_contract and not 3 <= len(todos) <= 5:
+            return "Error: task plans require 3 to 5 concise todos"
 
         normalized: list[dict] = []
         for i, t in enumerate(todos):

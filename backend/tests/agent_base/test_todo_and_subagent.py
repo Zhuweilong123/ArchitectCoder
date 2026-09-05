@@ -56,18 +56,22 @@ def test_acceptance_todo_requires_criteria_and_verification():
         reset_runtime(token)
 
 
-def test_lightweight_task_plan_requires_one_to_three_items():
+def test_lightweight_task_plan_requires_three_to_five_items():
     runtime = AgentRuntime(requires_todo_plan=True)
     token = set_runtime(runtime)
     try:
         tool = TodoWriteTool()
-        assert "1 to 3" in tool.run({"todos": []})
-        assert "Updated 1" in tool.run({"todos": [{"content": "rename components", "status": "pending"}]})
+        assert "3 to 5" in tool.run({"todos": []})
+        valid = [
+            {"content": f"item {index}", "status": "pending"}
+            for index in range(3)
+        ]
+        assert "Updated 3" in tool.run({"todos": valid})
         too_many = [
             {"content": f"item {index}", "status": "pending"}
-            for index in range(4)
+            for index in range(6)
         ]
-        assert "1 to 3" in tool.run({"todos": too_many})
+        assert "3 to 5" in tool.run({"todos": too_many})
     finally:
         reset_runtime(token)
 

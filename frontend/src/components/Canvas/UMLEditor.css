@@ -1,6 +1,6 @@
 .uml-canvas-container {
-  width: 100%;
-  height: 100%;
+  width: 100% !important;
+  height: 100% !important;
   overflow: hidden;
   background: var(--uml-canvas-bg, #fafafa);
   transition: background 0.2s ease;
@@ -100,6 +100,52 @@
 }
 
 .uml-class-node.theme-blueprint {
+  --uml-node-bg: #f6fbff;
+  --uml-header-start: #e0f2fe;
+  --uml-header-end: #dbeafe;
+  --uml-header-text: #0c4a6e;
+  --uml-accent: #0284c7;
+  --uml-divider: #bae6fd;
+  --uml-surface: #eff6ff;
+  --uml-primary-text: #164e63;
+  --uml-secondary-text: #0369a1;
+  --uml-muted-text: #7dd3fc;
+  --uml-selection: #0284c7;
+}
+
+/* The graph container is the source of truth for the active theme. Keep the
+ * node variables synchronized from the container as well, so a stale HTML
+ * fragment from the previous theme cannot remain visually mixed after a
+ * theme switch. */
+.uml-canvas-container.theme-light .uml-class-node {
+  --uml-node-bg: #ffffff;
+  --uml-header-start: #f8fafc;
+  --uml-header-end: #eef4ff;
+  --uml-header-text: #0f172a;
+  --uml-accent: #64748b;
+  --uml-divider: #d9e1ec;
+  --uml-surface: #f8fafc;
+  --uml-primary-text: #334155;
+  --uml-secondary-text: #64748b;
+  --uml-muted-text: #cbd5e1;
+  --uml-selection: #2563eb;
+}
+
+.uml-canvas-container.theme-dark .uml-class-node {
+  --uml-node-bg: #172033;
+  --uml-header-start: #1e293b;
+  --uml-header-end: #1d3557;
+  --uml-header-text: #f8fafc;
+  --uml-accent: #60a5fa;
+  --uml-divider: #334155;
+  --uml-surface: #1e293b;
+  --uml-primary-text: #e2e8f0;
+  --uml-secondary-text: #94a3b8;
+  --uml-muted-text: #64748b;
+  --uml-selection: #60a5fa;
+}
+
+.uml-canvas-container.theme-blueprint .uml-class-node {
   --uml-node-bg: #f6fbff;
   --uml-header-start: #e0f2fe;
   --uml-header-end: #dbeafe;
@@ -233,17 +279,43 @@
   border: none !important;
 }
 
-.x6-edge .x6-edge-label {
+.uml-canvas-container .x6-edge .x6-edge-label {
   font-size: 10px;
   font-weight: 600;
   fill: var(--uml-edge-label, #475569);
   paint-order: stroke;
   stroke: var(--uml-edge-label-halo, #ffffff);
-  stroke-width: 4px;
+  stroke-width: 0;
   stroke-linejoin: round;
 }
 
-.x6-edge:hover .x6-edge-label,
-.x6-edge-selected .x6-edge-label {
+.uml-canvas-container .x6-edge .x6-edge-label text {
+  fill: var(--uml-edge-label, #475569);
+  paint-order: stroke;
+  stroke: var(--uml-edge-label-halo, #ffffff);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+}
+
+.uml-canvas-container .x6-edge:hover .x6-edge-label,
+.uml-canvas-container .x6-edge-selected .x6-edge-label {
   fill: var(--uml-selection, #1d4ed8);
+}
+
+.uml-canvas-container.theme-dark .x6-edge .x6-edge-label {
+  fill: #f8fafc;
+  stroke: #0b1220;
+  stroke-width: 0;
+}
+
+.uml-canvas-container.theme-dark .x6-edge .x6-edge-label text {
+  fill: #f8fafc;
+  stroke: #0b1220;
+  stroke-width: 1.5px;
+}
+
+.uml-canvas-container.theme-dark .x6-edge:hover .x6-edge-label,
+.uml-canvas-container.theme-dark .x6-edge-selected .x6-edge-label {
+  fill: #bfdbfe;
+  stroke: #0b1220;
 }

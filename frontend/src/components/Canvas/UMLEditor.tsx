@@ -10,10 +10,14 @@ import { Graph, Edge, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
-import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
+import {
+  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid,
+} from './core/canvasCommon';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -216,23 +220,94 @@ function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): s
 // ── Component ──────────────────────────────────────────
 /** Estimate a readable minimum size without overwriting the user's manual resize. */
 function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
-  const attributeRows = Math.max(cls.attributes.length, 1);
-  const operationRows = Math.max(cls.methods.length, 1);
+  const width = cls.size.width || 200;
+  const maxChars = Math.max(18, Math.floor((width - 20) / 7));
+  const wrappedRows = (rows: string[]) => rows.reduce((sum, row) => (
+    sum + Math.max(1, Math.ceil(row.replace(/\s+/g, ' ').trim().length / maxChars))
+  ), 0);
+  const attributeRows = cls.attributes.map((attribute) => (
+    `${attribute.visibility} ${attribute.name}: ${attribute.type}${attribute.default_value ? ` = ${attribute.default_value}` : ''}`
+  ));
+  const operationRows = cls.methods.map((method) => (
+    `${method.visibility} ${method.name}(${method.params}): ${method.return_type}`
+  ));
   const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
     + (cls.required_interfaces?.length ? 1 : 0);
   const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
   const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
-  const attributesHeight = 28 + attributeRows * 19;
-  const operationsHeight = 28 + operationRows * 19;
-  const noteHeight = cls.note ? 34 : 0;
+  const attributesHeight = 28 + Math.max(1, wrappedRows(attributeRows)) * 19;
+  const operationsHeight = 28 + Math.max(1, wrappedRows(operationRows)) * 19;
+  const noteLines = cls.note
+    ? Math.max(1, Math.ceil(cls.note.replace(/\s+/g, ' ').trim().length / maxChars))
+    : 0;
+  const noteHeight = noteLines ? 12 + noteLines * 14 : 0;
 
   return {
-    width: cls.size.width || 200,
+    width,
     height: Math.max(
       cls.size.height || 150,
       headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
     ),
   };
+}
+
+interface ClassRenderLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function rectanglesOverlap(
+  first: ClassRenderLayout,
+  second: ClassRenderLayout,
+  gap: number,
+): boolean {
+  return first.x < second.x + second.width + gap
+    && first.x + first.width + gap > second.x
+    && first.y < second.y + second.height + gap
+    && first.y + first.height + gap > second.y;
+}
+
+/** Resolve overlaps introduced when a class grows to fit long members/notes. */
+function resolveClassLayouts(classes: UmlClass[]): Map<string, ClassRenderLayout> {
+  const gap = 36;
+  const placed: ClassRenderLayout[] = [];
+  const layouts = new Map<string, ClassRenderLayout>();
+  const ordered = [...classes].sort((a, b) => (
+    a.position.y - b.position.y
+    || a.position.x - b.position.x
+    || a.id.localeCompare(b.id)
+  ));
+
+  ordered.forEach((cls) => {
+    const size = getClassNodeSize(cls);
+    const desired = { x: cls.position.x, y: cls.position.y, ...size };
+    let position = desired;
+    const candidates = [
+      desired,
+      ...placed.flatMap((other) => [
+        { ...desired, x: other.x - size.width - gap },
+        { ...desired, x: other.x + other.width + gap },
+        { ...desired, y: other.y + other.height + gap },
+      ]),
+    ];
+    const valid = candidates
+      .filter((candidate) => placed.every((other) => !rectanglesOverlap(candidate, other, 0)))
+      .sort((a, b) => {
+        const distance = (candidate: ClassRenderLayout) =>
+          Math.abs(candidate.x - desired.x) + Math.abs(candidate.y - desired.y);
+        return distance(a) - distance(b) || a.y - b.y || a.x - b.x;
+      });
+    if (valid.length > 0) position = valid[0];
+    else if (placed.length > 0) {
+      const bottom = Math.max(...placed.map((item) => item.y + item.height));
+      position = { ...desired, y: bottom + gap };
+    }
+    layouts.set(cls.id, position);
+    placed.push(position);
+  });
+  return layouts;
 }
 
 const UMLEditor: React.FC = () => {
@@ -242,24 +317,31 @@ const UMLEditor: React.FC = () => {
   const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
 
   const {
-    diagram, selectedClassId, selectedRelationId,
+    diagram, selectedClassId, selectedClassIds, selectedRelationId,
     moveClass, resizeClass, selectClass, selectRelation,
-    addRelation, removeClass, removeRelation, addClass,
-    undo, redo,
+    addRelation, updateRelation, removeClass, removeRelation, addClass,
+    undo, redo, selectClasses, alignClasses, distributeClasses,
+    autoLayoutClasses,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedClassId: s.selectedClassId,
+    selectedClassIds: s.selectedClassIds,
     selectedRelationId: s.selectedRelationId,
     moveClass: s.moveClass,
     resizeClass: s.resizeClass,
     selectClass: s.selectClass,
     selectRelation: s.selectRelation,
     addRelation: s.addRelation,
+    updateRelation: s.updateRelation,
     removeClass: s.removeClass,
     removeRelation: s.removeRelation,
     addClass: s.addClass,
     undo: s.undo,
     redo: s.redo,
+    selectClasses: s.selectClasses,
+    alignClasses: s.alignClasses,
+    distributeClasses: s.distributeClasses,
+    autoLayoutClasses: s.autoLayoutClasses,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
@@ -286,16 +368,9 @@ const UMLEditor: React.FC = () => {
           strokeWidth: 2,
           targetMarker: { name: 'block', width: 12, height: 8 },
         },
+        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+        connector: { name: 'rounded' },
       },
-    });
-
-    const detachViewport = attachGraphViewport(graph, {
-      container: containerRef.current,
-      zoom: viewport.zoom,
-      panX: viewport.panX,
-      panY: viewport.panY,
-      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
-      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // ── Events ───────────────────────────────────────
@@ -305,6 +380,12 @@ const UMLEditor: React.FC = () => {
       onNodeClick: (node) => {
         selectClass(node.id);
         setRightPanelTab('properties');
+      },
+      onSelectionChanged: (cells) => {
+        const classIds = cells
+          .filter((cell) => cell.isNode() && cell.shape === 'uml-class')
+          .map((cell) => cell.id);
+        selectClasses(classIds);
       },
       onBlankClick: () => {
         selectClass(null);
@@ -335,6 +416,13 @@ const UMLEditor: React.FC = () => {
         selectRelation(edge.id);
         setRightPanelTab('properties');
       },
+      onEdgeEndpointChanged: (edge) => {
+        if (!(getActiveDiagram().relations || []).some((relation) => relation.id === edge.id)) return;
+        const source = edge.getSourceCellId();
+        const target = edge.getTargetCellId();
+        if (!source || !target || source === target) return;
+        updateRelation(edge.id, { source, target });
+      },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
         edge.remove();
@@ -354,56 +442,84 @@ const UMLEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
 
-      if (e.ctrlKey && e.key === 'c') {
-        // Copy selected class
-        if (store.selectedClassId) {
-          const cls = getActiveDiagram().classes.find((c) => c.id === store.selectedClassId);
-          if (cls) {
-            clipboard.current = { classes: [JSON.parse(JSON.stringify(cls))], relations: [] };
-            console.log('[UMLEditor] Copied:', cls.name);
-          }
+      if (modifier && key === 'c') {
+        // Copy all selected classes so rubber-band and shift selection behave consistently.
+        const graphSelectedIds = graph.getSelectedCells()
+          .filter((cell) => cell.isNode() && cell.shape === 'uml-class')
+          .map((cell) => cell.id);
+        const selectedIds = graphSelectedIds.length > 0
+          ? graphSelectedIds
+          : (store.selectedClassIds.length > 0
+            ? store.selectedClassIds
+            : store.selectedClassId ? [store.selectedClassId] : []);
+        const selectedIdSet = new Set(selectedIds);
+        const classes = getActiveDiagram().classes
+          .filter((cls) => selectedIdSet.has(cls.id))
+          .map((cls) => JSON.parse(JSON.stringify(cls)));
+        if (classes.length > 0) {
+          clipboard.current = { classes, relations: [] };
+          console.log('[UMLEditor] Copied classes:', classes.length);
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
+        if (clipboard.current.classes.length === 0) return;
         // Paste copied classes at offset position with same size
-        clipboard.current.classes.forEach((cls: any) => {
-          const newId = `class_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
-          // Apply copied size, attributes, methods
-          const store2 = useDiagramStore.getState();
-          const activeDiagram = getActiveDiagram();
-          const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
-          if (lastAdded) {
-            store2.updateClass(lastAdded.id, {
-              name: cls.name,
-              size: { ...cls.size },
-              attributes: [...cls.attributes],
-              methods: [...cls.methods],
-              stereotype: cls.stereotype,
-              note: cls.note,
-            });
-          }
-        });
+        store.beginBatch();
+        try {
+          clipboard.current.classes.forEach((cls: any) => {
+            store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
+            // Apply copied size, attributes, methods
+            const store2 = useDiagramStore.getState();
+            const activeDiagram = getActiveDiagram();
+            const lastAdded = activeDiagram.classes[activeDiagram.classes.length - 1];
+            if (lastAdded) {
+              store2.updateClass(lastAdded.id, {
+                name: cls.name,
+                size: { ...cls.size },
+                attributes: [...cls.attributes],
+                methods: [...cls.methods],
+                stereotype: cls.stereotype,
+                note: cls.note,
+              });
+            }
+          });
+        } finally {
+          store.endBatch();
+        }
         clipboard.current = { classes: clipboard.current.classes.map((c: any) => ({
           ...c, position: { x: c.position.x + 30, y: c.position.y + 30 }
         })), relations: [] };
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+      } else if (modifier && key === 'z' && !e.shiftKey) {
         e.preventDefault();
         store.undo();
-      } else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      } else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault();
         store.redo();
+      } else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectClass(null);
+        selectRelation(null);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         const cells = graph.getSelectedCells();
-        if (cells.length > 0) {
+        const selectedNodeIds = cells.filter((cell) => cell.isNode()).map((cell) => cell.id);
+        const selectedEdgeIds = cells.filter((cell) => cell.isEdge()).map((cell) => cell.id);
+        const nodeIds = selectedNodeIds.length > 0 ? selectedNodeIds : store.selectedClassIds;
+        const edgeIds = selectedEdgeIds.length > 0
+          ? selectedEdgeIds
+          : store.selectedRelationId ? [store.selectedRelationId] : [];
+        if (nodeIds.length > 0 || edgeIds.length > 0) {
           e.preventDefault();
           isInternalUpdate.current = true;
-          cells.forEach((cell) => {
-            if (cell.isNode()) store.removeClass(cell.id);
-            else if (cell.isEdge()) store.removeRelation(cell.id);
-            cell.remove();
-          });
+          nodeIds.forEach((id) => store.removeClass(id));
+          edgeIds.forEach((id) => store.removeRelation(id));
+          graph.cleanSelection();
           isInternalUpdate.current = false;
+          selectClass(null);
+          selectRelation(null);
         }
       }
     };
@@ -413,17 +529,20 @@ const UMLEditor: React.FC = () => {
       graph.centerContent();
     }
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     console.log('[UML Editor] Initialized. Shape registered:', shapeRegistered);
 
     return () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
       detachCanvasEvents();
-      detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useCanvasGraphViewport(graphRef, containerRef, viewport);
 
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
@@ -437,14 +556,18 @@ const UMLEditor: React.FC = () => {
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
       const currentIds = new Set(diagram.classes.map((c) => c.id));
+      const classLayouts = resolveClassLayouts(diagram.classes);
+      const themeChanged = renderedTheme.current !== canvasTheme;
 
       // Remove deleted nodes
       prevClassIds.current.forEach((id) => {
@@ -459,16 +582,18 @@ const UMLEditor: React.FC = () => {
       // Add or update nodes
       diagram.classes.forEach((cls) => {
         const isSelected = cls.id === selectedClassId;
-        const cachedRender = renderCache.current.get(cls.id);
-        const htmlContent = cachedRender?.entity === cls
-          && cachedRender.selected === isSelected
-          && cachedRender.theme === canvasTheme
-          ? cachedRender.html
-          : buildClassHTML(cls, isSelected, canvasTheme);
+        // Theme is part of the rendered HTML. Always rebuild this small HTML
+        // fragment so a theme change can never reuse a stale node fragment.
+        const htmlContent = buildClassHTML(cls, isSelected, canvasTheme);
         const cached = htmlCache.current.get(cls.id);
-        const { width, height } = getClassNodeSize(cls);
+        const layout = classLayouts.get(cls.id) || {
+          x: cls.position.x,
+          y: cls.position.y,
+          ...getClassNodeSize(cls),
+        };
+        const { width, height } = layout;
         const signature = JSON.stringify([
-          htmlContent, cls.position.x, cls.position.y, width, height,
+          htmlContent, layout.x, layout.y, width, height, canvasTheme,
         ]);
         renderCache.current.set(cls.id, {
           entity: cls,
@@ -480,10 +605,12 @@ const UMLEditor: React.FC = () => {
         try {
           const existing = graph.getCellById(cls.id);
           if (existing && existing.isNode()) {
-            if (nodeSignatureCache.current.get(cls.id) === signature) return;
+            // A theme change must refresh every node, even if an older cache
+            // entry accidentally reports the same layout signature.
+            if (!themeChanged && nodeSignatureCache.current.get(cls.id) === signature) return;
             // Update existing node
             const node = existing as Node;
-            node.setPosition(cls.position.x, cls.position.y);
+            node.setPosition(layout.x, layout.y);
             node.setSize({ width, height });
             node.setAttrs({
               body: {
@@ -491,7 +618,7 @@ const UMLEditor: React.FC = () => {
                 strokeWidth: isSelected ? 2.5 : 1.5,
               },
             });
-            if (cached !== htmlContent) {
+            if (themeChanged || cached !== htmlContent) {
               // X6 attr: set the 'html' attr on the 'content' selector
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(cls.id, htmlContent);
@@ -502,8 +629,8 @@ const UMLEditor: React.FC = () => {
             const node = graph.addNode({
               id: cls.id,
               shape: 'uml-class',
-              x: cls.position.x,
-              y: cls.position.y,
+              x: layout.x,
+              y: layout.y,
               width,
               height,
               attrs: {
@@ -535,6 +662,14 @@ const UMLEditor: React.FC = () => {
         }
       });
 
+      const classRects = diagram.classes.map((cls) => ({
+        id: cls.id,
+        ...(classLayouts.get(cls.id) || {
+          x: cls.position.x,
+          y: cls.position.y,
+          ...getClassNodeSize(cls),
+        }),
+      }));
       diagram.relations.forEach((rel) => {
         const isSelected = rel.id === selectedRelationId;
         const isComposition = rel.type === RelationType.COMPOSITION;
@@ -553,15 +688,19 @@ const UMLEditor: React.FC = () => {
           ? 'block' : 'classic';
 
         const lineAttrs = {
-          stroke: isSelected ? '#2563eb' : '#64748b',
+          stroke: isSelected
+            ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+            : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
           strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
           sourceMarker: isComposition || isAggregation
             ? {
                 name: 'diamond',
-                width: 16,
-                height: 12,
-                fill: isComposition ? '#64748b' : '#ffffff',
+              width: 16,
+              height: 12,
+                fill: isComposition
+                  ? (canvasTheme === 'dark' ? '#94a3b8' : '#64748b')
+                  : '#ffffff',
               }
             : undefined,
           targetMarker: {
@@ -570,12 +709,46 @@ const UMLEditor: React.FC = () => {
             height: 8,
             fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
               ? '#ffffff'
-              : isSelected ? '#2563eb' : '#64748b',
+              : isSelected
+                ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+                : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
           },
+        };
+        const labelColor = canvasTheme === 'dark'
+          ? '#f8fafc'
+          : isSelected ? '#1d4ed8' : '#475569';
+        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+        const labelBorder = canvasTheme === 'dark'
+          ? (isSelected ? '#60a5fa' : '#475569')
+          : isSelected ? '#93c5fd' : '#cbd5e1';
+        const edgeLabels = labelText ? [{
+          attrs: {
+            text: {
+              text: labelText,
+              fontSize: 10,
+              fontWeight: 600,
+              fill: labelColor,
+            },
+            rect: {
+              fill: labelBackground,
+              stroke: labelBorder,
+              strokeWidth: 1,
+              rx: 4,
+              ry: 4,
+            },
+          },
+          position: { distance: 0.5, offset: -10 },
+        }] : [];
+        const vertices = getParallelEdgeVertices(rel, diagram.relations, classRects);
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 18,
+          fill: 'none',
+          pointerEvents: 'stroke',
         };
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
-          isSelected, isComposition, isAggregation,
+          isSelected, isComposition, isAggregation, vertices, canvasTheme,
         ]);
 
         try {
@@ -586,11 +759,26 @@ const UMLEditor: React.FC = () => {
             if (edge) {
               edge.setSource({ cell: rel.source });
               edge.setTarget({ cell: rel.target });
-              edge.setLabels(labelText ? [labelText] : []);
+              edge.setLabels(edgeLabels);
+              edge.setVertices(vertices);
+              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
+              edge.setConnector({ name: 'rounded' });
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
+              edge.setAttrByPath(
+                'line/sourceMarker/name',
+                lineAttrs.sourceMarker?.name || 'none',
+              );
+              edge.setAttrByPath(
+                'line/sourceMarker/fill',
+                lineAttrs.sourceMarker?.fill || 'none',
+              );
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
+              edge.setAttrByPath('line/targetMarker/fill', lineAttrs.targetMarker.fill);
+              edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+              edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+              edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
               edgeSignatureCache.current.set(rel.id, signature);
             }
           } else {
@@ -607,8 +795,11 @@ const UMLEditor: React.FC = () => {
               id: rel.id,
               source: { cell: rel.source },
               target: { cell: rel.target },
-              labels: labelText ? [labelText] : undefined,
-              attrs: { line: lineAttrs },
+              labels: edgeLabels,
+              vertices,
+              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+              connector: { name: 'rounded' },
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) edgeSignatureCache.current.set(rel.id, signature);
           }
@@ -617,6 +808,7 @@ const UMLEditor: React.FC = () => {
         }
       });
 
+      renderedTheme.current = canvasTheme;
       prevClassIds.current = currentIds;
       isInternalUpdate.current = false;
 
@@ -631,14 +823,7 @@ const UMLEditor: React.FC = () => {
         setTimeout(() => {
           const g = graphRef.current;
           if (!g) return;
-          const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-          const sidebarW = useUiStore.getState().rightPanelWidth;
-          g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-          // Shift left to account for sidebar, but only if content fits visible area
-          const visibleW = g.options.width - sidebarW;
-          if (bbox.width < visibleW - 40) {
-            g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-          }
+          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
         }, 200);
       }
     } catch (err) {
@@ -649,49 +834,16 @@ const UMLEditor: React.FC = () => {
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
-      graph.zoomTo(viewport.zoom);
-    }
-  }, [viewport.zoom]);
-
-  // Restore persisted translation when switching diagrams or loading a project.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const translation = graph.translate();
-    if (
-      Math.abs(translation.tx - viewport.panX) > 0.5
-      || Math.abs(translation.ty - viewport.panY) > 0.5
-    ) {
-      graph.translate(viewport.panX, viewport.panY);
-    }
-  }, [viewport.panX, viewport.panY]);
-
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;
     if (!graph) return;
-    try {
-      if (diagram.grid_visible) {
-        graph.showGrid();
-        graph.setGridSize(diagram.grid_size);
-        // Redraw with color/thickness (omit type to use default dot preset)
-        graph.drawGrid({
-          size: diagram.grid_size,
-          args: {
-            color: diagram.grid_color || '#aaaaaa',
-            thickness: diagram.grid_thickness || 1,
-          },
-        });
-      } else {
-        graph.hideGrid();
-      }
-    } catch (e) {
-      console.warn('[UML Editor] Grid sync error:', e);
-    }
+    syncCanvasGrid(graph, {
+      visible: diagram.grid_visible,
+      size: diagram.grid_size,
+      color: diagram.grid_color || '#aaaaaa',
+      thickness: diagram.grid_thickness || 1,
+    });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
 
   // ── Auto-center on recenter trigger ───────────────
@@ -701,13 +853,7 @@ const UMLEditor: React.FC = () => {
     setTimeout(() => {
       const g = graphRef.current;
       if (!g) return;
-      const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-      const sidebarW = useUiStore.getState().rightPanelWidth;
-      g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-      const visibleW = g.options.width - sidebarW;
-      if (bbox.width < visibleW - 40) {
-        g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-      }
+      centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
     }, 100);
   }, [recenterCounter]);
 
@@ -722,6 +868,28 @@ const UMLEditor: React.FC = () => {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {selectedClassIds.length >= 2 && (
+        <div style={{
+          position: 'absolute', top: showToolbar ? 44 : 8, left: 8, zIndex: 100,
+          display: 'flex', alignItems: 'center', gap: 3,
+          background: 'var(--canvas-toolbar-bg, #ffffff)',
+          border: '1px solid var(--canvas-toolbar-border, #d9e1ec)',
+          borderRadius: 6, padding: '4px 6px',
+          boxShadow: '0 2px 8px rgba(15,23,42,0.12)',
+        }}>
+          <span style={{ fontSize: 11, color: '#64748b', marginRight: 3 }}>
+            {selectedClassIds.length} selected
+          </span>
+          <Button size="small" type="text" title="Align left" onClick={() => alignClasses('left')}>L</Button>
+          <Button size="small" type="text" title="Align center" onClick={() => alignClasses('center')}>C</Button>
+          <Button size="small" type="text" title="Align right" onClick={() => alignClasses('right')}>R</Button>
+          <Button size="small" type="text" title="Align top" onClick={() => alignClasses('top')}>T</Button>
+          <Button size="small" type="text" title="Align middle" onClick={() => alignClasses('middle')}>M</Button>
+          <Button size="small" type="text" title="Align bottom" onClick={() => alignClasses('bottom')}>B</Button>
+          <Button size="small" type="text" title="Distribute horizontally" onClick={() => distributeClasses('horizontal')}>↔</Button>
+          <Button size="small" type="text" title="Distribute vertically" onClick={() => distributeClasses('vertical')}>↕</Button>
+        </div>
+      )}
       {showToolbar && (
         <div style={{
           position: 'absolute', top: 8, left: 8, zIndex: 100,
@@ -729,6 +897,9 @@ const UMLEditor: React.FC = () => {
           padding: '4px 6px', boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
         }}>
           <Button size="small" icon={<PlusOutlined />} onClick={handleAddClass}>类</Button>
+          {diagram.classes.length >= 2 && (
+            <Button size="small" type="text" title="Auto layout" onClick={autoLayoutClasses}>布局</Button>
+          )}
           <Button size="small" type="text" onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>

@@ -6,13 +6,15 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Graph, Node, Edge } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
-import { Button, Tooltip } from 'antd';
+import { Button, Select, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
-import { useUiStore } from '../../stores/uiStore';
-import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { snapCanvasPosition } from './core/snapToGrid';
+import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
@@ -31,6 +33,7 @@ function ensureShapesRegistered() {
     resizable: false,
     markup: [
       { tagName: 'rect', selector: 'body' },
+      { tagName: 'line', selector: 'lifelineLine' },
       {
         tagName: 'foreignObject',
         selector: 'fo',
@@ -51,11 +54,32 @@ function ensureShapesRegistered() {
     ],
     attrs: {
       body: {
-        stroke: '#333', strokeWidth: 2, fill: '#ffe6cc',
+        stroke: 'transparent', strokeWidth: 0, fill: 'transparent',
         rx: 4, ry: 4,
+      },
+      lifelineLine: {
+        x1: 70, y1: 45, x2: 70, y2: 400,
+        stroke: '#94a3b8', strokeWidth: 1.2,
+        strokeDasharray: '6 5', fill: 'none', pointerEvents: 'none',
       },
       fo: { refWidth: '100%', refHeight: '100%' },
       content: { html: '' },
+    },
+    ports: {},
+  });
+
+  // Native SVG activation bars remain stable when the graph is exported.
+  Graph.registerNode('seq-activation', {
+    inherit: 'rect',
+    resizable: false,
+    selectable: false,
+    movable: false,
+    markup: [{ tagName: 'rect', selector: 'body' }],
+    attrs: {
+      body: {
+        rx: 4, ry: 4, stroke: '#3b82f6', strokeWidth: 1,
+        fill: '#dbeafe', pointerEvents: 'none',
+      },
     },
     ports: {},
   });
@@ -95,19 +119,22 @@ function ensureShapesRegistered() {
 
 // ── HTML builders ────────────────────────────────────
 
-function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
-  const selClass = selected ? 'selected' : '';
-  const bars = (lifeline.activations || []).map((y, i) =>
-    `<div class="seq-activation" style="top:${y - 6}px" title="激活条 #${i + 1}"></div>`
-  ).join('');
+function buildLifelineHTML(
+  lifeline: SeqLifeline,
+  selected: boolean,
+  endpointHighlighted: boolean,
+  theme: CanvasTheme,
+): string {
+  const selClass = [
+    selected ? 'selected' : '',
+    endpointHighlighted ? 'message-endpoint' : '',
+  ].filter(Boolean).join(' ');
   const hint = selected
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
-  return `<div class="seq-lifeline-node ${selClass}">
+  return `<div class="seq-lifeline-node theme-${theme} ${selClass}">
     <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
-      <div class="seq-lifeline-dash"></div>
-      ${bars}
       ${hint}
     </div>
   </div>`;
@@ -118,18 +145,61 @@ function buildLifelineHTML(lifeline: SeqLifeline, selected: boolean): string {
 const LIFELINE_WIDTH = 140;
 const LIFELINE_HEIGHT = 400;
 const LIFELINE_Y = 120;  // give top padding so lifelines aren't cut off
+const MESSAGE_START_Y = 190;
+const MESSAGE_GAP = 48;
+
+function getMessageVisual(type: MessageType, theme: CanvasTheme) {
+  const palette = theme === 'dark'
+    ? {
+        sync: '#60a5fa', async: '#4ade80', return: '#cbd5e1', simple: '#e2e8f0', self: '#a78bfa',
+      }
+    : {
+        sync: '#2563eb', async: '#16a34a', return: '#64748b', simple: '#475569', self: '#7c3aed',
+      };
+  const color = palette[type];
+  return {
+    color,
+    dash: type === 'return' ? '6,3' : '',
+    marker: type === 'simple' ? null : {
+      name: type === 'async' ? 'classic' : 'block',
+      width: 10,
+      height: 6,
+      fill: color,
+      stroke: color,
+    },
+  };
+}
+
+function getMessageY(message: SeqMessage): number {
+  return message.y || MESSAGE_START_Y + (message.order - 1) * MESSAGE_GAP;
+}
+
+type InlineEditKind = 'lifeline' | 'message' | 'fragment';
+interface InlineEditState {
+  kind: InlineEditKind;
+  id: string;
+  value: string;
+  x: number;
+  y: number;
+  width: number;
+}
 
 const SeqEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
   const clipboard = useRef<any>(null);
+  const [messageMode, setMessageMode] = useState<MessageType>('sync');
+  const messageModeRef = useRef<MessageType>('sync');
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
+  const inlineInputRef = useRef<HTMLInputElement>(null);
 
   const {
     diagram, selectedLifelineId, selectedMessageId,
     addLifeline, removeLifeline, moveLifeline,
     selectLifeline, selectMessage,
-    undo, redo,
+    undo, redo, arrangeSequence, fitSequenceFragments,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedLifelineId: s.selectedLifelineId,
@@ -141,15 +211,44 @@ const SeqEditor: React.FC = () => {
     selectMessage: s.selectMessage,
     undo: s.undo,
     redo: s.redo,
+    arrangeSequence: s.arrangeSequence,
+    fitSequenceFragments: s.fitSequenceFragments,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab } = useUiStore();
+  const { setRightPanelTab, canvasTheme } = useUiStore();
 
-  // ── Fragment context menu ───────────────────────────
-  const [ctxMenu, setCtxMenu] = useState<{ visible: boolean; x: number; y: number; nodeId: string }>({
-    visible: false, x: 0, y: 0, nodeId: '',
-  });
+  const beginInlineEdit = useCallback((edit: InlineEditState) => {
+    setInlineEdit(edit);
+    window.setTimeout(() => {
+      inlineInputRef.current?.focus();
+      inlineInputRef.current?.select();
+    }, 0);
+  }, []);
+
+  const commitInlineEdit = useCallback(() => {
+    if (!inlineEdit) return;
+    const value = inlineEdit.value.trim();
+    const store = useDiagramStore.getState();
+    if (inlineEdit.kind === 'lifeline' && value) {
+      store.updateLifeline(inlineEdit.id, { name: value });
+    } else if (inlineEdit.kind === 'message' && value) {
+      store.updateMessage(inlineEdit.id, { label: value });
+    } else if (inlineEdit.kind === 'fragment') {
+      store.updateFragment(inlineEdit.id, { label: value });
+    }
+    setInlineEdit(null);
+  }, [inlineEdit]);
+
+  // ── Canvas context menu ────────────────────────────
+  const [ctxMenu, setCtxMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    nodeId: string;
+    kind: 'fragment' | 'lifeline';
+    messageY: number;
+  }>({ visible: false, x: 0, y: 0, nodeId: '', kind: 'fragment', messageY: 0 });
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
@@ -167,32 +266,43 @@ const SeqEditor: React.FC = () => {
       },
     });
 
-    const detachViewport = attachGraphViewport(graph, {
-      container: containerRef.current,
-      zoom: viewport.zoom,
-      panX: viewport.panX,
-      panY: viewport.panY,
-      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
-      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
-    });
-
     // Click-to-click message creation (lifelines only)
-    graph.on('node:click', ({ node, e }) => {
+    graph.on('node:click', ({ node }) => {
       if (node.shape === 'seq-fragment') {
         (graph as any).__selectedFragment = node.id;
         return;
       }
       const store = useDiagramStore.getState();
-      if (store.selectedLifelineId === node.id) {
-        store.addMessage(node.id, node.id);
-        return;
-      }
-      if (store.selectedLifelineId) {
-        store.addMessage(store.selectedLifelineId, node.id);
+      if (store.selectedLifelineId && store.selectedLifelineId !== node.id) {
+        store.addMessage(store.selectedLifelineId, node.id, messageModeRef.current);
         return;
       }
       selectLifeline(node.id);
       setRightPanelTab('properties');
+    });
+
+    // Inline editing: double-click the visible text instead of opening the
+    // property panel. The normal click handler remains selection-only for a
+    // repeated click on the same lifeline, so this cannot create a self-message.
+    graph.on('node:dblclick', ({ node, e }: any) => {
+      if (node.shape !== 'seq-lifeline' && node.shape !== 'seq-fragment') return;
+      e?.evt?.preventDefault?.();
+      e?.evt?.stopPropagation?.();
+      const bbox = node.getBBox();
+      const topLeft = graph.localToClient(bbox.x, bbox.y);
+      const isLifeline = node.shape === 'seq-lifeline';
+      const item = isLifeline
+        ? (getActiveDiagram().lifelines || []).find((lifeline) => lifeline.id === node.id)
+        : (getActiveDiagram().fragments || []).find((fragment) => fragment.id === node.id);
+      if (!item) return;
+      beginInlineEdit({
+        kind: isLifeline ? 'lifeline' : 'fragment',
+        id: node.id,
+        value: 'name' in item ? item.name : item.label,
+        x: Math.round(topLeft.x + (isLifeline ? 8 : 4)),
+        y: Math.round(topLeft.y + (isLifeline ? 5 : 2)),
+        width: isLifeline ? Math.max(110, Math.min(220, bbox.width - 16)) : 180,
+      });
     });
 
     graph.on('blank:click', () => {
@@ -201,16 +311,24 @@ const SeqEditor: React.FC = () => {
       (graph as any).__selectedFragment = null;
     });
 
-    // Right-click on fragment → context menu
+    // Right-click on a fragment or lifeline → context menu
     graph.on('node:contextmenu', ({ node, e }: any) => {
-      if (node.shape === 'seq-fragment') {
-        const evt = e.evt || e;
+      const evt = e.evt || e;
+      const clientX = evt?.clientX || evt?.pageX || 0;
+      const clientY = evt?.clientY || evt?.pageY || 0;
+      if (node.shape === 'seq-fragment' || node.shape === 'seq-lifeline') {
         evt?.preventDefault?.();
+        const bbox = node.getBBox();
+        const localPoint = graph.clientToLocal(clientX, clientY);
         setCtxMenu({
           visible: true,
-          x: evt?.clientX || evt?.pageX || e.clientX || e.pageX || 0,
-          y: evt?.clientY || evt?.pageY || e.clientY || e.pageY || 0,
+          x: clientX,
+          y: clientY,
           nodeId: node.id,
+          kind: node.shape === 'seq-lifeline' ? 'lifeline' : 'fragment',
+          messageY: node.shape === 'seq-lifeline'
+            ? Math.max(bbox.y + 30, Math.min(localPoint.y, bbox.y + bbox.height - 30))
+            : 0,
         });
       }
     });
@@ -270,15 +388,16 @@ const SeqEditor: React.FC = () => {
     graph.on('node:moved', ({ node }) => {
       if (isInternalUpdate.current || node.shape !== 'seq-lifeline') return;
       const position = node.position();
-      const store = useDiagramStore.getState();
       const nextPosition = snapCanvasPosition(
         { x: position.x, y: position.y },
         getActiveDiagram().snap_to_grid,
         getActiveDiagram().grid_size,
       );
-      if (position.x !== nextPosition.x) {
+      // Lifelines share one horizontal baseline. Only persist X; any
+      // accidental vertical drag is immediately snapped back to it.
+      if (position.x !== nextPosition.x || position.y !== LIFELINE_Y) {
         isInternalUpdate.current = true;
-        node.setPosition(nextPosition.x, position.y);
+        node.setPosition(nextPosition.x, LIFELINE_Y);
         isInternalUpdate.current = false;
       }
       moveLifeline(node.id, nextPosition.x);
@@ -287,6 +406,27 @@ const SeqEditor: React.FC = () => {
     graph.on('edge:click', ({ edge }) => {
       selectMessage(edge.id);
       setRightPanelTab('properties');
+    });
+    graph.on('edge:dblclick', ({ edge, e }: any) => {
+      const message = (getActiveDiagram().messages || []).find((item) => item.id === edge.id);
+      if (!message) return;
+      e?.evt?.preventDefault?.();
+      e?.evt?.stopPropagation?.();
+      const evt = e?.evt || e;
+      const edgeBox = edge.getBBox();
+      const fallback = graph.localToClient(edgeBox.x + edgeBox.width / 2, edgeBox.y);
+      beginInlineEdit({
+        kind: 'message',
+        id: edge.id,
+        value: message.label,
+        x: Math.round(evt?.clientX ?? fallback.x - 90),
+        y: Math.round(evt?.clientY ?? fallback.y - 16),
+        width: 180,
+      });
+    });
+    graph.on('edge:mouseenter', ({ edge }) => setHoveredMessageId(edge.id));
+    graph.on('edge:mouseleave', ({ edge }) => {
+      setHoveredMessageId((current) => (current === edge.id ? null : current));
     });
 
     // Save edge Y position when dragged
@@ -320,50 +460,73 @@ const SeqEditor: React.FC = () => {
       const store = useDiagramStore.getState();
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const key = e.key.toLowerCase();
+      const modifier = e.ctrlKey || e.metaKey;
 
-      if (e.ctrlKey && e.key === 'c') {
+      if (modifier && key === 'c') {
         if (store.selectedLifelineId) {
           const ll = (getActiveDiagram().lifelines || []).find((l) => l.id === store.selectedLifelineId);
           if (ll) clipboard.current = JSON.parse(JSON.stringify(ll));
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (modifier && key === 'v') {
+        e.preventDefault();
         if (clipboard.current) {
           const c = clipboard.current;
-          store.addLifeline(c.x + 30);
-          // Apply copied name
-          const store2 = useDiagramStore.getState();
-          const lls = getActiveDiagram().lifelines || [];
-          const pasted = lls[lls.length - 1];
-          if (pasted) {
-            store2.updateLifeline(pasted.id, {
-              name: c.name, class_ref: c.class_ref,
-              activations: [...(c.activations || [])],
-            });
+          store.beginBatch();
+          try {
+            store.addLifeline(c.x + 30);
+            // Apply copied name
+            const store2 = useDiagramStore.getState();
+            const lls = getActiveDiagram().lifelines || [];
+            const pasted = lls[lls.length - 1];
+            if (pasted) {
+              store2.updateLifeline(pasted.id, {
+                name: c.name, class_ref: c.class_ref,
+                activations: [...(c.activations || [])],
+              });
+            }
+          } finally {
+            store.endBatch();
           }
         }
-      } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+      } else if (modifier && key === 'z' && !e.shiftKey) {
         e.preventDefault(); store.undo();
-      } else if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      } else if (modifier && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault(); store.redo();
+      } else if (key === 'escape') {
+        e.preventDefault();
+        graph.cleanSelection();
+        selectLifeline(null);
+        selectMessage(null);
+        (graph as any).__selectedFragment = null;
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // Delete selected element
         const fragId = (graph as any).__selectedFragment;
-        if (fragId) {
+        const targetIds = {
+          fragment: fragId || '',
+          message: store.selectedMessageId || '',
+          lifeline: store.selectedLifelineId || '',
+        };
+        if (targetIds.fragment || targetIds.message || targetIds.lifeline) {
           e.preventDefault();
-          store.removeFragment(fragId);
+          store.beginBatch();
+          try {
+            if (targetIds.fragment) store.removeFragment(targetIds.fragment);
+            else if (targetIds.message) store.removeMessage(targetIds.message);
+            else if (targetIds.lifeline) store.removeLifeline(targetIds.lifeline);
+          } finally {
+            store.endBatch();
+          }
+          selectLifeline(null);
+          selectMessage(null);
           (graph as any).__selectedFragment = null;
-        } else if (store.selectedMessageId) {
-          e.preventDefault();
-          store.removeMessage(store.selectedMessageId);
-        } else if (store.selectedLifelineId) {
-          e.preventDefault();
-          store.removeLifeline(store.selectedLifelineId);
         }
       }
     };
     document.addEventListener('keydown', handleKeyDown);
 
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
@@ -372,29 +535,55 @@ const SeqEditor: React.FC = () => {
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       document.removeEventListener('keydown', handleKeyDown);
-      detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useCanvasGraphViewport(graphRef, containerRef, viewport);
+
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
   const htmlCache = useRef<Map<string, string>>(new Map());
-  const renderCache = useRef<Map<string, { entity: SeqLifeline; selected: boolean; html: string }>>(new Map());
+  const renderCache = useRef<Map<string, {
+    entity: SeqLifeline;
+    selected: boolean;
+    endpointHighlighted: boolean;
+    autoActivationSignature: string;
+    theme: CanvasTheme;
+    html: string;
+  }>>(new Map());
   const lifelineSignatureCache = useRef<Map<string, string>>(new Map());
   const messageSignatureCache = useRef<Map<string, string>>(new Map());
   const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
       const lifelines = diagram.lifelines || [];
       const messages = diagram.messages || [];
+      const selectedMessage = messages.find((message) => message.id === selectedMessageId);
+      const selectedEndpointIds = new Set(
+        selectedMessage
+          ? [selectedMessage.from_lifeline, selectedMessage.to_lifeline]
+          : [],
+      );
+      const themeChanged = renderedTheme.current !== canvasTheme;
+      const autoActivationMap = new Map<string, number[]>();
+      messages.forEach((message) => {
+        if (message.type === 'return') return;
+        const activationLifeline = message.to_lifeline || message.from_lifeline;
+        const activations = autoActivationMap.get(activationLifeline) || [];
+        activations.push(getMessageY(message));
+        autoActivationMap.set(activationLifeline, activations);
+      });
       const currentLIds = new Set(lifelines.map((l) => l.id));
 
       // Remove deleted lifelines
@@ -412,7 +601,7 @@ const SeqEditor: React.FC = () => {
       // _SEQ_START_Y=190. Using msg.y directly avoids drift from formula mismatches.
       let maxMsgY = 0;
       for (const m of messages) {
-        const y = m.y || (LIFELINE_Y + 30 + m.order * 45);
+        const y = getMessageY(m);
         if (y > maxMsgY) maxMsgY = y;
       }
       const neededHeight = Math.max(
@@ -423,23 +612,61 @@ const SeqEditor: React.FC = () => {
       // Add/update lifelines (coordinate validation handled by store)
       lifelines.forEach((ll) => {
         const selected = ll.id === selectedLifelineId;
+        const endpointHighlighted = selectedEndpointIds.has(ll.id);
+        const autoActivationYs = autoActivationMap.get(ll.id) || [];
+        const autoActivationSignature = JSON.stringify(autoActivationYs);
         const cachedRender = renderCache.current.get(ll.id);
         const htmlContent = cachedRender?.entity === ll && cachedRender.selected === selected
+          && cachedRender.endpointHighlighted === endpointHighlighted
+          && cachedRender.autoActivationSignature === autoActivationSignature
+          && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildLifelineHTML(ll, selected);
+          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
+          canvasTheme, endpointHighlighted,
         ]);
-        renderCache.current.set(ll.id, { entity: ll, selected, html: htmlContent });
+        const lineColor = endpointHighlighted
+          ? (canvasTheme === 'dark' ? '#60a5fa' : '#2563eb')
+          : canvasTheme === 'blueprint' ? '#0284c7' : canvasTheme === 'dark' ? '#64748b' : '#94a3b8';
+        const lifelineLine = {
+          x1: LIFELINE_WIDTH / 2,
+          y1: 45,
+          x2: LIFELINE_WIDTH / 2,
+          y2: Math.max(50, neededHeight - 4),
+          stroke: lineColor,
+          strokeWidth: endpointHighlighted ? 1.6 : 1.2,
+          strokeDasharray: '6 5',
+          fill: 'none',
+          pointerEvents: 'none',
+        };
+        renderCache.current.set(ll.id, {
+          entity: ll,
+          selected,
+          endpointHighlighted,
+          autoActivationSignature,
+          theme: canvasTheme,
+          html: htmlContent,
+        });
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
-            if (lifelineSignatureCache.current.get(ll.id) === signature) return;
+            // A theme change must refresh every lifeline, even if an older
+            // cache entry accidentally reports the same layout signature.
+            if (!themeChanged && lifelineSignatureCache.current.get(ll.id) === signature) return;
             const node = existing as Node;
             node.setPosition(ll.x, LIFELINE_Y);
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
-            if (cached !== htmlContent) {
+            node.setAttrs({
+              body: {
+                stroke: 'transparent',
+                strokeWidth: 0,
+                fill: 'transparent',
+              },
+              lifelineLine,
+            });
+            if (themeChanged || cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(ll.id, htmlContent);
             }
@@ -450,7 +677,15 @@ const SeqEditor: React.FC = () => {
               shape: 'seq-lifeline',
               x: ll.x, y: LIFELINE_Y,
               width: LIFELINE_WIDTH, height: neededHeight,
-              attrs: { content: { html: htmlContent } },
+              attrs: {
+                content: { html: htmlContent },
+                body: {
+                  stroke: 'transparent',
+                  strokeWidth: 0,
+                  fill: 'transparent',
+                },
+                lifelineLine,
+              },
             });
             htmlCache.current.set(ll.id, htmlContent);
             if (node) lifelineSignatureCache.current.set(ll.id, signature);
@@ -459,6 +694,67 @@ const SeqEditor: React.FC = () => {
           console.warn('[SeqEditor] Sync lifeline error:', ll.name, e);
         }
       });
+
+      // Keep activation bars as native graph nodes so their position and style
+      // survive SVG/PNG export instead of depending on foreignObject layout.
+      const activationIds = new Set<string>();
+      lifelines.forEach((ll) => {
+        const explicitActivations = (ll.activations || []).map((y, index) => ({
+          id: `${ll.id}__activation__explicit__${index}`,
+          top: LIFELINE_Y + 45 + y - 6,
+          width: 32,
+          height: 18,
+          auto: false,
+        }));
+        const autoActivations = (autoActivationMap.get(ll.id) || []).map((messageY, index) => ({
+          id: `${ll.id}__activation__auto__${index}`,
+          top: messageY - 9,
+          width: 28,
+          height: 20,
+          auto: true,
+        }));
+        [...explicitActivations, ...autoActivations].forEach((activation) => {
+          activationIds.add(activation.id);
+          const x = ll.x + LIFELINE_WIDTH / 2 - activation.width / 2;
+          const fill = canvasTheme === 'dark'
+            ? activation.auto ? '#1e3a5f' : '#1e3a5f'
+            : canvasTheme === 'blueprint'
+              ? '#e0f2fe'
+              : activation.auto ? '#dbeafe' : '#eff6ff';
+          const stroke = canvasTheme === 'blueprint' ? '#0284c7' : '#3b82f6';
+          const nodeAttrs = {
+            body: {
+              fill,
+              stroke,
+              strokeWidth: 1,
+              opacity: activation.auto ? 0.82 : 1,
+              pointerEvents: 'none',
+            },
+          };
+          const existing = graph.getCellById(activation.id);
+          if (existing && existing.isNode()) {
+            const node = existing as Node;
+            node.setPosition(x, activation.top);
+            node.setSize({ width: activation.width, height: activation.height });
+            node.setAttrs(nodeAttrs);
+          } else {
+            graph.addNode({
+              id: activation.id,
+              shape: 'seq-activation',
+              x,
+              y: activation.top,
+              width: activation.width,
+              height: activation.height,
+              attrs: nodeAttrs,
+            });
+          }
+        });
+      });
+      graph.getNodes()
+        .filter((node) => node.shape === 'seq-activation' && !activationIds.has(node.id))
+        .forEach((node) => {
+          try { graph.removeCell(node.id); } catch { /* ignore */ }
+        });
 
       // Remove deleted messages (those in graph but not in data)
       const graphEdgeIds = new Set(graph.getEdges().map((e) => e.id));
@@ -472,41 +768,73 @@ const SeqEditor: React.FC = () => {
 
       // Add/update messages — use persisted msg.y, fall back to order-based calculation
       const lifelineMap = new Map(lifelines.map((l) => [l.id, l]));
-      const MSG_Y_BASE = LIFELINE_Y + 30;
       messages.forEach((msg) => {
         const srcLL = lifelineMap.get(msg.from_lifeline);
         const tgtLL = lifelineMap.get(msg.to_lifeline);
         if (!srcLL || !tgtLL) return;
 
         const isSelf = msg.from_lifeline === msg.to_lifeline;
-        const msgY = msg.y || MSG_Y_BASE + msg.order * 45;  // persisted Y takes priority; fallback matches backend 45px gap
+        const msgY = getMessageY(msg);  // persisted Y takes priority
 
-        // Connect from source lifeline edge → target lifeline edge
-        // Self-messages stay on right side; normal messages connect edges
+        // Connect to the visual axis of each lifeline instead of the outer
+        // node boundary. This makes messages feel anchored to the dashed line.
+        const sourceAxisX = srcLL.x + LIFELINE_WIDTH / 2;
+        const targetAxisX = tgtLL.x + LIFELINE_WIDTH / 2;
+        // Self-messages consistently open to the right for a stable visual language.
+        const selfLoopDirection = 1;
         let fromX: number, toX: number;
         if (isSelf) {
-          fromX = srcLL.x + LIFELINE_WIDTH;
-          toX   = srcLL.x + LIFELINE_WIDTH;
+          fromX = sourceAxisX;
+          toX = sourceAxisX;
         } else {
-          const srcIsLeft = srcLL.x <= tgtLL.x;
-          fromX = srcIsLeft ? srcLL.x + LIFELINE_WIDTH : srcLL.x;
-          toX   = srcIsLeft ? tgtLL.x : tgtLL.x + LIFELINE_WIDTH;
+          fromX = sourceAxisX;
+          toX = targetAxisX;
         }
 
-        let strokeColor = '#1890ff';
-        let strokeDash = '';
-        if (msg.type === 'return') { strokeColor = '#888'; strokeDash = '6,3'; }
-        else if (msg.type === 'simple') { strokeColor = '#333'; }
-        else if (msg.type === 'async') { strokeColor = '#52c41a'; }
-
+        const isSelected = msg.id === selectedMessageId;
+        const isHovered = msg.id === hoveredMessageId;
+        const visual = getMessageVisual(msg.type, canvasTheme);
+        const strokeColor = isSelected
+          ? (canvasTheme === 'dark' ? '#93c5fd' : '#1d4ed8')
+          : visual.color;
+        const strokeDash = visual.dash;
+        const labelPosition = {
+          distance: 0.5,
+          offset: isSelf ? { x: 0, y: -14 } : -12,
+        };
         const lineAttrs: Record<string, unknown> = {
           stroke: strokeColor,
-          strokeWidth: 2,
+          strokeWidth: isSelected ? 3 : isHovered ? 2.5 : 1.8,
           strokeDasharray: strokeDash,
-          targetMarker: { name: 'block', width: 10, height: 6 },
+          targetMarker: visual.marker,
         };
+        const interactionAttrs = {
+          stroke: 'transparent',
+          strokeWidth: 14,
+          fill: 'none',
+          pointerEvents: 'stroke',
+        };
+        const edgeLabels = msg.label ? [{
+          attrs: {
+            text: {
+              text: msg.label,
+              fontSize: isSelected || isHovered ? 11 : 10,
+              fontWeight: isSelected ? 600 : 500,
+              fill: strokeColor,
+            },
+            rect: {
+              fill: canvasTheme === 'dark' ? '#172033' : '#ffffff',
+              stroke: isSelected ? strokeColor : canvasTheme === 'dark' ? '#334155' : '#e2e8f0',
+              strokeWidth: isSelected ? 1 : 0.6,
+              rx: 4,
+              ry: 4,
+            },
+          },
+          position: labelPosition,
+        }] : [];
         const signature = JSON.stringify([
-          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, strokeColor, strokeDash,
+          srcLL.x, tgtLL.x, msgY, isSelf, msg.label, msg.type, strokeColor, strokeDash,
+          selfLoopDirection, isSelected, isHovered, canvasTheme,
         ]);
 
         try {
@@ -519,48 +847,36 @@ const SeqEditor: React.FC = () => {
             edge.setTarget({ x: toX, y: isSelf ? msgY + 24 : msgY });
             if (isSelf) {
               edge.setVertices([
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY },
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY + 24 },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY + 24 },
               ]);
             } else {
               edge.setVertices([]);
             }
-            edge.setLabels(msg.label ? [{
-              attrs: {
-                text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                rect: { fill: '#fff', stroke: 'none', rx: 2 },
-              },
-              position: { distance: 0.5, offset: -12 },
-            }] : []);
+            edge.setLabels(edgeLabels);
             edge.setAttrByPath('line/stroke', strokeColor);
+            edge.setAttrByPath('line/strokeWidth', isSelected ? 3 : isHovered ? 2.5 : 1.8);
             edge.setAttrByPath('line/strokeDasharray', strokeDash);
+            edge.setAttrByPath('line/targetMarker', visual.marker);
+            edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);
+            edge.setAttrByPath('wrap/strokeWidth', interactionAttrs.strokeWidth);
+            edge.setAttrByPath('wrap/pointerEvents', interactionAttrs.pointerEvents);
             messageSignatureCache.current.set(msg.id, signature);
             return;
           }
 
-          // New edge
-          const edgeLabel = msg.label
-            ? [{
-                attrs: {
-                  text: { text: msg.label, fontSize: 10, fill: strokeColor },
-                  rect: { fill: '#fff', stroke: 'none', rx: 2 },
-                },
-                position: { distance: 0.5, offset: -12 },
-              }]
-            : undefined;
-
           if (isSelf) {
             const edge = graph.addEdge({
               id: msg.id,
-              source: { x: srcLL.x + LIFELINE_WIDTH, y: msgY },
-              target: { x: srcLL.x + LIFELINE_WIDTH, y: msgY + 24 },
+              source: { x: sourceAxisX, y: msgY },
+              target: { x: sourceAxisX, y: msgY + 24 },
               vertices: [
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY },
-                { x: srcLL.x + LIFELINE_WIDTH + 40, y: msgY + 24 },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY },
+                { x: sourceAxisX + selfLoopDirection * 40, y: msgY + 24 },
               ],
-              labels: edgeLabel,
+              labels: edgeLabels,
               connector: { name: 'rounded' },
-              attrs: { line: lineAttrs },
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) messageSignatureCache.current.set(msg.id, signature);
           } else {
@@ -568,8 +884,8 @@ const SeqEditor: React.FC = () => {
               id: msg.id,
               source: { x: fromX, y: msgY },
               target: { x: toX, y: msgY },
-              labels: edgeLabel,
-              attrs: { line: lineAttrs },
+              labels: edgeLabels,
+              attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) messageSignatureCache.current.set(msg.id, signature);
           }
@@ -599,7 +915,12 @@ const SeqEditor: React.FC = () => {
         const h = Math.max(60, (f.y_end || (yStart + 120)) - yStart);
         const stroke = f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
         const dash = f.type === 'opt' ? '4,2' : '';
-        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash]);
+        const fill = f.type === 'alt'
+          ? 'rgba(114,46,209,0.05)'
+          : f.type === 'loop'
+            ? 'rgba(24,144,255,0.05)'
+            : 'rgba(100,116,139,0.04)';
+        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash, fill]);
         try {
           const existing = graph.getCellById(f.id);
           if (existing && existing.isNode()
@@ -620,11 +941,16 @@ const SeqEditor: React.FC = () => {
             fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
             fn.setAttrByPath('body/stroke', stroke);
             fn.setAttrByPath('body/strokeDasharray', dash);
+            fn.setAttrByPath('body/fill', fill);
+            // Fragments are visual containers. Keep them behind lifelines and
+            // message edges so elements inside a loop remain selectable.
+            fn.toBack();
             fragmentSignatureCache.current.set(f.id, signature);
           }
         } catch (e) { /* ignore */ }
       });
 
+      renderedTheme.current = canvasTheme;
       prevLifelineIds.current = currentLIds;
       isInternalUpdate.current = false;
 
@@ -640,13 +966,7 @@ const SeqEditor: React.FC = () => {
         setTimeout(() => {
           const g = graphRef.current;
           if (!g) return;
-          g.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-          const sidebarW = useUiStore.getState().rightPanelWidth;
-          const bbox = g.getAllCellsBBox?.() || g.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-          const visibleW = g.options.width - sidebarW;
-          if (bbox.width < visibleW - 40) {
-            g.translate(g.translate().tx - sidebarW / 2, g.translate().ty);
-          }
+          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
         }, 200);
       }
 
@@ -654,45 +974,20 @@ const SeqEditor: React.FC = () => {
       console.error('[SeqEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId]);
+  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId, selectedMessageId, canvasTheme]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    if (Math.abs(graph.zoom() - viewport.zoom) > 0.001) {
-      graph.zoomTo(viewport.zoom);
-    }
-  }, [viewport.zoom]);
-
-  // Restore persisted translation when switching diagrams or loading a project.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const translation = graph.translate();
-    if (
-      Math.abs(translation.tx - viewport.panX) > 0.5
-      || Math.abs(translation.ty - viewport.panY) > 0.5
-    ) {
-      graph.translate(viewport.panX, viewport.panY);
-    }
-  }, [viewport.panX, viewport.panY]);
-
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;
     if (!graph) return;
-    try {
-      if (diagram.grid_visible !== false) {
-        graph.showGrid();
-        graph.setGridSize(diagram.grid_size || 20);
-        graph.drawGrid({ size: diagram.grid_size || 20,
-          args: { color: diagram.grid_color || '#e0e0e0', thickness: diagram.grid_thickness || 1 } });
-      } else {
-        graph.hideGrid();
-      }
-    } catch (e) { /* ignore */ }
+    syncCanvasGrid(graph, {
+      visible: diagram.grid_visible !== false,
+      size: diagram.grid_size || 20,
+      color: diagram.grid_color || '#e0e0e0',
+      thickness: diagram.grid_thickness || 1,
+    });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
 
   // ── Auto-center on recenter trigger ───────────────
@@ -705,13 +1000,7 @@ const SeqEditor: React.FC = () => {
     setTimeout(() => {
       const g2 = graphRef.current;
       if (!g2) return;
-      g2.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-      const sidebarW = useUiStore.getState().rightPanelWidth;
-      const bbox = g2.getAllCellsBBox?.() || g2.getContentBBox?.() || { x: 0, y: 0, width: 0, height: 0 };
-      const visibleW = g2.options.width - sidebarW;
-      if (bbox.width < visibleW - 40) {
-        g2.translate(g2.translate().tx - sidebarW / 2, g2.translate().ty);
-      }
+      centerCanvasContent(g2, useUiStore.getState().rightPanelWidth);
     }, 100);
   }, [recenterCounter]);
 
@@ -719,7 +1008,11 @@ const SeqEditor: React.FC = () => {
   const [showToolbar, setShowToolbar] = useState(true);
 
   const handleAddLifeline = useCallback(() => {
-    const x = 150 + Math.random() * 300;
+    const lifelines = getActiveDiagram().lifelines || [];
+    const rightmostX = lifelines.reduce((maxX, lifeline) => Math.max(maxX, lifeline.x), 0);
+    // Keep the new participant beside the current rightmost one. The 220px
+    // step leaves room for the 140px header and a comfortable visual gap.
+    const x = lifelines.length > 0 ? rightmostX + 220 : 200;
     addLifeline(x);
   }, [addLifeline]);
 
@@ -750,11 +1043,41 @@ const SeqEditor: React.FC = () => {
           background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6,
           padding: '4px 6px', display: 'flex', gap: 4, alignItems: 'center',
           boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
-          flexWrap: 'wrap', maxWidth: 360,
+          flexWrap: 'wrap', maxWidth: 480,
         }}>
           <Tooltip title="添加生命线">
             <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>生命线</Button>
           </Tooltip>
+          <Tooltip title="先选择消息类型，再依次点击发送方和接收方生命线">
+            <Select
+              size="small"
+              value={messageMode}
+              onChange={(value: MessageType) => {
+                messageModeRef.current = value;
+                setMessageMode(value);
+              }}
+              options={(Object.keys(MESSAGE_TYPE_LABELS) as MessageType[]).map((type) => ({
+                value: type,
+                label: MESSAGE_TYPE_LABELS[type],
+              }))}
+              style={{ width: 104 }}
+            />
+          </Tooltip>
+          {(diagram.lifelines || []).length > 0 && (
+            <Tooltip title="均匀排列生命线并整理消息时间轴">
+              <Button size="small" onClick={arrangeSequence}>整理</Button>
+            </Tooltip>
+          )}
+          {(diagram.lifelines || []).length > 0 && (
+            <Tooltip title="将时序图自动居中到可视画布">
+              <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>居中</Button>
+            </Tooltip>
+          )}
+          {(diagram.fragments || []).length > 0 && (
+            <Tooltip title="根据片段内消息自动调整 loop、alt 等片段范围">
+              <Button size="small" onClick={fitSequenceFragments}>适配片段</Button>
+            </Tooltip>
+          )}
           <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>片段:</span>
           {(Object.keys(FRAGMENT_LABELS) as FragmentType[]).map((t) => (
             <Tooltip key={t} title={`添加 ${FRAGMENT_LABELS[t]} 片段`}>
@@ -762,6 +1085,12 @@ const SeqEditor: React.FC = () => {
                 style={{ fontSize: 11, padding: '0 6px' }}>{FRAGMENT_LABELS[t]}</Button>
             </Tooltip>
           ))}
+          <div className="seq-legend" aria-label="消息类型图例">
+            <span className="seq-legend-item"><i className="seq-legend-line" />同步</span>
+            <span className="seq-legend-item"><i className="seq-legend-line async" />异步</span>
+            <span className="seq-legend-item"><i className="seq-legend-line return" />返回</span>
+            <span className="seq-legend-item"><i className="seq-legend-line self" />自反</span>
+          </div>
           <Button size="small" type="text"
             onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
@@ -776,9 +1105,38 @@ const SeqEditor: React.FC = () => {
         </div>
       )}
 
-      <div ref={containerRef} className="seq-canvas-container" />
+      <div ref={containerRef} className={`seq-canvas-container theme-${canvasTheme}`} />
 
-      {/* Fragment right-click menu */}
+      {inlineEdit && (
+        <input
+          ref={inlineInputRef}
+          className={`seq-inline-editor theme-${canvasTheme}`}
+          value={inlineEdit.value}
+          onChange={(event) => setInlineEdit({ ...inlineEdit, value: event.target.value })}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commitInlineEdit();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              setInlineEdit(null);
+            }
+          }}
+          onBlur={commitInlineEdit}
+          onMouseDown={(event) => event.stopPropagation()}
+          style={{
+            position: 'fixed',
+            left: inlineEdit.x,
+            top: inlineEdit.y,
+            width: inlineEdit.width,
+            zIndex: 1200,
+          }}
+          aria-label="图内编辑"
+        />
+      )}
+
+      {/* Canvas right-click menu */}
       {ctxMenu.visible && (
         <div
           style={{
@@ -788,24 +1146,43 @@ const SeqEditor: React.FC = () => {
           }}
           onClick={() => setCtxMenu({ ...ctxMenu, visible: false })}
         >
-          <div
-            style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            onClick={() => {
-              const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
-              if (fn) (fn as Node).toBack();
-            }}
-          >置于底层</div>
-          <div
-            style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            onClick={() => {
-              const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
-              if (fn) (fn as Node).toFront();
-            }}
-          >置于上层</div>
+          {ctxMenu.kind === 'lifeline' && (
+            <div
+              style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                useDiagramStore.getState().addMessage(
+                  ctxMenu.nodeId,
+                  ctxMenu.nodeId,
+                  'self',
+                  ctxMenu.messageY,
+                );
+              }}
+            >添加自反消息</div>
+          )}
+          {ctxMenu.kind === 'fragment' && (
+            <>
+              <div
+                style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
+                  if (fn) (fn as Node).toBack();
+                }}
+              >置于底层</div>
+              <div
+                style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
+                  if (fn) (fn as Node).toFront();
+                }}
+              >置于上层</div>
+            </>
+          )}
         </div>
       )}
       {/* Click anywhere to close menu */}

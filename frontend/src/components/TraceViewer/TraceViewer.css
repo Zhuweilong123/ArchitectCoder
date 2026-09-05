@@ -127,6 +127,20 @@
   overflow: auto;
 }
 
+.trace-expandable {
+  min-width: 0;
+}
+
+.trace-pre-expanded {
+  max-height: 70vh;
+}
+
+.trace-expand-toggle {
+  padding: 2px 0 !important;
+  height: auto;
+  font-size: 12px;
+}
+
 .trace-diff {
   padding: 8px;
   background: #fafafa;

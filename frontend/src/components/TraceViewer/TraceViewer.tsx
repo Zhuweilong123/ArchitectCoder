@@ -70,6 +70,40 @@ function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function ExpandablePre({
+  text,
+  limit = 3000,
+  className = 'trace-pre',
+}: {
+  text: string;
+  limit?: number;
+  className?: string;
+}): React.ReactNode {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > limit;
+  const displayText = expanded ? text : truncate(text, limit);
+
+  return (
+    <div className="trace-expandable">
+      <pre className={`${className}${expanded ? ' trace-pre-expanded' : ''}`}>{displayText}</pre>
+      {isLong ? (
+        <Button
+          type="link"
+          size="small"
+          className="trace-expand-toggle"
+          aria-expanded={expanded}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+        >
+          {expanded ? '收起' : `展开完整内容（共 ${text.length.toLocaleString()} 字）`}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 // ── 回放结果缓存（localStorage，跨抽屉/页面刷新保留）──────────
 const REPLAY_CACHE_PREFIX = 'traceReplay:v3:';
 
@@ -183,7 +217,7 @@ function renderMessages(systemPrompt?: string, messages?: any[]): React.ReactNod
       {msgs.map((m, i) => (
         <div className="trace-msg" key={i}>
           <div className="trace-msg-role">{m.role}</div>
-          <pre className="trace-pre">{truncate(m.content, 3000)}</pre>
+          <ExpandablePre text={m.content} limit={3000} />
         </div>
       ))}
     </div>
@@ -201,7 +235,7 @@ function renderToolSchema(tools: any[]): React.ReactNode {
           </div>
         ))}
       </div>
-      <pre className="trace-pre">{truncate(pretty(tools), 4000)}</pre>
+      <ExpandablePre text={pretty(tools)} limit={4000} />
     </div>
   );
 }

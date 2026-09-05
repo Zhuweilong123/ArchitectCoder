@@ -62,6 +62,7 @@
   "version": "1.0",
   "name": "DiagramName",
   "diagram_type": "class",
+  "component_id": "",
   "classes": [ ... ],
   "relations": [ ... ],
   // 以下字段按需保留默认值：
@@ -102,7 +103,7 @@
 | `-` | private | 私有 |
 | `#` | protected | 受保护 |
 
-**严格约束：visibility 只能使用 `+`、`-`、`#` 三个字符。** 不接受 `"public"` 等字符串形式（后端会在 normalize 阶段自动转换，但直接输出正确值更可靠）。
+**规范输出：visibility 只能使用 `+`、`-`、`#` 三个字符。** `public`、`private` 等文字只属于 LLM 兼容输入，不应写入持久化 JSON。
 
 ### 2.3 RelationType（关系类型）
 
@@ -119,7 +120,8 @@
 - 实现和依赖关系为**虚线**（`strokeDasharray: "5,5"`）
 - `source` 指向关系起点类，`target` 指向关系终点类
 - 继承/实现：子类为 source，父类/接口为 target
-- 别名兼容：后端会识别 `generalization→inheritance`、`implements→realization` 等
+- UML 2.5.1 中泛化使用 `inheritance`，接口实现使用 `realization`；不要把“继承”和“实现”混用
+- `generalization`、`implements` 等别名只属于 LLM 兼容输入，不应写入持久化 JSON
 
 ---
 
@@ -189,8 +191,11 @@
 - 具体数字如 `"2..4"` — 范围
 
 示例：`aggregation` 关系中
-- `multiplicity_source: "1"` — 整体端恰好一个
-- `multiplicity_target: "*"` — 部分端零到多个
+- `source` 是整体，`target` 是部分
+- `multiplicity_source: "1"` — 一个整体实例参与该关系
+- `multiplicity_target: "0..*"` — 一个整体可聚合零到多个部分
+
+多重性描述的是**对端实例数量**，不要把 `1` 理解成“这条线只有一个对象”。如果没有可靠的业务约束，宁可留空，也不要猜测。
 
 ### 4.3 角色名 (role_name)
 
@@ -204,9 +209,10 @@
 
 ### 5.1 ID 生成规则
 
-- 类 ID：`class_<timestamp>_<random6>`，其中 timestamp 为毫秒时间戳，random6 为 6 位随机字母数字
-- 关系 ID：`rel_<timestamp>_<random6>` 或使用语义化 ID 如 `rel_inherit_order_001`
-- 后端 normalize 会自动为缺失 ID 的实体补全
+- 新建对象可使用 `class_<timestamp>_<random6>`、`rel_<timestamp>_<random6>` 等生成式 ID，也可使用稳定的语义 ID，如 `class_order`、`rel_order_customer`
+- 既有项目中的 ID 是稳定引用，修改时不得重命名或重新生成
+- ID 必须在整个项目中唯一；至少不能与同类实体冲突，跨图引用对象必须使用同一个 ID
+- 兼容层可以为缺失 ID 自动补全，但 LLM 应始终显式输出 ID
 
 ### 5.2 位置布局建议
 
@@ -258,7 +264,7 @@
 
 ### 6.2 常见陷阱
 
-1. **visibility 用 `+`/`-`/`#` 而不是 `"public"`/`"private"`**
+1. **规范 JSON 中 visibility 用 `+`/`-`/`#` 而不是 `"public"`/`"private"`**
 2. **source/target 是类 ID，不是类名**
 3. **每个 id 必须唯一**，不能有重复
 4. **stereotype 只用四个值**：`class`, `interface`, `abstract`, `enum`
@@ -268,6 +274,8 @@
 8. **relations 中的 source/target 必须对应 classes 中存在的 id**
 9. ⚠️ **坐标不能清零**：PRESERVE 所有 position/size 字段（x/y/width/height），NEVER zero them out。如用户要求调整位置则深思熟虑后修改
 10. ⚠️ **跨图引用验证**：class_ref、component_id 等跨图引用字段必须指向实际存在的实体 ID
+11. `default_value` 规范上为字符串或 `null`；没有默认值时使用 `null`，不要用业务字符串表示“未设置”
+12. 接口名是字符串契约，不等同于接口类 ID；如果需要表达接口类型本身，应另建 `stereotype: "interface"` 的类并用 `realization` 连接
 
 ### 6.3 LLM 优化建议
 

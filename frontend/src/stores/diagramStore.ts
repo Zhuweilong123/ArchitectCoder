@@ -2,12 +2,15 @@
 
 import { create } from 'zustand';
 import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project } from '../types/uml';
-import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject } from '../types/uml';
-import type { SeqLifeline, SeqMessage } from '../types/sequence';
+import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
+import type { SeqLifeline, SeqMessage, SeqFragment, MessageType } from '../types/sequence';
 import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
+
+const SEQUENCE_MESSAGE_START_Y = 190;
+const SEQUENCE_MESSAGE_GAP = 48;
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -68,6 +71,72 @@ function _applyViewport(diagram: UmlDiagram, viewport: ViewportState): UmlDiagra
   };
 }
 
+/** Expand a combined fragment when a nearby message enters or moves beyond it. */
+function _expandFragmentForMessage(
+  fragments: SeqFragment[],
+  messageY: number,
+  previousY?: number,
+): SeqFragment[] {
+  return fragments.map((fragment) => {
+    const wasInside = typeof previousY === 'number'
+      && previousY >= fragment.y_start && previousY <= fragment.y_end;
+    const isNear = messageY >= fragment.y_start - 20 && messageY <= fragment.y_end + 45;
+    if (!wasInside && !isNear) return fragment;
+    return {
+      ...fragment,
+      y_start: Math.max(80, Math.min(fragment.y_start, messageY - 24)),
+      y_end: Math.max(fragment.y_end, messageY + 36),
+    };
+  });
+}
+
+/** Calculate a stable message coordinate for both legacy and current diagrams. */
+function _sequenceMessageY(message: SeqMessage): number {
+  return message.y || SEQUENCE_MESSAGE_START_Y + (message.order - 1) * SEQUENCE_MESSAGE_GAP;
+}
+
+/** Fit fragments to the messages currently inside them while preserving empty fragments. */
+function _fitSequenceFragments(
+  fragments: SeqFragment[],
+  messages: SeqMessage[],
+): SeqFragment[] {
+  return fragments.map((fragment) => {
+    const contained = messages
+      .map((message) => ({ message, y: _sequenceMessageY(message) }))
+      .filter(({ y }) => y >= fragment.y_start && y <= fragment.y_end);
+    if (contained.length === 0) return fragment;
+
+    const minY = Math.min(...contained.map(({ y }) => y));
+    const maxY = Math.max(...contained.map(({ y }) => y));
+    return {
+      ...fragment,
+      y_start: Math.max(80, minY - 28),
+      y_end: Math.max(minY + 72, maxY + 36),
+    };
+  });
+}
+
+/** Keep newly inserted messages readable without overriding an intentional click position. */
+function _allocateSequenceMessageY(
+  messages: SeqMessage[],
+  requestedY: number,
+  minGap = 28,
+): number {
+  const occupied = messages.map((message) => message.y || 0).filter((y) => y > 0);
+  if (!occupied.some((y) => Math.abs(y - requestedY) < minGap)) return requestedY;
+
+  for (let step = 1; step <= 20; step += 1) {
+    const candidates = [
+      requestedY + step * SEQUENCE_MESSAGE_GAP,
+      requestedY - step * SEQUENCE_MESSAGE_GAP,
+    ];
+    const available = candidates.find((candidate) => candidate >= 150
+      && !occupied.some((y) => Math.abs(y - candidate) < minGap));
+    if (typeof available === 'number') return available;
+  }
+  return requestedY + SEQUENCE_MESSAGE_GAP;
+}
+
 // Helper: update the active diagram within a project
 function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlDiagram): Project {
   const idx = project.active_diagram_index;
@@ -83,6 +152,7 @@ export interface DiagramState {
   /** Viewport is kept separate so pan/zoom does not invalidate diagram content subscriptions. */
   viewport: ViewportState;
   selectedClassId: string | null;
+  selectedClassIds: string[];
   selectedRelationId: string | null;
   isModified: boolean;
   currentFilepath: string | null;
@@ -133,6 +203,10 @@ export interface DiagramState {
   moveClass: (id: string, position: Position) => void;
   resizeClass: (id: string, size: Size) => void;
   selectClass: (id: string | null) => void;
+  selectClasses: (ids: string[]) => void;
+  alignClasses: (direction: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
+  distributeClasses: (axis: 'horizontal' | 'vertical') => void;
+  autoLayoutClasses: () => void;
 
   // ── Relation operations ────────────────────────
 
@@ -153,9 +227,11 @@ export interface DiagramState {
   moveLifeline: (id: string, x: number) => void;
   updateLifeline: (id: string, updates: Partial<SeqLifeline>) => void;
 
-  addMessage: (from: string, to: string) => void;
+  addMessage: (from: string, to: string, type?: MessageType, y?: number) => void;
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
+  arrangeSequence: () => void;
+  fitSequenceFragments: () => void;
 
   // ── Fragment operations (UML 2.5.1) ───────────
   addFragment: (y?: number) => void;
@@ -173,6 +249,7 @@ export interface DiagramState {
   removeComponent: (id: string) => void;
   moveComponent: (id: string, x: number, y: number) => void;
   updateComponent: (id: string, updates: Partial<CompNode>) => void;
+  autoLayoutComponents: () => void;
 
   addCompRelation: (source: string, target: string) => void;
   removeCompRelation: (id: string) => void;
@@ -220,6 +297,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   project: _initialProject,
   viewport: _viewportFromDiagram(_initialDiagram),
   selectedClassId: null,
+  selectedClassIds: [],
   selectedRelationId: null,
   selectedLifelineId: null,
   selectedMessageId: null,
@@ -294,6 +372,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       project,
       viewport: _viewportFromDiagram(_activeDiagram(project)),
       selectedClassId: null,
+      selectedClassIds: [],
       selectedRelationId: null,
       isModified: false,
       currentFilepath: null,
@@ -310,6 +389,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         project: { ...state.project, active_diagram_index: index },
         viewport: _viewportFromDiagram(state.project.diagrams[index]),
         selectedClassId: null,
+        selectedClassIds: [],
         selectedRelationId: null,
         selectedLifelineId: null,
         selectedMessageId: null,
@@ -336,6 +416,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       },
       viewport: _viewportFromDiagram(newD),
       selectedClassId: null,
+      selectedClassIds: [],
       selectedRelationId: null,
       isModified: true,
       undoStack: [],
@@ -452,6 +533,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       selectedClassId: newClass.id,
+      selectedClassIds: [newClass.id],
       selectedRelationId: null,
       isModified: true,
     });
@@ -468,6 +550,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       project,
       selectedClassId: state.selectedClassId === id ? null : state.selectedClassId,
+      selectedClassIds: state.selectedClassIds.filter((classId) => classId !== id),
       isModified: true,
     });
   },
@@ -501,7 +584,226 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  selectClass: (id) => set({ selectedClassId: id, selectedRelationId: null }),
+  selectClass: (id) => set({
+    selectedClassId: id,
+    selectedClassIds: id ? [id] : [],
+    selectedRelationId: null,
+  }),
+
+  selectClasses: (ids) => {
+    const state = get();
+    const availableIds = new Set(_activeDiagram(state.project).classes.map((cls) => cls.id));
+    const selectedClassIds = [...new Set(ids)].filter((id) => availableIds.has(id));
+    set({
+      selectedClassId: selectedClassIds[0] || null,
+      selectedClassIds,
+      selectedRelationId: null,
+    });
+  },
+
+  alignClasses: (direction) => {
+    const state = get();
+    const selectedIds = state.selectedClassIds.length > 1
+      ? state.selectedClassIds
+      : state.selectedClassId ? [state.selectedClassId] : [];
+    const classes = _activeDiagram(state.project).classes.filter((cls) => selectedIds.includes(cls.id));
+    if (classes.length < 2) return;
+
+    const minX = Math.min(...classes.map((cls) => cls.position.x));
+    const minY = Math.min(...classes.map((cls) => cls.position.y));
+    const maxRight = Math.max(...classes.map((cls) => cls.position.x + cls.size.width));
+    const maxBottom = Math.max(...classes.map((cls) => cls.position.y + cls.size.height));
+    const centerX = (minX + maxRight) / 2;
+    const centerY = (minY + maxBottom) / 2;
+
+    const project = _updateActiveDiagram(state.project, (diagram) => ({
+      ...diagram,
+      classes: diagram.classes.map((cls) => {
+        if (!selectedIds.includes(cls.id)) return cls;
+        const position = { ...cls.position };
+        if (direction === 'left') position.x = minX;
+        if (direction === 'center') position.x = centerX - cls.size.width / 2;
+        if (direction === 'right') position.x = maxRight - cls.size.width;
+        if (direction === 'top') position.y = minY;
+        if (direction === 'middle') position.y = centerY - cls.size.height / 2;
+        if (direction === 'bottom') position.y = maxBottom - cls.size.height;
+        return { ...cls, position };
+      }),
+    }));
+    get().pushSnapshot(`align_${direction}`);
+    set({ project, isModified: true });
+  },
+
+  distributeClasses: (axis) => {
+    const state = get();
+    const selectedIds = state.selectedClassIds.length > 2
+      ? state.selectedClassIds
+      : state.selectedClassId ? [state.selectedClassId] : [];
+    const classes = _activeDiagram(state.project).classes
+      .filter((cls) => selectedIds.includes(cls.id))
+      .sort((a, b) => axis === 'horizontal'
+        ? a.position.x - b.position.x
+        : a.position.y - b.position.y);
+    if (classes.length < 3) return;
+
+    const start = axis === 'horizontal' ? classes[0].position.x : classes[0].position.y;
+    const last = classes[classes.length - 1];
+    const end = axis === 'horizontal'
+      ? last.position.x + last.size.width
+      : last.position.y + last.size.height;
+    const totalSize = classes.reduce((sum, cls) => sum + (
+      axis === 'horizontal' ? cls.size.width : cls.size.height
+    ), 0);
+    const gap = (end - start - totalSize) / (classes.length - 1);
+    const positions = new Map<string, number>();
+    let cursor = start;
+    classes.forEach((cls) => {
+      positions.set(cls.id, cursor);
+      cursor += (axis === 'horizontal' ? cls.size.width : cls.size.height) + gap;
+    });
+
+    const project = _updateActiveDiagram(state.project, (diagram) => ({
+      ...diagram,
+      classes: diagram.classes.map((cls) => {
+        const coordinate = positions.get(cls.id);
+        if (coordinate === undefined) return cls;
+        return {
+          ...cls,
+          position: {
+            ...cls.position,
+            ...(axis === 'horizontal' ? { x: coordinate } : { y: coordinate }),
+          },
+        };
+      }),
+    }));
+    get().pushSnapshot(`distribute_${axis}`);
+    set({ project, isModified: true });
+  },
+
+  autoLayoutClasses: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    if (diagram.classes.length < 2) return;
+
+    const classIds = new Set(diagram.classes.map((cls) => cls.id));
+    const hierarchyRelations = diagram.relations.filter((relation) => (
+      (relation.type === RelationType.INHERITANCE || relation.type === RelationType.REALIZATION)
+      && classIds.has(relation.source)
+      && classIds.has(relation.target)
+    ));
+    const relations = hierarchyRelations.length > 0
+      ? hierarchyRelations
+      : diagram.relations.filter((relation) => (
+        classIds.has(relation.source) && classIds.has(relation.target)
+      ));
+    const isHierarchyLayout = hierarchyRelations.length > 0;
+    const outgoing = new Map<string, string[]>();
+    const incoming = new Map<string, string[]>();
+    const indegree = new Map<string, number>();
+    const levels = new Map<string, number>();
+
+    diagram.classes.forEach((cls) => {
+      outgoing.set(cls.id, []);
+      incoming.set(cls.id, []);
+      indegree.set(cls.id, 0);
+      levels.set(cls.id, 0);
+    });
+
+    relations.forEach((relation) => {
+      // UML inheritance is stored child -> parent, while the layout flows
+      // parent -> child so base classes appear above derived classes.
+      const from = isHierarchyLayout ? relation.target : relation.source;
+      const to = isHierarchyLayout ? relation.source : relation.target;
+      const neighbors = outgoing.get(from);
+      if (!neighbors || !indegree.has(to) || neighbors.includes(to)) return;
+      neighbors.push(to);
+      incoming.get(to)?.push(from);
+      indegree.set(to, (indegree.get(to) || 0) + 1);
+    });
+
+    const queue = diagram.classes
+      .filter((cls) => indegree.get(cls.id) === 0)
+      .map((cls) => cls.id);
+    const processed = new Set<string>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const currentId = queue[index];
+      processed.add(currentId);
+      const currentLevel = levels.get(currentId) || 0;
+      outgoing.get(currentId)?.forEach((nextId) => {
+        levels.set(nextId, Math.max(levels.get(nextId) || 0, currentLevel + 1));
+        const nextIndegree = (indegree.get(nextId) || 0) - 1;
+        indegree.set(nextId, nextIndegree);
+        if (nextIndegree === 0) queue.push(nextId);
+      });
+    }
+
+    // Cycles have no meaningful topological level; keep them together below
+    // the resolved hierarchy so the result remains deterministic and usable.
+    if (processed.size < diagram.classes.length) {
+      const maxLevel = Math.max(...Array.from(levels.values()));
+      diagram.classes.forEach((cls) => {
+        if (!processed.has(cls.id)) levels.set(cls.id, maxLevel + 1);
+      });
+    }
+
+    const rows = new Map<number, UmlClass[]>();
+    diagram.classes.forEach((cls) => {
+      const level = levels.get(cls.id) || 0;
+      const row = rows.get(level) || [];
+      row.push(cls);
+      rows.set(level, row);
+    });
+    const startX = 120;
+    const startY = 100;
+    const horizontalGap = 110;
+    const verticalGap = 120;
+    const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
+    const maxRowWidth = Math.max(...orderedLevels.map((level) => (
+      (rows.get(level) || []).reduce((sum, cls) => sum + (cls.size.width || 200), 0)
+      + Math.max(0, (rows.get(level) || []).length - 1) * horizontalGap
+    )));
+    const layoutCenterX = Math.max(680, maxRowWidth / 2 + startX);
+    let nextY = startY;
+    const positions = new Map<string, Position>();
+    const centerById = new Map<string, number>();
+    orderedLevels.forEach((level) => {
+      const row = rows.get(level) || [];
+      row.sort((a, b) => {
+        const averageCenter = (cls: UmlClass) => {
+          const parentCenters = (incoming.get(cls.id) || [])
+            .map((parentId) => centerById.get(parentId))
+            .filter((center): center is number => typeof center === 'number');
+          return parentCenters.length > 0
+            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length
+            : cls.position.x;
+        };
+        return averageCenter(a) - averageCenter(b) || a.position.x - b.position.x || a.id.localeCompare(b.id);
+      });
+      const totalWidth = row.reduce((sum, cls) => sum + (cls.size.width || 200), 0)
+        + Math.max(0, row.length - 1) * horizontalGap;
+      const rowStartX = layoutCenterX - totalWidth / 2;
+      let nextX = rowStartX;
+      row.forEach((cls) => {
+        const width = cls.size.width || 200;
+        positions.set(cls.id, { x: Math.max(startX, nextX), y: nextY });
+        centerById.set(cls.id, nextX + width / 2);
+        nextX += width + horizontalGap;
+      });
+      const rowHeight = Math.max(...row.map((cls) => cls.size.height || 150));
+      nextY += rowHeight + verticalGap;
+    });
+
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      classes: activeDiagram.classes.map((cls) => {
+        const position = positions.get(cls.id);
+        return position ? { ...cls, position } : cls;
+      }),
+    }));
+    get().pushSnapshot('auto_layout');
+    set({ project, isModified: true });
+    get().triggerRecenter();
+  },
 
   // ── Relation operations ────────────────────────────────
 
@@ -544,7 +846,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  selectRelation: (id) => set({ selectedRelationId: id, selectedClassId: null }),
+  selectRelation: (id) => set({
+    selectedRelationId: id,
+    selectedClassId: null,
+    selectedClassIds: [],
+  }),
 
   // ── Sequence diagram operations ────────────────────────
 
@@ -606,20 +912,31 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({ project, isModified: true });
   },
 
-  addMessage: (from, to) => {
+  addMessage: (from, to, type = 'sync', requestedY) => {
     const state = get();
-    const order = (_activeDiagram(state.project).messages?.length || 0) + 1;
-    const y = 150 + order * 40;  // LIFELINE_Y(120) + 30 + order*40
-    const msg = createDefaultMessage(from, to, order, y);
+    const existingMessages = _activeDiagram(state.project).messages || [];
+    const order = existingMessages.length + 1;
+    const preferredY = typeof requestedY === 'number'
+      ? requestedY
+      : SEQUENCE_MESSAGE_START_Y + (order - 1) * SEQUENCE_MESSAGE_GAP;
+    const y = _allocateSequenceMessageY(existingMessages, preferredY);
+    const msg = { ...createDefaultMessage(from, to, order, y), type };
     get().pushSnapshot('add_message');
-    const project = _updateActiveDiagram(state.project, (d) => ({
-      ...d,
-      messages: [...(d.messages || []), msg],
-    }));
-    console.debug('[Store] addMessage:', msg.label, from, '→', to);
+    const project = _updateActiveDiagram(state.project, (d) => {
+      const messages = [...(d.messages || []), msg]
+        .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
+        .map((message, index) => ({ ...message, order: index + 1 }));
+      return {
+        ...d,
+        messages,
+        fragments: _expandFragmentForMessage(d.fragments || [], y),
+      };
+    });
+    console.debug('[Store] addMessage:', msg.label, type, from, '→', to);
     set({
       project,
       selectedMessageId: msg.id,
+      selectedLifelineId: null,
       isModified: true,
     });
   },
@@ -639,11 +956,98 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   updateMessage: (id, updates) => {
+    const state = get();
+    const currentMessage = (_activeDiagram(state.project).messages || []).find((message) => message.id === id);
     get().pushSnapshot('update_message', `update_message:${id}`);
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      messages: (d.messages || []).map((m) =>
+    const project = _updateActiveDiagram(state.project, (d) => {
+      const nextMessages = (d.messages || []).map((m) =>
         m.id === id ? { ...m, ...updates } : m
+      );
+      const fragments = typeof updates.y === 'number'
+        ? _expandFragmentForMessage(
+          d.fragments || [],
+          updates.y,
+          currentMessage?.y,
+        )
+        : d.fragments;
+      if (typeof updates.y !== 'number') return { ...d, messages: nextMessages };
+
+      // Keep persisted order aligned with the visual timeline after an edge
+      // is dragged. Stable tie-breaking prevents messages at the same Y from
+      // swapping on every mouse move.
+      const messages = [...nextMessages]
+        .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
+        .map((message, index) => ({ ...message, order: index + 1 }));
+      return { ...d, messages, fragments };
+    });
+    set({ project, isModified: true });
+  },
+
+  arrangeSequence: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    const lifelines = [...(diagram.lifelines || [])]
+      .sort((a, b) => a.x - b.x || a.id.localeCompare(b.id));
+    const messages = [...(diagram.messages || [])]
+      .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id));
+    if (lifelines.length === 0 && messages.length === 0) return;
+
+    const lifelineX = new Map<string, number>();
+    lifelines.forEach((lifeline, index) => lifelineX.set(lifeline.id, 160 + index * 220));
+
+    const oldMessageY = new Map(messages.map((message) => [
+      message.id,
+      _sequenceMessageY(message),
+    ]));
+    const messageY = new Map<string, number>();
+    const arrangedMessages = messages.map((message, index) => {
+      const y = SEQUENCE_MESSAGE_START_Y + index * SEQUENCE_MESSAGE_GAP;
+      messageY.set(message.id, y);
+      return { ...message, y, order: index + 1 };
+    });
+
+    const arrangedFragments = (diagram.fragments || []).map((fragment) => {
+      const containedMessages = messages.filter((message) => {
+        const y = oldMessageY.get(message.id) || 0;
+        return y >= fragment.y_start && y <= fragment.y_end;
+      });
+      if (containedMessages.length === 0) return fragment;
+      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
+      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
+      return {
+        ...fragment,
+        // Re-fit the fragment to its original message membership. This is
+        // intentionally done by the explicit arrange command so normal
+        // editing can still preserve a user's manually enlarged region.
+        y_start: Math.max(80, minMessageY - 28),
+        y_end: Math.max(minMessageY + 72, maxMessageY + 36),
+      };
+    });
+
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      lifelines: (activeDiagram.lifelines || []).map((lifeline) => ({
+        ...lifeline,
+        x: lifelineX.get(lifeline.id) ?? lifeline.x,
+      })),
+      messages: arrangedMessages,
+      fragments: arrangedFragments,
+    }));
+    get().pushSnapshot('arrange_sequence');
+    set({ project, isModified: true });
+    get().triggerRecenter();
+  },
+
+  fitSequenceFragments: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    if (!(diagram.fragments || []).length || !(diagram.messages || []).length) return;
+    get().pushSnapshot('fit_sequence_fragments');
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      fragments: _fitSequenceFragments(
+        activeDiagram.fragments || [],
+        activeDiagram.messages || [],
       ),
     }));
     set({ project, isModified: true });
@@ -755,19 +1159,39 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   removeComponent: (id) => {
+    const state = get();
+    const removedIds = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      (_activeDiagram(state.project).components || []).forEach((component) => {
+        if (component.parent_id && removedIds.has(component.parent_id) && !removedIds.has(component.id)) {
+          removedIds.add(component.id);
+          changed = true;
+        }
+      });
+    }
+    const removedRelationIds = new Set<string>();
+    (_activeDiagram(state.project).comp_relations || []).forEach((relation) => {
+      if (removedIds.has(relation.source) || removedIds.has(relation.target)) {
+        removedRelationIds.add(relation.id);
+      }
+    });
     get().pushSnapshot('remove_component');
-    const project = _updateActiveDiagram(get().project, (d) => ({
+    const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
-      components: (d.components || []).filter((c) => c.id !== id),
-      comp_relations: (d.comp_relations || []).filter(
-        (r) => r.source !== id && r.target !== id
-      ),
+      components: (d.components || []).filter((c) => !removedIds.has(c.id)),
+      comp_relations: (d.comp_relations || []).filter((r) => !removedRelationIds.has(r.id)),
     }));
     set({
       project,
-      selectedComponentId: get().selectedComponentId === id ? null : get().selectedComponentId,
+      selectedComponentId: state.selectedComponentId && removedIds.has(state.selectedComponentId)
+        ? null : state.selectedComponentId,
+      selectedCompRelationId: state.selectedCompRelationId && removedRelationIds.has(state.selectedCompRelationId)
+        ? null : state.selectedCompRelationId,
       isModified: true,
     });
+    console.debug('[Store] removeComponent:', id, '→ removed subtree:', removedIds.size);
   },
 
   moveComponent: (id, x, y) => {
@@ -790,6 +1214,213 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       ),
     }));
     set({ project, isModified: true });
+  },
+
+  autoLayoutComponents: () => {
+    const state = get();
+    const diagram = _activeDiagram(state.project);
+    const components = diagram.components || [];
+    if (components.length < 2) return;
+
+    const componentById = new Map(components.map((component) => [component.id, component]));
+    const childrenByParent = new Map<string, CompNode[]>();
+    components.forEach((component) => {
+      if (!component.parent_id || !componentById.has(component.parent_id)) return;
+      const children = childrenByParent.get(component.parent_id) || [];
+      children.push(component);
+      childrenByParent.set(component.parent_id, children);
+    });
+    childrenByParent.forEach((children) => children.sort((a, b) => (
+      a.y - b.y || a.x - b.x || a.id.localeCompare(b.id)
+    )));
+
+    const topLevel = components.filter((component) => (
+      !component.parent_id || !componentById.has(component.parent_id)
+    ));
+    const topLevelIds = new Set(topLevel.map((component) => component.id));
+    const sizes = new Map<string, { width: number; height: number }>();
+    components.forEach((component) => {
+      sizes.set(component.id, {
+        width: component.width || (component.parent_id ? 150 : 200),
+        height: component.height || (component.parent_id ? 100 : 160),
+      });
+    });
+
+    const prepareSize = (id: string, visiting = new Set<string>()) => {
+      if (visiting.has(id)) return sizes.get(id)!;
+      const nextVisiting = new Set(visiting).add(id);
+      const children = childrenByParent.get(id) || [];
+      children.forEach((child) => prepareSize(child.id, nextVisiting));
+      if (children.length === 0) return sizes.get(id)!;
+
+      const columns = Math.min(3, children.length);
+      const gapX = 16;
+      const gapY = 18;
+      const columnWidths = Array.from({ length: columns }, () => 0);
+      const rowHeights: number[] = [];
+      children.forEach((child, index) => {
+        const size = sizes.get(child.id)!;
+        const row = Math.floor(index / columns);
+        const column = index % columns;
+        columnWidths[column] = Math.max(columnWidths[column], size.width);
+        rowHeights[row] = Math.max(rowHeights[row] || 0, size.height);
+      });
+      const gridWidth = columnWidths.reduce((sum, width) => sum + width, 0)
+        + Math.max(0, columns - 1) * gapX;
+      const gridHeight = rowHeights.reduce((sum, height) => sum + height, 0)
+        + Math.max(0, rowHeights.length - 1) * gapY;
+      const currentSize = sizes.get(id)!;
+      sizes.set(id, {
+        width: Math.max(currentSize.width, gridWidth + 40),
+        height: Math.max(currentSize.height, gridHeight + 64),
+      });
+      return sizes.get(id)!;
+    };
+    topLevel.forEach((component) => prepareSize(component.id));
+
+    // Collapse relations to top-level owners so nested dependencies still
+    // influence the placement of their containing components.
+    const ownerOf = (id: string): string => {
+      let current = id;
+      const visited = new Set<string>();
+      while (componentById.get(current)?.parent_id && !visited.has(current)) {
+        visited.add(current);
+        const parentId = componentById.get(current)?.parent_id || '';
+        if (!componentById.has(parentId)) break;
+        current = parentId;
+      }
+      return topLevelIds.has(current) ? current : id;
+    };
+    const outgoing = new Map<string, string[]>();
+    const incoming = new Map<string, string[]>();
+    const indegree = new Map<string, number>();
+    const levels = new Map<string, number>();
+    topLevel.forEach((component) => {
+      outgoing.set(component.id, []);
+      incoming.set(component.id, []);
+      indegree.set(component.id, 0);
+      levels.set(component.id, 0);
+    });
+    (diagram.comp_relations || []).forEach((relation) => {
+      const source = ownerOf(relation.source);
+      const target = ownerOf(relation.target);
+      if (!topLevelIds.has(source) || !topLevelIds.has(target) || source === target) return;
+      const neighbors = outgoing.get(source)!;
+      if (neighbors.includes(target)) return;
+      neighbors.push(target);
+      incoming.get(target)?.push(source);
+      indegree.set(target, (indegree.get(target) || 0) + 1);
+    });
+
+    const queue = topLevel
+      .filter((component) => indegree.get(component.id) === 0)
+      .map((component) => component.id);
+    const processed = new Set<string>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      processed.add(current);
+      const currentLevel = levels.get(current) || 0;
+      outgoing.get(current)?.forEach((target) => {
+        levels.set(target, Math.max(levels.get(target) || 0, currentLevel + 1));
+        const nextIndegree = (indegree.get(target) || 0) - 1;
+        indegree.set(target, nextIndegree);
+        if (nextIndegree === 0) queue.push(target);
+      });
+    }
+    if (processed.size < topLevel.length) {
+      const maxLevel = Math.max(...Array.from(levels.values()));
+      topLevel.forEach((component) => {
+        if (!processed.has(component.id)) levels.set(component.id, maxLevel + 1);
+      });
+    }
+
+    const positions = new Map<string, { x: number; y: number }>();
+    const rows = new Map<number, CompNode[]>();
+    topLevel.forEach((component) => {
+      const row = rows.get(levels.get(component.id) || 0) || [];
+      row.push(component);
+      rows.set(levels.get(component.id) || 0, row);
+    });
+    const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
+    const columnGap = 180;
+    const verticalGap = 70;
+    const maxColumnHeight = Math.max(...orderedLevels.map((level) => {
+      const row = rows.get(level) || [];
+      return row.reduce((sum, component) => sum + sizes.get(component.id)!.height, 0)
+        + Math.max(0, row.length - 1) * verticalGap;
+    }));
+    const layoutCenterY = Math.max(480, maxColumnHeight / 2 + 80);
+    let nextX = 100;
+    const centerById = new Map<string, number>();
+    orderedLevels.forEach((level) => {
+      const row = rows.get(level) || [];
+      row.sort((a, b) => {
+        const averageCenter = (component: CompNode) => {
+          const upstreamCenters = (incoming.get(component.id) || [])
+            .map((upstreamId) => centerById.get(upstreamId))
+            .filter((center): center is number => typeof center === 'number');
+          return upstreamCenters.length > 0
+            ? upstreamCenters.reduce((sum, center) => sum + center, 0) / upstreamCenters.length
+            : component.y;
+        };
+        return averageCenter(a) - averageCenter(b) || a.y - b.y || a.id.localeCompare(b.id);
+      });
+      const totalHeight = row.reduce((sum, component) => sum + sizes.get(component.id)!.height, 0)
+        + Math.max(0, row.length - 1) * verticalGap;
+      let nextY = layoutCenterY - totalHeight / 2;
+      const columnWidth = Math.max(...row.map((component) => sizes.get(component.id)!.width));
+      row.forEach((component) => {
+        const height = sizes.get(component.id)!.height;
+        positions.set(component.id, { x: Math.max(100, nextX), y: nextY });
+        centerById.set(component.id, nextY + height / 2);
+        nextY += height + verticalGap;
+      });
+      nextX += columnWidth + columnGap;
+    });
+
+    const placeChildren = (parentId: string) => {
+      const parent = componentById.get(parentId);
+      const parentPosition = positions.get(parentId);
+      const children = childrenByParent.get(parentId) || [];
+      if (!parent || !parentPosition || children.length === 0) return;
+      const columns = Math.min(3, children.length);
+      const gapX = 16;
+      const gapY = 18;
+      const columnWidths = Array.from({ length: columns }, () => 0);
+      const rowHeights: number[] = [];
+      children.forEach((child, index) => {
+        const size = sizes.get(child.id)!;
+        const row = Math.floor(index / columns);
+        const column = index % columns;
+        columnWidths[column] = Math.max(columnWidths[column], size.width);
+        rowHeights[row] = Math.max(rowHeights[row] || 0, size.height);
+      });
+      children.forEach((child, index) => {
+        const row = Math.floor(index / columns);
+        const column = index % columns;
+        const x = parentPosition.x + 20 + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gapX, 0);
+        const y = parentPosition.y + 44 + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gapY, 0);
+        positions.set(child.id, { x, y });
+        placeChildren(child.id);
+      });
+    };
+    topLevel.forEach((component) => placeChildren(component.id));
+
+    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
+      ...activeDiagram,
+      components: (activeDiagram.components || []).map((component) => {
+        const position = positions.get(component.id);
+        const size = sizes.get(component.id);
+        return {
+          ...component,
+          ...(position || {}),
+          ...(size || {}),
+        };
+      }),
+    }));
+    get().pushSnapshot('auto_layout_components');
+    set({ project, isModified: true });
+    get().triggerRecenter();
   },
 
   addCompRelation: (source, target) => {

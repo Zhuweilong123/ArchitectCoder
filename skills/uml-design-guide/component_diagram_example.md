@@ -7,6 +7,7 @@
   "version": "1.0",
   "name": "Web Application Architecture",
   "diagram_type": "component",
+  "component_id": "",
   "classes": [],
   "relations": [],
   "lifelines": [],
@@ -96,6 +97,7 @@
   "version": "1.0",
   "name": "Vehicle OTA System",
   "diagram_type": "component",
+  "component_id": "",
   "classes": [],
   "relations": [],
   "lifelines": [],
@@ -133,7 +135,7 @@
       "height": 280.0,
       "parent_id": "",
       "provided_interfaces": ["RecieveOtaRequestFromTbox()"],
-      "required_interfaces": ["TboxSendOtaRequestToTbox()"]
+      "required_interfaces": ["TboxSendOtaReqToMDC()"]
     },
     {
       "id": "comp_ota",
@@ -182,15 +184,15 @@
   ],
   "comp_relations": [
     {
-      "id": "crel_cloud_tbox",
-      "source": "comp_cloud",
-      "target": "comp_tbox",
+      "id": "crel_tbox_cloud",
+      "source": "comp_tbox",
+      "target": "comp_cloud",
       "type": "dependency"
     },
     {
-      "id": "crel_tbox_mdc",
-      "source": "comp_tbox",
-      "target": "comp_mdc",
+      "id": "crel_mdc_tbox",
+      "source": "comp_mdc",
+      "target": "comp_tbox",
       "type": "dependency"
     },
     {
