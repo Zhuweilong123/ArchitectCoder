@@ -1,4 +1,5 @@
 from backend.config import Settings
+from pathlib import Path
 
 
 def test_settings_accepts_deprecated_sub_agent_model_without_routing(monkeypatch):
@@ -70,3 +71,14 @@ def test_settings_planner_budget_has_reasoning_headroom():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
     assert settings.agent_planner_max_tokens == 3000
+
+
+def test_settings_resolves_relative_storage_from_backend_directory():
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="test-key",
+        uml_dir="../temp/uml_files",
+    )
+
+    expected = (Path(__file__).resolve().parents[2] / "../temp/uml_files").resolve()
+    assert Path(settings.uml_dir) == expected

@@ -3,16 +3,23 @@
 import asyncio
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from app.agent_base.agents.react_agent import ReActProgress
-from extensions.evals.models import EvalCase
+from extensions.evals.models import EvalCase, ProjectManifest
 from extensions.evals.checkers import build_checkers
+from extensions.evals.fixture_materializer import materialize_fixture
 from extensions.evals.projects import load_projects, resolve_fixture
 from extensions.evals.registry import load_cases
-from extensions.evals.runner import EvalRunner
+from extensions.evals.runner import (
+    EvalRunner,
+    _build_eval_workspace_context,
+    _validate_project_layout,
+)
+from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from extensions.evals.batches import EvalArchiveRequest, EvalBatch, EvalBatchManager, summarize
 from app.api.evals import BASELINE_PATH, get_baseline, get_repository
 
@@ -51,9 +58,38 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     assert result.status == "passed"
     assert result.passed is True
     assert result.score == 1.0
-    assert result.trace_path.endswith(f"{result.run_id}.jsonl")
+    assert re.search(
+        r"trace_\d{8}_\d{6}_[0-9a-f]{16}_eval\.jsonl$",
+        result.trace_path,
+    )
     assert (tmp_path / "results.jsonl").is_file()
     assert result.workspace == ""
+    assert result.metadata["eval_contract"]["tool_protocol_version"] == (
+        "foundation-tools-v1"
+    )
+    assert result.metadata["eval_contract"]["fixture_layout_version"] == (
+        "design-src-test-v1"
+    )
+    assert result.metadata["eval_contract"]["context_version"] == (
+        "eval-workspace-v1"
+    )
+
+
+def test_eval_workspace_context_describes_canonical_tool_paths():
+    manifest = ProjectManifest(
+        id="context-contract",
+        fixture="fixture",
+        entry_file="design/model.umlproj",
+        source_dir="src",
+        test_dir="test",
+    )
+
+    context = _build_eval_workspace_context(manifest)
+
+    assert "design/model.umlproj" in context
+    assert 'target="model.umlproj", cwd="design"' in context
+    assert "search_text accept src, test, design, or workspace" in context
+    assert 'target="test", cwd="test"' in context
 
 
 def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):
@@ -138,6 +174,13 @@ def test_radar_eval_catalog_and_uml_checkers():
     assert manifest is not None
     assert manifest.entry_file == "design/radar_sim_design.umlproj"
 
+    trace_fixture, trace_manifest = resolve_fixture(
+        cases["trace-3-1-component-element-continuous-remove-001"]
+    )
+    assert trace_fixture is not None and trace_manifest is not None
+    assert trace_manifest.entry_file == "design/radar_design_0730.umlproj"
+    assert (trace_fixture / trace_manifest.entry_file).is_file()
+
     configs = [
         {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
         {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "component", "name": "EchoSimulation", "diagram": "Radar System Architecture"},
@@ -147,6 +190,60 @@ def test_radar_eval_catalog_and_uml_checkers():
     ]
     results = asyncio.run(_run_checkers(fixture, configs))
     assert all(item.passed for item in results), [(item.checker, item.passed, item.message) for item in results]
+
+
+def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
+    cases = load_cases()
+    fixture, manifest = resolve_fixture(
+        cases["trace-3-1-component-element-continuous-remove-001"]
+    )
+    assert fixture is not None and manifest is not None
+
+    materialize_fixture(fixture, tmp_path, manifest)
+    source = tmp_path / manifest.source_dir
+    test = tmp_path / manifest.test_dir
+    design = tmp_path / "design"
+    tools = create_foundation_tools(
+        str(source), str(test), str(design), workspace_root=str(tmp_path),
+    )
+
+    async def exercise():
+        list_tool = next(tool for tool in tools if tool.name == "list_files")
+        read_tool = next(tool for tool in tools if tool.name == "read_file")
+        task_tool = next(tool for tool in tools if tool.name == "run_task")
+        listed = await list_tool._execute({"path": "design", "pattern": "*.umlproj"})
+        content = await read_tool._execute({"path": "design/radar_design_0730.umlproj"})
+        validated = await task_tool._execute({
+            "task": "validate", "target": "design/radar_design_0730.umlproj",
+            "cwd": "design",
+        })
+        return listed, content, validated
+
+    listed, content, validated = asyncio.run(exercise())
+    assert listed == "radar_design_0730.umlproj"
+    assert '"diagrams"' in content
+    assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
+
+
+def test_project_layout_preflight_rejects_legacy_root_entry_file(tmp_path):
+    (tmp_path / "design").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "test").mkdir()
+    (tmp_path / "design" / "model.umlproj").write_text(
+        '{"diagrams": [{"diagram_type": "component"}]}\n',
+        encoding="utf-8",
+    )
+    manifest = ProjectManifest(
+        id="legacy-layout",
+        fixture="unused",
+        entry_file="model.umlproj",
+        source_dir="src",
+        test_dir="test",
+    )
+
+    errors = _validate_project_layout(tmp_path, manifest)
+
+    assert any("canonical design/ path" in error for error in errors)
 
 
 def test_uml_component_names_checker_matches_exact_component_set(tmp_path):

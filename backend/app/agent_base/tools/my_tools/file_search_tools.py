@@ -59,7 +59,7 @@ class GrepFileTool(Tool):
                 name="path",
                 type="string",
                 description=(
-                    "Optional single file to search (relative or absolute path "
+                    "Optional file or directory scope to search (relative or absolute path "
                     "inside the project). If omitted, searches all project files."
                 ),
                 required=False,
@@ -108,6 +108,11 @@ class GrepFileTool(Tool):
             return None
         return p
 
+    def _resolve_search_paths(self, raw_path: str) -> list[str] | None:
+        """Resolve the legacy single-file search contract."""
+        target = self._resolve_allowed_path(raw_path)
+        return [target] if target else None
+
     def run(self, parameters: Dict[str, Any]) -> str:
         pattern = str(parameters.get("pattern", "")).strip()
         if not pattern:
@@ -125,10 +130,9 @@ class GrepFileTool(Tool):
 
         raw_path = parameters.get("path")
         if raw_path:
-            target = self._resolve_allowed_path(str(raw_path).strip())
-            if target is None:
+            files = self._resolve_search_paths(str(raw_path).strip())
+            if files is None:
                 return f"路径无效或超出允许范围: {raw_path}"
-            files = [target]
         else:
             files = self._candidate_files()
 

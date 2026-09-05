@@ -7,6 +7,7 @@ _os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import logging
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationInfo, field_validator
 from functools import lru_cache
@@ -154,6 +155,22 @@ class Settings(BaseSettings):
 
     # File storage
     uml_dir: str = "../temp/uml_files"
+
+    @field_validator("uml_dir", mode="after")
+    @classmethod
+    def resolve_uml_dir(cls, value: str) -> str:
+        """Resolve relative storage paths from the backend directory.
+
+        The backend is launched from both ``backend/`` and the repository
+        root by different entry points. Resolving here keeps UML, trace,
+        eval, memory, and audit artifacts on the same stable storage tree.
+        Absolute paths remain explicit deployment overrides.
+        """
+        path = Path(value)
+        if path.is_absolute():
+            return str(path)
+        backend_dir = Path(__file__).resolve().parents[1]
+        return str((backend_dir / path).resolve())
 
     # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
     # 仓库目录和 uml_dir；需要访问外部源码时显式配置此项。

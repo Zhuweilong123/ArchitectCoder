@@ -719,7 +719,9 @@ class SearchTextTool(GrepFileTool):
         self.name = "search_text"
         self.description = (
             "Search project source, tests, and design files by text or regular expression. "
-            "Returns file names, line numbers, and short matching snippets."
+            "The optional path accepts a file or directory scope such as source, src, "
+            "test, design, or workspace. Returns file names, line numbers, and short "
+            "matching snippets."
         )
         self.read_only = True
         self.can_parallel = True
@@ -760,6 +762,54 @@ class SearchTextTool(GrepFileTool):
         except ValueError:
             return None
         return candidate
+
+
+    def _resolve_search_paths(self, raw_path: str) -> list[str] | None:
+        """Resolve a file or directory scope using the shared workspace aliases."""
+        expanded = _expand_workspace_alias(
+            raw_path, self.workspace_root, self.source_dir,
+            self.test_dir, self.design_dir,
+        )
+        roots = [
+            root for root in (
+                self.workspace_root, self.source_dir,
+                self.test_dir, self.design_dir,
+            ) if root
+        ]
+        candidate = os.path.abspath(expanded) if os.path.isabs(expanded) else None
+        if candidate is None:
+            for root in roots:
+                possible = os.path.abspath(os.path.join(root, expanded))
+                if os.path.exists(possible):
+                    candidate = possible
+                    break
+        if candidate is None or not os.path.exists(candidate):
+            return None
+
+        resolved_roots = [os.path.abspath(root) for root in roots]
+        try:
+            if not any(
+                os.path.commonpath([candidate, root]) == root
+                for root in resolved_roots
+            ):
+                return None
+        except ValueError:
+            return None
+
+        if os.path.isfile(candidate):
+            return [candidate]
+        if not os.path.isdir(candidate):
+            return None
+
+        suffixes = (".py", ".umlproj", ".uml", ".json")
+        files: list[str] = []
+        for dirpath, _dirs, names in os.walk(candidate):
+            files.extend(
+                os.path.join(dirpath, name)
+                for name in names
+                if name.lower().endswith(suffixes)
+            )
+        return sorted(files)
 
 
 def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
