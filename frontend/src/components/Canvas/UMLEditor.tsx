@@ -10,13 +10,13 @@ import { Graph, Edge, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
-import { attachGraphViewport } from './graphViewport';
+import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid, syncCanvasViewport,
+  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid,
 } from './core/canvasCommon';
 import {
   type UmlClass,
@@ -373,15 +373,6 @@ const UMLEditor: React.FC = () => {
       },
     });
 
-    const detachViewport = attachGraphViewport(graph, {
-      container: containerRef.current,
-      zoom: viewport.zoom,
-      panX: viewport.panX,
-      panY: viewport.panY,
-      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
-      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
-    });
-
     // ── Events ───────────────────────────────────────
     const detachCanvasEvents = attachCanvasEventAdapter({
       graph,
@@ -545,12 +536,13 @@ const UMLEditor: React.FC = () => {
       _didFirstSync.current = false;
       document.removeEventListener('keydown', handleKeyDown);
       detachCanvasEvents();
-      detachViewport();
       unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useCanvasGraphViewport(graphRef, containerRef, viewport);
 
   // ── Sync diagram → graph ─────────────────────────────
   const prevClassIds = useRef<Set<string>>(new Set());
@@ -842,19 +834,6 @@ const UMLEditor: React.FC = () => {
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    syncCanvasViewport(graph, viewport);
-  }, [viewport.zoom]);
-
-  // Restore persisted translation when switching diagrams or loading a project.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    syncCanvasViewport(graph, viewport);
-  }, [viewport.panX, viewport.panY]);
-
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;

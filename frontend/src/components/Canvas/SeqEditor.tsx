@@ -10,11 +10,11 @@ import { Button, Select, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
-import { attachGraphViewport } from './graphViewport';
+import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { snapCanvasPosition } from './core/snapToGrid';
-import { centerCanvasContent, syncCanvasGrid, syncCanvasViewport } from './core/canvasCommon';
+import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
@@ -264,15 +264,6 @@ const SeqEditor: React.FC = () => {
         color: d.grid_color || '#e0e0e0',
         thickness: d.grid_thickness || 1,
       },
-    });
-
-    const detachViewport = attachGraphViewport(graph, {
-      container: containerRef.current,
-      zoom: viewport.zoom,
-      panX: viewport.panX,
-      panY: viewport.panY,
-      onZoom: (zoom) => useDiagramStore.getState().setZoom(zoom),
-      onPan: (x, y) => useDiagramStore.getState().setPan(x, y),
     });
 
     // Click-to-click message creation (lifelines only)
@@ -544,12 +535,13 @@ const SeqEditor: React.FC = () => {
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       document.removeEventListener('keydown', handleKeyDown);
-      detachViewport();
       unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useCanvasGraphViewport(graphRef, containerRef, viewport);
 
   // ── Sync diagram → graph ───────────────────────────
   const prevLifelineIds = useRef<Set<string>>(new Set());
@@ -986,19 +978,6 @@ const SeqEditor: React.FC = () => {
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    syncCanvasViewport(graph, viewport);
-  }, [viewport.zoom]);
-
-  // Restore persisted translation when switching diagrams or loading a project.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    syncCanvasViewport(graph, viewport);
-  }, [viewport.panX, viewport.panY]);
-
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
     const graph = graphRef.current as any;
