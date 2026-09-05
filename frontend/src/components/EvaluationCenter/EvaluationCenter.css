@@ -6,3 +6,13 @@
 .evaluation-stat-row { margin: 12px 0; }
 .evaluation-stat-row .ant-statistic { padding: 10px 12px; border: 1px solid #f0f0f0; border-radius: 6px; background: #fff; }
 .evaluation-trend-values { color: #595959; font-size: 12px; }
+.evaluation-filter-row { margin: 0 0 12px; }
+.evaluation-case-detail { margin-top: 12px; background: #fafafa; }
+.evaluation-checker-list { margin: 10px 0 12px; }
+.evaluation-control-card .ant-space { row-gap: 8px; }
+.evaluation-selected-row > td { background: #e6f4ff !important; }
+.evaluation-suite-select-all { padding: 0 12px 4px; }
+
+@media (max-width: 900px) {
+  .evaluation-trend-values { display: none; }
+}

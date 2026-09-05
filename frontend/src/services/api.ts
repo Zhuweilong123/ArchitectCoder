@@ -306,6 +306,7 @@ export interface EvalResult {
   tool_calls: number;
   total_tokens: number;
   trace_id?: string;
+  trace_path?: string;
   checker_results: Array<Record<string, any>>;
   error: string;
 }

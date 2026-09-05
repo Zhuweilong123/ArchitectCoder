@@ -611,7 +611,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
 // ── 主组件 ────────────────────────────────────────────
 
 const TraceViewer: React.FC = () => {
-  const { traceVisible, setTraceVisible } = useUiStore();
+  const { traceVisible, traceSessionId, setTraceVisible, setTraceSessionId } = useUiStore();
 
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
@@ -649,8 +649,13 @@ const TraceViewer: React.FC = () => {
     try {
       const list = await listTraces();
       setTraces(list);
-      if (list.length > 0 && !selected) {
-        selectSession(list[0].session_id);
+      const preferred = traceSessionId && list.some((item) => item.session_id === traceSessionId)
+        ? traceSessionId
+        : selected && list.some((item) => item.session_id === selected)
+          ? selected
+          : list[0]?.session_id;
+      if (preferred && preferred !== selected) {
+        selectSession(preferred);
       }
     } catch {
       // 后端未启动等：静默保留旧列表
@@ -677,7 +682,7 @@ const TraceViewer: React.FC = () => {
   useEffect(() => {
     if (traceVisible) refreshList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceVisible]);
+  }, [traceVisible, traceSessionId]);
 
   const turns = useMemo(() => (detail ? buildTurns(detail.events) : []), [detail]);
 
@@ -789,6 +794,7 @@ const TraceViewer: React.FC = () => {
   const handleClose = () => {
     setPlaying(false);
     setPlayIndex(-1);
+    setTraceSessionId(null);
     setTraceVisible(false);
   };
 

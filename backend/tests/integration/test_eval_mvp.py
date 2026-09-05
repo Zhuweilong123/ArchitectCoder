@@ -640,6 +640,7 @@ def test_eval_batch_summary_counts_budget_statuses():
 
 def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"case-1": object()})
     manager = EvalBatchManager()
     batch = EvalBatch(
         batch_id="batch_test",
@@ -658,6 +659,26 @@ def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
     archive_path = tmp_path / "evals" / "archives" / f"{archive['archive_id']}.json"
     assert archive_path.is_file()
     assert '"v3.0-test"' in archive_path.read_text(encoding="utf-8")
+
+
+def test_eval_batch_archive_rejects_single_suite(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr(
+        "extensions.evals.batches.load_cases",
+        lambda: {"case-1": object(), "case-2": object()},
+    )
+    manager = EvalBatchManager()
+    batch = EvalBatch(
+        batch_id="batch_partial",
+        suite="core",
+        version="v3.3",
+        case_ids=["case-1"],
+        status="completed",
+    )
+    manager._batches[batch.batch_id] = batch
+
+    with pytest.raises(ValueError, match="complete evaluation catalog"):
+        manager.archive(EvalArchiveRequest(batch_id=batch.batch_id))
 
 
 def test_eval_batch_archive_baseline_snapshot(tmp_path, monkeypatch):

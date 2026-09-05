@@ -62,6 +62,7 @@ interface UiState {
 
   // Trace viewer
   traceVisible: boolean;
+  traceSessionId: string | null;
 
   // Evaluation center
   evaluationVisible: boolean;
@@ -110,6 +111,7 @@ interface UiState {
 
   // Trace viewer
   setTraceVisible: (visible: boolean) => void;
+  setTraceSessionId: (sessionId: string | null) => void;
   setEvaluationVisible: (visible: boolean) => void;
 }
 
@@ -148,6 +150,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentChatVisible: false,
   agentChatExpanded: false,
   traceVisible: false,
+  traceSessionId: null,
   evaluationVisible: false,
   agentChatPosition: (() => {
     try {
@@ -264,5 +267,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   setTraceVisible: (visible) => set({ traceVisible: visible }),
+  setTraceSessionId: (sessionId) => set({ traceSessionId: sessionId }),
   setEvaluationVisible: (visible) => set({ evaluationVisible: visible }),
 }));

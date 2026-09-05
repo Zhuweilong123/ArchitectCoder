@@ -225,6 +225,13 @@ class EvalBatchManager:
         if batch.status in {"queued", "running"}:
             raise ValueError("evaluation batch is still running")
 
+        # A formal archive represents a complete catalog run.  A targeted
+        # suite/subset is useful for iteration, but must not be presented as
+        # a comparable version snapshot.
+        catalog_ids = set(load_cases())
+        if catalog_ids and set(batch.case_ids) != catalog_ids:
+            raise ValueError("only a complete evaluation catalog can be archived")
+
         return self._write_archive(batch.model_dump(mode="json"), request.note)
 
     def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]:
