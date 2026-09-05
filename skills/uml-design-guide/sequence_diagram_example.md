@@ -7,6 +7,7 @@
   "version": "1.0",
   "name": "User Login Flow",
   "diagram_type": "sequence",
+  "component_id": "",
   "classes": [],
   "relations": [],
   "lifelines": [
@@ -115,6 +116,7 @@
   "version": "1.0",
   "name": "OTA Notification Flow",
   "diagram_type": "sequence",
+  "component_id": "",
   "classes": [],
   "relations": [],
   "lifelines": [

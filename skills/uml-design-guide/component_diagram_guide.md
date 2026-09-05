@@ -40,6 +40,7 @@
   "version": "1.0",
   "name": "ComponentDiagramName",
   "diagram_type": "component",
+  "component_id": "",
   "classes": [],
   "relations": [],
   "lifelines": [],
@@ -66,10 +67,10 @@
 
 | 值 | 含义 | 视觉样式 | 适用场景 |
 |----|------|---------|---------|
-| `dependency` | 依赖关系 | 橙色(#d48806)虚线 + 实心箭头 | A 依赖 B 提供的接口 |
-| `delegation` | 委托关系 | 橙色(#d48806)虚线 + 实心箭头 | A 将实现委托给 B |
+| `dependency` | 依赖关系 | 橙色(#d48806)虚线 + 实心箭头 | A 使用 B 对外提供的服务 |
+| `delegation` | 委托关系 | 橙色(#d48806)实线 + 实心箭头 | 复合组件把职责转交给内部子组件 |
 
-**说明：** 当前组件图的关系类型只有这两种。`dependency` 是最常见的组件关系，表示一个组件需要另一个组件提供的功能。所有组件关系都使用橙色虚线渲染（`strokeDasharray: "6,4"`）。
+**说明：** 当前组件图的关系类型只有这两种。`dependency` 是最常见的组件关系。当前数据模型没有 UML 端口、连接器和接口端点字段，因此 `delegation` 是对 UML 2.5.1 委托语义的简化表达；只有父组件到内部子组件时才使用它。
 
 ---
 
@@ -84,7 +85,7 @@
 
 ### 3.2 组件层次结构 (parent_id)
 
-组件图支持**两层嵌套**：
+组件图支持父子嵌套：
 
 ```
 顶层组件（parent_id = ""）
@@ -94,13 +95,15 @@
 规则：
 - `parent_id: ""` — 顶层组件，独立的矩形节点
 - `parent_id: "<comp_id>"` — 子组件，嵌入在父组件内部
-- 子组件在父组件内部定位（x, y 相对于父组件）
-- 删除父组件时，子组件不会自动删除（需手动处理）
+- `parent_id` 表达 UML 复合组件中的内部归属
+- `x`、`y` 是画布坐标，不是相对于父组件的局部坐标；生成或修改子组件时直接使用最终画布坐标
+- 当前编辑器和自动布局支持递归嵌套，但为了可读性建议最多 2 层
+- 删除父组件会级联删除其子组件以及相关关系；需要保留子组件时，先把它移动到其他父组件或清空 `parent_id`
 
 **使用建议：**
 - 顶层组件代表独立的子系统/模块
 - 子组件代表该模块内部的关键组成
-- 嵌套层级仅支持一层（子组件不能再包含子组件）
+- 不要制造过深的嵌套；超过 2 层时应考虑拆分组件图
 
 ### 3.3 接口设计 (provided_interfaces / required_interfaces)
 
@@ -122,8 +125,10 @@
 - 接口名称应反映**能力/契约**而非实现细节
 
 **接口匹配规则：**
-- A 的 `required_interfaces` 应该能匹配 B 的 `provided_interfaces`
+- 如果 A 声明了 `required_interfaces`，这些接口应能在 B 的 `provided_interfaces` 中找到匹配；没有声明接口时，关系只表达结构依赖，不强行虚构接口名称
 - 组件依赖关系 (CompRelation) 的方向是 A(source) → B(target)，表示 A 依赖 B
+- 匹配按接口字符串名称进行；当前 `CompRelation` 没有 `interface` 字段，不能表达一条依赖线只绑定多个接口中的某一个
+- 接口名称应保持大小写、参数和版本约定一致；`Database` 与 `IDatabase` 不应视为自动匹配
 
 ---
 
@@ -159,10 +164,12 @@ A 的 `required_interfaces` 与 B 的 `provided_interfaces` 匹配。
 
 ### 4.2 委托关系 (delegation)
 
-委托表示父组件将接口的实现委托给内部子组件：
+委托表示父组件把自己的职责或接口实现转交给内部子组件：
 ```
 [ParentComponent] ──delegation──► [ChildComponent]
 ```
+
+这不是普通的外部依赖。子组件应当是 `parent_id` 指向父组件的内部组件；父组件对外提供的接口应能在子组件或其类图中找到对应实现。
 
 ### 4.3 布局建议
 
@@ -256,11 +263,13 @@ A 的 `required_interfaces` 与 B 的 `provided_interfaces` 匹配。
 - [ ] `parent_id` 为空字符串 `""` 或引用已存在的组件 ID
 - [ ] 接口列表 (`provided_interfaces`, `required_interfaces`) 是字符串数组
 - [ ] 关系 `type` 必须是 `"dependency"` 或 `"delegation"`
-- [ ] 子组件的坐标相对于父组件
+- [ ] 子组件的 `x`、`y` 是最终画布坐标，且视觉上位于父组件内部
 - [ ] `provided_interfaces` 与 `required_interfaces` 在依赖关系两端应能匹配
 - [ ] 空数组不能省略：`"provided_interfaces": []` 而不是不写
 - [ ] ⚠️ **坐标不能清零**：PRESERVE 所有 x/y/width/height 字段，NEVER zero them out
 - [ ] ⚠️ **接口一致性**：组件的 provided/required 接口必须与类图中的接口定义保持一致
+- [ ] 父组件的 `delegation` 关系必须指向自己的后代组件
+- [ ] `parent_id` 不能自引用，也不能形成父子循环
 
 ### 6.4 组件图优化检查清单
 

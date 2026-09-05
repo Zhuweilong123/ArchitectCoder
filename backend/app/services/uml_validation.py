@@ -411,7 +411,20 @@ def _normalize_llm_output(data: dict) -> dict:
                     mapped_key = "stereotype"
                     v = "abstract"
                 elif mapped_key == "type" and isinstance(v, str):
-                    v = RELATION_TYPE_MAP.get(v.lower(), "association")
+                    # ``type`` is shared by class relations, component
+                    # relations, sequence messages and fragments.  Do not
+                    # apply the class-relation alias map to every context:
+                    # in particular, delegation is a valid component
+                    # relation but not a UML class relation.
+                    value = v.lower()
+                    if parent_key == "comp_relations":
+                        v = value if value in {"dependency", "delegation"} else "dependency"
+                    elif parent_key == "messages":
+                        v = value if value in {"sync", "async", "return", "simple", "self"} else "sync"
+                    elif parent_key == "fragments":
+                        v = value if value in {"loop", "alt", "opt", "break", "par", "critical", "neg"} else "loop"
+                    else:
+                        v = RELATION_TYPE_MAP.get(value, "association")
                 elif k in ("is_static", "is_abstract") and v is None:
                     v = False
                 elif k == "default_value" and v == "":

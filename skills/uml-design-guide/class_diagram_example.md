@@ -7,6 +7,7 @@
   "version": "1.0",
   "name": "TaskScheduler",
   "diagram_type": "class",
+  "component_id": "",
   "classes": [
     {
       "id": "class_base_task",

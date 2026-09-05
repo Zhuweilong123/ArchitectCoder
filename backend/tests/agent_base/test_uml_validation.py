@@ -2,6 +2,7 @@
 import json
 
 from app.agent_base.tools.my_tools import UmlValidationTool
+from app.services.uml_validation import _normalize_llm_output
 
 
 def make_class(name, cid, methods=None):
@@ -90,3 +91,14 @@ def test_invalid_json_returns_error():
     tool = UmlValidationTool()
     report = tool.run({"diagrams_json": "{not valid json"})
     assert "验证失败" in report
+
+
+def test_component_delegation_survives_llm_normalization():
+    data = {
+        "comp_relations": [
+            {"id": "rel_delegate", "source": "comp_parent", "target": "comp_child",
+             "type": "delegation"},
+        ],
+    }
+    normalized = _normalize_llm_output(data)
+    assert normalized["comp_relations"][0]["type"] == "delegation"
