@@ -11,7 +11,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
@@ -20,6 +21,15 @@ import {
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
+
+const componentThemeVisuals: Record<CanvasTheme, {
+  surface: string;
+  accent: string;
+}> = {
+  light: { surface: '#fffaf1', accent: '#b7791f' },
+  dark: { surface: '#172033', accent: '#60a5fa' },
+  blueprint: { surface: '#f6fbff', accent: '#0284c7' },
+};
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -45,7 +55,7 @@ function ensureShapesRegistered() {
       },
     ],
     attrs: {
-      body: { stroke: '#d48806', strokeWidth: 2, fill: '#fffbe6', rx: 6, ry: 6 },
+      body: { stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffaf1', rx: 8, ry: 8 },
       fo: { refWidth: '100%', refHeight: '100%' },
       content: { html: '' },
     },
@@ -54,22 +64,22 @@ function ensureShapesRegistered() {
         top: {
           position: { name: 'top' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         right: {
           position: { name: 'right' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         bottom: {
           position: { name: 'bottom' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
         left: {
           position: { name: 'left' },
           markup: [{ tagName: 'circle', selector: 'circle' }],
-          attrs: { circle: { r: 5, magnet: true, stroke: '#d48806', strokeWidth: 2, fill: '#fff' } },
+          attrs: { circle: { r: 5, magnet: true, stroke: '#b7791f', strokeWidth: 1.5, fill: '#fffdf8' } },
         },
       },
       items: [{ id: 'pt', group: 'top' }, { id: 'pr', group: 'right' }, { id: 'pb', group: 'bottom' }, { id: 'pl', group: 'left' }],
@@ -182,7 +192,7 @@ const CompEditor: React.FC = () => {
       connection: {
         allowMulti: true,
         line: {
-          stroke: '#d48806', strokeWidth: 2, strokeDasharray: '6,4',
+          stroke: '#b7791f', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
         router: { name: 'manhattan', args: { padding: 24, step: 20 } },
@@ -396,6 +406,7 @@ const CompEditor: React.FC = () => {
       graph.centerContent();
     }
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     console.log('[CompEditor] Graph initialized');
 
     return () => {
@@ -403,6 +414,7 @@ const CompEditor: React.FC = () => {
       document.removeEventListener('keydown', handleKeyDown);
       detachCanvasEvents();
       detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -415,16 +427,20 @@ const CompEditor: React.FC = () => {
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
       const comps = diagram.components || [];
       const rels = diagram.comp_relations || [];
       const currentIds = new Set(comps.map((c) => c.id));
+      const themeChanged = renderedTheme.current !== canvasTheme;
+      const themeVisuals = componentThemeVisuals[canvasTheme];
 
       // Remove deleted
       prevCompIds.current.forEach((id) => {
@@ -441,30 +457,31 @@ const CompEditor: React.FC = () => {
         const isChild = !!c.parent_id;
         const { width: w, height: h } = getCompNodeSize(c);
         const selected = c.id === selectedComponentId;
-        const cachedRender = renderCache.current.get(c.id);
-        const htmlContent = cachedRender?.entity === c && cachedRender.selected === selected
-          && cachedRender.theme === canvasTheme
-          ? cachedRender.html
-          : buildCompHTML(c, selected, canvasTheme);
+        // Theme is part of the rendered HTML. Always rebuild this small HTML
+        // fragment so a theme change can never reuse a stale node fragment.
+        const htmlContent = buildCompHTML(c, selected, canvasTheme);
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
-          htmlContent, c.x, c.y, w, h, c.parent_id || '',
+          htmlContent, c.x, c.y, w, h, c.parent_id || '', canvasTheme,
         ]);
         renderCache.current.set(c.id, { entity: c, selected, theme: canvasTheme, html: htmlContent });
         try {
           const existing = graph.getCellById(c.id);
           if (existing && existing.isNode()) {
-            if (nodeSignatureCache.current.get(c.id) === signature) return;
+            // A theme change must refresh every node, even if an older cache
+            // entry accidentally reports the same layout signature.
+            if (!themeChanged && nodeSignatureCache.current.get(c.id) === signature) return;
             const node = existing as Node;
             node.setPosition(c.x, c.y);
             node.setSize({ width: w, height: h });
             node.setAttrs({
               body: {
-                stroke: selected ? '#2563eb' : '#d48806',
+                fill: themeVisuals.surface,
+                stroke: selected ? '#2563eb' : themeVisuals.accent,
                 strokeWidth: selected ? 2.5 : 1.5,
               },
             });
-            if (cached !== htmlContent) {
+            if (themeChanged || cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(c.id, htmlContent);
             }
@@ -482,7 +499,8 @@ const CompEditor: React.FC = () => {
               attrs: {
                 content: { html: htmlContent },
                 body: {
-                  stroke: selected ? '#2563eb' : '#d48806',
+                  fill: themeVisuals.surface,
+                  stroke: selected ? '#2563eb' : themeVisuals.accent,
                   strokeWidth: selected ? 2.5 : 1.5,
                 },
               },
@@ -520,7 +538,7 @@ const CompEditor: React.FC = () => {
           ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
           : r.type === 'delegation'
             ? (canvasTheme === 'dark' ? '#4ade80' : '#389e0d')
-            : (canvasTheme === 'dark' ? '#fbbf24' : '#d48806');
+            : (canvasTheme === 'dark' ? '#fbbf24' : '#b7791f');
         const dash = r.type === 'delegation' ? '' : '6,4';
         const labelColor = canvasTheme === 'dark' ? '#f8fafc' : stroke;
         const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
@@ -592,6 +610,7 @@ const CompEditor: React.FC = () => {
         } catch (e) { console.warn('[CompEditor] Edge error:', r.id, e); }
       });
 
+      renderedTheme.current = canvasTheme;
       prevCompIds.current = currentIds;
       isInternalUpdate.current = false;
 
@@ -620,6 +639,7 @@ const CompEditor: React.FC = () => {
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
     syncCanvasViewport(graph, viewport);
   }, [viewport.zoom]);
 
@@ -721,7 +741,7 @@ const CompEditor: React.FC = () => {
               {/* Header — component name */}
               <div style={{
                 padding: '6px 12px', fontSize: 13, fontWeight: 600,
-                color: '#d48806', borderBottom: '1px solid #f0f0f0', marginBottom: 4,
+                color: '#9a6b2f', borderBottom: '1px solid #f0f0f0', marginBottom: 4,
               }}>
                 📦 {ctxMenu.compName}
               </div>

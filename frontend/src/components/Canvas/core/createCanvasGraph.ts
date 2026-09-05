@@ -3,6 +3,9 @@ import { History } from '@antv/x6-plugin-history';
 import { Transform } from '@antv/x6-plugin-transform';
 import { Selection } from '@antv/x6-plugin-selection';
 import { Snapline } from '@antv/x6-plugin-snapline';
+import { Export } from '@antv/x6-plugin-export';
+
+export type CanvasTheme = 'light' | 'dark' | 'blueprint';
 
 export interface CanvasGraphOptions {
   container: HTMLElement;
@@ -19,6 +22,21 @@ export interface CanvasGraphOptions {
     router?: Record<string, unknown>;
     connector?: Record<string, unknown>;
   };
+}
+
+const canvasThemeVisuals: Record<CanvasTheme, { background: string; grid: string }> = {
+  light: { background: '#fafafa', grid: '#e0e0e0' },
+  dark: { background: '#111827', grid: '#334155' },
+  blueprint: { background: '#eaf5ff', grid: '#bae6fd' },
+};
+
+/** Keep X6's generated background/grid in sync with the HTML node theme. */
+export function applyCanvasThemeToGraph(graph: Graph, theme: CanvasTheme): void {
+  const visuals = canvasThemeVisuals[theme];
+  graph.drawBackground({ color: visuals.background });
+  // `drawGrid` replaces the grid definition, while `update` refreshes the
+  // existing pattern and preserves the diagram's configured size/visibility.
+  graph.grid.update({ color: visuals.grid, thickness: 1 });
 }
 
 /** Create the shared X6 graph shell used by all diagram editors. */
@@ -73,5 +91,6 @@ export function createCanvasGraph(options: CanvasGraphOptions): Graph {
     showNodeSelectionBox: true,
   }));
   graph.use(new Snapline({ enabled: true, sharp: true }));
+  graph.use(new Export());
   return graph;
 }

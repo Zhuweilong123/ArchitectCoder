@@ -49,7 +49,13 @@ export function attachGraphViewport(
   const observer = typeof ResizeObserver !== 'undefined'
     ? new ResizeObserver(resize)
     : null;
+  // X6 writes a pixel width to the graph root. Observe the parent as well so
+  // layout changes (for example, collapsing the right panel) still trigger a
+  // graph resize even when the root's inline width has not changed yet.
   observer?.observe(options.container);
+  if (options.container.parentElement) {
+    observer?.observe(options.container.parentElement);
+  }
 
   return () => {
     observer?.disconnect();

@@ -11,7 +11,8 @@ import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { snapCanvasPosition } from './core/snapToGrid';
 import { centerCanvasContent, syncCanvasGrid, syncCanvasViewport } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
@@ -32,6 +33,7 @@ function ensureShapesRegistered() {
     resizable: false,
     markup: [
       { tagName: 'rect', selector: 'body' },
+      { tagName: 'line', selector: 'lifelineLine' },
       {
         tagName: 'foreignObject',
         selector: 'fo',
@@ -55,8 +57,29 @@ function ensureShapesRegistered() {
         stroke: 'transparent', strokeWidth: 0, fill: 'transparent',
         rx: 4, ry: 4,
       },
+      lifelineLine: {
+        x1: 70, y1: 45, x2: 70, y2: 400,
+        stroke: '#94a3b8', strokeWidth: 1.2,
+        strokeDasharray: '6 5', fill: 'none', pointerEvents: 'none',
+      },
       fo: { refWidth: '100%', refHeight: '100%' },
       content: { html: '' },
+    },
+    ports: {},
+  });
+
+  // Native SVG activation bars remain stable when the graph is exported.
+  Graph.registerNode('seq-activation', {
+    inherit: 'rect',
+    resizable: false,
+    selectable: false,
+    movable: false,
+    markup: [{ tagName: 'rect', selector: 'body' }],
+    attrs: {
+      body: {
+        rx: 4, ry: 4, stroke: '#3b82f6', strokeWidth: 1,
+        fill: '#dbeafe', pointerEvents: 'none',
+      },
     },
     ports: {},
   });
@@ -101,27 +124,17 @@ function buildLifelineHTML(
   selected: boolean,
   endpointHighlighted: boolean,
   theme: CanvasTheme,
-  autoActivationYs: number[] = [],
 ): string {
   const selClass = [
     selected ? 'selected' : '',
     endpointHighlighted ? 'message-endpoint' : '',
   ].filter(Boolean).join(' ');
-  const bars = (lifeline.activations || []).map((y, i) =>
-    `<div class="seq-activation" style="top:${y - 6}px" title="激活条 #${i + 1}"></div>`
-  ).join('');
-  const autoBars = autoActivationYs.map((messageY, i) => {
-    const bodyOffset = messageY - LIFELINE_Y - 45 - 9;
-    return `<div class="seq-activation seq-activation-auto" style="top:${Math.max(0, bodyOffset)}px" title="消息激活 #${i + 1}"></div>`;
-  }).join('');
   const hint = selected
     ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
     : '';
   return `<div class="seq-lifeline-node theme-${theme} ${selClass}">
     <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
     <div class="seq-lifeline-body">
-      <div class="seq-lifeline-dash"></div>
-      ${bars}${autoBars}
       ${hint}
     </div>
   </div>`;
@@ -522,6 +535,7 @@ const SeqEditor: React.FC = () => {
     document.addEventListener('keydown', handleKeyDown);
 
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
@@ -531,6 +545,7 @@ const SeqEditor: React.FC = () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       document.removeEventListener('keydown', handleKeyDown);
       detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -551,10 +566,12 @@ const SeqEditor: React.FC = () => {
   const messageSignatureCache = useRef<Map<string, string>>(new Map());
   const fragmentSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
@@ -566,6 +583,7 @@ const SeqEditor: React.FC = () => {
           ? [selectedMessage.from_lifeline, selectedMessage.to_lifeline]
           : [],
       );
+      const themeChanged = renderedTheme.current !== canvasTheme;
       const autoActivationMap = new Map<string, number[]>();
       messages.forEach((message) => {
         if (message.type === 'return') return;
@@ -611,11 +629,26 @@ const SeqEditor: React.FC = () => {
           && cachedRender.autoActivationSignature === autoActivationSignature
           && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme, autoActivationYs);
+          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
+          canvasTheme, endpointHighlighted,
         ]);
+        const lineColor = endpointHighlighted
+          ? (canvasTheme === 'dark' ? '#60a5fa' : '#2563eb')
+          : canvasTheme === 'blueprint' ? '#0284c7' : canvasTheme === 'dark' ? '#64748b' : '#94a3b8';
+        const lifelineLine = {
+          x1: LIFELINE_WIDTH / 2,
+          y1: 45,
+          x2: LIFELINE_WIDTH / 2,
+          y2: Math.max(50, neededHeight - 4),
+          stroke: lineColor,
+          strokeWidth: endpointHighlighted ? 1.6 : 1.2,
+          strokeDasharray: '6 5',
+          fill: 'none',
+          pointerEvents: 'none',
+        };
         renderCache.current.set(ll.id, {
           entity: ll,
           selected,
@@ -627,7 +660,9 @@ const SeqEditor: React.FC = () => {
         try {
           const existing = graph.getCellById(ll.id);
           if (existing && existing.isNode()) {
-            if (lifelineSignatureCache.current.get(ll.id) === signature) return;
+            // A theme change must refresh every lifeline, even if an older
+            // cache entry accidentally reports the same layout signature.
+            if (!themeChanged && lifelineSignatureCache.current.get(ll.id) === signature) return;
             const node = existing as Node;
             node.setPosition(ll.x, LIFELINE_Y);
             node.setSize({ width: LIFELINE_WIDTH, height: neededHeight });
@@ -637,8 +672,9 @@ const SeqEditor: React.FC = () => {
                 strokeWidth: 0,
                 fill: 'transparent',
               },
+              lifelineLine,
             });
-            if (cached !== htmlContent) {
+            if (themeChanged || cached !== htmlContent) {
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(ll.id, htmlContent);
             }
@@ -656,6 +692,7 @@ const SeqEditor: React.FC = () => {
                   strokeWidth: 0,
                   fill: 'transparent',
                 },
+                lifelineLine,
               },
             });
             htmlCache.current.set(ll.id, htmlContent);
@@ -665,6 +702,67 @@ const SeqEditor: React.FC = () => {
           console.warn('[SeqEditor] Sync lifeline error:', ll.name, e);
         }
       });
+
+      // Keep activation bars as native graph nodes so their position and style
+      // survive SVG/PNG export instead of depending on foreignObject layout.
+      const activationIds = new Set<string>();
+      lifelines.forEach((ll) => {
+        const explicitActivations = (ll.activations || []).map((y, index) => ({
+          id: `${ll.id}__activation__explicit__${index}`,
+          top: LIFELINE_Y + 45 + y - 6,
+          width: 32,
+          height: 18,
+          auto: false,
+        }));
+        const autoActivations = (autoActivationMap.get(ll.id) || []).map((messageY, index) => ({
+          id: `${ll.id}__activation__auto__${index}`,
+          top: messageY - 9,
+          width: 28,
+          height: 20,
+          auto: true,
+        }));
+        [...explicitActivations, ...autoActivations].forEach((activation) => {
+          activationIds.add(activation.id);
+          const x = ll.x + LIFELINE_WIDTH / 2 - activation.width / 2;
+          const fill = canvasTheme === 'dark'
+            ? activation.auto ? '#1e3a5f' : '#1e3a5f'
+            : canvasTheme === 'blueprint'
+              ? '#e0f2fe'
+              : activation.auto ? '#dbeafe' : '#eff6ff';
+          const stroke = canvasTheme === 'blueprint' ? '#0284c7' : '#3b82f6';
+          const nodeAttrs = {
+            body: {
+              fill,
+              stroke,
+              strokeWidth: 1,
+              opacity: activation.auto ? 0.82 : 1,
+              pointerEvents: 'none',
+            },
+          };
+          const existing = graph.getCellById(activation.id);
+          if (existing && existing.isNode()) {
+            const node = existing as Node;
+            node.setPosition(x, activation.top);
+            node.setSize({ width: activation.width, height: activation.height });
+            node.setAttrs(nodeAttrs);
+          } else {
+            graph.addNode({
+              id: activation.id,
+              shape: 'seq-activation',
+              x,
+              y: activation.top,
+              width: activation.width,
+              height: activation.height,
+              attrs: nodeAttrs,
+            });
+          }
+        });
+      });
+      graph.getNodes()
+        .filter((node) => node.shape === 'seq-activation' && !activationIds.has(node.id))
+        .forEach((node) => {
+          try { graph.removeCell(node.id); } catch { /* ignore */ }
+        });
 
       // Remove deleted messages (those in graph but not in data)
       const graphEdgeIds = new Set(graph.getEdges().map((e) => e.id));
@@ -860,6 +958,7 @@ const SeqEditor: React.FC = () => {
         } catch (e) { /* ignore */ }
       });
 
+      renderedTheme.current = canvasTheme;
       prevLifelineIds.current = currentLIds;
       isInternalUpdate.current = false;
 

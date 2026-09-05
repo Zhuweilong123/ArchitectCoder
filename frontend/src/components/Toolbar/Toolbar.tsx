@@ -16,6 +16,7 @@ import {
   PlusSquareOutlined, DownOutlined, TableOutlined,
   ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
   BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -28,6 +29,8 @@ import {
   browseDirectory, type BrowseResult,
 } from '../../services/api';
 import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
+import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
+import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
@@ -714,6 +717,42 @@ const Toolbar: React.FC = () => {
     setSaving(false);
   };
 
+  const handleExportCanvas = async (format: CanvasExportFormat) => {
+    const graph = getActiveCanvasGraph();
+    if (!graph) {
+      message.warning(copy('noDiagram'));
+      return;
+    }
+
+    try {
+      const extension = format === 'png' ? 'png' : 'svg';
+      const backgroundColor = canvasTheme === 'dark'
+        ? '#111827'
+        : canvasTheme === 'blueprint' ? '#eaf5ff' : '#fafafa';
+      await exportCanvasGraph(
+        graph,
+        format,
+        `${fileStem(diagram.name)}.${extension}`,
+        backgroundColor,
+      );
+      message.success(copy('exportSuccess'));
+    } catch (error) {
+      console.error('[Toolbar] Canvas export failed:', error);
+      message.error(copy('exportFailed'));
+    }
+  };
+
+  const handleExportProject = () => {
+    try {
+      const snapshot = useDiagramStore.getState().getProjectSnapshot();
+      exportProjectSnapshot(snapshot, `${fileStem(snapshot.name)}.umlproj`);
+      message.success(copy('exportAllDesignsSuccess'));
+    } catch (error) {
+      console.error('[Toolbar] Project export failed:', error);
+      message.error(copy('exportFailed'));
+    }
+  };
+
   const handleExportMd = async () => {
     try {
       const md = await exportMarkdown(diagram);
@@ -738,6 +777,25 @@ const Toolbar: React.FC = () => {
   const saveMenuItems = [
     { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), onClick: handleSave },
     { key: 'saveas', label: copy('saveAs'), onClick: openSaveAs },
+  ];
+
+  const exportMenuItems = [
+    {
+      key: 'diagram-png',
+      label: copy('exportCurrentDiagram') + ' PNG',
+      onClick: () => void handleExportCanvas('png'),
+    },
+    {
+      key: 'diagram-svg',
+      label: copy('exportCurrentDiagram') + ' SVG',
+      onClick: () => void handleExportCanvas('svg'),
+    },
+    { type: 'divider' as const },
+    {
+      key: 'project',
+      label: copy('exportAllDesigns'),
+      onClick: handleExportProject,
+    },
   ];
 
   return (
@@ -1001,6 +1059,11 @@ const Toolbar: React.FC = () => {
         </Tooltip>
 
         {/* Export */}
+        <Dropdown menu={{ items: exportMenuItems }} trigger={['click']}>
+          <Button icon={<ExportOutlined />}>
+            {copy('exportDesign')} <DownOutlined />
+          </Button>
+        </Dropdown>
         <Tooltip title={copy('exportMarkdown')}>
           <Button icon={<FileMarkdownOutlined />} onClick={handleExportMd}>
             {copy('exportMarkdown')}

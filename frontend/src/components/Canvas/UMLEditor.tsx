@@ -11,7 +11,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { attachGraphViewport } from './graphViewport';
-import { createCanvasGraph } from './core/createCanvasGraph';
+import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
+import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
@@ -219,23 +220,94 @@ function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): s
 // ── Component ──────────────────────────────────────────
 /** Estimate a readable minimum size without overwriting the user's manual resize. */
 function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
-  const attributeRows = Math.max(cls.attributes.length, 1);
-  const operationRows = Math.max(cls.methods.length, 1);
+  const width = cls.size.width || 200;
+  const maxChars = Math.max(18, Math.floor((width - 20) / 7));
+  const wrappedRows = (rows: string[]) => rows.reduce((sum, row) => (
+    sum + Math.max(1, Math.ceil(row.replace(/\s+/g, ' ').trim().length / maxChars))
+  ), 0);
+  const attributeRows = cls.attributes.map((attribute) => (
+    `${attribute.visibility} ${attribute.name}: ${attribute.type}${attribute.default_value ? ` = ${attribute.default_value}` : ''}`
+  ));
+  const operationRows = cls.methods.map((method) => (
+    `${method.visibility} ${method.name}(${method.params}): ${method.return_type}`
+  ));
   const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
     + (cls.required_interfaces?.length ? 1 : 0);
   const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
   const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
-  const attributesHeight = 28 + attributeRows * 19;
-  const operationsHeight = 28 + operationRows * 19;
-  const noteHeight = cls.note ? 34 : 0;
+  const attributesHeight = 28 + Math.max(1, wrappedRows(attributeRows)) * 19;
+  const operationsHeight = 28 + Math.max(1, wrappedRows(operationRows)) * 19;
+  const noteLines = cls.note
+    ? Math.max(1, Math.ceil(cls.note.replace(/\s+/g, ' ').trim().length / maxChars))
+    : 0;
+  const noteHeight = noteLines ? 12 + noteLines * 14 : 0;
 
   return {
-    width: cls.size.width || 200,
+    width,
     height: Math.max(
       cls.size.height || 150,
       headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
     ),
   };
+}
+
+interface ClassRenderLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function rectanglesOverlap(
+  first: ClassRenderLayout,
+  second: ClassRenderLayout,
+  gap: number,
+): boolean {
+  return first.x < second.x + second.width + gap
+    && first.x + first.width + gap > second.x
+    && first.y < second.y + second.height + gap
+    && first.y + first.height + gap > second.y;
+}
+
+/** Resolve overlaps introduced when a class grows to fit long members/notes. */
+function resolveClassLayouts(classes: UmlClass[]): Map<string, ClassRenderLayout> {
+  const gap = 36;
+  const placed: ClassRenderLayout[] = [];
+  const layouts = new Map<string, ClassRenderLayout>();
+  const ordered = [...classes].sort((a, b) => (
+    a.position.y - b.position.y
+    || a.position.x - b.position.x
+    || a.id.localeCompare(b.id)
+  ));
+
+  ordered.forEach((cls) => {
+    const size = getClassNodeSize(cls);
+    const desired = { x: cls.position.x, y: cls.position.y, ...size };
+    let position = desired;
+    const candidates = [
+      desired,
+      ...placed.flatMap((other) => [
+        { ...desired, x: other.x - size.width - gap },
+        { ...desired, x: other.x + other.width + gap },
+        { ...desired, y: other.y + other.height + gap },
+      ]),
+    ];
+    const valid = candidates
+      .filter((candidate) => placed.every((other) => !rectanglesOverlap(candidate, other, 0)))
+      .sort((a, b) => {
+        const distance = (candidate: ClassRenderLayout) =>
+          Math.abs(candidate.x - desired.x) + Math.abs(candidate.y - desired.y);
+        return distance(a) - distance(b) || a.y - b.y || a.x - b.x;
+      });
+    if (valid.length > 0) position = valid[0];
+    else if (placed.length > 0) {
+      const bottom = Math.max(...placed.map((item) => item.y + item.height));
+      position = { ...desired, y: bottom + gap };
+    }
+    layouts.set(cls.id, position);
+    placed.push(position);
+  });
+  return layouts;
 }
 
 const UMLEditor: React.FC = () => {
@@ -466,6 +538,7 @@ const UMLEditor: React.FC = () => {
       graph.centerContent();
     }
     graphRef.current = graph;
+    registerCanvasGraph(graph);
     console.log('[UML Editor] Initialized. Shape registered:', shapeRegistered);
 
     return () => {
@@ -473,6 +546,7 @@ const UMLEditor: React.FC = () => {
       document.removeEventListener('keydown', handleKeyDown);
       detachCanvasEvents();
       detachViewport();
+      unregisterCanvasGraph(graph);
       try { graph.dispose(); } catch { /* ignore */ }
       graphRef.current = null;
     };
@@ -490,14 +564,18 @@ const UMLEditor: React.FC = () => {
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
   const _didFirstSync = useRef(false);
+  const renderedTheme = useRef<CanvasTheme | null>(null);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    applyCanvasThemeToGraph(graph, canvasTheme);
 
     try {
       isInternalUpdate.current = true;
       const currentIds = new Set(diagram.classes.map((c) => c.id));
+      const classLayouts = resolveClassLayouts(diagram.classes);
+      const themeChanged = renderedTheme.current !== canvasTheme;
 
       // Remove deleted nodes
       prevClassIds.current.forEach((id) => {
@@ -512,16 +590,18 @@ const UMLEditor: React.FC = () => {
       // Add or update nodes
       diagram.classes.forEach((cls) => {
         const isSelected = cls.id === selectedClassId;
-        const cachedRender = renderCache.current.get(cls.id);
-        const htmlContent = cachedRender?.entity === cls
-          && cachedRender.selected === isSelected
-          && cachedRender.theme === canvasTheme
-          ? cachedRender.html
-          : buildClassHTML(cls, isSelected, canvasTheme);
+        // Theme is part of the rendered HTML. Always rebuild this small HTML
+        // fragment so a theme change can never reuse a stale node fragment.
+        const htmlContent = buildClassHTML(cls, isSelected, canvasTheme);
         const cached = htmlCache.current.get(cls.id);
-        const { width, height } = getClassNodeSize(cls);
+        const layout = classLayouts.get(cls.id) || {
+          x: cls.position.x,
+          y: cls.position.y,
+          ...getClassNodeSize(cls),
+        };
+        const { width, height } = layout;
         const signature = JSON.stringify([
-          htmlContent, cls.position.x, cls.position.y, width, height,
+          htmlContent, layout.x, layout.y, width, height, canvasTheme,
         ]);
         renderCache.current.set(cls.id, {
           entity: cls,
@@ -533,10 +613,12 @@ const UMLEditor: React.FC = () => {
         try {
           const existing = graph.getCellById(cls.id);
           if (existing && existing.isNode()) {
-            if (nodeSignatureCache.current.get(cls.id) === signature) return;
+            // A theme change must refresh every node, even if an older cache
+            // entry accidentally reports the same layout signature.
+            if (!themeChanged && nodeSignatureCache.current.get(cls.id) === signature) return;
             // Update existing node
             const node = existing as Node;
-            node.setPosition(cls.position.x, cls.position.y);
+            node.setPosition(layout.x, layout.y);
             node.setSize({ width, height });
             node.setAttrs({
               body: {
@@ -544,7 +626,7 @@ const UMLEditor: React.FC = () => {
                 strokeWidth: isSelected ? 2.5 : 1.5,
               },
             });
-            if (cached !== htmlContent) {
+            if (themeChanged || cached !== htmlContent) {
               // X6 attr: set the 'html' attr on the 'content' selector
               node.setAttrByPath('content/html', htmlContent);
               htmlCache.current.set(cls.id, htmlContent);
@@ -555,8 +637,8 @@ const UMLEditor: React.FC = () => {
             const node = graph.addNode({
               id: cls.id,
               shape: 'uml-class',
-              x: cls.position.x,
-              y: cls.position.y,
+              x: layout.x,
+              y: layout.y,
               width,
               height,
               attrs: {
@@ -590,10 +672,11 @@ const UMLEditor: React.FC = () => {
 
       const classRects = diagram.classes.map((cls) => ({
         id: cls.id,
-        x: cls.position.x,
-        y: cls.position.y,
-        width: cls.size.width || 200,
-        height: cls.size.height || 150,
+        ...(classLayouts.get(cls.id) || {
+          x: cls.position.x,
+          y: cls.position.y,
+          ...getClassNodeSize(cls),
+        }),
       }));
       diagram.relations.forEach((rel) => {
         const isSelected = rel.id === selectedRelationId;
@@ -673,7 +756,7 @@ const UMLEditor: React.FC = () => {
         };
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
-          isSelected, isComposition, isAggregation, vertices,
+          isSelected, isComposition, isAggregation, vertices, canvasTheme,
         ]);
 
         try {
@@ -733,6 +816,7 @@ const UMLEditor: React.FC = () => {
         }
       });
 
+      renderedTheme.current = canvasTheme;
       prevClassIds.current = currentIds;
       isInternalUpdate.current = false;
 

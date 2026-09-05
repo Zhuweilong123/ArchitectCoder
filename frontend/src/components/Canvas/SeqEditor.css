@@ -1,8 +1,8 @@
 /* Sequence Diagram Editor */
 
 .seq-canvas-container {
-  width: 100%;
-  height: 100%;
+  width: 100% !important;
+  height: 100% !important;
   overflow: hidden;
   background: var(--seq-canvas-bg, #fafafa);
   transition: background 0.2s ease;
@@ -211,6 +211,9 @@
 .x6-edge .x6-edge-label text {
   font-family: Consolas, Monaco, monospace;
   dominant-baseline: central;
+  paint-order: normal;
+  stroke: none;
+  stroke-width: 0;
 }
 
 .seq-legend {

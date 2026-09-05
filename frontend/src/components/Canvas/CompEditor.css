@@ -1,5 +1,5 @@
 .comp-canvas-container {
-  width: 100%; height: 100%; overflow: hidden;
+  width: 100% !important; height: 100% !important; overflow: hidden;
   background: var(--comp-canvas-bg, #fafafa);
   transition: background 0.2s ease;
 }
@@ -16,15 +16,27 @@
   font-size: 10px;
   font-weight: 600;
   paint-order: stroke;
+  stroke-width: 0;
+  stroke-linejoin: round;
+}
+
+.comp-canvas-container .x6-edge .x6-edge-label text {
+  paint-order: stroke;
   stroke: #ffffff;
-  stroke-width: 3px;
+  stroke-width: 1.5px;
   stroke-linejoin: round;
 }
 
 .comp-canvas-container.theme-dark .x6-edge .x6-edge-label {
   fill: #f8fafc;
   stroke: #111827;
-  stroke-width: 4px;
+  stroke-width: 0;
+}
+
+.comp-canvas-container.theme-dark .x6-edge .x6-edge-label text {
+  fill: #f8fafc;
+  stroke: #111827;
+  stroke-width: 1.5px;
 }
 
 .comp-canvas-container .x6-edge:hover .x6-edge-label,
@@ -40,12 +52,21 @@
 }
 
 .comp-node {
-  padding: 8px 10px; height: 100%; box-sizing: border-box;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 8px 10px;
+  color: #3f352a;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 250, 241, 0.92) 100%);
+  border: 1px solid rgba(183, 121, 31, 0.28);
+  border-top: 3px solid #b7791f;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(122, 84, 31, 0.1);
 }
 
 .comp-node.child {
-  background: #fff;
-  border: 1px dashed #d48806;
+  background: rgba(255, 252, 245, 0.86);
+  border: 1px dashed #c99a54;
   border-radius: 4px;
 }
 .comp-node.child .comp-name {
@@ -56,19 +77,36 @@
 }
 
 .comp-node .comp-stereotype {
-  font-size: 10px; color: #d48806; text-align: center; margin-bottom: 2px;
+  font-size: 9px;
+  color: #9a6b2f;
+  text-align: center;
+  margin-bottom: 3px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .comp-node .comp-name {
-  font-weight: 600; font-size: 13px; text-align: center; color: #333;
-  padding: 4px 0; border-bottom: 1px solid #f0d080; margin-bottom: 6px;
+  font-weight: 650;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  text-align: center;
+  color: #3f352a;
+  padding: 5px 0 7px;
+  border-bottom: 1px solid #ead9b8;
+  margin-bottom: 7px;
 }
 
 .comp-block {
-  margin: 4px 0; padding: 2px 4px; border-top: 1px solid #f0d080;
+  margin: 5px 0;
+  padding: 3px 4px 1px;
+  border-top: 1px solid #eadfca;
 }
 .comp-block-label {
-  font-size: 8px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
+  font-size: 8px;
+  color: #927e62;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 3px;
 }
 
 .comp-lollipop {
@@ -89,7 +127,7 @@
 .comp-node .comp-iface.required { color: #cf1322; }
 
 .comp-node.selected {
-  box-shadow: inset 0 0 0 2px #d48806;
+  box-shadow: inset 0 0 0 2px #2563eb, 0 8px 20px rgba(37, 99, 235, 0.16);
 }
 
 .x6-node .x6-port-body circle { opacity: 0; }
@@ -99,6 +137,9 @@
 .comp-node.theme-dark {
   background: #172033;
   color: #e2e8f0;
+  border-color: #334155;
+  border-top-color: #60a5fa;
+  box-shadow: 0 6px 16px rgba(2, 6, 23, 0.24);
 }
 .comp-node.theme-dark.child { background: #1e293b; border-color: #60a5fa; }
 .comp-node.theme-dark .comp-name { color: #f8fafc; border-color: #334155; }
@@ -109,6 +150,9 @@
 .comp-node.theme-blueprint {
   background: #f6fbff;
   color: #164e63;
+  border-color: #bae6fd;
+  border-top-color: #0284c7;
+  box-shadow: 0 6px 16px rgba(14, 116, 144, 0.1);
 }
 .comp-node.theme-blueprint.child { background: #eff6ff; border-color: #0284c7; }
 .comp-node.theme-blueprint .comp-name { color: #0c4a6e; border-color: #bae6fd; }
