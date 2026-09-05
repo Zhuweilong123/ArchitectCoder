@@ -307,6 +307,66 @@ def test_validate_task_validates_uml_project_directly(tmp_path):
     assert result == f"Validated UML project: {project} (diagrams=1)"
 
 
+def test_validate_task_accepts_workspace_qualified_target_with_cwd_alias(tmp_path):
+    source = tmp_path / "src"
+    test = tmp_path / "test"
+    design = tmp_path / "design"
+    source.mkdir()
+    test.mkdir()
+    design.mkdir()
+    project = design / "model.umlproj"
+    project.write_text(
+        '{"diagrams": [{"diagram_type": "component"}]}\n',
+        encoding="utf-8",
+    )
+    tool = _tool(
+        create_foundation_tools(
+            str(source), str(test), str(design), workspace_root=str(tmp_path),
+        ),
+        "run_task",
+    )
+
+    import asyncio
+
+    result = asyncio.run(tool._execute({
+        "task": "validate", "target": "design/model.umlproj", "cwd": "design",
+    }))
+
+    assert result == f"Validated UML project: {project} (diagrams=1)"
+
+
+def test_run_task_does_not_duplicate_test_alias_as_target(tmp_path):
+    source = tmp_path / "src"
+    test = tmp_path / "test"
+    design = tmp_path / "design"
+    source.mkdir()
+    test.mkdir()
+    design.mkdir()
+    tool = _tool(
+        create_foundation_tools(
+            str(source), str(test), str(design), workspace_root=str(tmp_path),
+        ),
+        "run_task",
+    )
+
+    captured = {}
+
+    async def fake_run(program, args, cwd):
+        captured.update(program=program, args=args, cwd=cwd)
+        return "ok"
+
+    tool._run_program_cancellable = fake_run
+    import asyncio
+
+    result = asyncio.run(tool._execute({
+        "task": "test", "target": "test", "cwd": "test",
+    }))
+
+    assert result == "ok"
+    assert captured["args"] == ["-m", "pytest"]
+    assert captured["cwd"] == str(test)
+
+
 def test_power_shell_adapter_owns_shell_syntax_validation():
     executor = NativePowerShellExecutor()
     assert executor.validate_shell_command("Get-ChildItem -Force") is None

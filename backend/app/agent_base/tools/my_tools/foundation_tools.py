@@ -672,7 +672,9 @@ class RunTaskTool(RunProgramTool):
         self.description = (
             "Run a semantic development task. Supported tasks: test, build, lint, "
             "format, typecheck, validate. Validate checks UML project files directly "
-            "and uses the host-specific executable for source/test validation."
+            "when target is a .umlproj/.uml/.json file; target paths are relative to "
+            "cwd when cwd is provided, and cwd accepts source, test, design, or workspace. "
+            "For a full test directory, use cwd=\"test\" with no target or target=\".\"."
         )
 
     async def _execute(self, params: dict) -> str:
@@ -689,26 +691,50 @@ class RunTaskTool(RunProgramTool):
         if target:
             if not isinstance(target, str):
                 return "Error: target must be a string"
-            args.append(target)
+            # A model may carry the cwd alias into target as well. Treat
+            # ``target=test, cwd=test`` as the intended full-suite command
+            # instead of executing pytest against the non-existent test/test.
+            raw_cwd = params.get("cwd")
+            if not (
+                task == "test"
+                and isinstance(raw_cwd, str)
+                and target.strip().lower() == raw_cwd.strip().lower()
+            ):
+                args.append(target)
         return await RunProgramTool._execute(self, {
             "program": program, "args": args, "cwd": params.get("cwd"),
         })
 
     def _validate_project_file(self, target: str, raw_cwd) -> str:
+        candidates: list[Path] = []
         if raw_cwd:
             cwd, cwd_error = self._resolve_cwd(raw_cwd)
             if cwd_error:
                 return f"Error: {cwd_error}"
-            candidate = Path(cwd) / target
+            candidates.append(Path(cwd) / target)
+        # Accept both canonical forms:
+        #   target="model.umlproj", cwd="design"
+        #   target="design/model.umlproj"
+        # The second form is common when an Agent carries the workspace alias
+        # into a task target, and should not become workspace/design/design/...
+        candidates.append(Path(target))
+        path = None
+        last_error: Exception | None = None
+        seen: set[str] = set()
+        for candidate in candidates:
             try:
+                key = str(candidate)
+                if key in seen:
+                    continue
+                seen.add(key)
                 path = safe_path(str(candidate), self._roots, require_exist=True)
+                if not path.is_file():
+                    raise FileNotFoundError(path)
+                break
             except (OSError, ValueError) as exc:
-                return f"Error: {exc}"
-        else:
-            try:
-                path = safe_path(target, self._roots, require_exist=True)
-            except (OSError, ValueError) as exc:
-                return f"Error: {exc}"
+                last_error = exc
+        if path is None:
+            return f"Error: {last_error or 'project file not found'}"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:

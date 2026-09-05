@@ -10,6 +10,7 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -32,6 +33,10 @@ from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
 logger = logging.getLogger(__name__)
+
+EVAL_TOOL_PROTOCOL_VERSION = "foundation-tools-v1"
+EVAL_FIXTURE_LAYOUT_VERSION = "design-src-test-v1"
+EVAL_CONTEXT_VERSION = "eval-workspace-v1"
 
 _HARD_BUDGET_STOP_REASONS = {
     "hard_limit_before_next_llm",
@@ -63,6 +68,59 @@ def _trace_total_tokens(trace_path: str) -> int:
 def _default_results_path() -> Path:
     settings = get_settings()
     return Path(settings.uml_dir).resolve().parent / "evals" / "results.jsonl"
+
+
+def _eval_trace_session_id(run_id: str) -> str:
+    """Return a normal-looking, durable session id for an evaluation trace."""
+    token = run_id.removeprefix("eval_") or uuid.uuid4().hex[:16]
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{token}_eval"
+
+
+def _validate_project_layout(workspace: Path, manifest) -> list[str]:
+    """Validate the manifest contract before spending an LLM turn.
+
+    Production DevAgent tools use explicit ``design``, ``src`` and ``test``
+    roots.  A malformed fixture should fail during evaluation preflight rather
+    than making the Agent rediscover paths and eventually time out.
+    """
+    if manifest is None:
+        return []
+    required = {
+        "entry_file": workspace / manifest.entry_file,
+        "source_dir": workspace / manifest.source_dir,
+        "test_dir": workspace / manifest.test_dir,
+    }
+    missing: list[str] = []
+    if not manifest.entry_file:
+        missing.append("entry_file is not configured")
+    elif not required["entry_file"].is_file():
+        missing.append(f"entry_file not found: {manifest.entry_file}")
+    if not required["source_dir"].is_dir():
+        missing.append(f"source_dir not found: {manifest.source_dir}")
+    if not required["test_dir"].is_dir():
+        missing.append(f"test_dir not found: {manifest.test_dir}")
+    if manifest.entry_file and not Path(manifest.entry_file).parts[0].lower() == "design":
+        missing.append(
+            "entry_file must use the canonical design/ path under the foundation tool contract"
+        )
+    return missing
+
+
+def _build_eval_workspace_context(manifest) -> str:
+    """Return a compact, eval-only reminder of the canonical workspace contract."""
+    if manifest is None:
+        return ""
+    entry_name = Path(manifest.entry_file).name if manifest.entry_file else ""
+    return "\n".join([
+        "## Evaluation workspace contract (authoritative)",
+        "Use workspace-relative paths and the supplied directory aliases.",
+        f"- UML design file: design/{entry_name}",
+        f"- Validate UML with run_task target=\"{entry_name}\", cwd=\"design\".",
+        "- Source files are under src/; tests are under test/.",
+        "- list_files and search_text accept src, test, design, or workspace as directory scopes.",
+        "- For the whole test suite use run_task task=\"test\", cwd=\"test\"; omit target or use target=\".\".",
+        "- Do not repeat a directory alias as both cwd and target (for example target=\"test\", cwd=\"test\").",
+    ])
 
 
 async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
@@ -108,6 +166,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     agent._eval_progress = progress
     agent._eval_review_manager = review_mgr
     agent._eval_agent_mode = "devagent"
+    agent._eval_workspace_context = _build_eval_workspace_context(manifest)
     agent._eval_context = "\n\n".join(filter(None, [
         agent._eval_context, enabled_tools_context(),
     ]))
@@ -127,6 +186,15 @@ class EvalRunner:
         # unit tests and local harnesses.
         factory = agent_factory or dev_agent_factory
         result.metadata["project_id"] = case.project_id
+        result.metadata["eval_contract"] = {
+            "tool_protocol_version": EVAL_TOOL_PROTOCOL_VERSION,
+            "fixture_layout_version": EVAL_FIXTURE_LAYOUT_VERSION,
+            "context_version": EVAL_CONTEXT_VERSION,
+            "budget_scope": "case_wall_clock_turn_agent_budget",
+            "case_max_seconds": case.max_seconds,
+            "turn_max_tool_calls": case.max_tool_calls,
+            "turn_max_total_tokens": case.max_total_tokens,
+        }
 
         try:
             fixture, manifest = resolve_fixture(case)
@@ -155,6 +223,24 @@ class EvalRunner:
                     return finished
                 materialize_fixture(fixture, workspace, manifest)
 
+            layout_errors = _validate_project_layout(workspace, manifest)
+            if layout_errors:
+                finished = self._finish(
+                    result, "error", "; ".join(layout_errors), started,
+                )
+                finished.workspace = ""
+                self._append_result(finished)
+                get_agent_metrics().record_run("eval_error")
+                return finished
+            if manifest is not None:
+                result.metadata["project_manifest"] = {
+                    "id": manifest.id,
+                    "version": manifest.version,
+                    "entry_file": manifest.entry_file,
+                    "source_dir": manifest.source_dir,
+                    "test_dir": manifest.test_dir,
+                }
+
             baseline_hashes: dict[str, str | None] = {}
             for config in [*case.hard_checkers, *case.checkers]:
                 if config.get("type") != "paths_unchanged":
@@ -173,7 +259,7 @@ class EvalRunner:
                 test_dir = workspace / manifest.test_dir if manifest else workspace
                 first_prompt = case.prompts()[0]
                 async with TraceSession(
-                    session_id=run_id, user_message=first_prompt,
+                    session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
                     env_snapshot={"eval_case": case.id},
                 ) as tracer:
@@ -440,6 +526,7 @@ class EvalRunner:
                             context = "\n\n".join(filter(None, [
                                 context,
                                 enabled_tools_context(),
+                                getattr(agent, "_eval_workspace_context", ""),
                             ]))
                             stream_kwargs: dict[str, Any] = {}
                             if context:

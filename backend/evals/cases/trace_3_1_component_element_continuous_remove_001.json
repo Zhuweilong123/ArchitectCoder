@@ -11,7 +11,7 @@
       "hard_checkers": [
         {
           "type": "uml_component_names",
-          "path": "radar_design_0730.umlproj",
+          "path": "design/radar_design_0730.umlproj",
           "diagram": "Radar Signal Processing Architecture",
           "names": [
             "ModeControlCompElement",
@@ -27,11 +27,11 @@
       "hard_checkers": [
         {
           "type": "uml_valid",
-          "path": "radar_design_0730.umlproj"
+          "path": "design/radar_design_0730.umlproj"
         },
         {
           "type": "uml_component_names",
-          "path": "radar_design_0730.umlproj",
+          "path": "design/radar_design_0730.umlproj",
           "diagram": "Radar Signal Processing Architecture",
           "names": [
             "ModeControlComp",
@@ -148,11 +148,11 @@
   "hard_checkers": [
     {
       "type": "uml_valid",
-      "path": "radar_design_0730.umlproj"
+      "path": "design/radar_design_0730.umlproj"
     },
     {
       "type": "uml_component_names",
-      "path": "radar_design_0730.umlproj",
+      "path": "design/radar_design_0730.umlproj",
       "diagram": "Radar Signal Processing Architecture",
       "names": [
         "ModeControlComp",
