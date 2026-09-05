@@ -121,7 +121,7 @@ test_dir: test
 - 完成进度：`7/7` 轮全部完成。
 - Checker：共 `43` 个，`43` 个通过，`0` 个失败。
 - Trace：`D:\AI_tools\temp\chat_log\trace_eval_1b059a4e3d304058.jsonl`
-- 结果文件：`temp/evals/remove_01-contract-v2-results.jsonl`
+- 结果文件：`temp/evals/runs/remove_01-contract-v2-results.jsonl`
 
 ### 逐轮指标
 

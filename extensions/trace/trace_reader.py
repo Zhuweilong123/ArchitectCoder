@@ -20,10 +20,22 @@ from extensions.trace.chat_trace import (
     EVT_TASK_SUMMARY,
     _chat_log_dir,
 )
+from backend.config import evaluation_traces_dir
 
 
 def _trace_dir() -> str:
     return _chat_log_dir()
+
+
+def _trace_dirs() -> list[str]:
+    """Read ordinary chat traces and evaluation traces through one reader."""
+    candidates = [_trace_dir(), str(evaluation_traces_dir())]
+    result: list[str] = []
+    for path in candidates:
+        normalized = os.path.normpath(path)
+        if normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def _sanitize_session_id(session_id: str) -> str:
@@ -71,28 +83,31 @@ def _peek(path: str) -> dict:
 
 def list_traces() -> list[dict]:
     """列出所有 trace 文件，按修改时间倒序。"""
-    log_dir = _trace_dir()
-    if not os.path.isdir(log_dir):
-        return []
-
     traces = []
-    for name in os.listdir(log_dir):
-        if not name.startswith("trace_") or not name.endswith(".jsonl"):
+    seen: set[str] = set()
+    for log_dir in _trace_dirs():
+        if not os.path.isdir(log_dir):
             continue
-        path = os.path.join(log_dir, name)
-        try:
-            st = os.stat(path)
-        except OSError:
-            continue
+        for name in os.listdir(log_dir):
+            if not name.startswith("trace_") or not name.endswith(".jsonl"):
+                continue
+            path = os.path.join(log_dir, name)
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
 
-        session_id = name[len("trace_"):-len(".jsonl")]
-        traces.append({
-            "session_id": session_id,
-            "filename": name,
-            "size": st.st_size,
-            "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
-            **_peek(path),
-        })
+            session_id = name[len("trace_"):-len(".jsonl")]
+            traces.append({
+                "session_id": session_id,
+                "filename": name,
+                "size": st.st_size,
+                "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                **_peek(path),
+            })
 
     traces.sort(key=lambda t: t["modified"], reverse=True)
     return traces
@@ -101,8 +116,15 @@ def list_traces() -> list[dict]:
 def read_trace(session_id: str) -> dict | None:
     """读取单个 session 的完整事件流（保持文件顺序）。"""
     safe_id = _sanitize_session_id(session_id)
-    path = os.path.join(_trace_dir(), f"trace_{safe_id}.jsonl")
-    if not os.path.isfile(path):
+    path = next(
+        (
+            os.path.join(directory, f"trace_{safe_id}.jsonl")
+            for directory in _trace_dirs()
+            if os.path.isfile(os.path.join(directory, f"trace_{safe_id}.jsonl"))
+        ),
+        None,
+    )
+    if path is None:
         return None
 
     events = []

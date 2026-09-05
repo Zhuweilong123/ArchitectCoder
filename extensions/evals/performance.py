@@ -21,7 +21,11 @@ def _repo_root() -> Path:
 def _result_roots(eval_root: Path) -> list[Path]:
     """Return canonical and CLI output locations, without duplicate roots."""
 
-    roots = [eval_root.resolve(), (_repo_root() / "backend" / "temp" / "evals").resolve()]
+    roots = [
+        (eval_root / "results").resolve(),
+        eval_root.resolve(),
+        (_repo_root() / "backend" / "temp" / "evals").resolve(),
+    ]
     unique: list[Path] = []
     for root in roots:
         if root not in unique:
@@ -116,7 +120,7 @@ def _archive_sources(eval_root: Path) -> set[str]:
             note = str(data.get("note") or "")
             sources.update(
                 match.group(0).replace("\\", "/")
-                for match in re.finditer(r"(?:backend/)?temp/evals/performance-[A-Za-z0-9_.-]+\.jsonl", note)
+                for match in re.finditer(r"(?:backend/)?temp/evals/(?:results/)?performance-[A-Za-z0-9_.-]+\.jsonl", note)
             )
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
             continue

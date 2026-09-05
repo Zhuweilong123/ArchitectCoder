@@ -21,7 +21,7 @@ from app.agent_base.assembly import (
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.execution_summary import build_task_execution_summary
-from backend.config import get_settings
+from backend.config import evaluation_results_dir, evaluation_traces_dir, get_settings
 from app.services.agent_execution import handle_agent_execution
 from app.services.agent_metrics import get_agent_metrics
 from app.services.run_state import get_run_store
@@ -79,8 +79,7 @@ def _trace_event_count(trace_path: str, event_type: str) -> int:
 
 
 def _default_results_path() -> Path:
-    settings = get_settings()
-    return Path(settings.uml_dir).resolve().parent / "evals" / "results.jsonl"
+    return evaluation_results_dir() / "results.jsonl"
 
 
 def _eval_trace_session_id(run_id: str) -> str:
@@ -274,6 +273,7 @@ class EvalRunner:
                 async with TraceSession(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
+                    trace_dir=str(evaluation_traces_dir()),
                     env_snapshot={"eval_case": case.id},
                 ) as tracer:
                     result.trace_id = tracer.trace_id

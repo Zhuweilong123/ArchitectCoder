@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.config import get_settings
+from backend.config import evaluation_root
 from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchRequest
 
 from .models import EvalResult
@@ -24,7 +24,7 @@ def _now() -> str:
 
 
 def _eval_root() -> Path:
-    return Path(get_settings().uml_dir).resolve().parent / "evals"
+    return evaluation_root()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

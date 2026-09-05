@@ -198,7 +198,21 @@ backend/evals/               # 版本化评测数据
 单用例结果默认追加到：
 
 ```text
-<uml_dir 的父目录>/evals/results.jsonl
+<uml_dir 的父目录>/evals/results/results.jsonl
+```
+
+评测专用 Trace 统一写入 `<uml_dir 的父目录>/evals/traces/`；普通聊天 Trace 仍写入同级的 `chat_log/`。
+
+评测运行时目录统一约定如下：
+
+```text
+temp/evals/
+├── results/       # 单次评测和性能评测 JSONL
+├── traces/        # 评测专用 Trace
+├── archives/      # 正式批次快照
+├── runs/          # 历史评测结果
+├── reports/       # 评测分析报告
+└── batches.jsonl  # 批次索引
 ```
 
 JSONL 采用追加模式，适合保留运行历史，但目前没有自动去重、版本索引或结果数据库。
@@ -395,10 +409,10 @@ conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --i
 
 指标来源：
 
-- 3.3 基线：`backend/temp/evals/performance-16-20260905.jsonl`
-- 3.3.1：`backend/temp/evals/performance-16-20260905-v3.3.1.jsonl`
-- 3.3.2：`backend/temp/evals/performance-16-20260905-v3.3.2.jsonl`
-- 3.3.3：`backend/temp/evals/performance-16-20260905-v3.3.3.jsonl`
+- 3.3 基线：`temp/evals/results/performance-16-20260905.jsonl`
+- 3.3.1：`temp/evals/results/performance-16-20260905-v3.3.1.jsonl`
+- 3.3.2：`temp/evals/results/performance-16-20260905-v3.3.2.jsonl`
+- 3.3.3：`temp/evals/results/performance-16-20260905-v3.3.3.jsonl`
 
 ### 14.2 每轮改动和验证
 
@@ -407,21 +421,21 @@ conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --i
 - 修改 `backend/app/agent_base/core/hooks.py` 的默认 `TruncateHook` 配置：`read_file` 上限调整为 6000 字符，`search_text` 为 4000，`run_task` 为 6000，`skill` 保持 20000；全局默认上限仍保持 1200。
 - 目标是让 Agent 一次获得足够的代码上下文，减少因输出被截断而反复读取同一文件。
 - 结果：工具调用从基线 496 降至 360，平均耗时从 95.2 s 降至 74.6 s，通过率提升 6.2 个百分点。
-- 代表性 Trace：`temp/chat_log/trace_20260905_172343_96609abbfb974d73_eval.jsonl`
+- 代表性 Trace：`temp/evals/traces/trace_20260905_172343_96609abbfb974d73_eval.jsonl`
 
 #### 3.3.2：在既有预算阈值触发一次收敛检查点
 
 - 修改 `backend/app/agent_base/agents/react_agent.py`：沿用既有的工具步数/Token 预算阈值，首次达到阈值时追加一次运行时 system checkpoint。
 - 约束 Agent 停止继续广泛探索，转入修改、验证和收尾，并避免重复读取已确认文件；没有修改用户原始 Prompt，也没有改变预算值。
 - 结果：16 个用例中通过 8 个，为三轮最佳；平均得分 0.736，平均耗时 74.1 s。
-- 代表性 Trace：`temp/chat_log/trace_20260905_174426_44913bb1773940ca_eval.jsonl`
+- 代表性 Trace：`temp/evals/traces/trace_20260905_174426_44913bb1773940ca_eval.jsonl`
 
 #### 3.3.3：对工具失败提供一次性恢复指引
 
 - 修改 `backend/app/agent_base/agents/react_agent.py`：按不同的工具名/错误码识别失败签名，每种新失败只追加一次 recovery checkpoint。
 - 指引 Agent 将失败视为已知证据，禁止机械重试，要求检查目标、进行最小修复并做聚焦验证；无法继续时明确报告限制。
 - 结果：通过 7/16，平均得分 0.674；总 Token 降至 2,754,828，工具调用降至 386，较 3.3.2 更节省资源，但通过率回落 6.2 个百分点。
-- 代表性 Trace：`temp/chat_log/trace_20260905_180631_e90b7dd681dd4e87_eval.jsonl`
+- 代表性 Trace：`temp/evals/traces/trace_20260905_180631_e90b7dd681dd4e87_eval.jsonl`
 
 三轮代码修改均通过定向回归测试：`tests/agent_base/test_react_agent.py` 与 `tests/agent_base/test_evidence.py` 共 24 项通过。
 

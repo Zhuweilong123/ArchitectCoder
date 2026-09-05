@@ -25,6 +25,7 @@ class TraceSessionRequest:
     project_file: str = ""
     source_dir: str = ""
     test_dir: str = ""
+    trace_dir: str = ""
     env_snapshot: dict[str, Any] | None = None
 
 
@@ -383,6 +384,7 @@ class TraceSession:
         project_file: str = "",
         source_dir: str = "",
         test_dir: str = "",
+        trace_dir: str = "",
         env_snapshot: dict[str, Any] | None = None,
         provider: TraceProvider | None = None,
         sink: TraceSink | None = None,
@@ -393,6 +395,7 @@ class TraceSession:
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
+            trace_dir=trace_dir,
             env_snapshot=env_snapshot,
         )
         self._provider = provider

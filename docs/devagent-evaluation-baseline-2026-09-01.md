@@ -8,7 +8,7 @@
 - 模型：`deepseek-v4-flash`
 - 用例数：16
 - 执行命令：在仓库根目录运行 `conda run --no-capture-output -n hello_agents python -m extensions.evals.cli`
-- 结果文件：`temp/evals/results.jsonl`
+- 结果文件：`temp/evals/results/results.jsonl`
 
 结果文件中包含 4 条更早的单用例记录。本基线只统计本次完整运行连续写入的 16 条记录，时间窗口为 `2026-09-01 11:10:58` 至 `11:41:30`（北京时间）。
 
