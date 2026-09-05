@@ -16,7 +16,7 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 
 - **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.
 - **AI-powered validation**: cross-diagram consistency checks with fuzzy-match auto-repair — machines catch what humans miss.
-- **Natural language to running code**: Describe requirements → auto-generate UML → the Agent writes code and runs real pytest → auto-repair on failure.
+- **Natural language to running code**: Describe requirements → auto-generate UML → human diff review → the Agent implements code and runs real pytest → auto-repair on failure.
 
 ## Core Capabilities
 
@@ -44,10 +44,12 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.2, the main loop remains a direct ReAct workflow, with optional task orchestration and a bounded read-only strategy worker available through a pluggable provider:
 
 - **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
-- **Task planning**: `todo_write` maintains a session task list — plan before multi-step work, update status as you go
+- **Task planning**: `todo_write` maintains a session task list — multi-step tasks create 3–5 concise todos, include verification, and update status as work progresses
+- **Design-first workflow**: design-impacting requirements follow `inspect → update UML → validate → human review → implementation → verification`; business code should be changed only after the affected design is accepted. Implementation-only tasks can proceed directly.
 - **Optional task orchestration**: a planner can create a bounded plan, delegate read-only cross-artifact exploration, and hand structured evidence back to the main Agent; disabling the provider falls back to the direct ReAct path
 - **Controlled sub-agent** `spawn_subagent`: only explicitly enabled strategy work is delegated with a separate context and restricted read-only tools; the main Agent remains responsible for edits and verification
-- **Human review**: UML design changes go through `submit_uml_review` diff approval; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
+- **Human review**: UML design changes go through `submit_uml_review` diff approval before the implementation phase; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
+- **UML 2.5.1 skill pack**: on-demand class, sequence, component, and cross-diagram guides, including a small loadable `.umlproj` reference case; advanced project cases remain outside the skill pack
 - **Streaming progress**: every tool call, arguments, and results pushed in real time
 - **Interrupt control**: stop the Agent at any time
 - **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
@@ -93,6 +95,7 @@ Excel test-case-driven test code generation:
 
 - **Full recording**: every Agent session is persisted as a JSONL trace (LLM requests/responses + step-by-step tool call events)
 - **TraceViewer**: a drawer-style UI for browsing historical sessions, expanding each tool call's arguments and results
+- **Long prompt inspection**: oversized LLM prompts and tool schemas stay compact by default and can be expanded to inspect the complete content in a scrollable panel
 - **Deterministic replay**: `mock` mode replays from the recording with zero network access (with cursor-consistency checks); `rerun` mode re-runs the real LLM while tools stay mocked from the recording — for prompt debugging and regression comparison
 
 ### Knowledge Graph
