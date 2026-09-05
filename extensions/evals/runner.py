@@ -17,13 +17,14 @@ from typing import Any, Awaitable, Callable
 from app.agent_base.assembly import (
     ProgressRelay,
     create_dev_agent,
-    enabled_tools_context,
 )
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.execution_summary import build_task_execution_summary
 from backend.config import get_settings
+from app.services.agent_execution import handle_agent_execution
 from app.services.agent_metrics import get_agent_metrics
+from app.services.run_state import get_run_store
 from app.trace.tracing import TraceSession
 
 from .checkers import build_checkers
@@ -36,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 EVAL_TOOL_PROTOCOL_VERSION = "foundation-tools-v1"
 EVAL_FIXTURE_LAYOUT_VERSION = "design-src-test-v1"
-EVAL_CONTEXT_VERSION = "eval-workspace-v1"
 
 _HARD_BUDGET_STOP_REASONS = {
     "hard_limit_before_next_llm",
@@ -63,6 +63,19 @@ def _trace_total_tokens(trace_path: str) -> int:
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return 0
     return total
+
+
+def _trace_event_count(trace_path: str, event_type: str) -> int:
+    if not trace_path:
+        return 0
+    count = 0
+    try:
+        for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
+            if json.loads(line).get("event_type") == event_type:
+                count += 1
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return 0
+    return count
 
 
 def _default_results_path() -> Path:
@@ -106,29 +119,35 @@ def _validate_project_layout(workspace: Path, manifest) -> list[str]:
     return missing
 
 
-def _build_eval_workspace_context(manifest) -> str:
-    """Return a compact, eval-only reminder of the canonical workspace contract."""
-    if manifest is None:
-        return ""
-    entry_name = Path(manifest.entry_file).name if manifest.entry_file else ""
-    return "\n".join([
-        "## Evaluation workspace contract (authoritative)",
-        "Use workspace-relative paths and the supplied directory aliases.",
-        f"- UML design file: design/{entry_name}",
-        f"- Validate UML with run_task target=\"{entry_name}\", cwd=\"design\".",
-        "- Source files are under src/; tests are under test/.",
-        "- list_files and search_text accept src, test, design, or workspace as directory scopes.",
-        "- For the whole test suite use run_task task=\"test\", cwd=\"test\"; omit target or use target=\".\".",
-        "- Do not repeat a directory alias as both cwd and target (for example target=\"test\", cwd=\"test\").",
-    ])
+def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
+    """Return the budget used by the agent, keeping production as the default.
+
+    Evaluation deadlines and checker limits are harness concerns.  Only the
+    dedicated budget-control case is allowed to intentionally override the
+    production agent budget so that the budget behavior itself remains testable.
+    """
+    if case.metadata.get("capability") == "budget_control":
+        return {
+            "max_steps": case.max_tool_calls,
+            "max_tool_calls": case.max_tool_calls,
+            "max_run_seconds": case.max_seconds,
+            "max_total_tokens": case.max_total_tokens,
+        }
+    return {
+        "max_steps": settings.agent_max_steps,
+        "max_tool_calls": settings.agent_max_tool_calls,
+        "max_run_seconds": settings.agent_max_run_seconds,
+        "max_total_tokens": settings.agent_max_total_tokens,
+    }
 
 
 async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
     The interactive WebSocket path and this factory share the same agent
-    assembly function. Evaluation only changes the workspace, run budgets and
-    approval policy; it does not replace the production prompt/tool chain.
+    assembly function. Evaluation only changes the workspace and approval
+    adapter; it does not replace the production prompt/tool chain or task
+    budget.
     """
     settings = get_settings()
     first_prompt = case.prompts()[0]
@@ -138,6 +157,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
     progress = ProgressRelay()
+    budget = _agent_budget(case, settings)
     agent, review_mgr, prompt_builder = await create_dev_agent(
         llm,
         source_dir=str(source_dir),
@@ -147,17 +167,12 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         progress=progress,
         task_scope=f"eval_{case.id}",
         auto_approve_reviews=True,
-        max_steps=case.max_tool_calls,
-        max_tool_calls=case.max_tool_calls,
-        max_run_seconds=case.max_seconds,
-        max_total_tokens=min(settings.agent_max_total_tokens, case.max_total_tokens),
+        **budget,
         convergence_tool_steps=(
             int(case.metadata["convergence_tool_steps"])
-            if case.metadata.get("convergence_tool_steps") is not None else None
+            if case.metadata.get("convergence_tool_steps") is not None
+            else settings.agent_convergence_tool_steps
         ),
-    )
-    agent._eval_context = await prompt_builder.build_context(
-        str(project_file), str(source_dir), str(test_dir), first_prompt,
     )
     agent._eval_prompt_builder = prompt_builder
     agent._eval_source_dir = str(source_dir)
@@ -166,10 +181,6 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     agent._eval_progress = progress
     agent._eval_review_manager = review_mgr
     agent._eval_agent_mode = "devagent"
-    agent._eval_workspace_context = _build_eval_workspace_context(manifest)
-    agent._eval_context = "\n\n".join(filter(None, [
-        agent._eval_context, enabled_tools_context(),
-    ]))
     return agent
 
 
@@ -189,11 +200,13 @@ class EvalRunner:
         result.metadata["eval_contract"] = {
             "tool_protocol_version": EVAL_TOOL_PROTOCOL_VERSION,
             "fixture_layout_version": EVAL_FIXTURE_LAYOUT_VERSION,
-            "context_version": EVAL_CONTEXT_VERSION,
-            "budget_scope": "case_wall_clock_turn_agent_budget",
-            "case_max_seconds": case.max_seconds,
-            "turn_max_tool_calls": case.max_tool_calls,
-            "turn_max_total_tokens": case.max_total_tokens,
+            "execution_path": "production_agent_execution",
+            "prompt_source": "case_user_message_only",
+            "budget_scope": "production_agent_budget_with_case_deadline",
+            "agent_budget_source": "backend_settings",
+            "case_deadline_seconds": case.max_seconds,
+            "case_tool_call_limit": case.max_tool_calls,
+            "budget_control_case": case.metadata.get("capability") == "budget_control",
         }
 
         try:
@@ -267,12 +280,13 @@ class EvalRunner:
                     agent = await factory(workspace, case)
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
                     result.metadata["agent"] = "devagent"
+                    production_agent = isinstance(agent, ReActAgent)
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()
                     task_binding = None
                     task_finalized = False
-                    if hasattr(agent, "tool_registry"):
+                    if not production_agent and hasattr(agent, "tool_registry"):
                         try:
                             from app.agent_base.tools.task_system import create_task_execution
 
@@ -311,6 +325,7 @@ class EvalRunner:
                         "checkpoint": {},
                         "summary_written": False,
                     }
+                    execution_error = ""
 
                     def finalize_task(
                         status: str,
@@ -348,6 +363,7 @@ class EvalRunner:
 
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
+                        nonlocal execution_error
                         from app.agent_base.core.hooks import (
                             AgentRuntime, get_runtime, set_runtime, reset_runtime,
                         )
@@ -362,7 +378,10 @@ class EvalRunner:
                         review_offset = 0
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
-                        production_agent = hasattr(agent, "tool_registry")
+                        production_agent = isinstance(agent, ReActAgent)
+                        coordinated_agent = production_agent or hasattr(
+                            agent, "tool_registry"
+                        )
 
                         def sync_task_binding(checkpoint: dict[str, Any]) -> None:
                             if task_binding is None:
@@ -471,7 +490,7 @@ class EvalRunner:
                                 policy="fixed_session_model", turn=turn_index,
                             )
 
-                            if not production_agent:
+                            if not coordinated_agent:
                                 turn_tool_calls = 0
                                 turn_tokens = 0
                                 final_answer = ""
@@ -523,50 +542,122 @@ class EvalRunner:
                                     **prompt_builder.last_context_report,
                                     turn=turn_index,
                                 )
-                            context = "\n\n".join(filter(None, [
-                                context,
-                                enabled_tools_context(),
-                                getattr(agent, "_eval_workspace_context", ""),
-                            ]))
-                            stream_kwargs: dict[str, Any] = {}
-                            if context:
-                                stream_kwargs["context"] = context
-                            # Each turn is a separate user task with its own
-                            # main-Agent budget. Cumulative usage is report-only.
-                            runtime_token = set_runtime(AgentRuntime(
-                            ))
+                            # ``context`` contains only the same dynamic context
+                            # that the production transport builds from the user
+                            # message.  The production execution coordinator adds
+                            # the shared tool policy and orchestration context.
                             turn_tool_calls = 0
                             turn_tokens = 0
                             final_answer = ""
                             turn_tool_details: list[dict] = active_turn["details"]
                             tool_budget_exceeded = False
-                            try:
-                                stream = agent.arun_stream(prompt, **stream_kwargs)
-                                async for progress in stream:
-                                    details = progress.tool_calls_detail or []
-                                    tool_budget_exceeded = tool_budget_exceeded or any(
-                                        "Tool-call budget exceeded" in str(
-                                            detail.get("observation") or ""
+                            if production_agent:
+                                # Use the same transport-neutral coordinator as
+                                # the WebSocket path.  The sender is the only
+                                # frontend boundary and is intentionally stubbed
+                                # for an offline evaluation.
+                                sent_events: list[dict] = []
+
+                                async def _eval_send(payload: dict) -> bool:
+                                    sent_events.append(payload)
+                                    return True
+
+                                turn_run_id = f"{run_id}_turn_{turn_index}"
+                                turn_owner = f"eval:{run_id}:{turn_index}"
+                                eval_run = get_run_store().create(
+                                    kind="agent_chat",
+                                    session_id=f"eval_{case.id}",
+                                    run_id=turn_run_id,
+                                    metadata={
+                                        "eval_case": case.id,
+                                        "parent_run_id": run_id,
+                                        "turn": turn_index,
+                                        "message": prompt[:500],
+                                    },
+                                )
+                                get_run_store().claim(eval_run.run_id, turn_owner)
+                                result.metadata.setdefault("execution_runs", []).append(
+                                    turn_run_id
+                                )
+                                before_tool_calls = _trace_event_count(
+                                    tracer.path, "tool_call"
+                                )
+                                await handle_agent_execution(
+                                    agent,
+                                    review_mgr,
+                                    prompt,
+                                    _eval_send,
+                                    lambda: False,
+                                    trace_log=tracer,
+                                    project_file=getattr(agent, "_eval_project_file", ""),
+                                    source_dir=getattr(agent, "_eval_source_dir", ""),
+                                    test_dir=getattr(agent, "_eval_test_dir", ""),
+                                    progress=progress_relay,
+                                    context=context,
+                                    fallback_review_runs={},
+                                    run_id=turn_run_id,
+                                    run_owner=turn_owner,
+                                    session_id=f"eval_{case.id}",
+                                    disconnect_check=lambda: False,
+                                )
+                                turn_tool_calls = max(
+                                    0,
+                                    _trace_event_count(tracer.path, "tool_call")
+                                    - before_tool_calls,
+                                )
+                                result.tool_calls += turn_tool_calls
+                                done_events = [
+                                    event for event in sent_events
+                                    if event.get("event") == "done"
+                                ]
+                                error_events = [
+                                    event for event in sent_events
+                                    if event.get("event") == "error"
+                                ]
+                                if error_events:
+                                    execution_error = str(
+                                        error_events[-1].get("message") or "agent execution failed"
+                                    )
+                                if done_events:
+                                    final_answer = str(done_events[-1].get("result") or "")
+                                elif error_events:
+                                    final_answer = str(error_events[-1].get("message") or "")
+                                # handle_agent_execution owns progress, review,
+                                # task-summary, checkpoint, and terminal trace
+                                # events for production-shaped runs.
+                                active_turn["summary_written"] = True
+                            else:
+                                # Keep the lightweight direct path for injected
+                                # test doubles; official evaluations use the
+                                # production coordinator above.
+                                runtime_token = set_runtime(AgentRuntime())
+                                try:
+                                    stream = agent.arun_stream(prompt, context=context)
+                                    async for progress in stream:
+                                        details = progress.tool_calls_detail or []
+                                        tool_budget_exceeded = tool_budget_exceeded or any(
+                                            "Tool-call budget exceeded" in str(
+                                                detail.get("observation") or ""
+                                            )
+                                            for detail in details
                                         )
-                                        for detail in details
-                                    )
-                                    record_tool_details(progress.step, details, turn_tool_details)
-                                    sync_progress_checkpoint(progress.step, details)
-                                    turn_tool_calls += sum(
-                                        detail.get("status") != "blocked" for detail in details
-                                    )
-                                    result.tool_calls += sum(
-                                        detail.get("status") != "blocked" for detail in details
-                                    )
-                                    for detail in details:
-                                        tokens = int(detail.get("total_tokens") or 0)
-                                        turn_tokens += tokens
-                                        result.total_tokens += tokens
-                                    if progress.is_final:
-                                        final_answer = progress.final_answer or ""
-                                        tracer.done(answer=final_answer)
-                            finally:
-                                reset_runtime(runtime_token)
+                                        record_tool_details(progress.step, details, turn_tool_details)
+                                        sync_progress_checkpoint(progress.step, details)
+                                        turn_tool_calls += sum(
+                                            detail.get("status") != "blocked" for detail in details
+                                        )
+                                        result.tool_calls += sum(
+                                            detail.get("status") != "blocked" for detail in details
+                                        )
+                                        for detail in details:
+                                            tokens = int(detail.get("total_tokens") or 0)
+                                            turn_tokens += tokens
+                                            result.total_tokens += tokens
+                                        if progress.is_final:
+                                            final_answer = progress.final_answer or ""
+                                            tracer.done(answer=final_answer)
+                                finally:
+                                    reset_runtime(runtime_token)
 
                             # Tool-call details do not carry LLM usage. Use the
                             # trace delta and this turn's report for aggregation,
@@ -590,24 +681,31 @@ class EvalRunner:
                             if tool_budget_exceeded and not budget_stop_reason:
                                 budget_stop_reason = "tool_call_limit"
 
-                            # Mirror the production transport's terminal
-                            # checkpoint for explicit task-status requests.
-                            agent.last_run_checkpoint = {
-                                "status": "completed",
-                                "run_id": run_id,
-                                "turn": turn_index,
-                                "request": prompt[:500],
-                                "verification": [],
-                            }
-                            if task_binding is not None:
-                                agent.last_run_checkpoint["task_id"] = task_binding.task_id
+                            if not production_agent:
+                                # Mirror the production transport's terminal
+                                # checkpoint for injected test doubles.
+                                agent.last_run_checkpoint = {
+                                    "status": "completed",
+                                    "run_id": run_id,
+                                    "turn": turn_index,
+                                    "request": prompt[:500],
+                                    "verification": [],
+                                }
+                                if task_binding is not None:
+                                    agent.last_run_checkpoint["task_id"] = task_binding.task_id
                             active_turn["checkpoint"] = dict(agent.last_run_checkpoint)
                             sync_task_binding(active_turn["checkpoint"])
+                            if production_agent and active_turn["checkpoint"].get("task_id"):
+                                result.metadata["task_id"] = active_turn["checkpoint"]["task_id"]
                             turn_records.append({
                                 "turn": turn_index,
                                 "prompt": prompt,
                                 "model": getattr(getattr(agent, "llm", None), "model", ""),
-                                "status": "completed",
+                                "status": (
+                                    "error"
+                                    if production_agent and error_events
+                                    else str(active_turn["checkpoint"].get("status") or "completed")
+                                ),
                                 "tool_calls": turn_tool_calls,
                                 "total_tokens": turn_tokens,
                                 "answer": final_answer[:500],
@@ -646,7 +744,7 @@ class EvalRunner:
                                     "used": reported_tokens,
                                 })
 
-                            if progress_relay is not None:
+                            if progress_relay is not None and not production_agent:
                                 for event in progress_relay.events[review_offset:]:
                                     if event.get("event") != "review":
                                         continue
@@ -750,7 +848,11 @@ class EvalRunner:
                         str(event.get("reason") or "")
                         for event in budget_events
                     }
-                    if budget_reasons & _HARD_BUDGET_STOP_REASONS:
+                    if execution_error:
+                        result.status = "error"
+                        result.passed = False
+                        result.error = execution_error
+                    elif budget_reasons & _HARD_BUDGET_STOP_REASONS:
                         result.status = "budget_exceeded"
                         result.passed = False
                         result.error = "evaluation stopped after a hard execution budget was exhausted"

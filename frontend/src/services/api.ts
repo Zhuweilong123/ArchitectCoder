@@ -346,6 +346,8 @@ export interface EvalArchive {
   agent: string;
   version: string;
   suite: string;
+  started_at: string;
+  finished_at: string;
   summary: EvalSummary;
 }
 

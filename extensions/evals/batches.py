@@ -291,6 +291,8 @@ class EvalBatchManager:
                     "agent": batch.get("agent", "devagent"),
                     "version": batch.get("version", ""),
                     "suite": batch.get("suite", ""),
+                    "started_at": batch.get("started_at", ""),
+                    "finished_at": batch.get("finished_at", ""),
                     "summary": batch.get("summary", {}),
                 })
             except (OSError, json.JSONDecodeError):

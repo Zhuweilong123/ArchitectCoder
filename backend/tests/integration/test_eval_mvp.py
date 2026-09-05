@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,8 @@ from extensions.evals.projects import load_projects, resolve_fixture
 from extensions.evals.registry import load_cases
 from extensions.evals.runner import (
     EvalRunner,
-    _build_eval_workspace_context,
+    _agent_budget,
+    dev_agent_factory,
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
@@ -70,26 +72,123 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     assert result.metadata["eval_contract"]["fixture_layout_version"] == (
         "design-src-test-v1"
     )
-    assert result.metadata["eval_contract"]["context_version"] == (
-        "eval-workspace-v1"
+    assert result.metadata["eval_contract"]["execution_path"] == (
+        "production_agent_execution"
+    )
+    assert result.metadata["eval_contract"]["prompt_source"] == (
+        "case_user_message_only"
     )
 
 
-def test_eval_workspace_context_describes_canonical_tool_paths():
-    manifest = ProjectManifest(
-        id="context-contract",
-        fixture="fixture",
-        entry_file="design/model.umlproj",
-        source_dir="src",
-        test_dir="test",
+def test_eval_agent_budget_defaults_to_production_settings():
+    settings = SimpleNamespace(
+        agent_max_steps=50,
+        agent_max_tool_calls=100,
+        agent_max_run_seconds=600,
+        agent_max_total_tokens=200000,
+    )
+    case = EvalCase(
+        id="production-budget",
+        prompt="按用户消息执行",
+        max_seconds=30,
+        max_tool_calls=3,
+        max_total_tokens=1000,
     )
 
-    context = _build_eval_workspace_context(manifest)
+    assert _agent_budget(case, settings) == {
+        "max_steps": 50,
+        "max_tool_calls": 100,
+        "max_run_seconds": 600,
+        "max_total_tokens": 200000,
+    }
 
-    assert "design/model.umlproj" in context
-    assert 'target="model.umlproj", cwd="design"' in context
-    assert "search_text accept src, test, design, or workspace" in context
-    assert 'target="test", cwd="test"' in context
+
+def test_eval_agent_factory_passes_only_user_message_and_production_budget(
+    tmp_path, monkeypatch
+):
+    settings = SimpleNamespace(
+        agent_max_steps=50,
+        agent_max_tool_calls=100,
+        agent_max_run_seconds=600,
+        agent_max_total_tokens=200000,
+        agent_convergence_tool_steps=25,
+    )
+    captured = {}
+    fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))
+
+    monkeypatch.setattr("extensions.evals.runner.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "extensions.evals.runner.BaseAgentsLLM.from_settings",
+        lambda **kwargs: "fake-llm",
+    )
+
+    async def _create_agent(llm, **kwargs):
+        captured.update(kwargs)
+        return fake_agent, object(), SimpleNamespace()
+
+    monkeypatch.setattr("extensions.evals.runner.create_dev_agent", _create_agent)
+    case = EvalCase(
+        id="production-contract",
+        prompt="只传递这条用户消息",
+        max_seconds=30,
+        max_tool_calls=3,
+        max_total_tokens=1000,
+    )
+
+    agent = asyncio.run(dev_agent_factory(tmp_path, case))
+
+    assert captured["user_message"] == case.prompt
+    assert captured["max_steps"] == settings.agent_max_steps
+    assert captured["max_tool_calls"] == settings.agent_max_tool_calls
+    assert captured["max_run_seconds"] == settings.agent_max_run_seconds
+    assert captured["max_total_tokens"] == settings.agent_max_total_tokens
+    assert not hasattr(agent, "_eval_context")
+
+
+def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _ProductionAgent:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.llm = SimpleNamespace(model="production-model")
+            self.tool_registry = SimpleNamespace()
+            self.last_run_checkpoint = {}
+            self.last_context_report = {}
+            self.change_set = None
+
+    calls = []
+
+    async def _factory(workspace, case):
+        return _ProductionAgent(workspace)
+
+    async def _execute(agent, review_mgr, user_message, send, stop_check, **kwargs):
+        calls.append({"message": user_message, "context": kwargs.get("context", "")})
+        (agent.workspace / "result.txt").write_text("executed", encoding="utf-8")
+        agent.last_run_checkpoint = {"status": "completed"}
+        await send({"event": "done", "result": "production answer"})
+
+    class _RunStore:
+        def create(self, **kwargs):
+            return SimpleNamespace(run_id=kwargs["run_id"])
+
+        def claim(self, run_id, owner_id):
+            return None
+
+    monkeypatch.setattr("extensions.evals.runner.ReActAgent", _ProductionAgent)
+    monkeypatch.setattr("extensions.evals.runner.handle_agent_execution", _execute)
+    monkeypatch.setattr("extensions.evals.runner.get_run_store", lambda: _RunStore())
+
+    case = EvalCase(
+        id="production-execution-path",
+        prompt="只执行这条用户消息",
+        checkers=[{"type": "file_exists", "path": "result.txt"}],
+    )
+    result = asyncio.run(EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory))
+
+    assert result.status == "passed"
+    assert calls == [{"message": case.prompt, "context": ""}]
 
 
 def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):

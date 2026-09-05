@@ -28,6 +28,11 @@ function fmtTime(value: string): string {
   return new Date(value).toLocaleString();
 }
 
+function archiveExecutionTimestamp(archive: EvalArchive): number {
+  const timestamp = Date.parse(archive.started_at || archive.created_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
 function statusTag(status: string, passed?: boolean): React.ReactNode {
   if (status === 'passed' || passed) return <Tag color="success">通过</Tag>;
   if (status === 'failed') return <Tag color="error">失败</Tag>;
@@ -53,6 +58,9 @@ const EvaluationCenter: React.FC = () => {
   const suites = useMemo(() => Array.from(new Set(cases
     .map((item) => item.metadata?.suite)
     .filter(Boolean))) as string[], [cases]);
+  const sortedArchives = useMemo(() => [...archives].sort(
+    (left, right) => archiveExecutionTimestamp(right) - archiveExecutionTimestamp(left),
+  ), [archives]);
 
   const refresh = async () => {
     setLoading(true);
@@ -266,7 +274,7 @@ const EvaluationCenter: React.FC = () => {
           size="small"
           rowKey="archive_id"
           pagination={{ pageSize: 5 }}
-          dataSource={archives}
+          dataSource={sortedArchives}
           columns={[
             { title: '完成数', key: 'completed', render: (_: unknown, r: EvalArchive) => `${r.summary.completed} / ${r.summary.total}` },
             { title: '通过数', key: 'passed', render: (_: unknown, r: EvalArchive) => `${r.summary.passed} / ${r.summary.total}` },
@@ -278,7 +286,7 @@ const EvaluationCenter: React.FC = () => {
             { title: '平均耗时', key: 'duration', render: (_: unknown, r: EvalArchive) => fmtDuration(r.summary.average_duration_ms) },
             { title: 'Token', key: 'tokens', render: (_: unknown, r: EvalArchive) => r.summary.total_tokens },
             { title: '工具调用', key: 'tool_calls', render: (_: unknown, r: EvalArchive) => r.summary.total_tool_calls },
-            { title: '归档时间', dataIndex: 'created_at', key: 'created_at', render: fmtTime },
+            { title: '评测执行时间', dataIndex: 'started_at', key: 'started_at', render: fmtTime },
             { title: '归档 ID', dataIndex: 'archive_id', key: 'archive_id', ellipsis: true },
           ]}
           scroll={{ x: 1250 }}

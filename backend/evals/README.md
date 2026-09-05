@@ -16,3 +16,18 @@ The application resolves these paths through `extensions.evals.paths`; callers s
 use that module instead of reconstructing paths from the package location.
 `extensions.evals.fixture_materializer` expands a base fixture and overlay into a
 normal writable temporary workspace before an evaluation starts.
+
+## Runtime parity
+
+Official evaluations use the same `DevAgent` assembly and
+`app.services.agent_execution` coordinator as the interactive chat path. A case
+prompt is passed as the user message; the runner does not inject an evaluation-
+only workspace or tool-policy prompt. Frontend delivery is replaced by an
+in-memory sender, and review decisions use the existing `auto_stub` approval
+adapter.
+
+Normal cases inherit the production agent budget from `backend/.env` (or the
+defaults in `backend/config`). `max_seconds` remains the outer evaluation
+deadline. The only intentional exception is a case marked
+`metadata.capability=budget_control`, which is used to verify budget behavior
+itself and may provide its own limits.
