@@ -327,6 +327,8 @@ export interface EvalBatch {
   results: EvalResult[];
   summary: EvalSummary;
   error: string;
+  performance_result_id?: string;
+  source_batch_ids?: string[];
 }
 
 export interface EvalTrend {
@@ -402,6 +404,15 @@ export async function startEvalBatch(req: {
 
 export async function getEvalBatch(batchId: string): Promise<EvalBatch> {
   const { data } = await api.get(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
+  return data;
+}
+
+export async function mergeEvalBatches(req: {
+  batch_ids: string[];
+  version?: string;
+  label?: string;
+}): Promise<EvalBatch> {
+  const { data } = await api.post('/evals/runs/merge', req, { timeout: 15000 });
   return data;
 }
 

@@ -71,6 +71,8 @@ class EvalBatch(BaseModel):
     results: list[EvalResult] = Field(default_factory=list)
     summary: EvalSummary = Field(default_factory=EvalSummary)
     error: str = ""
+    performance_result_id: str = ""
+    source_batch_ids: list[str] = Field(default_factory=list)
 
 
 def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummary:
@@ -166,7 +168,7 @@ class EvalBatchManager:
         return batch
 
     def merge(self, request: EvalBatchMergeRequest) -> EvalBatch:
-        """Combine completed batches into the current 16-case baseline batch."""
+        """Combine completed same-version batches into a performance result."""
         batches: list[EvalBatch] = []
         seen_batch_ids: set[str] = set()
         for batch_id in request.batch_ids:
@@ -180,34 +182,41 @@ class EvalBatchManager:
                 raise ValueError(f"evaluation batch is not completed: {batch_id}")
             batches.append(batch)
 
-        catalog = load_cases()
-        baseline_ids = sorted(
-            case_id for case_id, case in catalog.items()
-            if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
-        )
+        versions = {batch.version for batch in batches if batch.version}
+        if len(versions) > 1:
+            raise ValueError("only batches from the same version can be merged")
+        merged_version = request.version
+        if not merged_version or merged_version == "working-tree":
+            merged_version = next(iter(versions), "working-tree")
+
         result_by_case: dict[str, EvalResult] = {}
         for batch in batches:
             for result in batch.results:
                 if result.case_id in result_by_case:
-                    raise ValueError(f"duplicate evaluation result: {result.case_id}")
+                    if result_by_case[result.case_id].model_dump(mode="json") == result.model_dump(mode="json"):
+                        continue
+                    raise ValueError(f"conflicting evaluation result: {result.case_id}")
                 result_by_case[result.case_id] = result
-        if set(result_by_case) != set(baseline_ids):
-            missing = sorted(set(baseline_ids) - set(result_by_case))
-            extra = sorted(set(result_by_case) - set(baseline_ids))
-            raise ValueError(f"baseline merge must contain exactly 16 cases; missing={missing}, extra={extra}")
+
+        if not result_by_case:
+            raise ValueError("selected batches contain no evaluation results")
+        case_ids = sorted(result_by_case)
 
         merged = EvalBatch(
             batch_id=f"batch_{uuid.uuid4().hex[:16]}",
-            suite="baseline",
-            version=request.version,
+            suite="merged",
+            version=merged_version,
             label=request.label,
-            case_ids=baseline_ids,
+            case_ids=case_ids,
             status="completed",
             started_at=min(batch.started_at for batch in batches),
             finished_at=max(batch.finished_at for batch in batches),
-            results=[result_by_case[case_id] for case_id in baseline_ids],
+            results=[result_by_case[case_id] for case_id in case_ids],
+            source_batch_ids=[batch.batch_id for batch in batches],
         )
         merged.summary = summarize(merged.results, len(merged.case_ids))
+        performance_path = _write_performance_result(merged)
+        merged.performance_result_id = str(performance_path)
         self._batches[merged.batch_id] = merged
         self._persist_batch(merged)
         return merged
@@ -361,6 +370,19 @@ class EvalBatchManager:
             except (OSError, json.JSONDecodeError):
                 continue
         return rows[:max(1, min(limit, 100))]
+
+
+def _write_performance_result(batch: EvalBatch) -> Path:
+    """Persist a merged batch as a performance-result JSONL file."""
+
+    result_root = _eval_root() / "results"
+    result_root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = result_root / f"performance-merged-{timestamp}-{uuid.uuid4().hex[:8]}.jsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for result in batch.results:
+            handle.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n")
+    return path
 
 
 _manager: EvalBatchManager | None = None

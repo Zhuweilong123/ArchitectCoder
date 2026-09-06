@@ -63,3 +63,15 @@ Each completed run also persists its final materialized workspace under the
 runtime evaluation artifacts directory. The result's `workspace` field points
 to that snapshot, allowing file, UML, and test checkers to be audited after the
 temporary execution directory has been removed.
+
+## Batch and performance-result boundaries
+
+The Evaluation Center treats one execution as a runtime batch. Multiple
+completed batches from the same version can be selected and merged into one
+performance-result JSONL file. Results are keyed by `case_id`: exact duplicate
+results are kept once, while conflicting results for the same case are rejected.
+The merge does not modify `baseline.json`; only an explicit baseline promotion
+or archive operation changes the tracked baseline.
+
+The baseline remains a versioned repository asset under `backend/evals`, while
+runtime batches and merged performance results remain under `temp/evals`.

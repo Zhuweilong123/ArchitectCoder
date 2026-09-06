@@ -25,7 +25,7 @@ class EvalBatchRequest(BaseModel):
 
 
 class EvalBatchMergeRequest(BaseModel):
-    """Request for combining completed suite batches into a baseline batch."""
+    """Request for combining completed batches into a performance result."""
 
     batch_ids: list[str] = Field(min_length=2, max_length=20)
     version: str = Field(default="working-tree", min_length=1, max_length=100)

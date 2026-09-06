@@ -9,7 +9,7 @@ import {
 import { useUiStore } from '../../stores/uiStore';
 import {
   archiveEvalBaseline, archiveEvalBatch, getEvalBatch, listEvalArchives, listEvalCases,
-  getEvalBaseline, listEvalTrends, startEvalBatch,
+  getEvalBaseline, listEvalTrends, mergeEvalBatches, startEvalBatch,
   getEvalRepository,
   archiveEvalPerformanceResult, getEvalPerformanceResult, listEvalPerformanceResults,
   type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalPerformanceRun,
@@ -79,6 +79,8 @@ const EvaluationCenter: React.FC = () => {
   const [resultStatus, setResultStatus] = useState<'all' | 'passed' | 'failed' | 'timeout'>('all');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [selectedTrendBatch, setSelectedTrendBatch] = useState<EvalBatch | null>(null);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [mergingRuns, setMergingRuns] = useState(false);
   const [trendLoading, setTrendLoading] = useState(false);
   const [archiveQuery, setArchiveQuery] = useState('');
   const [activeTab, setActiveTab] = useState<EvaluationTab>('overview');
@@ -181,6 +183,13 @@ const EvaluationCenter: React.FC = () => {
     () => performanceRuns.filter((run) => comparisonIds.includes(run.result_id)),
     [comparisonIds, performanceRuns],
   );
+
+  const selectedRuns = useMemo(
+    () => trends.filter((item) => selectedRunIds.includes(item.batch_id)),
+    [selectedRunIds, trends],
+  );
+  const selectedRunVersionsMatch = selectedRuns.length > 0
+    && selectedRuns.every((item) => item.version === selectedRuns[0].version);
 
   useEffect(() => {
     setSelectedSuites((current) => current.length > 0
@@ -516,6 +525,11 @@ const EvaluationCenter: React.FC = () => {
   );
 
   const openTrend = async (item: EvalTrend) => {
+    if (selectedTrendBatch?.batch_id === item.batch_id) {
+      setSelectedTrendBatch(null);
+      setSelectedCaseId(null);
+      return;
+    }
     setTrendLoading(true);
     setSelectedCaseId(null);
     try {
@@ -527,16 +541,60 @@ const EvaluationCenter: React.FC = () => {
     }
   };
 
+  const mergeSelectedRuns = async () => {
+    if (selectedRuns.length < 2) return;
+    setMergingRuns(true);
+    try {
+      const version = selectedRuns[0].version || repository?.version || 'working-tree';
+      const merged = await mergeEvalBatches({
+        batch_ids: selectedRuns.map((item) => item.batch_id),
+        version,
+        label: `${version} merged performance`,
+      });
+      setSelectedRunIds([]);
+      message.success(`已合并 ${merged.results.length} 个用例，并登记为性能结果`);
+      await refresh();
+      setActiveTab('performance');
+    } catch (error: any) {
+      message.error(`批次合并失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setMergingRuns(false);
+    }
+  };
+
   const renderRunsWithDetails = () => trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (
-    <List size="small" dataSource={trends} renderItem={(item) => (
+    <>
+      <Space wrap className="evaluation-filter-row">
+        <Text type="secondary">已选 {selectedRuns.length} 个运行批次</Text>
+        <Button
+          type="primary"
+          disabled={selectedRuns.length < 2 || !selectedRunVersionsMatch || selectedRuns.some((item) => item.status !== 'completed')}
+          loading={mergingRuns}
+          onClick={mergeSelectedRuns}
+        >
+          合并为性能结果
+        </Button>
+      </Space>
+      <List size="small" dataSource={trends} renderItem={(item) => (
       <React.Fragment key={item.batch_id}>
         <List.Item
           className="evaluation-trend-item"
-          actions={[<Button type="link" loading={trendLoading && selectedTrendBatch?.batch_id === item.batch_id} onClick={(event) => { event.stopPropagation(); openTrend(item); }}>查看详情</Button>]}
+          actions={[<Button type="link" loading={trendLoading && selectedTrendBatch?.batch_id === item.batch_id} onClick={(event) => { event.stopPropagation(); openTrend(item); }}>{selectedTrendBatch?.batch_id === item.batch_id ? '收起详情' : '查看详情'}</Button>]}
           onClick={() => openTrend(item)}
         >
+          <div className="evaluation-run-main">
+          <Checkbox
+            checked={selectedRunIds.includes(item.batch_id)}
+            disabled={item.status !== 'completed'}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => setSelectedRunIds((current) => event.target.checked
+              ? [...current, item.batch_id]
+              : current.filter((id) => id !== item.batch_id))}
+            style={{ marginRight: 12 }}
+          />
           <List.Item.Meta title={<Space>{item.version}{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>} description={fmtTime(item.started_at)} />
           <Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space>
+          </div>
         </List.Item>
         {selectedTrendBatch?.batch_id === item.batch_id ? (
           <List.Item>
@@ -547,7 +605,8 @@ const EvaluationCenter: React.FC = () => {
           </List.Item>
         ) : null}
       </React.Fragment>
-    )} />
+      )} />
+    </>
   );
 
   const renderArchives = () => (
@@ -612,7 +671,7 @@ const EvaluationCenter: React.FC = () => {
         { key: 'overview', label: '概览与当前批次', children: <>{renderBaseline()}<Divider orientation="left">当前批次</Divider>{renderBatch()}</> },
         { key: 'performance', label: `性能结果 (${performanceRuns.length})`, children: renderPerformance() },
         { key: 'comparison', label: `多版本对比${comparisonRuns.length ? ` (${comparisonRuns.length})` : ''}`, children: renderComparison() },
-        { key: 'runs', label: '版本趋势', children: renderRunsWithDetails() },
+        { key: 'runs', label: '运行批次', children: renderRunsWithDetails() },
         { key: 'archives', label: `已归档 (${archives.length})`, children: renderArchives() },
       ]} />
     </Modal>
