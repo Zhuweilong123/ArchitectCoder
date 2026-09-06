@@ -769,9 +769,9 @@ const EvaluationCenter: React.FC = () => {
       </Card>
       <Tabs activeKey={activeTab} onChange={(key) => setActiveTab(key as EvaluationTab)} items={[
         { key: 'overview', label: '概览与当前批次', children: <>{renderBaseline()}<Divider orientation="left">当前批次</Divider>{renderBatch()}</> },
+        { key: 'runs', label: '运行批次', children: renderRunsWithDetails() },
         { key: 'performance', label: `性能结果 (${performanceRuns.length})`, children: renderPerformance() },
         { key: 'comparison', label: `多版本对比${comparisonRuns.length ? ` (${comparisonRuns.length})` : ''}`, children: renderComparison() },
-        { key: 'runs', label: '运行批次', children: renderRunsWithDetails() },
         { key: 'archives', label: `已归档 (${archives.length})`, children: renderArchives() },
       ]} />
     </Modal>
