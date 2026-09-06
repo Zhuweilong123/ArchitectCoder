@@ -24,10 +24,26 @@ class EvalBatchRequest(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class EvalBatchMergeRequest(BaseModel):
+    """Request for combining completed suite batches into a baseline batch."""
+
+    batch_ids: list[str] = Field(min_length=2, max_length=20)
+    version: str = Field(default="working-tree", min_length=1, max_length=100)
+    label: str = Field(default="", max_length=200)
+
+
 class EvalArchiveRequest(BaseModel):
     """Provider-neutral request for archiving an evaluation batch."""
 
     batch_id: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=500)
+
+
+class EvalPerformanceArchiveRequest(BaseModel):
+    """Request for importing one persisted performance JSONL as a snapshot."""
+
+    result_id: str = Field(min_length=1, max_length=300)
+    version: str = Field(default="", max_length=100)
     note: str = Field(default="", max_length=500)
 
 
@@ -46,6 +62,8 @@ class EvalProvider(Protocol):
 
     async def start_batch(self, request: Any) -> Any: ...
 
+    def merge_batches(self, request: Any) -> Any: ...
+
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]: ...
 
     def get_batch(self, batch_id: str) -> Any | None: ...
@@ -57,6 +75,12 @@ class EvalProvider(Protocol):
     def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]: ...
 
     def list_archives(self, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def get_performance_result(self, result_id: str) -> dict[str, Any] | None: ...
+
+    def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
 
 
 class NoOpEvalProvider:
@@ -80,6 +104,9 @@ class NoOpEvalProvider:
     async def start_batch(self, request: Any) -> Any:
         raise RuntimeError("evaluation provider is disabled")
 
+    def merge_batches(self, request: Any) -> Any:
+        raise RuntimeError("evaluation provider is disabled")
+
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
@@ -97,6 +124,15 @@ class NoOpEvalProvider:
 
     def list_archives(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
+
+    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]:
+        return []
+
+    def get_performance_result(self, result_id: str) -> dict[str, Any] | None:
+        return None
+
+    def archive_performance_result(self, request: Any) -> dict[str, Any]:
+        raise RuntimeError("evaluation provider is disabled")
 
 
 class _ResilientEvalProvider:
@@ -151,6 +187,7 @@ def load_evals(*, settings=None, **kwargs) -> EvalProvider:
 __all__ = [
     "EvalArchiveRequest",
     "EvalBatchRequest",
+    "EvalPerformanceArchiveRequest",
     "EvalProvider",
     "NoOpEvalProvider",
     "load_evals",

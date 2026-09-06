@@ -1,0 +1,15 @@
+{
+  "id": "radar-multiturn-greeting-component-001",
+  "name": "问候后查询组件映射",
+  "project_id": "project_radar_v1",
+  "turns": [
+    {"prompt": "你好", "hard_checkers": [{"type": "answer_contains_all", "texts": ["你好"]}, {"type": "trace_policy", "max_tool_calls": 0}]},
+    {"prompt": "项目中有几个组件？列出它们对应的源码模块和测试文件。", "hard_checkers": [{"type": "answer_contains_all", "texts": ["4", "ModeControl", "TransmitWaveformGen", "EchoSimulation", "PulseCompression", "mode_control.py", "transmit.py", "echo.py", "pulse_compression.py"]}, {"type": "trace_policy", "required_tools": ["read_file"]}]},
+    {"prompt": "哪个组件负责生成回波？它的核心类有哪些？", "hard_checkers": [{"type": "answer_contains_all", "texts": ["EchoSimulation", "EchoSimulator", "TargetSceneManager", "DelayProcessor", "NoiseAdder"]}, {"type": "trace_policy", "required_tools": ["read_file"]}]}
+  ],
+  "hard_checkers": [{"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}],
+  "max_seconds": 240,
+  "max_tool_calls": 60,
+  "max_total_tokens": 80000,
+  "metadata": {"suite": "multiturn", "capability": "greeting_context_read", "sample_type": "positive", "release_gate": true, "first_turn_no_tools": true}
+}

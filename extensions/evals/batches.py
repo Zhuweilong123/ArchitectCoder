@@ -11,8 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.config import get_settings
-from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchRequest
+from backend.config import evaluation_root
+from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
 
 from .models import EvalResult
 from .registry import load_cases
@@ -24,7 +24,7 @@ def _now() -> str:
 
 
 def _eval_root() -> Path:
-    return Path(get_settings().uml_dir).resolve().parent / "evals"
+    return evaluation_root()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -165,6 +165,53 @@ class EvalBatchManager:
         self._tasks[batch.batch_id] = asyncio.create_task(self._run(batch, selected))
         return batch
 
+    def merge(self, request: EvalBatchMergeRequest) -> EvalBatch:
+        """Combine completed batches into the current 16-case baseline batch."""
+        batches: list[EvalBatch] = []
+        seen_batch_ids: set[str] = set()
+        for batch_id in request.batch_ids:
+            if batch_id in seen_batch_ids:
+                raise ValueError(f"duplicate evaluation batch: {batch_id}")
+            seen_batch_ids.add(batch_id)
+            batch = self.get(batch_id)
+            if batch is None:
+                raise KeyError(batch_id)
+            if batch.status != "completed":
+                raise ValueError(f"evaluation batch is not completed: {batch_id}")
+            batches.append(batch)
+
+        catalog = load_cases()
+        baseline_ids = sorted(
+            case_id for case_id, case in catalog.items()
+            if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
+        )
+        result_by_case: dict[str, EvalResult] = {}
+        for batch in batches:
+            for result in batch.results:
+                if result.case_id in result_by_case:
+                    raise ValueError(f"duplicate evaluation result: {result.case_id}")
+                result_by_case[result.case_id] = result
+        if set(result_by_case) != set(baseline_ids):
+            missing = sorted(set(baseline_ids) - set(result_by_case))
+            extra = sorted(set(result_by_case) - set(baseline_ids))
+            raise ValueError(f"baseline merge must contain exactly 16 cases; missing={missing}, extra={extra}")
+
+        merged = EvalBatch(
+            batch_id=f"batch_{uuid.uuid4().hex[:16]}",
+            suite="baseline",
+            version=request.version,
+            label=request.label,
+            case_ids=baseline_ids,
+            status="completed",
+            started_at=min(batch.started_at for batch in batches),
+            finished_at=max(batch.finished_at for batch in batches),
+            results=[result_by_case[case_id] for case_id in baseline_ids],
+        )
+        merged.summary = summarize(merged.results, len(merged.case_ids))
+        self._batches[merged.batch_id] = merged
+        self._persist_batch(merged)
+        return merged
+
     async def _run(self, batch: EvalBatch, cases: list[Any]) -> None:
         batch.status = "running"
         batch.started_at = _now()
@@ -172,9 +219,13 @@ class EvalBatchManager:
             runner = EvalRunner()
             for case in cases:
                 batch.current_case_id = case.id
-                result = await runner.run_case(case)
-                result.metadata.setdefault("batch_id", batch.batch_id)
-                result.metadata.setdefault("version", batch.version)
+                result = await runner.run_case(
+                    case,
+                    result_metadata={
+                        "batch_id": batch.batch_id,
+                        "version": batch.version,
+                    },
+                )
                 batch.results.append(result)
                 batch.summary = summarize(batch.results, len(cases))
             batch.status = "completed"
@@ -224,6 +275,18 @@ class EvalBatchManager:
             raise KeyError(request.batch_id)
         if batch.status in {"queued", "running"}:
             raise ValueError("evaluation batch is still running")
+
+        # A formal baseline archive must contain exactly the current 16-case
+        # catalog.  Trace regression cases and targeted suite runs are kept
+        # separately and must not be presented as a baseline snapshot.
+        catalog = load_cases()
+        baseline_ids = {
+            case_id for case_id, case in catalog.items()
+            if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
+        }
+        submitted_ids = set(batch.case_ids)
+        if baseline_ids and submitted_ids != baseline_ids:
+            raise ValueError("only the complete evaluation catalog (the 16-case baseline catalog) can be archived")
 
         return self._write_archive(batch.model_dump(mode="json"), request.note)
 
@@ -291,6 +354,8 @@ class EvalBatchManager:
                     "agent": batch.get("agent", "devagent"),
                     "version": batch.get("version", ""),
                     "suite": batch.get("suite", ""),
+                    "started_at": batch.get("started_at", ""),
+                    "finished_at": batch.get("finished_at", ""),
                     "summary": batch.get("summary", {}),
                 })
             except (OSError, json.JSONDecodeError):

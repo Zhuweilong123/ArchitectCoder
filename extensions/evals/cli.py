@@ -7,6 +7,7 @@ import asyncio
 import json
 
 from app.agent_base.core.evals import load_evals
+from backend.config import evaluation_results_dir
 
 
 def _parse_args() -> argparse.Namespace:
@@ -19,7 +20,10 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    provider = load_evals(results_path=args.results or None)
+    # CLI output is always kept in the canonical evaluation results folder.
+    # The argument remains a filename for backwards-compatible invocations.
+    result_path = evaluation_results_dir() / args.results.replace("\\", "/").split("/")[-1] if args.results else None
+    provider = load_evals(results_path=result_path)
     cases = {case.id: case for case in provider.list_cases()}
     selected = list(cases.values())
     if args.suite:

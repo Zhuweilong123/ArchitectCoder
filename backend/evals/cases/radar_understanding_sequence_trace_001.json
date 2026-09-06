@@ -1,0 +1,16 @@
+{
+  "id": "radar-understanding-sequence-trace-001",
+  "name": "时序源码调用链理解",
+  "prompt": "对照 UML 时序图、src/main.py 和测试，按调用顺序解释完整雷达信号处理链路，并指出每一步对应的组件。不要修改任何文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "answer_ordered_contains", "texts": ["setMode", "getCurrentParams", "generateTransmitSignal", "buildFilter", "setTargets", "generateEcho", "compress", "detect"]},
+    {"type": "answer_contains_all", "texts": ["ModeControl", "TransmitWaveformGen", "EchoSimulation", "PulseCompression", "main.py"]},
+    {"type": "trace_policy", "required_tools": ["read_file"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 150,
+  "max_tool_calls": 30,
+  "max_total_tokens": 40000,
+  "metadata": {"suite": "understanding", "capability": "sequence_code_trace", "sample_type": "positive", "release_gate": true}
+}

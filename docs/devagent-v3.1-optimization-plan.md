@@ -781,7 +781,7 @@ safely and provide the completed work, remaining work, and exact reason.
 | 状态查询 | 22 次 LLM / 30 次工具 | 0 次 LLM / 0 次工具 | — | 3.1 使用 checkpoint fast path，避免重复探索 |
 | 静态 Prompt 候选长度 | 2,211 字符（3.0） | 1,123 字符（3.1） | -49.2% | 约减少 1,088 字符、272 估算 token |
 
-本次 3.1 运行记录：`eval_6ceaf785972a487b`，结果文件为 `temp/evals/results-v31-element-rerun.jsonl`，Trace 为 `temp/chat_log/trace_eval_6ceaf785972a487b.jsonl`。该 A/B 记录保留为历史基线；生产环境现已固化唯一的合并版 3.1 静态 Prompt，后续实验应在隔离评测分支中进行。
+本次 3.1 运行记录：`eval_6ceaf785972a487b`，结果文件为 `temp/evals/results/results-v31-element-rerun.jsonl`，Trace 为 `temp/evals/traces/trace_eval_6ceaf785972a487b.jsonl`。该 A/B 记录保留为历史基线；生产环境现已固化唯一的合并版 3.1 静态 Prompt，后续实验应在隔离评测分支中进行。
 
 ### 7.3.1 连续对话用例与 3.0 基线实测对比
 
@@ -803,7 +803,7 @@ safely and provide the completed work, remaining work, and exact reason.
 | 状态查询成本 | 22 次 LLM / 30 次工具 | 0 / 0 | 全部消除 | 3.1 使用 checkpoint fast path |
 | 任务结果 | 用户主动中止 | 得分 1.0，硬校验通过 | — | 新结果仅证明最终状态正确，不代表审核链路完整 |
 
-新增实跑结果：`eval_e9184aa983c3439d`，结果文件 `temp/evals/results-v31-continuous-remove.jsonl`，Trace 文件 `temp/chat_log/trace_eval_e9184aa983c3439d.jsonl`。该表可用于 prompt、上下文和路由趋势分析；正式发布门禁还必须补齐审核事件覆盖，并在 3.0/3.1 固定模型、重复次数和预算后再比较均值与 P95。
+新增实跑结果：`eval_e9184aa983c3439d`，结果文件 `temp/evals/results/results-v31-continuous-remove.jsonl`，Trace 文件 `temp/evals/traces/trace_eval_e9184aa983c3439d.jsonl`。该表可用于 prompt、上下文和路由趋势分析；正式发布门禁还必须补齐审核事件覆盖，并在 3.0/3.1 固定模型、重复次数和预算后再比较均值与 P95。
 
 ### 7.4 单元测试
 

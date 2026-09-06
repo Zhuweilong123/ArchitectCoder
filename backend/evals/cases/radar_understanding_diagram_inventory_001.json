@@ -1,0 +1,15 @@
+{
+  "id": "radar-understanding-diagram-inventory-001",
+  "name": "UML 图清单理解",
+  "prompt": "读取 UML 和源码，列出项目的 6 张图及其图类型，并说明每张图对应的源码模块或运行职责。不要修改任何文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "answer_contains_all", "texts": ["Radar Signal Processing Architecture", "ModeControl Domain Model", "TransmitWaveformGen Domain Model", "EchoSimulation Domain Model", "PulseCompression Domain Model", "Full Radar Signal Processing Flow", "component", "class", "sequence"]},
+    {"type": "trace_policy", "required_tools": ["read_file"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 120,
+  "max_tool_calls": 20,
+  "max_total_tokens": 30000,
+  "metadata": {"suite": "understanding", "capability": "uml_inventory", "sample_type": "positive", "release_gate": true}
+}

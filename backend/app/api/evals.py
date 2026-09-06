@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.agent_base.core.evals import (
     EvalArchiveRequest,
+    EvalBatchMergeRequest,
     EvalBatchRequest,
+    EvalPerformanceArchiveRequest,
     load_evals,
 )
 
@@ -124,6 +126,31 @@ async def list_results(limit: int = 100):
     return {"results": load_evals().list_results(limit)}
 
 
+@router.get("/performance")
+async def list_performance_results(limit: int = 20):
+    return {"results": load_evals().list_performance_results(limit)}
+
+
+@router.get("/performance/detail")
+async def get_performance_result(result_id: str):
+    result = load_evals().get_performance_result(result_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="performance result not found")
+    return result
+
+
+@router.post("/performance/archive")
+async def archive_performance_result(request: EvalPerformanceArchiveRequest):
+    try:
+        return load_evals().archive_performance_result(request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="performance result not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.post("/runs")
 async def start_eval_batch(request: EvalBatchRequest):
     try:
@@ -138,6 +165,16 @@ async def start_eval_batch(request: EvalBatchRequest):
 @router.get("/runs")
 async def list_eval_batches(limit: int = 20):
     return {"runs": load_evals().list_batches(limit)}
+
+
+@router.post("/runs/merge")
+async def merge_eval_batches(request: EvalBatchMergeRequest):
+    try:
+        return load_evals().merge_batches(request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"evaluation batch not found: {exc.args[0]}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/runs/{batch_id}")

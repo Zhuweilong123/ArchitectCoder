@@ -1,0 +1,16 @@
+{
+  "id": "radar-single-update-contract-001",
+  "name": "修复 UML 方法契约漂移",
+  "prompt": "检查并修复 UML 中 PeakDetector.detect 的方法签名，使其与当前源码一致；不要修改源码和原有测试，并运行源码一致性测试。",
+  "project_id": "project_radar_stale_contract_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test/test_design_source_consistency.py", "timeout": 60},
+    {"type": "uml_method_signature", "path": "design/radar_design_0730.umlproj", "diagram": "PulseCompression Domain Model", "class_name": "PeakDetector", "method": "detect", "params": "rangeProfile: float[], sampleRate: float, rangeOffset: float = 0.0, snrThreshold: float = 6.0", "return_type": "Peak[]"},
+    {"type": "paths_unchanged", "paths": ["src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "checkers": [{"type": "answer_contains_all", "texts": ["PeakDetector", "snrThreshold", "源码一致"]}],
+  "max_seconds": 180,
+  "max_tool_calls": 40,
+  "max_total_tokens": 60000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_update", "operation": "update", "sample_type": "positive", "release_gate": true}
+}

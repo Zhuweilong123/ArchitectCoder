@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,8 @@ from extensions.evals.projects import load_projects, resolve_fixture
 from extensions.evals.registry import load_cases
 from extensions.evals.runner import (
     EvalRunner,
-    _build_eval_workspace_context,
+    _agent_budget,
+    dev_agent_factory,
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
@@ -63,33 +65,135 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
         result.trace_path,
     )
     assert (tmp_path / "results.jsonl").is_file()
-    assert result.workspace == ""
+    assert result.workspace
+    assert Path(result.workspace).is_dir()
+    assert (Path(result.workspace) / "result.txt").read_text(encoding="utf-8") == (
+        "evaluation passed"
+    )
+    assert result.metadata["workspace_ephemeral"] is False
     assert result.metadata["eval_contract"]["tool_protocol_version"] == (
         "foundation-tools-v1"
     )
     assert result.metadata["eval_contract"]["fixture_layout_version"] == (
         "design-src-test-v1"
     )
-    assert result.metadata["eval_contract"]["context_version"] == (
-        "eval-workspace-v1"
+    assert result.metadata["eval_contract"]["execution_path"] == (
+        "production_agent_execution"
+    )
+    assert result.metadata["eval_contract"]["prompt_source"] == (
+        "case_user_message_only"
     )
 
 
-def test_eval_workspace_context_describes_canonical_tool_paths():
-    manifest = ProjectManifest(
-        id="context-contract",
-        fixture="fixture",
-        entry_file="design/model.umlproj",
-        source_dir="src",
-        test_dir="test",
+def test_eval_agent_budget_defaults_to_production_settings():
+    settings = SimpleNamespace(
+        agent_max_steps=50,
+        agent_max_tool_calls=100,
+        agent_max_run_seconds=600,
+        agent_max_total_tokens=200000,
+    )
+    case = EvalCase(
+        id="production-budget",
+        prompt="按用户消息执行",
+        max_seconds=30,
+        max_tool_calls=3,
+        max_total_tokens=1000,
     )
 
-    context = _build_eval_workspace_context(manifest)
+    assert _agent_budget(case, settings) == {
+        "max_steps": 50,
+        "max_tool_calls": 100,
+        "max_run_seconds": 600,
+        "max_total_tokens": 200000,
+    }
 
-    assert "design/model.umlproj" in context
-    assert 'target="model.umlproj", cwd="design"' in context
-    assert "search_text accept src, test, design, or workspace" in context
-    assert 'target="test", cwd="test"' in context
+
+def test_eval_agent_factory_passes_only_user_message_and_production_budget(
+    tmp_path, monkeypatch
+):
+    settings = SimpleNamespace(
+        agent_max_steps=50,
+        agent_max_tool_calls=100,
+        agent_max_run_seconds=600,
+        agent_max_total_tokens=200000,
+        agent_convergence_tool_steps=25,
+    )
+    captured = {}
+    fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))
+
+    monkeypatch.setattr("extensions.evals.runner.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "extensions.evals.runner.BaseAgentsLLM.from_settings",
+        lambda **kwargs: "fake-llm",
+    )
+
+    async def _create_agent(llm, **kwargs):
+        captured.update(kwargs)
+        return fake_agent, object(), SimpleNamespace()
+
+    monkeypatch.setattr("extensions.evals.runner.create_dev_agent", _create_agent)
+    case = EvalCase(
+        id="production-contract",
+        prompt="只传递这条用户消息",
+        max_seconds=30,
+        max_tool_calls=3,
+        max_total_tokens=1000,
+    )
+
+    agent = asyncio.run(dev_agent_factory(tmp_path, case))
+
+    assert captured["user_message"] == case.prompt
+    assert captured["max_steps"] == settings.agent_max_steps
+    assert captured["max_tool_calls"] == settings.agent_max_tool_calls
+    assert captured["max_run_seconds"] == settings.agent_max_run_seconds
+    assert captured["max_total_tokens"] == settings.agent_max_total_tokens
+    assert not hasattr(agent, "_eval_context")
+
+
+def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _ProductionAgent:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.llm = SimpleNamespace(model="production-model")
+            self.tool_registry = SimpleNamespace()
+            self.last_run_checkpoint = {}
+            self.last_context_report = {}
+            self.change_set = None
+
+    calls = []
+
+    async def _factory(workspace, case):
+        return _ProductionAgent(workspace)
+
+    async def _execute(agent, review_mgr, user_message, send, stop_check, **kwargs):
+        calls.append({"message": user_message, "context": kwargs.get("context", "")})
+        (agent.workspace / "result.txt").write_text("executed", encoding="utf-8")
+        agent.last_run_checkpoint = {"status": "completed"}
+        await send({"event": "done", "result": "production answer"})
+
+    class _RunStore:
+        def create(self, **kwargs):
+            return SimpleNamespace(run_id=kwargs["run_id"])
+
+        def claim(self, run_id, owner_id):
+            return None
+
+    monkeypatch.setattr("extensions.evals.runner.ReActAgent", _ProductionAgent)
+    monkeypatch.setattr("extensions.evals.runner.handle_agent_execution", _execute)
+    monkeypatch.setattr("extensions.evals.runner.get_run_store", lambda: _RunStore())
+
+    case = EvalCase(
+        id="production-execution-path",
+        prompt="只执行这条用户消息",
+        checkers=[{"type": "file_exists", "path": "result.txt"}],
+    )
+    result = asyncio.run(EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory))
+
+    assert result.status == "passed"
+    assert calls == [{"message": case.prompt, "context": ""}]
 
 
 def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):
@@ -132,6 +236,11 @@ def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monke
     assert [turn["status"] for turn in result.metadata["turns"]] == [
         "completed", "completed", "completed",
     ]
+    assert result.metadata["eval_contract"]["budget_scope"] == (
+        "production_multiturn_per_turn_budget"
+    )
+    assert result.metadata["eval_contract"]["turn_deadline_seconds"] == 600.0
+    assert result.metadata["eval_contract"]["evaluation_deadline_seconds"] == 1800.0
 
 
 def test_eval_runner_persists_missing_fixture_result(tmp_path):
@@ -148,6 +257,25 @@ def test_eval_runner_persists_missing_fixture_result(tmp_path):
     assert results_path.read_text(encoding="utf-8").count("missing-fixture") == 1
 
 
+def test_eval_runner_persists_batch_metadata_before_result_write(tmp_path):
+    case = EvalCase(
+        id="batch-metadata",
+        prompt="run with missing fixture",
+        fixture=str(tmp_path / "missing"),
+    )
+    results_path = tmp_path / "results.jsonl"
+    result = asyncio.run(EvalRunner(results_path).run_case(
+        case,
+        _factory,
+        result_metadata={"batch_id": "batch-test", "version": "v-test"},
+    ))
+
+    assert result.status == "error"
+    persisted = json.loads(results_path.read_text(encoding="utf-8").splitlines()[0])
+    assert persisted["metadata"]["batch_id"] == "batch-test"
+    assert persisted["metadata"]["version"] == "v-test"
+
+
 async def _run_checkers(workspace, configs):
     return await asyncio.gather(*(checker.check(workspace) for checker in build_checkers(configs)))
 
@@ -156,10 +284,13 @@ def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
     assert len(cases) == 18
-    assert "radar-base-001" in cases
-    assert "radar_sim_v1" in projects
-    assert "radar_sim_validation_v1" in projects
-    assert "radar_sim_noise_seed_v1" in projects
+    assert "radar-understanding-component-map-001" in cases
+    assert "radar-single-create-remove-target-001" in cases
+    assert "project_radar_v1" in projects
+    assert "project_radar_delay_bug_v1" in projects
+    assert "project_radar_legacy_debug_v1" in projects
+    assert "project_radar_debug_trace_v1" in projects
+    assert "project_radar_stale_contract_v1" in projects
     assert "radar_trace_remove_v1" in projects
     trace_case = cases["trace-3-1-component-element-multiturn-001"]
     assert len(trace_case.turns) == 3
@@ -169,10 +300,10 @@ def test_radar_eval_catalog_and_uml_checkers():
     assert continuous_case.metadata["reference_turn_count"] == 7
     assert continuous_case.metadata["baseline_comparable"] is True
 
-    fixture, manifest = resolve_fixture(cases["radar-base-001"])
+    fixture, manifest = resolve_fixture(cases["radar-understanding-component-map-001"])
     assert fixture is not None and fixture.is_dir()
     assert manifest is not None
-    assert manifest.entry_file == "design/radar_sim_design.umlproj"
+    assert manifest.entry_file == "design/radar_design_0730.umlproj"
 
     trace_fixture, trace_manifest = resolve_fixture(
         cases["trace-3-1-component-element-continuous-remove-001"]
@@ -182,11 +313,11 @@ def test_radar_eval_catalog_and_uml_checkers():
     assert (trace_fixture / trace_manifest.entry_file).is_file()
 
     configs = [
-        {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
-        {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "component", "name": "EchoSimulation", "diagram": "Radar System Architecture"},
-        {"type": "uml_relation", "path": "design/radar_sim_design.umlproj", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency", "diagram": "Radar System Architecture"},
-        {"type": "uml_method", "path": "design/radar_sim_design.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "Pulse Compression"},
-        {"type": "uml_sequence", "path": "design/radar_sim_design.umlproj", "labels": ["setMode", "generateEcho", "compress", "detect"], "diagram": "Full Radar Signal Processing Flow"},
+        {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
+        {"type": "uml_contains", "path": "design/radar_design_0730.umlproj", "kind": "component", "name": "EchoSimulation", "diagram": "Radar Signal Processing Architecture"},
+        {"type": "uml_relation", "path": "design/radar_design_0730.umlproj", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency", "diagram": "Radar Signal Processing Architecture"},
+        {"type": "uml_method", "path": "design/radar_design_0730.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "PulseCompression Domain Model"},
+        {"type": "uml_sequence", "path": "design/radar_design_0730.umlproj", "labels": ["setMode", "generateEcho", "compress", "detect"], "diagram": "Full Radar Signal Processing Flow"},
     ]
     results = asyncio.run(_run_checkers(fixture, configs))
     assert all(item.passed for item in results), [(item.checker, item.passed, item.message) for item in results]
@@ -476,9 +607,10 @@ def test_devagent_baseline_snapshot_is_available():
     assert BASELINE_PATH.is_file()
     assert baseline["agent"] == "devagent"
     assert baseline["case_count"] == 16
-    assert baseline["passed"] == 10
-    assert baseline["pass_rate"] == 0.625
-    assert len(baseline["groups"]) == 6
+    assert baseline["passed"] == 6
+    assert baseline["pass_rate"] == 0.375
+    assert len(baseline["groups"]) == 3
+    assert all(not case_id.startswith("trace-") for case_id in baseline["case_ids"])
 
 
 def test_devagent_repository_version_is_available():
@@ -541,6 +673,7 @@ def test_eval_batch_summary_counts_budget_statuses():
 
 def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"case-1": object()})
     manager = EvalBatchManager()
     batch = EvalBatch(
         batch_id="batch_test",
@@ -559,6 +692,26 @@ def test_eval_batch_archive_writes_snapshot(tmp_path, monkeypatch):
     archive_path = tmp_path / "evals" / "archives" / f"{archive['archive_id']}.json"
     assert archive_path.is_file()
     assert '"v3.0-test"' in archive_path.read_text(encoding="utf-8")
+
+
+def test_eval_batch_archive_rejects_single_suite(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path / "evals")
+    monkeypatch.setattr(
+        "extensions.evals.batches.load_cases",
+        lambda: {"case-1": object(), "case-2": object()},
+    )
+    manager = EvalBatchManager()
+    batch = EvalBatch(
+        batch_id="batch_partial",
+        suite="core",
+        version="v3.3",
+        case_ids=["case-1"],
+        status="completed",
+    )
+    manager._batches[batch.batch_id] = batch
+
+    with pytest.raises(ValueError, match="complete evaluation catalog"):
+        manager.archive(EvalArchiveRequest(batch_id=batch.batch_id))
 
 
 def test_eval_batch_archive_baseline_snapshot(tmp_path, monkeypatch):

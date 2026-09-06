@@ -1,0 +1,16 @@
+{
+  "id": "radar-single-read-e2e-001",
+  "name": "端到端运行结果读取",
+  "prompt": "运行项目端到端示例或等价测试，报告完整处理链路以及 5 km、25 km、150 km 三个目标是否被正确检测，并说明涉及的源码和测试。不要修改项目文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "pytest", "path": "test", "timeout": 60},
+    {"type": "answer_contains_all", "texts": ["5", "25", "150", "generateEcho", "compress", "detect", "test_pulse_compression.py"]},
+    {"type": "trace_policy", "required_tools": ["run_task"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 150,
+  "max_tool_calls": 25,
+  "max_total_tokens": 40000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_read", "operation": "read", "sample_type": "positive", "release_gate": true}
+}

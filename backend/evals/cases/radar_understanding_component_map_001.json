@@ -1,0 +1,15 @@
+{
+  "id": "radar-understanding-component-map-001",
+  "name": "组件源码测试映射理解",
+  "prompt": "检查项目 UML、源码和测试，回答项目有多少个组件，并列出每个组件对应的源码模块、核心类和测试文件。不要修改任何文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "answer_contains_all", "texts": ["4", "ModeControl", "TransmitWaveformGen", "EchoSimulation", "PulseCompression", "mode_control.py", "transmit.py", "echo.py", "pulse_compression.py", "test_mode_control.py", "test_transmit.py", "test_echo.py", "test_pulse_compression.py"]},
+    {"type": "trace_policy", "required_tools": ["read_file"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 120,
+  "max_tool_calls": 20,
+  "max_total_tokens": 30000,
+  "metadata": {"suite": "understanding", "capability": "cross_artifact_inventory", "sample_type": "positive", "release_gate": true}
+}

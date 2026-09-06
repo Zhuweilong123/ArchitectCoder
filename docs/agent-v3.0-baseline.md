@@ -197,7 +197,7 @@ GET /api/metrics
 - `POST /api/evals/archives`、`GET /api/evals/archives`：创建和查询评测快照归档。
 
 每个用例可声明 fixture、最大时长、工具调用数、token 预算以及以下确定性检查器：
-`file_exists`、`file_contains`、`json_field`、`pytest`、`paths_unchanged` 以及 UML 专用检查器。评测运行会关联独立 Trace，结果写入 `evals/results.jsonl`，并记录到 Agent Metrics。
+`file_exists`、`file_contains`、`json_field`、`pytest`、`paths_unchanged` 以及 UML 专用检查器。评测运行会关联独立 Trace，结果写入 `temp/evals/results/results.jsonl`，Trace 写入 `temp/evals/traces/`，并记录到 Agent Metrics。
 
 评测固定使用生产 DevAgent，项目文件指向临时评测工作区，避免评测过程修改全局设计目录。正式接入真实任务集时，应将 fixture 放入受控目录，并补充成功率、工具选择、成本、延迟和回归阈值。
 

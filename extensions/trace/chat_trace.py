@@ -10,7 +10,8 @@ ChatTrace — 会话级结构化 trace 层 (JSONL).
   - 记录 LLM 原始往返（prompt/completion/model/tokens）、工具调用参数与完整返回
   - 记录环境快照（agent/prompt 版本、KG 状态），便于复现现场
 
-文件命名: trace_{session_id}.jsonl，位于 temp/chat_log/ 目录。
+文件命名: trace_{session_id}.jsonl。普通聊天位于 temp/chat_log/，评测 Trace
+由调用方指定到 temp/evals/traces/。
 """
 
 from __future__ import annotations
@@ -167,12 +168,13 @@ class ChatTraceLogger:
     写入 temp/chat_log/trace_{session_id}.jsonl（机器回放 JSONL）。
     """
 
-    def __init__(self, session_id: str = ""):
+    def __init__(self, session_id: str = "", log_dir: str | None = None):
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_id = ""
         self._trace_id = new_trace_id()
         self._lock = threading.Lock()
         self._path: str | None = None
+        self._log_dir = log_dir
         self._closed = False
         self._n = 0
 
@@ -187,7 +189,7 @@ class ChatTraceLogger:
     @property
     def path(self) -> str:
         if self._path is None:
-            log_dir = _chat_log_dir()
+            log_dir = self._log_dir or _chat_log_dir()
             os.makedirs(log_dir, exist_ok=True)
             self._path = os.path.join(log_dir, f"trace_{self.session_id}.jsonl")
         return self._path
@@ -665,7 +667,10 @@ class JsonlTraceProvider:
     """Default trace provider backed by the existing JSONL sink."""
 
     def create(self, request):
-        return ChatTraceLogger(session_id=request.session_id)
+        return ChatTraceLogger(
+            session_id=request.session_id,
+            log_dir=getattr(request, "trace_dir", "") or None,
+        )
 
     def query(self):
         return JsonlTraceQuery()
