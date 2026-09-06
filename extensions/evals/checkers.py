@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -147,6 +148,142 @@ class PytestChecker(Checker):
                                  message=output or ("pytest passed" if passed else "pytest failed"),
                                  details={"returncode": proc.returncode})
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
+class HiddenPytestChecker(PytestChecker):
+    """Run repository-hidden tests against the isolated workspace source."""
+
+    name = "hidden_pytest"
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            hidden_root = Path(__file__).resolve().parents[2] / "backend" / "evals" / "hidden_tests"
+            target = (hidden_root / self.path).resolve()
+            if not target.is_relative_to(hidden_root.resolve()):
+                raise ValueError(f"hidden test path escapes hidden_tests: {self.path}")
+            env = os.environ.copy()
+            source = str((workspace / "src").resolve())
+            env["PYTHONPATH"] = source + os.pathsep + env.get("PYTHONPATH", "")
+            command = [sys.executable, "-m", "pytest", "-q", str(target), *self.args]
+            proc = await asyncio.to_thread(
+                subprocess.run, command, cwd=str(workspace), capture_output=True,
+                text=True, timeout=self.timeout, env=env,
+            )
+            output = (proc.stdout + proc.stderr).strip()[-4000:]
+            passed = proc.returncode == 0
+            return CheckerResult(
+                checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+                message=output or ("hidden pytest passed" if passed else "hidden pytest failed"),
+                details={"returncode": proc.returncode, "path": self.path},
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
+class AnswerContainsAllChecker(Checker):
+    name = "answer_contains_all"
+
+    def __init__(self, texts: list[str], answer: str = ""):
+        self.texts = [str(text) for text in texts]
+        self.answer = answer
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        missing = [text for text in self.texts if text not in self.answer]
+        passed = not missing
+        return CheckerResult(
+            checker=self.name,
+            passed=passed,
+            score=1.0 if passed else 0.0,
+            message="answer contains all required facts" if passed else f"missing answer facts: {missing}",
+            details={"missing": missing},
+        )
+
+
+class AnswerOrderedContainsChecker(Checker):
+    name = "answer_ordered_contains"
+
+    def __init__(self, texts: list[str], answer: str = ""):
+        self.texts = [str(text) for text in texts]
+        self.answer = answer
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        cursor = 0
+        for text in self.texts:
+            match = self.answer.find(text, cursor)
+            if match < 0:
+                return CheckerResult(
+                    checker=self.name, passed=False, score=0.0,
+                    message=f"answer item not found in order: {text}",
+                )
+            cursor = match + len(text)
+        return CheckerResult(
+            checker=self.name, passed=True, score=1.0,
+            message="answer facts appear in the required order",
+        )
+
+
+class TracePolicyChecker(Checker):
+    name = "trace_policy"
+
+    def __init__(self, trace_path: str = "", runtime: dict[str, Any] | None = None,
+                 max_tool_calls: int | None = None, required_tools: list[str] | None = None,
+                 forbidden_tools: list[str] | None = None):
+        self.trace_path = trace_path
+        self.runtime = runtime or {}
+        self.max_tool_calls = max_tool_calls
+        self.required_tools = [str(item) for item in (required_tools or [])]
+        self.forbidden_tools = [str(item) for item in (forbidden_tools or [])]
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        events: list[dict[str, Any]] = []
+        try:
+            if self.trace_path:
+                events = [
+                    json.loads(line)
+                    for line in Path(self.trace_path).read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            tools = [str(event.get("tool_name") or "") for event in events if event.get("event_type") == "tool_call"]
+            observed_calls = self.runtime.get("turn_tool_calls")
+            if observed_calls is None:
+                observed_calls = self.runtime.get("total_tool_calls")
+            if observed_calls is None:
+                observed_calls = len(tools)
+            if self.max_tool_calls is not None and int(observed_calls) > self.max_tool_calls:
+                return CheckerResult(
+                    checker=self.name, passed=False, score=0.0,
+                    message=f"tool calls {observed_calls} exceed {self.max_tool_calls}",
+                    details={"tool_calls": observed_calls},
+                )
+            scoped_tools = self.runtime.get("turn_tool_names")
+            if scoped_tools is None:
+                scoped_tools = tools
+            scoped_tools = [str(tool) for tool in scoped_tools]
+            # Production DevAgent uses the foundation batch mutation tool for
+            # file edits. Keep legacy case terminology compatible without
+            # hiding the actual observed tool names in the result details.
+            aliases = {"edit_file": "apply_changes", "write_file": "apply_changes"}
+            canonical_tools = {aliases.get(tool, tool) for tool in scoped_tools}
+            canonical_required = [aliases.get(tool, tool) for tool in self.required_tools]
+            canonical_forbidden = [aliases.get(tool, tool) for tool in self.forbidden_tools]
+            missing = [tool for tool in self.required_tools if aliases.get(tool, tool) not in canonical_tools]
+            forbidden = [tool for tool in self.forbidden_tools if aliases.get(tool, tool) in canonical_tools]
+            passed = not missing and not forbidden
+            return CheckerResult(
+                checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+                message="trace policy satisfied" if passed else f"missing={missing}, forbidden={forbidden}",
+                details={
+                    "tool_calls": observed_calls,
+                    "tools": scoped_tools,
+                    "canonical_tools": sorted(canonical_tools),
+                    "required_tools": canonical_required,
+                    "forbidden_tools": canonical_forbidden,
+                    "missing": missing,
+                    "forbidden": forbidden,
+                },
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
 
@@ -325,6 +462,93 @@ class UMLMethodChecker(Checker):
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
 
+class UMLMethodSignatureChecker(Checker):
+    name = "uml_method_signature"
+
+    def __init__(self, path: str, class_name: str, method: str, params: str,
+                 return_type: str = "", diagram: str = ""):
+        self.path = path
+        self.class_name = class_name
+        self.method = method
+        self.params = params
+        self.return_type = return_type
+        self.diagram = diagram
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            document = _load_uml(workspace, self.path)
+            actual: dict[str, Any] | None = None
+            for diagram in _selected_diagrams(document, self.diagram):
+                for item in diagram.get("classes", []):
+                    if item.get("name") != self.class_name:
+                        continue
+                    for method in item.get("methods", []):
+                        if method.get("name") == self.method:
+                            actual = method
+                            break
+                    if actual is not None:
+                        break
+                if actual is not None:
+                    break
+            passed = bool(actual) and actual.get("params", "") == self.params
+            if self.return_type:
+                passed = passed and actual.get("return_type", "") == self.return_type
+            return CheckerResult(
+                checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+                message=(
+                    f"{self.class_name}.{self.method} signature matches"
+                    if passed else
+                    f"actual={actual!r}, expected params={self.params!r}, return={self.return_type!r}"
+                ),
+                details={"actual": actual, "expected_params": self.params, "expected_return": self.return_type},
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
+class UMLAbsentChecker(Checker):
+    name = "uml_absent"
+
+    def __init__(self, path: str, kind: str, name: str, diagram: str = "", class_name: str = "", method: str = ""):
+        self.path = path
+        self.kind = kind
+        self.name_to_find = name
+        self.diagram = diagram
+        self.class_name = class_name
+        self.method = method
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            document = _load_uml(workspace, self.path)
+            found = False
+            for item in _selected_diagrams(document, self.diagram):
+                if self.kind == "class":
+                    found = any(x.get("name") == self.name_to_find for x in item.get("classes", []))
+                elif self.kind == "component":
+                    found = any(x.get("name") == self.name_to_find for x in item.get("components", []))
+                elif self.kind == "message":
+                    found = any(self.name_to_find in x.get("label", "") for x in item.get("messages", []))
+                elif self.kind == "method":
+                    found = any(
+                        item_class.get("name") == self.class_name
+                        and any(method.get("name") == self.method for method in item_class.get("methods", []))
+                        for item_class in item.get("classes", [])
+                    )
+                elif self.kind == "diagram":
+                    found = item.get("name") == self.name_to_find
+                else:
+                    raise ValueError(f"unsupported UML absent kind: {self.kind}")
+                if found:
+                    break
+            passed = not found
+            return CheckerResult(
+                checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+                message=f"{self.kind} {self.name_to_find!r} {'absent' if passed else 'still present'}",
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
 class UMLSequenceChecker(Checker):
     name = "uml_sequence"
 
@@ -349,6 +573,34 @@ class UMLSequenceChecker(Checker):
                 cursor = match + 1
             return CheckerResult(checker=self.name, passed=True, score=1.0,
                                  message=f"{len(self.labels)} sequence labels found in order")
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            return CheckerResult(checker=self.name, passed=False, message=str(exc))
+
+
+class UMLSequenceExactChecker(Checker):
+    name = "uml_sequence_exact"
+
+    def __init__(self, path: str, labels: list[str], diagram: str = ""):
+        self.path = path
+        self.labels = labels
+        self.diagram = diagram
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        try:
+            document = _load_uml(workspace, self.path)
+            diagrams = _selected_diagrams(document, self.diagram)
+            messages = []
+            for diagram in diagrams:
+                messages.extend(sorted(diagram.get("messages", []), key=lambda item: item.get("order", 0)))
+            actual = [str(message.get("label", "")) for message in messages]
+            passed = len(actual) == len(self.labels) and all(
+                expected in actual[index] for index, expected in enumerate(self.labels)
+            )
+            return CheckerResult(
+                checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+                message=f"sequence={actual!r}, expected labels={self.labels!r}",
+                details={"actual": actual, "expected": self.labels},
+            )
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
             return CheckerResult(checker=self.name, passed=False, message=str(exc))
 
@@ -385,6 +637,9 @@ class PathsUnchangedChecker(Checker):
 def build_checkers(
     configs: list[dict[str, Any]],
     baseline: dict[str, str | None] | None = None,
+    answer: str = "",
+    trace_path: str = "",
+    runtime: dict[str, Any] | None = None,
 ) -> list[Checker]:
     result: list[Checker] = []
     for config in configs:
@@ -401,6 +656,20 @@ def build_checkers(
             result.append(JsonFieldChecker(config["path"], config["field"], config.get("expected")))
         elif kind == "pytest":
             result.append(PytestChecker(config.get("path", "."), config.get("args"), config.get("timeout", 120)))
+        elif kind == "hidden_pytest":
+            result.append(HiddenPytestChecker(config.get("path", "."), config.get("args"), config.get("timeout", 120)))
+        elif kind == "answer_contains_all":
+            result.append(AnswerContainsAllChecker(config.get("texts", []), answer))
+        elif kind == "answer_ordered_contains":
+            result.append(AnswerOrderedContainsChecker(config.get("texts", []), answer))
+        elif kind == "trace_policy":
+            result.append(TracePolicyChecker(
+                trace_path=trace_path,
+                runtime=runtime,
+                max_tool_calls=config.get("max_tool_calls"),
+                required_tools=config.get("required_tools"),
+                forbidden_tools=config.get("forbidden_tools"),
+            ))
         elif kind == "uml_valid":
             result.append(UMLValidChecker(config["path"]))
         elif kind == "uml_contains":
@@ -411,8 +680,20 @@ def build_checkers(
             result.append(UMLRelationChecker(config["path"], config["source"], config["target"], config.get("relation_type", ""), config.get("diagram", "")))
         elif kind == "uml_method":
             result.append(UMLMethodChecker(config["path"], config["class_name"], config["method"], config.get("diagram", "")))
+        elif kind == "uml_method_signature":
+            result.append(UMLMethodSignatureChecker(
+                config["path"], config["class_name"], config["method"],
+                config["params"], config.get("return_type", ""), config.get("diagram", ""),
+            ))
+        elif kind == "uml_absent":
+            result.append(UMLAbsentChecker(
+                config["path"], config["kind"], config["name"], config.get("diagram", ""),
+                config.get("class_name", ""), config.get("method", ""),
+            ))
         elif kind == "uml_sequence":
             result.append(UMLSequenceChecker(config["path"], config["labels"], config.get("diagram", "")))
+        elif kind == "uml_sequence_exact":
+            result.append(UMLSequenceExactChecker(config["path"], config["labels"], config.get("diagram", "")))
         elif kind == "paths_unchanged":
             result.append(PathsUnchangedChecker(config["paths"], baseline))
         else:

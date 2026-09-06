@@ -42,6 +42,9 @@ class LocalEvalProvider:
     async def start_batch(self, request):
         return await get_batch_manager().start(request)
 
+    def merge_batches(self, request):
+        return get_batch_manager().merge(request)
+
     def list_batches(self, limit: int = 20):
         return get_batch_manager().list_batches(limit)
 

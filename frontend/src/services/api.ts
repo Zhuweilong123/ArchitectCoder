@@ -274,10 +274,12 @@ export interface EvalBaseline {
   version: string;
   model: string;
   captured_at: string;
+  case_ids?: string[];
   case_count: number;
   passed: number;
   failed: number;
   timeout: number;
+  errors?: number;
   pass_rate: number;
   average_score: number;
   total_duration_ms: number;

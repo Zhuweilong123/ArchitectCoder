@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -21,7 +22,12 @@ from app.agent_base.assembly import (
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.execution_summary import build_task_execution_summary
-from backend.config import evaluation_results_dir, evaluation_traces_dir, get_settings
+from backend.config import (
+    evaluation_results_dir,
+    evaluation_root,
+    evaluation_traces_dir,
+    get_settings,
+)
 from app.services.agent_execution import handle_agent_execution
 from app.services.agent_metrics import get_agent_metrics
 from app.services.run_state import get_run_store
@@ -78,6 +84,26 @@ def _trace_event_count(trace_path: str, event_type: str) -> int:
     return count
 
 
+def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str, Any]]:
+    """Return production tool calls after a turn's trace offset."""
+    if not trace_path:
+        return []
+    tools: list[dict[str, Any]] = []
+    try:
+        for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            if event.get("event_type") != "tool_call":
+                continue
+            tools.append({
+                "name": str(event.get("tool_name") or ""),
+                "arguments": event.get("arguments") or {},
+                "status": "completed",
+            })
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return tools[max(0, int(start_index)):]
+
+
 def _default_results_path() -> Path:
     return evaluation_results_dir() / "results.jsonl"
 
@@ -127,10 +153,10 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     """
     if case.metadata.get("capability") == "budget_control":
         return {
-            "max_steps": case.max_tool_calls,
-            "max_tool_calls": case.max_tool_calls,
-            "max_run_seconds": case.max_seconds,
-            "max_total_tokens": case.max_total_tokens,
+            "max_steps": min(case.max_tool_calls, settings.agent_max_steps),
+            "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
+            "max_run_seconds": min(case.max_seconds, settings.agent_max_run_seconds),
+            "max_total_tokens": min(case.max_total_tokens, settings.agent_max_total_tokens),
         }
     return {
         "max_steps": settings.agent_max_steps,
@@ -187,10 +213,22 @@ class EvalRunner:
     def __init__(self, results_path: str | Path | None = None):
         self.results_path = Path(results_path) if results_path else _default_results_path()
 
-    async def run_case(self, case: EvalCase, agent_factory: AgentFactory | None = None) -> EvalResult:
+    async def run_case(
+        self,
+        case: EvalCase,
+        agent_factory: AgentFactory | None = None,
+        result_metadata: dict[str, Any] | None = None,
+    ) -> EvalResult:
         run_id = f"eval_{uuid.uuid4().hex[:16]}"
         result = EvalResult.started(run_id, case.id)
+        if result_metadata:
+            result.metadata.update(result_metadata)
         started = time.monotonic()
+        settings = get_settings()
+        turn_count = max(1, len(case.turn_specs()))
+        budget = _agent_budget(case, settings)
+        turn_deadline_seconds = min(case.max_seconds, budget["max_run_seconds"])
+        evaluation_deadline_seconds = turn_deadline_seconds * turn_count
         # All official evaluations use the production DevAgent assembly.
         # ``agent_factory`` remains only as a dependency-injection seam for
         # unit tests and local harnesses.
@@ -201,9 +239,25 @@ class EvalRunner:
             "fixture_layout_version": EVAL_FIXTURE_LAYOUT_VERSION,
             "execution_path": "production_agent_execution",
             "prompt_source": "case_user_message_only",
-            "budget_scope": "production_agent_budget_with_case_deadline",
+            "budget_scope": (
+                "production_single_turn_budget"
+                if len(case.turn_specs()) == 1
+                else "production_multiturn_per_turn_budget"
+            ),
             "agent_budget_source": "backend_settings",
-            "case_deadline_seconds": case.max_seconds,
+            # ``case.max_seconds`` is a per-turn harness deadline.  A
+            # multi-turn evaluation gets one such deadline per production
+            # task, while the whole case still has a bounded aggregate
+            # deadline for the runner.
+            "case_deadline_seconds": evaluation_deadline_seconds,
+            "turn_deadline_seconds": turn_deadline_seconds,
+            "evaluation_deadline_seconds": evaluation_deadline_seconds,
+            "production_budget": {
+                "max_steps": settings.agent_max_steps,
+                "max_tool_calls": settings.agent_max_tool_calls,
+                "max_run_seconds": settings.agent_max_run_seconds,
+                "max_total_tokens": settings.agent_max_total_tokens,
+            },
             "case_tool_call_limit": case.max_tool_calls,
             "budget_control_case": case.metadata.get("capability") == "budget_control",
         }
@@ -370,9 +424,12 @@ class EvalRunner:
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
                         turn_records: list[dict[str, Any]] = []
-                        # Budget semantics: every user task gets an independent
-                        # ReAct budget. Keep cumulative usage for reporting only;
-                        # never pass it into the next turn's budget.
+                        # Every user request is a production task.  Multi-turn
+                        # cases preserve the same Agent/history, but each turn
+                        # gets a fresh production task budget.  Totals below
+                        # are report-only and must never be fed into the next
+                        # turn's budget.
+                        production_budget = budget
                         reported_total_tokens = 0
                         traced_total_tokens = 0
                         review_offset = 0
@@ -473,6 +530,11 @@ class EvalRunner:
                         for turn_index, (prompt, turn_spec) in enumerate(
                             zip(prompts, turn_specs), 1
                         ):
+                            if production_agent:
+                                agent.max_total_tokens = production_budget["max_total_tokens"]
+                                agent.max_tool_calls = production_budget["max_tool_calls"]
+                                agent.max_steps = production_budget["max_steps"]
+                                agent.max_run_seconds = production_budget["max_run_seconds"]
                             active_turn.update({
                                 "turn": turn_index,
                                 "details": [],
@@ -518,7 +580,11 @@ class EvalRunner:
                                     "status": "completed",
                                     "tool_calls": turn_tool_calls,
                                     "total_tokens": turn_tokens,
-                                    "answer": final_answer[:500],
+                                    # Keep the complete answer for checker input and
+                                    # retrospective evaluation. User prompts are
+                                    # intentionally bounded, but model answers must
+                                    # not be truncated before they are checked.
+                                    "answer": final_answer,
                                 })
                                 active_turn["checkpoint"] = dict(
                                     getattr(agent, "last_run_checkpoint", {}) or {}
@@ -605,6 +671,9 @@ class EvalRunner:
                                     _trace_event_count(tracer.path, "tool_call")
                                     - before_tool_calls,
                                 )
+                                turn_tool_details.extend(
+                                    _trace_tool_details(tracer.path, before_tool_calls)
+                                )
                                 result.tool_calls += turn_tool_calls
                                 done_events = [
                                     event for event in sent_events
@@ -672,7 +741,7 @@ class EvalRunner:
                             )
                             turn_tokens = max(traced_delta, reported_tokens)
                             reported_total_tokens += turn_tokens
-                            result.total_tokens = max(result.total_tokens, reported_total_tokens)
+                            result.total_tokens = reported_total_tokens
                             budget_stop_reason = str(
                                 getattr(agent, "last_context_report", {}).get(
                                     "token_budget_stop_reason", ""
@@ -708,7 +777,9 @@ class EvalRunner:
                                 ),
                                 "tool_calls": turn_tool_calls,
                                 "total_tokens": turn_tokens,
-                                "answer": final_answer[:500],
+                                # Do not truncate the answer before the final
+                                # top-level checkers read it below.
+                                "answer": final_answer,
                             })
 
                             turn_hard_configs = turn_spec.hard_checkers
@@ -717,13 +788,33 @@ class EvalRunner:
                                 turn_hard_results = await asyncio.gather(*(
                                     checker.check(workspace)
                                     for checker in build_checkers(
-                                        turn_hard_configs, baseline_hashes
+                                        turn_hard_configs,
+                                        baseline_hashes,
+                                        answer=final_answer,
+                                        trace_path=tracer.path,
+                                        runtime={
+                                            "turn_tool_calls": turn_tool_calls,
+                                            "turn_tool_names": [
+                                                str(detail.get("name") or "")
+                                                for detail in turn_tool_details
+                                            ],
+                                        },
                                     )
                                 ))
                                 turn_score_results = await asyncio.gather(*(
                                     checker.check(workspace)
                                     for checker in build_checkers(
-                                        turn_score_configs, baseline_hashes
+                                        turn_score_configs,
+                                        baseline_hashes,
+                                        answer=final_answer,
+                                        trace_path=tracer.path,
+                                        runtime={
+                                            "turn_tool_calls": turn_tool_calls,
+                                            "turn_tool_names": [
+                                                str(detail.get("name") or "")
+                                                for detail in turn_tool_details
+                                            ],
+                                        },
                                     )
                                 ))
                                 turn_results = [*turn_hard_results, *turn_score_results]
@@ -775,14 +866,17 @@ class EvalRunner:
                         result.metadata["turns"] = turn_records
 
                     try:
-                        await asyncio.wait_for(consume(), timeout=case.max_seconds)
+                        await asyncio.wait_for(
+                            consume(),
+                            timeout=evaluation_deadline_seconds,
+                        )
                     except asyncio.TimeoutError:
                         timeout_checkpoint = dict(
                             active_turn.get("checkpoint") or {}
                         )
                         timeout_checkpoint["status"] = "timed_out"
                         timeout_checkpoint["stop_reason"] = (
-                            f"evaluation exceeded {case.max_seconds}s"
+                            f"evaluation exceeded {evaluation_deadline_seconds}s"
                         )
                         # Keep the terminal task event inside TraceSession. The
                         # outer handler still owns rollback and result shaping.
@@ -816,11 +910,29 @@ class EvalRunner:
                         ))
                     if progress_relay is not None:
                         result.metadata["progress_events"] = progress_relay.events
+                    final_answer = (
+                        str((result.metadata.get("turns") or [])[-1].get("answer") or "")
+                        if result.metadata.get("turns") else ""
+                    )
                     hard_results = await asyncio.gather(*(
-                        checker.check(workspace) for checker in build_checkers(case.hard_checkers, baseline_hashes)
+                        checker.check(workspace)
+                        for checker in build_checkers(
+                            case.hard_checkers,
+                            baseline_hashes,
+                            answer=final_answer,
+                            trace_path=tracer.path,
+                            runtime={"total_tool_calls": result.tool_calls},
+                        )
                     ))
                     score_results = await asyncio.gather(*(
-                        checker.check(workspace) for checker in build_checkers(case.checkers, baseline_hashes)
+                        checker.check(workspace)
+                        for checker in build_checkers(
+                            case.checkers,
+                            baseline_hashes,
+                            answer=final_answer,
+                            trace_path=tracer.path,
+                            runtime={"total_tool_calls": result.tool_calls},
+                        )
                     ))
                     # Keep non-file execution checkers (notably
                     # review_auto_stub).  Turn-local file checkers are
@@ -876,7 +988,7 @@ class EvalRunner:
                 ):
                     active_turn["checkpoint"] = {
                         **dict(active_turn.get("checkpoint") or {}),
-                        "stop_reason": f"evaluation exceeded {case.max_seconds}s",
+                        "stop_reason": f"evaluation exceeded {evaluation_deadline_seconds}s",
                     }
                     summary = build_task_execution_summary(
                         active_turn.get("details") or [],
@@ -894,7 +1006,7 @@ class EvalRunner:
                 if change_set is not None:
                     change_set.rollback()
                 result.status = "timeout"
-                result.error = f"evaluation exceeded {case.max_seconds}s"
+                result.error = f"evaluation exceeded {evaluation_deadline_seconds}s"
                 timeout_checkpoint = dict(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
@@ -938,7 +1050,26 @@ class EvalRunner:
             finally:
                 result.trace_path = str(Path(tracer.path)) if "tracer" in locals() else ""
 
-        result.workspace = ""
+            # Keep the final materialized workspace so file/UML/test checkers
+            # can be audited or replayed after the temporary execution
+            # directory is removed. A snapshot failure must not change the
+            # Agent result.
+            snapshot_root = evaluation_root() / "artifacts" / run_id
+            try:
+                snapshot_root.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(
+                    workspace, snapshot_root, symlinks=True, dirs_exist_ok=True,
+                )
+                result.workspace = str(snapshot_root)
+                result.metadata["workspace_ephemeral"] = False
+                result.metadata["workspace_snapshot"] = str(snapshot_root)
+            except (OSError, shutil.Error) as exc:
+                logger.warning(
+                    "[Eval] Could not persist workspace snapshot for %s: %s",
+                    run_id, exc,
+                )
+                result.workspace = ""
+                result.metadata["workspace_snapshot_error"] = str(exc)
         result.total_tokens = max(result.total_tokens, _trace_total_tokens(result.trace_path))
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         self._append_result(result)

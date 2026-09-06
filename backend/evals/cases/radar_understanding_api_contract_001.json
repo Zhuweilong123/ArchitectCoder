@@ -1,0 +1,15 @@
+{
+  "id": "radar-understanding-api-contract-001",
+  "name": "类和 API 契约理解",
+  "prompt": "检查 UML、源码和测试，按组件列出核心类及其公开方法，至少覆盖 ModeController、TransmitCoordinator、EchoSimulator、TargetSceneManager、PulseCompressor 和 PeakDetector。不要修改任何文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "answer_contains_all", "texts": ["ModeController", "setMode", "getCurrentParams", "TransmitCoordinator", "generateTransmitSignal", "EchoSimulator", "setTargets", "generateEcho", "TargetSceneManager", "addTarget", "getTargetDelays", "PulseCompressor", "buildFilter", "compress", "PeakDetector", "detect"]},
+    {"type": "trace_policy", "required_tools": ["read_file"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 150,
+  "max_tool_calls": 30,
+  "max_total_tokens": 40000,
+  "metadata": {"suite": "understanding", "capability": "api_contract_understanding", "sample_type": "positive", "release_gate": true}
+}

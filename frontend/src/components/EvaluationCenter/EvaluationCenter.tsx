@@ -20,6 +20,8 @@ import './EvaluationCenter.css';
 const { Text } = Typography;
 const EVAL_AGENT_LABEL = 'DevAgent';
 const UNCLASSIFIED_SUITE = '__unclassified__';
+const TRACE_SUITE = 'trace-3.1';
+const ACTIVE_BATCH_STORAGE_KEY = 'evaluationActiveBatchId';
 
 function fmtDuration(ms: number): string {
   if (!ms) return '-';
@@ -76,6 +78,8 @@ const EvaluationCenter: React.FC = () => {
   const [resultQuery, setResultQuery] = useState('');
   const [resultStatus, setResultStatus] = useState<'all' | 'passed' | 'failed' | 'timeout'>('all');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [selectedTrendBatch, setSelectedTrendBatch] = useState<EvalBatch | null>(null);
+  const [trendLoading, setTrendLoading] = useState(false);
   const [archiveQuery, setArchiveQuery] = useState('');
   const [activeTab, setActiveTab] = useState<EvaluationTab>('overview');
   const [selectedSuites, setSelectedSuites] = useState<string[]>([]);
@@ -96,12 +100,23 @@ const EvaluationCenter: React.FC = () => {
   const selectedCaseIds = useMemo(() => cases
     .filter((item) => selectedSuites.includes(item.metadata?.suite ? String(item.metadata.suite) : UNCLASSIFIED_SUITE))
     .map((item) => item.id), [cases, selectedSuites]);
+  const baselineCases = useMemo(() => cases.filter((item) => (
+    (item.metadata?.suite ? String(item.metadata.suite) : UNCLASSIFIED_SUITE) !== TRACE_SUITE
+  )), [cases]);
+  const baselineCaseIds = useMemo(() => baselineCases.map((item) => item.id), [baselineCases]);
+  const baselineSnapshotMatchesCatalog = !!baseline
+    && Array.isArray(baseline.case_ids)
+    && baseline.case_ids.length === baselineCaseIds.length
+    && baselineCaseIds.every((caseId) => baseline.case_ids?.includes(caseId));
+  const baselineBatchIdsMatch = (caseIds: string[]) => (
+    caseIds.length === baselineCaseIds.length
+    && baselineCaseIds.every((caseId) => caseIds.includes(caseId))
+  );
   const archiveBatchReady = !!batch
     && batch.status === 'completed'
     && cases.length > 0
-    && batch.case_ids.length === cases.length
-    && cases.every((item) => batch.case_ids.includes(item.id));
-  const archiveBaselineReady = !batch && !!baseline && cases.length > 0 && baseline.case_count >= cases.length;
+    && baselineBatchIdsMatch(batch.case_ids);
+  const archiveBaselineReady = !batch && baselineSnapshotMatchesCatalog;
   const archiveReady = archiveBatchReady || archiveBaselineReady;
   const sortedArchives = useMemo(() => [...archives].sort(
     (left, right) => archiveExecutionTimestamp(right) - archiveExecutionTimestamp(left),
@@ -145,9 +160,22 @@ const EvaluationCenter: React.FC = () => {
   const selectedCase = useMemo(
     () => filteredSelectedResults.find((result) => result.case_id === selectedCaseId)
       || selectedPerformance?.results?.find((result) => result.case_id === selectedCaseId)
+      || selectedTrendBatch?.results?.find((result) => result.case_id === selectedCaseId)
+      || batch?.results?.find((result) => result.case_id === selectedCaseId)
       || null,
-    [filteredSelectedResults, selectedCaseId, selectedPerformance],
+    [batch, filteredSelectedResults, selectedCaseId, selectedPerformance, selectedTrendBatch],
   );
+
+  const catalogGroups = useMemo(() => {
+    const grouped = new Map<string, number>();
+    baselineCases.forEach((item) => {
+      const suite = item.metadata?.suite ? String(item.metadata.suite) : UNCLASSIFIED_SUITE;
+      grouped.set(suite, (grouped.get(suite) || 0) + 1);
+    });
+    return Array.from(grouped.entries()).map(([name, total]) => ({ name, total }));
+  }, [baselineCases]);
+
+  const baselineIsCurrent = baselineSnapshotMatchesCatalog;
 
   const comparisonRuns = useMemo(
     () => performanceRuns.filter((run) => comparisonIds.includes(run.result_id)),
@@ -171,6 +199,18 @@ const EvaluationCenter: React.FC = () => {
       setArchives(archiveList);
       setPerformanceRuns(performanceList);
       setRepository(await getEvalRepository());
+      const storedBatchId = window.localStorage.getItem(ACTIVE_BATCH_STORAGE_KEY);
+      const latestBatchId = storedBatchId || trendList[0]?.batch_id;
+      if (latestBatchId) {
+        try {
+          setBatch(await getEvalBatch(latestBatchId));
+        } catch {
+          window.localStorage.removeItem(ACTIVE_BATCH_STORAGE_KEY);
+          setBatch(null);
+        }
+      } else {
+        setBatch(null);
+      }
       try {
         setBaseline(await getEvalBaseline());
       } catch {
@@ -253,6 +293,7 @@ const EvaluationCenter: React.FC = () => {
       if (next.status === 'queued' || next.status === 'running') {
         pollRef.current = window.setTimeout(() => pollBatch(batchId), 2000);
       } else {
+        window.localStorage.setItem(ACTIVE_BATCH_STORAGE_KEY, batchId);
         await refresh();
         message.success(`评测批次完成：${next.summary.passed}/${next.summary.completed} 通过`);
       }
@@ -278,6 +319,7 @@ const EvaluationCenter: React.FC = () => {
         version: repository.version,
       });
       setBatch(next);
+      window.localStorage.setItem(ACTIVE_BATCH_STORAGE_KEY, next.batch_id);
       setActiveTab('overview');
       pollBatch(next.batch_id);
     } catch (error: any) {
@@ -322,14 +364,14 @@ const EvaluationCenter: React.FC = () => {
   ];
 
   const activeSummary = batch?.summary;
-  const renderBaseline = () => baseline ? (
+  const renderLegacyBaseline = () => baseline ? (
     <Card size="small" className="evaluation-baseline-card" title={<Space><LineChartOutlined />性能基线</Space>} extra={<Space><Tag color="blue">{EVAL_AGENT_LABEL}</Tag><Text type="secondary">{baseline.version}</Text></Space>}>
       <div className="evaluation-baseline-meta">{baseline.label} · {baseline.model} · 快照时间：{fmtTime(baseline.captured_at)}</div>
       <Row gutter={[12, 12]} className="evaluation-stat-row">
         <Col xs={12} sm={8} md={4}><Statistic title="用例数" value={baseline.case_count} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="通过率" value={baseline.pass_rate} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="平均得分" value={baseline.average_score} formatter={(v) => `${(Number(v) * 100).toFixed(1)}%`} /></Col>
-        <Col xs={12} sm={8} md={4}><Statistic title="通过 / 失败 / 超时" value={`${baseline.passed} / ${baseline.failed} / ${baseline.timeout}`} /></Col>
+        <Col xs={12} sm={8} md={4}><Statistic title="通过 / 失败 / 超时 / 错误" value={`${baseline.passed} / ${baseline.failed} / ${baseline.timeout} / ${baseline.errors ?? 0}`} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="累积耗时" value={fmtDuration(baseline.total_duration_ms)} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="总 Token" value={baseline.total_tokens} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="工具调用" value={baseline.total_tool_calls} /></Col>
@@ -344,10 +386,42 @@ const EvaluationCenter: React.FC = () => {
     </Card>
   ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无性能基线" />;
 
+  const renderBaseline = () => {
+    if (!baseline || baselineIsCurrent) return renderLegacyBaseline();
+    return (
+      <Card size="small" className="evaluation-baseline-card" title={<Space><LineChartOutlined />性能基线</Space>} extra={<Tag color="warning">目录已更新，基线待重建</Tag>}>
+        <Alert
+          type="warning"
+          showIcon
+          message="当前基线仍对应旧评测目录"
+          description={`当前目录有 ${cases.length} 个用例，旧基线快照仅覆盖 ${baseline.case_count} 个用例。旧基线指标不再展示为当前成绩，请完成全量评测后重新归档。`}
+          style={{ marginBottom: 12 }}
+        />
+        <Table
+          size="small"
+          rowKey="name"
+          pagination={false}
+          columns={[
+            { title: '当前评测范围', dataIndex: 'name', key: 'name' },
+            { title: '用例数', dataIndex: 'total', key: 'total' },
+            { title: '基线状态', key: 'status', render: () => <Tag color="warning">待重建</Tag> },
+          ]}
+          dataSource={catalogGroups}
+        />
+      </Card>
+    );
+  };
+
   const renderBatch = () => batch ? (
     <Card size="small" title="当前评测批次">
       <div className="evaluation-batch-line"><Text strong>{batch.version}</Text> · {batch.suite} · {statusTag(batch.status)}{batch.current_case_id ? <Text type="secondary">当前：{batch.current_case_id}</Text> : null}<Text type="secondary">开始：{fmtTime(batch.started_at)}</Text></div>
-      {batch.status === 'running' || batch.status === 'queued' ? <Progress percent={batch.summary.total ? Math.round(batch.summary.completed / batch.summary.total * 100) : 0} status="active" /> : null}
+      {batch.summary.total > 0 ? (() => {
+        const active = batch.status === 'running' || batch.status === 'queued';
+        const completed = !active && batch.status === 'completed'
+          ? batch.summary.total
+          : batch.summary.completed;
+        return <Progress percent={Math.min(100, Math.round(completed / batch.summary.total * 100))} status={active ? 'active' : batch.status === 'completed' ? 'success' : 'exception'} />;
+      })() : null}
       {batch.error ? <Alert type="error" showIcon message={batch.error} /> : null}
       <Row gutter={[12, 12]} className="evaluation-stat-row">
         <Col xs={12} sm={8} md={4}><Statistic title="总用例" value={activeSummary?.total || 0} /></Col>
@@ -441,6 +515,41 @@ const EvaluationCenter: React.FC = () => {
     )} />
   );
 
+  const openTrend = async (item: EvalTrend) => {
+    setTrendLoading(true);
+    setSelectedCaseId(null);
+    try {
+      setSelectedTrendBatch(await getEvalBatch(item.batch_id));
+    } catch (error: any) {
+      message.error(`历史批次详情加载失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTrendLoading(false);
+    }
+  };
+
+  const renderRunsWithDetails = () => trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (
+    <List size="small" dataSource={trends} renderItem={(item) => (
+      <React.Fragment key={item.batch_id}>
+        <List.Item
+          className="evaluation-trend-item"
+          actions={[<Button type="link" loading={trendLoading && selectedTrendBatch?.batch_id === item.batch_id} onClick={(event) => { event.stopPropagation(); openTrend(item); }}>查看详情</Button>]}
+          onClick={() => openTrend(item)}
+        >
+          <List.Item.Meta title={<Space>{item.version}{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>} description={fmtTime(item.started_at)} />
+          <Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space>
+        </List.Item>
+        {selectedTrendBatch?.batch_id === item.batch_id ? (
+          <List.Item>
+            <Card size="small" title={`批次详情 · ${item.version} · ${item.suite}`} style={{ width: '100%' }}>
+              <Table size="small" rowKey="case_id" pagination={{ pageSize: 8 }} columns={resultColumns} dataSource={selectedTrendBatch.results} onRow={(row) => ({ onClick: () => setSelectedCaseId(row.case_id) })} />
+              {renderFailureDetail()}
+            </Card>
+          </List.Item>
+        ) : null}
+      </React.Fragment>
+    )} />
+  );
+
   const renderArchives = () => (
     <>
       <Space wrap className="evaluation-filter-row"><Input.Search allowClear value={archiveQuery} onChange={(event) => setArchiveQuery(event.target.value)} placeholder="搜索版本、评测集、归档说明" style={{ width: 300 }} /><Text type="secondary">最新执行的归档展示在最上面</Text></Space>
@@ -503,7 +612,7 @@ const EvaluationCenter: React.FC = () => {
         { key: 'overview', label: '概览与当前批次', children: <>{renderBaseline()}<Divider orientation="left">当前批次</Divider>{renderBatch()}</> },
         { key: 'performance', label: `性能结果 (${performanceRuns.length})`, children: renderPerformance() },
         { key: 'comparison', label: `多版本对比${comparisonRuns.length ? ` (${comparisonRuns.length})` : ''}`, children: renderComparison() },
-        { key: 'runs', label: '版本趋势', children: renderRuns() },
+        { key: 'runs', label: '版本趋势', children: renderRunsWithDetails() },
         { key: 'archives', label: `已归档 (${archives.length})`, children: renderArchives() },
       ]} />
     </Modal>

@@ -1,0 +1,19 @@
+{
+  "id": "radar-single-delete-legacy-debug-001",
+  "name": "删除遗留调试探针",
+  "prompt": "删除 LegacyDebugProbe 功能，清理其源码文件、UML 类和对应测试；不得影响其他雷达功能，删除后运行全部测试。",
+  "project_id": "project_radar_legacy_debug_v1",
+  "hard_checkers": [
+    {"type": "file_absent", "path": "src/radar_sim/legacy_debug_probe.py"},
+    {"type": "file_absent", "path": "test/test_legacy_debug_probe.py"},
+    {"type": "uml_absent", "path": "design/radar_design_0730.umlproj", "kind": "class", "name": "LegacyDebugProbe", "diagram": "EchoSimulation Domain Model"},
+    {"type": "pytest", "path": "test", "timeout": 60},
+    {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
+    {"type": "paths_unchanged", "paths": ["src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "checkers": [{"type": "answer_contains_all", "texts": ["LegacyDebugProbe", "源码", "UML", "测试"]}],
+  "max_seconds": 180,
+  "max_tool_calls": 50,
+  "max_total_tokens": 70000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_delete", "operation": "delete", "sample_type": "positive", "release_gate": true}
+}

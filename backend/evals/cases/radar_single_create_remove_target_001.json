@@ -1,0 +1,17 @@
+{
+  "id": "radar-single-create-remove-target-001",
+  "name": "新增目标删除能力",
+  "prompt": "为 TargetSceneManager 增加 removeTarget(distance) -> bool：删除第一个匹配距离的目标，删除成功返回 true，不存在返回 false；同步 UML 方法契约，并通过项目测试和隐藏回归测试。不要修改原有测试文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "hidden_pytest", "path": "project_radar/test_remove_target.py", "timeout": 60},
+    {"type": "pytest", "path": "test", "timeout": 60},
+    {"type": "uml_method_signature", "path": "design/radar_design_0730.umlproj", "diagram": "EchoSimulation Domain Model", "class_name": "TargetSceneManager", "method": "removeTarget", "params": "distance: float", "return_type": "bool"},
+    {"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "checkers": [{"type": "answer_contains_all", "texts": ["removeTarget", "bool", "测试"]}],
+  "max_seconds": 240,
+  "max_tool_calls": 60,
+  "max_total_tokens": 80000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_create", "operation": "create", "sample_type": "positive", "release_gate": true, "hidden_oracle": true}
+}

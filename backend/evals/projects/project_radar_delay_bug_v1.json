@@ -1,0 +1,11 @@
+{
+  "id": "project_radar_delay_bug_v1",
+  "version": "1.0.0",
+  "fixture": "project_radar_delay_bug_v1",
+  "base_fixture": "project_radar_v1",
+  "entry_file": "design/radar_design_0730.umlproj",
+  "source_dir": "src",
+  "test_dir": "test",
+  "protected_paths": ["design/radar_design_0730.umlproj", "test"],
+  "allowed_write_paths": ["src", "test"]
+}

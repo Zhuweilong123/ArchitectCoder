@@ -1,0 +1,15 @@
+{
+  "id": "radar-single-read-echo-dependency-001",
+  "name": "回波组件依赖读取",
+  "prompt": "分析 EchoSimulator 的协作者、组件依赖和测试覆盖，说明 TargetSceneManager、DelayProcessor、NoiseAdder 分别负责什么。不要修改项目文件。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {"type": "answer_contains_all", "texts": ["EchoSimulator", "TargetSceneManager", "DelayProcessor", "NoiseAdder", "echo.py", "test_echo.py", "PulseCompression", "TransmitWaveformGen"]},
+    {"type": "trace_policy", "required_tools": ["read_file"]},
+    {"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "max_seconds": 120,
+  "max_tool_calls": 25,
+  "max_total_tokens": 30000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_read", "operation": "read", "sample_type": "positive", "release_gate": true}
+}

@@ -24,6 +24,14 @@ class EvalBatchRequest(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class EvalBatchMergeRequest(BaseModel):
+    """Request for combining completed suite batches into a baseline batch."""
+
+    batch_ids: list[str] = Field(min_length=2, max_length=20)
+    version: str = Field(default="working-tree", min_length=1, max_length=100)
+    label: str = Field(default="", max_length=200)
+
+
 class EvalArchiveRequest(BaseModel):
     """Provider-neutral request for archiving an evaluation batch."""
 
@@ -53,6 +61,8 @@ class EvalProvider(Protocol):
     def list_results(self, limit: int = 100) -> list[dict[str, Any]]: ...
 
     async def start_batch(self, request: Any) -> Any: ...
+
+    def merge_batches(self, request: Any) -> Any: ...
 
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]: ...
 
@@ -92,6 +102,9 @@ class NoOpEvalProvider:
         return []
 
     async def start_batch(self, request: Any) -> Any:
+        raise RuntimeError("evaluation provider is disabled")
+
+    def merge_batches(self, request: Any) -> Any:
         raise RuntimeError("evaluation provider is disabled")
 
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]:

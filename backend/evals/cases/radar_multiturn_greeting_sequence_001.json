@@ -1,0 +1,15 @@
+{
+  "id": "radar-multiturn-greeting-sequence-001",
+  "name": "问候后理解并验证端到端时序",
+  "project_id": "project_radar_v1",
+  "turns": [
+    {"prompt": "你好", "hard_checkers": [{"type": "answer_contains_all", "texts": ["你好"]}, {"type": "trace_policy", "max_tool_calls": 0}]},
+    {"prompt": "按顺序说明完整雷达处理链路，并指出每一步对应的组件。", "hard_checkers": [{"type": "answer_ordered_contains", "texts": ["setMode", "getCurrentParams", "generateTransmitSignal", "buildFilter", "setTargets", "generateEcho", "compress", "detect"]}, {"type": "answer_contains_all", "texts": ["ModeControl", "TransmitWaveformGen", "EchoSimulation", "PulseCompression"]}, {"type": "trace_policy", "required_tools": ["read_file"]}]},
+    {"prompt": "运行项目测试，确认这条链路仍然有效并说明结果。", "hard_checkers": [{"type": "pytest", "path": "test", "timeout": 60}, {"type": "answer_contains_all", "texts": ["测试", "通过"]}, {"type": "trace_policy", "required_tools": ["run_task"]}]}
+  ],
+  "hard_checkers": [{"type": "paths_unchanged", "paths": ["design/radar_design_0730.umlproj", "src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}],
+  "max_seconds": 300,
+  "max_tool_calls": 80,
+  "max_total_tokens": 100000,
+  "metadata": {"suite": "multiturn", "capability": "greeting_context_e2e", "sample_type": "positive", "release_gate": true, "first_turn_no_tools": true}
+}

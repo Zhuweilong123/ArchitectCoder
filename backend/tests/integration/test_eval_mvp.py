@@ -65,7 +65,12 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
         result.trace_path,
     )
     assert (tmp_path / "results.jsonl").is_file()
-    assert result.workspace == ""
+    assert result.workspace
+    assert Path(result.workspace).is_dir()
+    assert (Path(result.workspace) / "result.txt").read_text(encoding="utf-8") == (
+        "evaluation passed"
+    )
+    assert result.metadata["workspace_ephemeral"] is False
     assert result.metadata["eval_contract"]["tool_protocol_version"] == (
         "foundation-tools-v1"
     )
@@ -231,6 +236,11 @@ def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monke
     assert [turn["status"] for turn in result.metadata["turns"]] == [
         "completed", "completed", "completed",
     ]
+    assert result.metadata["eval_contract"]["budget_scope"] == (
+        "production_multiturn_per_turn_budget"
+    )
+    assert result.metadata["eval_contract"]["turn_deadline_seconds"] == 600.0
+    assert result.metadata["eval_contract"]["evaluation_deadline_seconds"] == 1800.0
 
 
 def test_eval_runner_persists_missing_fixture_result(tmp_path):
@@ -247,6 +257,25 @@ def test_eval_runner_persists_missing_fixture_result(tmp_path):
     assert results_path.read_text(encoding="utf-8").count("missing-fixture") == 1
 
 
+def test_eval_runner_persists_batch_metadata_before_result_write(tmp_path):
+    case = EvalCase(
+        id="batch-metadata",
+        prompt="run with missing fixture",
+        fixture=str(tmp_path / "missing"),
+    )
+    results_path = tmp_path / "results.jsonl"
+    result = asyncio.run(EvalRunner(results_path).run_case(
+        case,
+        _factory,
+        result_metadata={"batch_id": "batch-test", "version": "v-test"},
+    ))
+
+    assert result.status == "error"
+    persisted = json.loads(results_path.read_text(encoding="utf-8").splitlines()[0])
+    assert persisted["metadata"]["batch_id"] == "batch-test"
+    assert persisted["metadata"]["version"] == "v-test"
+
+
 async def _run_checkers(workspace, configs):
     return await asyncio.gather(*(checker.check(workspace) for checker in build_checkers(configs)))
 
@@ -255,10 +284,13 @@ def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
     assert len(cases) == 18
-    assert "radar-base-001" in cases
-    assert "radar_sim_v1" in projects
-    assert "radar_sim_validation_v1" in projects
-    assert "radar_sim_noise_seed_v1" in projects
+    assert "radar-understanding-component-map-001" in cases
+    assert "radar-single-create-remove-target-001" in cases
+    assert "project_radar_v1" in projects
+    assert "project_radar_delay_bug_v1" in projects
+    assert "project_radar_legacy_debug_v1" in projects
+    assert "project_radar_debug_trace_v1" in projects
+    assert "project_radar_stale_contract_v1" in projects
     assert "radar_trace_remove_v1" in projects
     trace_case = cases["trace-3-1-component-element-multiturn-001"]
     assert len(trace_case.turns) == 3
@@ -268,10 +300,10 @@ def test_radar_eval_catalog_and_uml_checkers():
     assert continuous_case.metadata["reference_turn_count"] == 7
     assert continuous_case.metadata["baseline_comparable"] is True
 
-    fixture, manifest = resolve_fixture(cases["radar-base-001"])
+    fixture, manifest = resolve_fixture(cases["radar-understanding-component-map-001"])
     assert fixture is not None and fixture.is_dir()
     assert manifest is not None
-    assert manifest.entry_file == "design/radar_sim_design.umlproj"
+    assert manifest.entry_file == "design/radar_design_0730.umlproj"
 
     trace_fixture, trace_manifest = resolve_fixture(
         cases["trace-3-1-component-element-continuous-remove-001"]
@@ -281,11 +313,11 @@ def test_radar_eval_catalog_and_uml_checkers():
     assert (trace_fixture / trace_manifest.entry_file).is_file()
 
     configs = [
-        {"type": "uml_valid", "path": "design/radar_sim_design.umlproj"},
-        {"type": "uml_contains", "path": "design/radar_sim_design.umlproj", "kind": "component", "name": "EchoSimulation", "diagram": "Radar System Architecture"},
-        {"type": "uml_relation", "path": "design/radar_sim_design.umlproj", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency", "diagram": "Radar System Architecture"},
-        {"type": "uml_method", "path": "design/radar_sim_design.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "Pulse Compression"},
-        {"type": "uml_sequence", "path": "design/radar_sim_design.umlproj", "labels": ["setMode", "generateEcho", "compress", "detect"], "diagram": "Full Radar Signal Processing Flow"},
+        {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
+        {"type": "uml_contains", "path": "design/radar_design_0730.umlproj", "kind": "component", "name": "EchoSimulation", "diagram": "Radar Signal Processing Architecture"},
+        {"type": "uml_relation", "path": "design/radar_design_0730.umlproj", "source": "PulseCompression", "target": "EchoSimulation", "relation_type": "dependency", "diagram": "Radar Signal Processing Architecture"},
+        {"type": "uml_method", "path": "design/radar_design_0730.umlproj", "class_name": "PeakDetector", "method": "detect", "diagram": "PulseCompression Domain Model"},
+        {"type": "uml_sequence", "path": "design/radar_design_0730.umlproj", "labels": ["setMode", "generateEcho", "compress", "detect"], "diagram": "Full Radar Signal Processing Flow"},
     ]
     results = asyncio.run(_run_checkers(fixture, configs))
     assert all(item.passed for item in results), [(item.checker, item.passed, item.message) for item in results]
@@ -575,9 +607,10 @@ def test_devagent_baseline_snapshot_is_available():
     assert BASELINE_PATH.is_file()
     assert baseline["agent"] == "devagent"
     assert baseline["case_count"] == 16
-    assert baseline["passed"] == 10
-    assert baseline["pass_rate"] == 0.625
-    assert len(baseline["groups"]) == 6
+    assert baseline["passed"] == 6
+    assert baseline["pass_rate"] == 0.375
+    assert len(baseline["groups"]) == 3
+    assert all(not case_id.startswith("trace-") for case_id in baseline["case_ids"])
 
 
 def test_devagent_repository_version_is_available():

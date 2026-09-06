@@ -1,0 +1,19 @@
+{
+  "id": "radar-single-delete-debug-trace-001",
+  "name": "删除临时调试跟踪器",
+  "prompt": "删除 DebugTrace 功能，清理其源码文件、UML 类和对应测试；保留正常端到端雷达处理链路，并运行全部测试。",
+  "project_id": "project_radar_debug_trace_v1",
+  "hard_checkers": [
+    {"type": "file_absent", "path": "src/radar_sim/debug_trace.py"},
+    {"type": "file_absent", "path": "test/test_debug_trace.py"},
+    {"type": "uml_absent", "path": "design/radar_design_0730.umlproj", "kind": "class", "name": "DebugTrace", "diagram": "EchoSimulation Domain Model"},
+    {"type": "pytest", "path": "test", "timeout": 60},
+    {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
+    {"type": "paths_unchanged", "paths": ["src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+  ],
+  "checkers": [{"type": "answer_contains_all", "texts": ["DebugTrace", "源码", "UML", "测试"]}],
+  "max_seconds": 180,
+  "max_tool_calls": 50,
+  "max_total_tokens": 70000,
+  "metadata": {"suite": "single", "capability": "cross_artifact_delete", "operation": "delete", "sample_type": "positive", "release_gate": true}
+}

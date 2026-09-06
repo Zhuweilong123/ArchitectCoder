@@ -1,0 +1,16 @@
+{
+  "id": "radar-multiturn-greeting-revision-001",
+  "name": "问候后新增能力并处理需求变更",
+  "project_id": "project_radar_v1",
+  "turns": [
+    {"prompt": "你好", "hard_checkers": [{"type": "answer_contains_all", "texts": ["你好"]}, {"type": "trace_policy", "max_tool_calls": 0}]},
+    {"prompt": "为 NoiseAdder 增加可选 seed 注入能力，先实现源码和基本测试。", "hard_checkers": [{"type": "hidden_pytest", "path": "project_radar/test_noise_seed.py", "timeout": 60}, {"type": "trace_policy", "required_tools": ["edit_file"]}]},
+    {"prompt": "需求变更：seed 只通过构造函数传入，addNoise 的旧参数形式保持不变，同时同步 UML。", "hard_checkers": [{"type": "hidden_pytest", "path": "project_radar/test_noise_seed.py", "timeout": 60}, {"type": "file_contains", "path": "src/radar_sim/echo.py", "text": "seed"}, {"type": "file_contains", "path": "design/radar_design_0730.umlproj", "text": "seed"}]},
+    {"prompt": "运行全量测试并报告源码、UML、测试是否一致。", "hard_checkers": [{"type": "pytest", "path": "test", "timeout": 60}, {"type": "answer_contains_all", "texts": ["测试", "源码", "UML", "一致"]}]}
+  ],
+  "hard_checkers": [{"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}],
+  "max_seconds": 360,
+  "max_tool_calls": 120,
+  "max_total_tokens": 160000,
+  "metadata": {"suite": "multiturn", "capability": "greeting_context_requirement_revision", "sample_type": "positive", "release_gate": true, "first_turn_no_tools": true, "hidden_oracle": true}
+}
