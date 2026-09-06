@@ -1,8 +1,8 @@
 # 智能体评测体系归档
 
-> 归档版本：3.0 evaluation baseline
-> 归档日期：2026-08-31
-> 适用范围：`backend/app/evals` 执行代码、`backend/evals` 评测数据、评测 API、评测中心前端和运行结果治理
+> 归档版本：3.0 evaluation baseline / evaluation center iteration
+> 归档日期：2026-09-06
+> 适用范围：`extensions/evals` 执行代码、`backend/evals` 评测数据、`backend/app/api/evals.py` 评测 API、评测中心前端和运行结果治理
 
 本文档记录当前智能体评测体系的实际构建结果、目录约定、运行链路、历史基线和未完成事项。它是评测系统的总览归档；`docs/agent-v3.0-baseline.md` 继续承担 3.0 版本整体工程基线的职责。
 
@@ -22,7 +22,7 @@
 ### 2.1 评测代码
 
 ```text
-backend/app/evals/          # 评测执行代码
+extensions/evals/           # 评测执行代码和本地 Provider
 ├── models.py    # EvalCase、EvalResult、CheckerResult 等模型
 ├── registry.py  # 用例注册和加载
 ├── projects.py  # 项目清单加载、fixture 路径解析
@@ -77,31 +77,31 @@ backend/evals/               # 版本化评测数据
 
 | 分组 | 数量 | 主要验证内容 | 是否用于正式基线 |
 |---|---:|---|---|
-| `baseline` | 2 | 项目理解、端到端处理流 | 是 |
-| `p0` | 4 | 延迟、波形补零、全链路、领域参数 | 是 |
-| `p1` | 3 | 随机性、UML-代码契约、旧版 UML 迁移 | 是 |
-| `p2` | 3 | 损坏文件恢复、预算边界、只读保护 | 是 |
-| `diagnostic` | 4 | 从父用例拆出的领域校验和 UML 迁移定位用例 | 否，主要用于诊断 |
-| `trace-3.1` | 2 | 组件图命名迁移和连续多轮对话能力 | 否，专项回归 |
+| `understanding` | 4 | 项目结构、组件、图清单、时序交互理解 | 是 |
+| `single` | 8 | 单轮读取、创建、更新、删除及跨设计/源码/测试联动 | 是 |
+| `multiturn` | 4 | 首轮问候不调用工具，以及多轮创建、变更和时序任务 | 是 |
+| `trace-3.1` | 2 | Trace 衍生的组件操作专项回归 | 否，保留但不作为基线 |
 
-正式基线目前是前四组共 12 个用例；`diagnostic` 用例用于把一个复合失败拆成更小的能力问题，`trace-3.1` 用例用于专项回归，均不应直接和正式正向通过率混合计算。
+正式基线是 `understanding`、`single`、`multiturn` 三组共 16 个用例；`trace-3.1` 仅用于专项回归，不应混入基线通过率。当前正式基线不再使用旧的 `baseline`、`p0`、`p1`、`p2`、`diagnostic` 分组口径。
 
 用例 JSON 的主要字段是：
 
 ```json
 {
-  "id": "radar-p0-delay-001",
-  "prompt": "修复指定领域缺陷并补充必要回归测试",
-  "project_id": "radar_sim_delay_bug_v1",
+  "id": "radar-single-update-delay-001",
+  "prompt": "修复回波延迟方向问题，并同步设计、源码和测试。",
+  "project_id": "project_radar_delay_bug_v1",
   "hard_checkers": [],
   "checkers": [],
-  "max_seconds": 180,
-  "max_tool_calls": 40,
-  "max_total_tokens": 50000,
+  "max_seconds": 720,
+  "max_tool_calls": 60,
+  "max_total_tokens": 70000,
   "metadata": {
-    "suite": "p0",
-    "capability": "echo_simulation",
-    "risk": "high"
+    "suite": "single",
+    "capability": "cross_artifact_update",
+    "operation": "update",
+    "sample_type": "positive",
+    "release_gate": true
   }
 }
 ```
@@ -139,7 +139,7 @@ backend/evals/               # 版本化评测数据
 删除临时工作区，保留 Trace 路径和结果元数据
 ```
 
-实现位置：`backend/app/evals/runner.py`。
+实现位置：`extensions/evals/runner.py`。
 
 隔离执行的关键行为：
 
@@ -215,7 +215,7 @@ temp/evals/
 └── batches.jsonl  # 批次索引
 ```
 
-JSONL 采用追加模式，适合保留运行历史，但目前没有自动去重、版本索引或结果数据库。
+JSONL 用于保留本地运行历史。性能结果列表读取 `results/` 下的 `performance-*.jsonl`；批次合并时会对相同 case 结果去重，并在结果内容完全一致时复用已有性能文件，避免重复创建。
 
 ### 6.2 批次结果
 
@@ -226,13 +226,15 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 - 平均耗时、总 Token、总工具调用数。
 - 当前用例、开始时间和完成时间。
 
-批次完成后追加到：
+真实执行批次完成后追加到：
 
 ```text
 <uml_dir 的父目录>/evals/batches.jsonl
 ```
 
-当前批次管理器是进程内实现：同一进程只允许一个活动批次；服务重启后，已持久化批次可查询，但运行中的任务不能自动恢复。
+当前批次管理器是进程内实现：同一进程只允许一个活动批次；服务重启后，已持久化的真实执行批次可查询，但运行中的任务不能自动恢复。将多个完成批次合并为性能结果时，只生成性能结果文件，不会创建或持久化一个 `merged` 批次。
+
+性能结果和运行批次均支持前端确认删除。删除只作用于本地 JSONL/批次索引数据，不修改代码仓、基线文件或已归档快照。
 
 ### 6.3 快照归档
 
@@ -256,20 +258,26 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 | `POST /api/evals/runs` | 按 suite 或 case IDs 启动批次 |
 | `GET /api/evals/runs` | 查询批次列表 |
 | `GET /api/evals/runs/{batch_id}` | 查询批次进度和明细 |
+| `DELETE /api/evals/runs/{batch_id}` | 删除已完成的本地运行批次 |
+| `POST /api/evals/runs/merge` | 合并同版本完成批次并生成性能结果，不新增运行批次 |
 | `GET /api/evals/trends` | 查询按版本组织的趋势数据 |
+| `GET /api/evals/performance` | 查询本地性能结果列表 |
+| `GET /api/evals/performance/detail` | 查询单个性能结果明细 |
+| `DELETE /api/evals/performance` | 删除本地性能结果 JSONL |
+| `POST /api/evals/performance/archive` | 将性能结果生成归档快照 |
 | `POST /api/evals/archives` | 创建批次快照 |
 | `GET /api/evals/archives` | 查询归档摘要 |
 
 前端 `EvaluationCenter` 已接入工具栏，提供：
 
-1. 选择评测 suite 和版本号。
-2. 一键启动批次。
-3. 每 2 秒轮询批次进度。
-4. 查看当前批次的通过率、平均得分、平均耗时、Token、工具调用和用例明细。
-5. 查看历史批次趋势列表。
-6. 一键创建归档快照。
+1. 选择评测 suite 和版本号并启动批次。
+2. 每 2 秒轮询批次进度。
+3. 在“运行批次”中查看、展开、选择和删除真实执行批次。
+4. 合并同一版本的多个完成批次，生成一条性能结果。
+5. 在“性能结果”中查看、删除、归档和勾选结果进行多版本对比。
+6. 在“已归档”中查看本地归档快照。
 
-当前前端是评测中心 MVP：当前批次、趋势和归档列表均展示总数、完成数、通过数、失败数、超时数、错误数、通过率、平均得分、平均耗时、Token 和工具调用；趋势仍使用列表展示，还没有真正的折线图、版本差异标记、失败用例钻取和 Trace 直达按钮。
+前端标签按递进流程排列为“运行批次 → 性能结果 → 多版本对比 → 已归档”。运行批次和性能结果的删除均要求二次确认；详情请求遇到已删除数据时会自动清理失效选择，避免显示误导性的详情加载错误。
 
 ## 8. 历史运行基线
 
@@ -302,6 +310,24 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 
 后续诊断运行表明，领域参数和 SNR 校验已经可以单独通过；旧版 UML 的 API 流程和拓扑迁移仍是当前挑战能力。当前已将上述汇总转换为本地历史归档：`temp/evals/archives/archive_20260831T000000Z_historical_v3_0_initial.json`。该文件位于运行目录并被 Git 忽略，包含汇总指标但不包含原始逐用例结果，因此可以被前端趋势和归档列表读取，但不能替代完整可复查的正式归档。
 
+### 8.3 当前 16 用例正式基线
+
+2026-09-06 基于当前 `project_radar` 用例目录完成正式基线登记。基线只统计 `understanding`、`single`、`multiturn` 三组 16 个用例，不包含 `trace-3.1`：
+
+| 指标 | 结果 |
+|---|---:|
+| 用例数 | 16 |
+| 通过 | 6 |
+| 失败 | 9 |
+| 超时 | 0 |
+| 错误 | 1 |
+| 平均 Checker 得分 | 0.7756 |
+| 总 Token | 2,904,977 |
+| 工具调用 | 420 |
+| 总耗时 | 1,227.2 s |
+
+基线版本为 `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`，基线指标来源为 `backend/evals/baseline.json`，对应性能结果为 `temp/evals/results/performance-16-20260906-v20260906.jsonl`。基线文件跟随代码仓提交；临时性能结果、Trace 和归档数据仍属于本地评测运行数据。
+
 ## 9. 样本解释规则
 
 评测结果应至少分成三类：
@@ -310,7 +336,7 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 - 负向样本：目标是拒绝危险操作、保护文件、遵守只读约束或在预算耗尽时安全停止。失败通常表示安全性问题。
 - 挑战样本：允许当前模型失败，用于记录能力边界、引导后续改进，不应混入正向发布通过率。
 
-当前用例通过 `suite`、`capability`、`risk` 和部分 `expected_runtime_behavior` 表达这些信息，但尚未有统一的 `sample_type`、`expected_status` 和 `release_gate` 字段。正式上线前应将样本语义从约定升级为结构化字段。
+当前用例通过 `suite`、`capability`、`operation`、`sample_type`、`release_gate` 和部分 `expected_runtime_behavior` 表达这些信息；`trace-3.1` 通过 suite 单独保留为专项回归，不进入 16 用例正式基线。
 
 ## 10. 已完成能力评估
 
@@ -324,7 +350,7 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 - 单用例 Trace、运行结果和 Agent Metrics 关联。
 - CLI 单用例/套件运行入口。
 - API 单用例运行、批次运行、趋势查询和归档。
-- 前端评测中心 MVP 和一键归档。
+- 前端评测中心的运行批次、性能结果、合并、删除和归档闭环。
 - 正向、负向、挑战样本的解释原则已经确定。
 
 ### 尚未完成或仅有 MVP 实现
@@ -334,7 +360,7 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 - hard checker 还没有完全落实为发布门禁语义。
 - 结果 JSONL 没有 schema version、唯一性约束和写入锁。
 - 归档有完整快照写入，但没有归档内容 hash、签名、导出下载和恢复接口。
-- 前端趋势是列表，没有指标折线图、回归标识和失败 Trace 钻取。
+- 运行批次趋势目前仍是列表，没有指标折线图和版本回归标识；结果明细已支持用例查看和 Trace 直达。
 - 失败诊断仍主要依赖 Checker message 和人工查看 Trace，尚未统一生成失败分类。
 - Checker 对领域行为的覆盖仍少于对文件存在性、字符串和 UML 结构的覆盖。
 - 没有稳定的多模型/多温度重复运行策略，随机性和置信区间尚未纳入正式报告。
@@ -355,7 +381,7 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 2. 支持从批次 → 用例 → Checker → Trace 的逐级钻取。
 3. 增加 UML-代码语义一致性、行为输出、边界值和回归测试 Checker，降低对 `file_contains` 的依赖。
 4. 为失败结果生成标准化分类：模型拒答、工具选择错误、参数错误、实现不完整、测试失败、预算耗尽、基础设施错误。
-5. 将 diagnostic 用例和父用例建立显式关联，自动生成“复合失败 → 能力分解”的报告。
+5. 将专项回归用例与正式用例建立显式关联，自动生成“正式能力 → 专项回归”的报告。
 
 ### P2：规模化和长期治理
 
@@ -367,17 +393,19 @@ JSONL 采用追加模式，适合保留运行历史，但目前没有自动去�
 
 ## 12. 推荐运行方式
 
-在项目根目录执行正式基线：
+在项目根目录执行正式基线的三个 suite：
 
 ```powershell
-conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite baseline
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite understanding
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite single
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite multiturn
 ```
 
-执行 P0 或单个诊断用例时：
+执行专项 Trace 用例或单个用例时：
 
 ```powershell
-conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite p0
-conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --ids radar-p1-uml-flow-001
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite trace-3.1
+conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --ids radar-understanding-component-map-001
 ```
 
 实际执行前应确认：

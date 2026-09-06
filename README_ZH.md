@@ -57,17 +57,21 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 评测体系只保留生产链路 **DevAgent**，不再维护 Legacy / ReAct 独立评测方案，避免不同 Agent 路径干扰结果。每个评测用例由受控 JSON 描述，绑定固定项目 fixture 和项目 manifest，在隔离工作区中执行：
 
-- **用例目录**：`backend/evals/cases/`，当前 18 个用例，按 `baseline`、`p0`、`p1`、`p2`、`diagnostic` 和 `trace-3.1` 套件组织。
+- **用例目录**：`backend/evals/cases/`，当前共 18 个用例：`understanding` 4 个、`single` 8 个、`multiturn` 4 个，以及保留的 `trace-3.1` 专项回归用例 2 个。正式基线只包含前 16 个用例。
+- **基线范围**：16 个正式用例覆盖项目理解、单轮读取/创建/更新/删除，以及首轮问候不调用工具的多轮会话；两个 `trace-3.1` 用例仅保留用于专项回归，不纳入基线评分。
 - **执行链路**：`case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`。
 - **确定性检查**：支持 pytest、UML 有效性/结构/方法/时序、文件存在/内容、受保护路径未变更等检查器。
-- **运行边界**：每个用例可配置最大执行时间、Tool Calls 和 Total Tokens；结果保留状态、得分、耗时、模型、Token、工具调用、Trace ID 和检查器明细。
-- **基线快照**：当前基线版本为 `a1122e8`，16 个用例通过 10 个、失败 1 个、超时 5 个，通过率 62.5%，平均得分 66.67%，累计 6,639,458 Tokens、602 次工具调用。完整指标见 `docs/devagent-evaluation-baseline-2026-09-01.md`。
+- **运行边界**：普通用例与生产 DevAgent 对齐，单轮任务预算为 50 步、100 次工具调用、600 秒和 200,000 Tokens。多轮用例每个用户轮次使用新的单次任务预算，累计用量只用于结果汇总。
+- **当前基线快照**：版本为 `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`，16 个用例通过 6 个、失败 9 个、超时 0 个、错误 1 个，平均得分 0.7756，累计 2,904,977 Tokens、420 次工具调用。指标登记在 `backend/evals/baseline.json`。
 - **版本标识**：评测中心自动读取当前 Git 分支和 HEAD commit，使用 `branch@commit` 作为版本；工作区有未提交修改时标记为 `dirty`。
-- **运行与归档**：评测中心支持按套件一键运行、实时查看批次和结果，并将已完成批次或基线快照一键归档到 `temp/evals/archives/`。CLI 可运行全部用例或指定套件：
+- **运行、合并与归档**：评测中心按“运行批次 → 性能结果 → 多版本对比 → 已归档”递进使用。相同版本的多个完成批次可合并为一条性能 JSONL 结果；完全重复的结果会复用已有文件。运行批次和性能结果支持确认后删除，但不会修改基线文件和已归档快照。
+- **CLI**：正式基线应分别运行三个 suite，`trace-3.1` 用于专项回归：
 
   ```bash
-  python -m extensions.evals.cli
-  python -m extensions.evals.cli --suite p0
+  python -m extensions.evals.cli --suite understanding
+  python -m extensions.evals.cli --suite single
+  python -m extensions.evals.cli --suite multiturn
+  python -m extensions.evals.cli --suite trace-3.1
   ```
 
   CLI 在存在失败或超时时返回非零退出码；这表示评测结果未全通过，不代表评测框架启动失败。
@@ -224,7 +228,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 - 对话 Agent 使用 WebSocket：`/api/ws/chat`。
 - API 文档：启动后访问 `http://localhost:8001/api/docs`。
 - 单元测试：`cd backend && python -m pytest -q`。
-- 评测全部 DevAgent 用例：在仓库根目录运行 `python -m extensions.evals.cli`。
+- 评测全部 18 个 DevAgent 用例（包含保留的 Trace 专项回归）：在仓库根目录运行 `python -m extensions.evals.cli`；正式 16 用例基线使用上面的三个 suite 命令分别运行。
 - 前端生产构建：`cd frontend && npm run build`。
 
 评测和运行日志写入 `temp/`，该目录及生成代码、数据库均为运行时产物，不提交到仓库。

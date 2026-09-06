@@ -10,7 +10,7 @@
 
 ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams**, connecting design, code generation, testing, repair, and replay into one traceable workflow. It includes the **DevAgent development assistant**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
-![ArchitectCoder workspace](workSpace.PNG)
+![ArchitectCoder workspace](workSpace_en.PNG)
 
 ## Why ArchitectCoder?
 
@@ -59,17 +59,21 @@ The bottom-right robot button opens the floating chat panel. The production **De
 
 The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
 
-- **Case catalog**: `backend/evals/cases/`, currently 18 cases organized into the `baseline`, `p0`, `p1`, `p2`, `diagnostic`, and `trace-3.1` suites.
+- **Case catalog**: `backend/evals/cases/`, currently 18 cases: 4 `understanding`, 8 `single`, 4 `multiturn`, plus 2 retained `trace-3.1` regression cases. The formal baseline contains only the first 16 cases.
+- **Baseline scope**: the 16-case baseline covers project understanding, single-turn read/create/update/delete tasks, and multi-turn conversations whose greeting turn must not call tools. The two `trace-3.1` cases remain available for regression history but are excluded from baseline scoring.
 - **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
 - **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
-- **Runtime limits**: every case can configure maximum seconds, Tool Calls, and Total Tokens; results retain status, score, duration, model, token/tool usage, Trace ID, and checker details.
-- **Baseline snapshot**: the current baseline is version `a1122e8`: 10 of 16 cases passed, 1 failed, and 5 timed out; pass rate 62.5%, average score 66.67%, with 6,639,458 total tokens and 602 tool calls. Full metrics are recorded in `docs/devagent-evaluation-baseline-2026-09-01.md`.
+- **Runtime limits**: normal cases use the production DevAgent limits: 50 steps, 100 tool calls, 600 seconds, and 200,000 total tokens per single task. Multi-turn cases receive a fresh task budget per user turn; cumulative usage is report-only.
+- **Current baseline snapshot**: version `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`, 6 of 16 cases passed, 9 failed, 0 timed out, and 1 errored; average score 0.7756, with 2,904,977 total tokens and 420 tool calls. Metrics are tracked in `backend/evals/baseline.json`.
 - **Version identity**: the Evaluation Center automatically reads the current Git branch and HEAD commit and uses `branch@commit` as the version. An uncommitted working tree is marked `dirty`.
-- **Run and archive**: the Evaluation Center supports one-click suite runs, live batch/result inspection, and one-click archiving for completed batches or the baseline snapshot under `temp/evals/archives/`. The CLI can run all cases or a selected suite:
+- **Run, merge, and archive**: the Evaluation Center guides users through `运行批次 → 性能结果 → 多版本对比 → 已归档`. Completed same-version batches can be merged into one performance JSONL result; exact duplicate results reuse an existing file. Batch and performance-result entries can be deleted after confirmation; baseline files and archived snapshots are not modified.
+- **CLI**: run the three formal baseline suites separately, or run the retained Trace suite for regression:
 
   ```bash
-  python -m extensions.evals.cli
-  python -m extensions.evals.cli --suite p0
+  python -m extensions.evals.cli --suite understanding
+  python -m extensions.evals.cli --suite single
+  python -m extensions.evals.cli --suite multiturn
+  python -m extensions.evals.cli --suite trace-3.1
   ```
 
   The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
@@ -219,7 +223,7 @@ Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `A
 - The conversational Agent uses WebSocket: `/api/ws/chat`.
 - API docs: open `http://localhost:8001/api/docs` after starting the backend.
 - Unit tests: `cd backend && python -m pytest -q`.
-- Run the full DevAgent evaluation catalog from the repository root: `python -m extensions.evals.cli`.
+- Run the full 18-case DevAgent catalog, including retained Trace regressions: `python -m extensions.evals.cli`. Run the formal 16-case baseline with the three suite commands above.
 - Production frontend build: `cd frontend && npm run build`.
 
 Evaluation and runtime logs are written to `temp/`. Generated code and databases are runtime artifacts and are not committed.
