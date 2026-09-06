@@ -129,6 +129,24 @@ class EvalBatchManager:
                     return None
         return None
 
+    def delete(self, batch_id: str) -> dict[str, str]:
+        batch = self.get(batch_id)
+        if batch is None:
+            raise KeyError(batch_id)
+        if batch.status in {"queued", "running"}:
+            raise ValueError(f"evaluation batch is still running: {batch_id}")
+
+        self._batches.pop(batch_id, None)
+        path = _eval_root() / "batches.jsonl"
+        rows = _read_jsonl(path)
+        remaining = [row for row in rows if row.get("batch_id") != batch_id]
+        if path.is_file():
+            path.write_text(
+                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in remaining),
+                encoding="utf-8",
+            )
+        return {"batch_id": batch_id}
+
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 100))
         current = [batch.model_dump(mode="json") for batch in self._batches.values()]
@@ -217,8 +235,6 @@ class EvalBatchManager:
         merged.summary = summarize(merged.results, len(merged.case_ids))
         performance_path = _write_performance_result(merged)
         merged.performance_result_id = str(performance_path)
-        self._batches[merged.batch_id] = merged
-        self._persist_batch(merged)
         return merged
 
     async def _run(self, batch: EvalBatch, cases: list[Any]) -> None:
@@ -377,12 +393,35 @@ def _write_performance_result(batch: EvalBatch) -> Path:
 
     result_root = _eval_root() / "results"
     result_root.mkdir(parents=True, exist_ok=True)
+
+    desired = {
+        result.case_id: result.model_dump(mode="json")
+        for result in batch.results
+    }
+    from .performance import _load_rows
+
+    for existing_path in sorted(result_root.glob("performance-*.jsonl")):
+        existing = _load_rows(existing_path)
+        actual = {
+            result.case_id: result.model_dump(mode="json")
+            for result in existing
+        }
+        if len(existing) == len(batch.results) and actual == desired:
+            _write_performance_jsonl(existing_path, batch.results)
+            return existing_path
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = result_root / f"performance-merged-{timestamp}-{uuid.uuid4().hex[:8]}.jsonl"
-    with path.open("w", encoding="utf-8") as handle:
-        for result in batch.results:
-            handle.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n")
+    _write_performance_jsonl(path, batch.results)
     return path
+
+
+def _write_performance_jsonl(path: Path, results: list[EvalResult]) -> None:
+    """Write one canonical JSONL performance result."""
+
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            handle.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
 
 _manager: EvalBatchManager | None = None

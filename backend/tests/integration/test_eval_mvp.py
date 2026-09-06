@@ -680,6 +680,12 @@ def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monke
     manager = EvalBatchManager()
     manager._batches[first.batch_id] = first
     manager._batches[duplicate.batch_id] = duplicate
+    existing_path = tmp_path / "results" / "performance-existing.jsonl"
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_path.write_text(
+        json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
     merged = manager.merge(EvalBatchMergeRequest(
         batch_ids=[first.batch_id, duplicate.batch_id],
@@ -689,9 +695,10 @@ def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monke
     assert merged.case_ids == ["case-a"]
     assert merged.source_batch_ids == ["batch-a", "batch-b"]
     performance_path = Path(merged.performance_result_id)
+    assert performance_path == existing_path
     assert performance_path.is_file()
     assert len(performance_path.read_text(encoding="utf-8").splitlines()) == 1
-    assert (tmp_path / "batches.jsonl").is_file()
+    assert not (tmp_path / "batches.jsonl").exists()
 
 
 def test_eval_batch_summary_counts_budget_statuses():

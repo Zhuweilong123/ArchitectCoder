@@ -407,6 +407,11 @@ export async function getEvalBatch(batchId: string): Promise<EvalBatch> {
   return data;
 }
 
+export async function deleteEvalBatch(batchId: string): Promise<{ batch_id: string }> {
+  const { data } = await api.delete(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
+  return data;
+}
+
 export async function mergeEvalBatches(req: {
   batch_ids: string[];
   version?: string;
@@ -440,6 +445,11 @@ export async function listEvalPerformanceResults(limit = 20): Promise<EvalPerfor
 
 export async function getEvalPerformanceResult(resultId: string): Promise<EvalPerformanceRun> {
   const { data } = await api.get('/evals/performance/detail', { params: { result_id: resultId } });
+  return data;
+}
+
+export async function deleteEvalPerformanceResult(resultId: string): Promise<{ result_id: string; path: string }> {
+  const { data } = await api.delete('/evals/performance', { params: { result_id: resultId }, timeout: 15000 });
   return data;
 }
 

@@ -139,6 +139,18 @@ async def get_performance_result(result_id: str):
     return result
 
 
+@router.delete("/performance")
+async def delete_performance_result(result_id: str):
+    try:
+        return load_evals().delete_performance_result(result_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="performance result not found") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.post("/performance/archive")
 async def archive_performance_result(request: EvalPerformanceArchiveRequest):
     try:
@@ -183,6 +195,18 @@ async def get_eval_batch(batch_id: str):
     if batch is None:
         raise HTTPException(status_code=404, detail="evaluation batch not found")
     return batch
+
+
+@router.delete("/runs/{batch_id}")
+async def delete_eval_batch(batch_id: str):
+    try:
+        return load_evals().delete_batch(batch_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="evaluation batch not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/trends")

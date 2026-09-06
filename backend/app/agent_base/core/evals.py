@@ -68,6 +68,8 @@ class EvalProvider(Protocol):
 
     def get_batch(self, batch_id: str) -> Any | None: ...
 
+    def delete_batch(self, batch_id: str) -> dict[str, Any]: ...
+
     def trends(self, limit: int = 20) -> list[dict[str, Any]]: ...
 
     def archive(self, request: Any) -> dict[str, Any]: ...
@@ -79,6 +81,8 @@ class EvalProvider(Protocol):
     def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]: ...
 
     def get_performance_result(self, result_id: str) -> dict[str, Any] | None: ...
+
+    def delete_performance_result(self, result_id: str) -> dict[str, Any]: ...
 
     def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
 
@@ -113,6 +117,9 @@ class NoOpEvalProvider:
     def get_batch(self, batch_id: str) -> Any | None:
         return None
 
+    def delete_batch(self, batch_id: str) -> dict[str, Any]:
+        raise RuntimeError("evaluation provider is disabled")
+
     def trends(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
@@ -130,6 +137,9 @@ class NoOpEvalProvider:
 
     def get_performance_result(self, result_id: str) -> dict[str, Any] | None:
         return None
+
+    def delete_performance_result(self, result_id: str) -> dict[str, Any]:
+        raise RuntimeError("evaluation provider is disabled")
 
     def archive_performance_result(self, request: Any) -> dict[str, Any]:
         raise RuntimeError("evaluation provider is disabled")
