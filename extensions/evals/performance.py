@@ -193,6 +193,17 @@ def get_performance_result(eval_root: Path, result_id: str) -> dict[str, Any] | 
     }
 
 
+def delete_performance_result(eval_root: Path, result_id: str) -> dict[str, str]:
+    """Delete one local performance JSONL result after path validation."""
+
+    resolved = _resolve_result(eval_root, result_id)
+    if resolved is None:
+        raise KeyError(result_id)
+    canonical_id, path = resolved
+    path.unlink()
+    return {"result_id": canonical_id, "path": str(path)}
+
+
 def archive_performance_result(
     eval_root: Path,
     result_id: str,

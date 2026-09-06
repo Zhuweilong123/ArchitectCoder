@@ -51,6 +51,9 @@ class LocalEvalProvider:
     def get_batch(self, batch_id: str):
         return get_batch_manager().get(batch_id)
 
+    def delete_batch(self, batch_id: str):
+        return get_batch_manager().delete(batch_id)
+
     def trends(self, limit: int = 20):
         return get_batch_manager().trends(limit)
 
@@ -74,6 +77,12 @@ class LocalEvalProvider:
         from .performance import get_performance_result
 
         return get_performance_result(_eval_root(), result_id)
+
+    def delete_performance_result(self, result_id: str):
+        from .batches import _eval_root
+        from .performance import delete_performance_result
+
+        return delete_performance_result(_eval_root(), result_id)
 
     def archive_performance_result(self, request):
         from .batches import _eval_root, get_batch_manager

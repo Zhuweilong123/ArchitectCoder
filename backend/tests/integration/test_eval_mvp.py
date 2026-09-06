@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.agents.react_agent import ReActProgress
-from extensions.evals.models import EvalCase, ProjectManifest
+from extensions.evals.models import EvalCase, EvalResult, ProjectManifest
 from extensions.evals.checkers import build_checkers
 from extensions.evals.fixture_materializer import materialize_fixture
 from extensions.evals.projects import load_projects, resolve_fixture
@@ -22,7 +22,8 @@ from extensions.evals.runner import (
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
-from extensions.evals.batches import EvalArchiveRequest, EvalBatch, EvalBatchManager, summarize
+from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
+from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize
 from app.api.evals import BASELINE_PATH, get_baseline, get_repository
 
 
@@ -653,6 +654,51 @@ def test_eval_batch_summary_aggregates_runtime_metrics():
     assert summary.average_score == 0.5
     assert summary.total_tokens == 60
     assert summary.total_tool_calls == 7
+
+
+def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    result = EvalResult(
+        run_id="run-1",
+        case_id="case-a",
+        status="passed",
+        passed=True,
+        score=1.0,
+        started_at="2026-09-06T00:00:00+00:00",
+    )
+    first = EvalBatch(
+        batch_id="batch-a",
+        version="dev-test",
+        case_ids=["case-a"],
+        status="completed",
+        started_at="2026-09-06T00:00:00+00:00",
+        finished_at="2026-09-06T00:01:00+00:00",
+        results=[result],
+    )
+    duplicate = first.model_copy(deep=True)
+    duplicate.batch_id = "batch-b"
+    manager = EvalBatchManager()
+    manager._batches[first.batch_id] = first
+    manager._batches[duplicate.batch_id] = duplicate
+    existing_path = tmp_path / "results" / "performance-existing.jsonl"
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_path.write_text(
+        json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    merged = manager.merge(EvalBatchMergeRequest(
+        batch_ids=[first.batch_id, duplicate.batch_id],
+        version="dev-test",
+    ))
+
+    assert merged.case_ids == ["case-a"]
+    assert merged.source_batch_ids == ["batch-a", "batch-b"]
+    performance_path = Path(merged.performance_result_id)
+    assert performance_path == existing_path
+    assert performance_path.is_file()
+    assert len(performance_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert not (tmp_path / "batches.jsonl").exists()
 
 
 def test_eval_batch_summary_counts_budget_statuses():

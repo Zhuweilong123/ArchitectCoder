@@ -186,14 +186,19 @@ GET /api/metrics
 
 ### 5.6 评测 MVP
 
-3.0 基线新增 `app/evals/` 评测能力，提供受保护的评测接口：
+3.0 基线新增 `extensions/evals/` 评测 Provider 和 `backend/app/api/evals.py` API，提供受保护的评测接口：
 
 - `GET /api/evals/cases`：列出 `backend/evals/cases/*.json` 中的评测用例。
 - `POST /api/evals/run`：按 `case_id` 在临时工作区执行 Agent，并持久化结果。
 - `GET /api/evals/results`：读取最近的 JSONL 评测结果。
 - `POST /api/evals/runs`：按 suite 或 case_ids 异步启动评测批次。
+- `GET /api/evals/runs`：读取运行批次列表。
 - `GET /api/evals/runs/{batch_id}`：查询批次进度、用例明细和当前指标。
+- `DELETE /api/evals/runs/{batch_id}`：删除已完成的本地运行批次。
+- `POST /api/evals/runs/merge`：合并同版本批次并生成性能结果，不新增 `merged` 运行批次。
 - `GET /api/evals/trends`：读取按版本记录的批次趋势。
+- `GET/DELETE /api/evals/performance`：查询或删除本地性能结果。
+- `GET /api/evals/performance/detail`、`POST /api/evals/performance/archive`：查看或归档性能结果。
 - `POST /api/evals/archives`、`GET /api/evals/archives`：创建和查询评测快照归档。
 
 每个用例可声明 fixture、最大时长、工具调用数、token 预算以及以下确定性检查器：
@@ -205,13 +210,15 @@ GET /api/metrics
 
 评测项目基于 `project/src` 冻结为 `radar_sim_v1`，包含四个雷达信号处理组件、六张 UML 图和 37 个原始测试。根目录的旧版 `radar_design_0730.umlproj` 单独作为 UML 迁移 fixture，不与当前基线混用。
 
-首批用例位于 `backend/evals/cases/`，当前共 18 个：2 个 baseline、4 个 P0、3 个 P1、3 个 P2、4 个 diagnostic，以及 2 个 `trace-3.1` 对话评测用例。fixture 位于 `backend/evals/fixtures/`，项目清单位于 `backend/evals/projects/`。每个项目固定为同级的 `design/`、`src/`、`test/` 三类资源，分别表示设计、源码和测试。P0 fixture 包含延迟方向、PRT 补零和非有限参数三个可复现缺陷；P1 fixture 包含噪声 seed 可复现性契约，用于验证 Agent 是否真正完成修复。
+评测用例位于 `backend/evals/cases/`，当前共 18 个：`understanding` 4 个、`single` 8 个、`multiturn` 4 个，以及保留但不纳入基线的 `trace-3.1` 2 个。正式基线只统计前三组共 16 个用例。fixture 位于 `backend/evals/fixtures/`，项目清单位于 `backend/evals/projects/`。每个项目固定为同级的 `design/`、`src/`、`test/` 三类资源，分别表示设计、源码和测试；用例覆盖项目理解、单轮增删查改、源码/测试联动，以及首轮问候不调用工具的多轮会话。
 
 UML 检查器已支持项目有效性、组件/类/方法存在性、关系存在性和时序消息顺序；`paths_unchanged` 用于验证只读任务和受保护文件不被修改。
 
 ### 5.8 首轮真实模型结果
 
-2026-08-31 使用 `backend/.env` 配置的 `deepseek-v4-flash` 顺序运行全部 12 个用例：9 个通过、2 个失败、1 个按预算超时，平均 Checker 得分 0.822。完成用例耗时约 18.1 分钟，工具调用 460 次；从 Trace 中汇总的 LLM token 约 3,565,346。
+本节保留 2026-08-31 旧 12 用例口径的历史结果，不作为当前正式基线。
+
+2026-08-31 使用 `backend/.env` 配置的 `deepseek-v4-flash` 顺序运行旧的 12 个用例：9 个通过、2 个失败、1 个按预算超时，平均 Checker 得分 0.822。完成用例耗时约 18.1 分钟，工具调用 460 次；从 Trace 中汇总的 LLM token 约 3,565,346。
 
 失败项：`radar-p0-validation-001` 仅完成部分非有限参数校验；`radar-p1-uml-stale-001` 未补齐旧 UML 的目标类、方法和时序消息。`radar-p2-budget-001` 按预期在 5 秒预算耗尽后停止。
 
@@ -219,7 +226,9 @@ UML 检查器已支持项目有效性、组件/类/方法存在性、关系存�
 
 前端已增加“评测中心”入口，形成“选择 suite/版本 → 一键启动 → 轮询进度 → 查看指标和用例明细 → 一键归档”的闭环。当前指标包括通过率、平均得分、平均耗时、Token、工具调用次数，并保留每个用例的状态、模型和 Trace ID。
 
-批次汇总持久化到 `temp/evals/batches.jsonl`，快照持久化到 `temp/evals/archives/archive_*.json`。归档记录包含版本、评测集、批次结果、Checker 明细和运行元数据；Trace 仍通过原有 Trace API 按 `trace_id` 查询。
+真实运行批次汇总持久化到 `temp/evals/batches.jsonl`，性能结果写入 `temp/evals/results/performance-*.jsonl`，快照写入 `temp/evals/archives/archive_*.json`。多个完成批次合并时只生成性能结果，不写入合成 `merged` 批次；内容完全一致的性能结果会复用已有文件。前端标签顺序为“运行批次 → 性能结果 → 多版本对比 → 已归档”，运行批次和性能结果支持确认后删除；删除不影响代码仓、基线文件和归档快照。
+
+2026-09-06 当前 16 用例基线为 6/16 通过、平均 Checker 得分 0.7756，总 Token 2,904,977，工具调用 420，版本为 `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`。基线指标登记在 `backend/evals/baseline.json`。
 
 评测结果按用途区分为正向样本、负向样本和挑战样本：负向样本用于验证拒绝、保护和预算边界；挑战样本允许当前模型失败，用于记录能力边界，不应与正向样本混合计算发布通过率。
 
@@ -231,7 +240,7 @@ UML 检查器已支持项目有效性、组件/类/方法存在性、关系存�
 | `AGENT_MAX_TOOL_CALLS` | `100` | 单次 run 最大工具调用数 |
 | `AGENT_MAX_REPEATED_TOOL_CALLS` | `3` | 相同工具参数最大重复次数 |
 | `AGENT_MAX_RUN_SECONDS` | `600` | 单次 run 墙上时间预算 |
-| `AGENT_MAX_TOTAL_TOKENS` | `100000` | 单次 run token 预算 |
+| `AGENT_MAX_TOTAL_TOKENS` | `200000` | 生产 DevAgent 单次任务 token 预算；评测同步使用 |
 | `AGENT_LLM_TIMEOUT_SECONDS` | `120` | 单次 LLM 调用超时 |
 | `WORKSPACE_ROOTS` | 空 | 外部工作区白名单，逗号分隔 |
 | `STRICT_PRODUCTION` | `false` | 生产安全配置强校验 |

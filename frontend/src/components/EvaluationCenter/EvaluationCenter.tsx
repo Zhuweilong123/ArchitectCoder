@@ -4,12 +4,12 @@ import {
   Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, message,
 } from 'antd';
 import {
-  EyeOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
+  DeleteOutlined, EyeOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import {
-  archiveEvalBaseline, archiveEvalBatch, getEvalBatch, listEvalArchives, listEvalCases,
-  getEvalBaseline, listEvalTrends, startEvalBatch,
+  archiveEvalBaseline, archiveEvalBatch, deleteEvalBatch, deleteEvalPerformanceResult, getEvalBatch, listEvalArchives, listEvalCases,
+  getEvalBaseline, listEvalTrends, mergeEvalBatches, startEvalBatch,
   getEvalRepository,
   archiveEvalPerformanceResult, getEvalPerformanceResult, listEvalPerformanceResults,
   type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalPerformanceRun,
@@ -70,6 +70,7 @@ const EvaluationCenter: React.FC = () => {
   const [performanceRuns, setPerformanceRuns] = useState<EvalPerformanceRun[]>([]);
   const [performanceLoading, setPerformanceLoading] = useState(false);
   const [performanceArchiving, setPerformanceArchiving] = useState(false);
+  const [deletingPerformanceId, setDeletingPerformanceId] = useState<string | null>(null);
   const [selectedPerformance, setSelectedPerformance] = useState<EvalPerformanceRun | null>(null);
   const [performanceVersion, setPerformanceVersion] = useState('');
   const [performanceQuery, setPerformanceQuery] = useState('');
@@ -79,6 +80,9 @@ const EvaluationCenter: React.FC = () => {
   const [resultStatus, setResultStatus] = useState<'all' | 'passed' | 'failed' | 'timeout'>('all');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [selectedTrendBatch, setSelectedTrendBatch] = useState<EvalBatch | null>(null);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [mergingRuns, setMergingRuns] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [trendLoading, setTrendLoading] = useState(false);
   const [archiveQuery, setArchiveQuery] = useState('');
   const [activeTab, setActiveTab] = useState<EvaluationTab>('overview');
@@ -182,6 +186,13 @@ const EvaluationCenter: React.FC = () => {
     [comparisonIds, performanceRuns],
   );
 
+  const selectedRuns = useMemo(
+    () => trends.filter((item) => selectedRunIds.includes(item.batch_id)),
+    [selectedRunIds, trends],
+  );
+  const selectedRunVersionsMatch = selectedRuns.length > 0
+    && selectedRuns.every((item) => item.version === selectedRuns[0].version);
+
   useEffect(() => {
     setSelectedSuites((current) => current.length > 0
       ? current.filter((value) => suites.includes(value))
@@ -243,6 +254,13 @@ const EvaluationCenter: React.FC = () => {
       setSelectedPerformance(detail);
       setPerformanceVersion(detail.version);
     } catch (error: any) {
+      if (error?.response?.status === 404) {
+        setSelectedPerformance(null);
+        setComparisonIds((current) => current.filter((id) => id !== run.result_id));
+        setPerformanceRuns(await listEvalPerformanceResults());
+        message.info('该性能结果已被删除，列表已刷新');
+        return;
+      }
       message.error(`性能结果详情加载失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
       setPerformanceLoading(false);
@@ -276,6 +294,45 @@ const EvaluationCenter: React.FC = () => {
       message.error(`性能评测归档失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
       setPerformanceArchiving(false);
+    }
+  };
+
+  const deletePerformance = async (run: EvalPerformanceRun) => {
+    setDeletingPerformanceId(run.result_id);
+    try {
+      await deleteEvalPerformanceResult(run.result_id);
+      if (selectedPerformance?.result_id === run.result_id) {
+        setSelectedPerformance(null);
+        setSelectedCaseId(null);
+      }
+      await refresh();
+      message.success('性能结果本地数据已删除');
+    } catch (error: any) {
+      message.error(`删除性能结果失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setDeletingPerformanceId(null);
+    }
+  };
+
+  const deleteRun = async (item: EvalTrend) => {
+    setDeletingRunId(item.batch_id);
+    try {
+      await deleteEvalBatch(item.batch_id);
+      setSelectedRunIds((current) => current.filter((id) => id !== item.batch_id));
+      if (selectedTrendBatch?.batch_id === item.batch_id) {
+        setSelectedTrendBatch(null);
+        setSelectedCaseId(null);
+      }
+      if (batch?.batch_id === item.batch_id) {
+        setBatch(null);
+        window.localStorage.removeItem(ACTIVE_BATCH_STORAGE_KEY);
+      }
+      await refresh();
+      message.success('运行批次本地数据已删除');
+    } catch (error: any) {
+      message.error(`删除运行批次失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setDeletingRunId(null);
     }
   };
 
@@ -450,7 +507,30 @@ const EvaluationCenter: React.FC = () => {
     { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
     { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
     { title: '归档', key: 'archived', render: (_: unknown, row: EvalPerformanceRun) => row.archived ? <Tag color="success">已归档</Tag> : <Tag>未归档</Tag> },
-    { title: '操作', key: 'action', width: 90, render: (_: unknown, row: EvalPerformanceRun) => <Button size="small" onClick={(event) => { event.stopPropagation(); selectPerformance(row); }}>查看</Button> },
+      { title: '操作', key: 'action', width: 170, render: (_: unknown, row: EvalPerformanceRun) => (
+        <Space>
+          <Button size="small" onClick={(event) => { event.stopPropagation(); selectPerformance(row); }}>查看</Button>
+          <Popconfirm
+            title="删除本地性能结果？"
+            description="将删除本地性能 JSONL 数据，已归档快照不受影响。"
+            okText="确认删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => deletePerformance(row)}
+          >
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              loading={deletingPerformanceId === row.result_id}
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ) },
   ];
 
   const renderFailureDetail = () => selectedCase ? (
@@ -469,7 +549,7 @@ const EvaluationCenter: React.FC = () => {
     <>
       <Alert type="info" showIcon message="先查看独立 performance JSONL 结果，再由你决定是否生成正式归档快照。" description="原始结果不会被覆盖；归档后会出现在‘已归档’页签，并按评测执行时间倒序展示。" style={{ marginBottom: 12 }} />
       <Space wrap className="evaluation-filter-row"><Input.Search allowClear value={performanceQuery} onChange={(event) => setPerformanceQuery(event.target.value)} placeholder="搜索版本、结果文件、评测集" style={{ width: 280 }} /><Select value={performanceArchiveFilter} onChange={setPerformanceArchiveFilter} style={{ width: 130 }} options={[{ value: 'all', label: '全部结果' }, { value: 'pending', label: '待归档' }, { value: 'archived', label: '已归档' }]} /><Text type="secondary">已加载 {filteredPerformanceRuns.length} / {performanceRuns.length} 个结果</Text></Space>
-      <Table size="small" rowKey="result_id" loading={performanceLoading} dataSource={filteredPerformanceRuns} pagination={{ pageSize: 6 }} rowSelection={{ selectedRowKeys: comparisonIds, onChange: (keys) => setComparisonIds(keys as string[]) }} rowClassName={(row) => selectedPerformance?.result_id === row.result_id ? 'evaluation-selected-row' : ''} onRow={(row) => ({ onClick: () => selectPerformance(row) })} columns={performanceColumns} />
+      <Table size="small" rowKey="result_id" loading={performanceLoading} dataSource={filteredPerformanceRuns} pagination={{ pageSize: 6 }} rowSelection={{ selectedRowKeys: comparisonIds, onChange: (keys) => setComparisonIds(keys as string[]) }} rowClassName={(row) => selectedPerformance?.result_id === row.result_id ? 'evaluation-selected-row' : ''} onRow={(row) => ({ onClick: (event) => { const target = event.target as HTMLElement; if (target.closest('button, a, [role="button"]')) return; selectPerformance(row); } })} columns={performanceColumns} />
       {selectedPerformance && (
         <Card size="small" title={<Space>{selectedPerformance.version || selectedPerformance.file_name}{selectedPerformance.archived ? <Tag color="success">已归档</Tag> : <Tag>待归档</Tag>}</Space>} style={{ marginTop: 12 }} extra={!selectedPerformance.archived ? (
           <Popconfirm title="确认归档这份性能结果？" description={`版本：${performanceVersion || '未填写'}，用例数：${selectedPerformance.summary.total}`} okText="确认归档" cancelText="取消" onConfirm={archivePerformance}><Button type="primary" icon={<FileDoneOutlined />} loading={performanceArchiving}>确认归档</Button></Popconfirm>
@@ -516,27 +596,105 @@ const EvaluationCenter: React.FC = () => {
   );
 
   const openTrend = async (item: EvalTrend) => {
+    if (selectedTrendBatch?.batch_id === item.batch_id) {
+      setSelectedTrendBatch(null);
+      setSelectedCaseId(null);
+      return;
+    }
     setTrendLoading(true);
     setSelectedCaseId(null);
     try {
       setSelectedTrendBatch(await getEvalBatch(item.batch_id));
     } catch (error: any) {
+      if (error?.response?.status === 404) {
+        setSelectedTrendBatch(null);
+        setSelectedRunIds((current) => current.filter((id) => id !== item.batch_id));
+        setTrends((current) => current.filter((trend) => trend.batch_id !== item.batch_id));
+        message.info('该运行批次已被删除，列表已刷新');
+        return;
+      }
       message.error(`历史批次详情加载失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
       setTrendLoading(false);
     }
   };
 
+  const mergeSelectedRuns = async () => {
+    if (selectedRuns.length < 2) return;
+    setMergingRuns(true);
+    try {
+      const version = selectedRuns[0].version || repository?.version || 'working-tree';
+      const merged = await mergeEvalBatches({
+        batch_ids: selectedRuns.map((item) => item.batch_id),
+        version,
+        label: `${version} merged performance`,
+      });
+      setSelectedRunIds([]);
+      message.success(`已合并 ${merged.results.length} 个用例，并登记为性能结果`);
+      await refresh();
+      setActiveTab('performance');
+    } catch (error: any) {
+      message.error(`批次合并失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setMergingRuns(false);
+    }
+  };
+
   const renderRunsWithDetails = () => trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (
-    <List size="small" dataSource={trends} renderItem={(item) => (
+    <>
+      <Space wrap className="evaluation-filter-row">
+        <Text type="secondary">已选 {selectedRuns.length} 个运行批次</Text>
+        <Button
+          type="primary"
+          disabled={selectedRuns.length < 2 || !selectedRunVersionsMatch || selectedRuns.some((item) => item.status !== 'completed')}
+          loading={mergingRuns}
+          onClick={mergeSelectedRuns}
+        >
+          合并为性能结果
+        </Button>
+      </Space>
+      <List size="small" dataSource={trends} renderItem={(item) => (
       <React.Fragment key={item.batch_id}>
         <List.Item
           className="evaluation-trend-item"
-          actions={[<Button type="link" loading={trendLoading && selectedTrendBatch?.batch_id === item.batch_id} onClick={(event) => { event.stopPropagation(); openTrend(item); }}>查看详情</Button>]}
-          onClick={() => openTrend(item)}
+          actions={[
+            <Button type="link" loading={trendLoading && selectedTrendBatch?.batch_id === item.batch_id} onClick={(event) => { event.stopPropagation(); openTrend(item); }}>{selectedTrendBatch?.batch_id === item.batch_id ? '收起详情' : '查看详情'}</Button>,
+            <Popconfirm
+              title="删除本地运行批次？"
+              description="将删除本地批次记录及其运行数据，不会修改代码仓或基线文件。"
+              okText="确认删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => deleteRun(item)}
+            >
+              <Button
+                type="link"
+                danger
+                icon={<DeleteOutlined />}
+                disabled={item.status === 'running' || item.status === 'queued'}
+                loading={deletingRunId === item.batch_id}
+                onClick={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                删除
+              </Button>
+            </Popconfirm>,
+          ]}
+          onClick={(event) => { const target = event.target as HTMLElement; if (target.closest('button, a, input, label, [role="button"]')) return; openTrend(item); }}
         >
+          <div className="evaluation-run-main">
+          <Checkbox
+            checked={selectedRunIds.includes(item.batch_id)}
+            disabled={item.status !== 'completed'}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => setSelectedRunIds((current) => event.target.checked
+              ? [...current, item.batch_id]
+              : current.filter((id) => id !== item.batch_id))}
+            style={{ marginRight: 12 }}
+          />
           <List.Item.Meta title={<Space>{item.version}{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>} description={fmtTime(item.started_at)} />
           <Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space>
+          </div>
         </List.Item>
         {selectedTrendBatch?.batch_id === item.batch_id ? (
           <List.Item>
@@ -547,7 +705,8 @@ const EvaluationCenter: React.FC = () => {
           </List.Item>
         ) : null}
       </React.Fragment>
-    )} />
+      )} />
+    </>
   );
 
   const renderArchives = () => (
@@ -610,9 +769,9 @@ const EvaluationCenter: React.FC = () => {
       </Card>
       <Tabs activeKey={activeTab} onChange={(key) => setActiveTab(key as EvaluationTab)} items={[
         { key: 'overview', label: '概览与当前批次', children: <>{renderBaseline()}<Divider orientation="left">当前批次</Divider>{renderBatch()}</> },
+        { key: 'runs', label: '运行批次', children: renderRunsWithDetails() },
         { key: 'performance', label: `性能结果 (${performanceRuns.length})`, children: renderPerformance() },
         { key: 'comparison', label: `多版本对比${comparisonRuns.length ? ` (${comparisonRuns.length})` : ''}`, children: renderComparison() },
-        { key: 'runs', label: '版本趋势', children: renderRunsWithDetails() },
         { key: 'archives', label: `已归档 (${archives.length})`, children: renderArchives() },
       ]} />
     </Modal>

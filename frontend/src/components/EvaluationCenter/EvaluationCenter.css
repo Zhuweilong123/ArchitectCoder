@@ -7,6 +7,11 @@
 .evaluation-stat-row .ant-statistic { padding: 10px 12px; border: 1px solid #f0f0f0; border-radius: 6px; background: #fff; }
 .evaluation-trend-values { color: #595959; font-size: 12px; }
 .evaluation-trend-item { cursor: pointer; }
+.evaluation-run-main { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 12px; }
+.evaluation-run-main .ant-list-item-meta { flex: 1 1 360px; min-width: 300px; }
+.evaluation-run-main .ant-list-item-meta-title { overflow-wrap: anywhere; }
+.evaluation-run-main .evaluation-trend-values { flex: 0 1 auto; justify-content: flex-end; flex-wrap: wrap; white-space: nowrap; }
+.evaluation-trend-item .ant-list-item-action { flex: 0 0 auto; margin-inline-start: 12px; }
 .evaluation-filter-row { margin: 0 0 12px; }
 .evaluation-case-detail { margin-top: 12px; background: #fafafa; }
 .evaluation-checker-list { margin: 10px 0 12px; }
