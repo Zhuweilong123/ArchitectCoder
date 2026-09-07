@@ -19,6 +19,7 @@ from extensions.evals.models import (
     ProjectManifest,
 )
 from extensions.evals.checkers import build_checkers
+from extensions.evals.checkers import TracePolicyChecker
 from extensions.evals.fixture_materializer import materialize_fixture
 from extensions.evals.projects import load_projects, resolve_fixture
 from extensions.evals.registry import EvalCatalogError, load_cases
@@ -660,6 +661,51 @@ def test_eval_case_rejects_contract_drift():
             prompt="inspect",
             hard_checkers=[{"type": "file_contains", "path": "result.txt"}],
         )
+
+
+def test_trace_policy_accepts_successful_program_test_as_run_task_equivalent(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps({"event_type": "tool_call", "tool_name": "run_program"})
+        + "\n"
+        + json.dumps({
+            "event_type": "tool_result",
+            "tool_name": "run_program",
+            "evidence": {
+                "effects": {
+                    "verification": {"kind": "test", "passed": True, "exit_code": 0},
+                },
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(TracePolicyChecker(
+        trace_path=str(trace_path),
+        runtime={"turn_tool_calls": 1, "turn_tool_names": ["run_program"]},
+        required_tools=["run_task"],
+    ).check(tmp_path))
+
+    assert result.passed is True
+    assert result.details["verification_equivalent"] is True
+
+
+def test_trace_policy_does_not_accept_arbitrary_program_for_run_task(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps({"event_type": "tool_call", "tool_name": "run_program"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(TracePolicyChecker(
+        trace_path=str(trace_path),
+        runtime={"turn_tool_calls": 1, "turn_tool_names": ["run_program"]},
+        required_tools=["run_task"],
+    ).check(tmp_path))
+
+    assert result.passed is False
+    assert result.details["missing"] == ["run_task"]
 
 
 def test_eval_catalog_fails_closed_for_invalid_case(tmp_path, monkeypatch):

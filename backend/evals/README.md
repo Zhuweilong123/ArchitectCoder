@@ -58,6 +58,12 @@ Criterion roles are intentionally separate:
   not turn a hard-gate pass into a failure.
 - A legacy/local case with no hard criteria keeps the old all-checkers pass rule.
 
+Trace policies check semantic evidence for verification tasks. A `run_task`
+call satisfies a project-test requirement directly; a `run_program` call is an
+equivalent only when its trace contains structured, successful test-verification
+evidence. This prevents tool-name mismatches from masking a passing test while
+still rejecting arbitrary program execution as test evidence.
+
 Every checker result records its criterion role and scope. Every run records a
 machine-readable `failure_category`: `agent_failure`, `tool_failure`,
 `environment_failure`, `checker_failure`, `timeout`, or `budget_exceeded` (and

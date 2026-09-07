@@ -235,6 +235,30 @@ class TracePolicyChecker(Checker):
         self.required_tools = [str(item) for item in (required_tools or [])]
         self.forbidden_tools = [str(item) for item in (forbidden_tools or [])]
 
+    @staticmethod
+    def _has_successful_test_verification(events: list[dict[str, Any]]) -> bool:
+        """Return whether the trace contains structured, successful test evidence.
+
+        ``run_task`` emits this evidence directly.  ``run_program`` can emit
+        the same evidence when it invokes an allowlisted test command, so the
+        checker evaluates the execution semantics instead of treating the
+        tool name as the capability itself.
+        """
+        for event in events:
+            if event.get("event_type") != "tool_result":
+                continue
+            evidence = event.get("evidence")
+            effects = evidence.get("effects") if isinstance(evidence, dict) else None
+            verification = effects.get("verification") if isinstance(effects, dict) else None
+            if (
+                isinstance(verification, dict)
+                and verification.get("kind") == "test"
+                and verification.get("passed") is True
+                and verification.get("exit_code") == 0
+            ):
+                return True
+        return False
+
     async def check(self, workspace: Path) -> CheckerResult:
         events: list[dict[str, Any]] = []
         try:
@@ -269,10 +293,28 @@ class TracePolicyChecker(Checker):
             canonical_forbidden = [aliases.get(tool, tool) for tool in self.forbidden_tools]
             missing = [tool for tool in self.required_tools if aliases.get(tool, tool) not in canonical_tools]
             forbidden = [tool for tool in self.forbidden_tools if aliases.get(tool, tool) in canonical_tools]
+            verification_equivalent = False
+            if (
+                "run_task" in canonical_required
+                and "run_task" in missing
+                and "run_program" in canonical_tools
+                and self._has_successful_test_verification(events)
+            ):
+                # A direct program invocation is equivalent for this policy
+                # only when the trace proves that it performed a successful
+                # test verification.  This keeps arbitrary run_program calls
+                # from satisfying a project-test requirement.
+                missing.remove("run_task")
+                verification_equivalent = True
             passed = not missing and not forbidden
             return CheckerResult(
                 checker=self.name, passed=passed, score=1.0 if passed else 0.0,
-                message="trace policy satisfied" if passed else f"missing={missing}, forbidden={forbidden}",
+                message=(
+                    "trace policy satisfied"
+                    + (" (successful test verification equivalent to run_task)" if verification_equivalent else "")
+                    if passed
+                    else f"missing={missing}, forbidden={forbidden}"
+                ),
                 details={
                     "tool_calls": observed_calls,
                     "tools": scoped_tools,
@@ -281,6 +323,7 @@ class TracePolicyChecker(Checker):
                     "forbidden_tools": canonical_forbidden,
                     "missing": missing,
                     "forbidden": forbidden,
+                    "verification_equivalent": verification_equivalent,
                 },
             )
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
