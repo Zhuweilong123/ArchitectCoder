@@ -73,6 +73,11 @@ export interface AgentDoneEvent {
   event: 'done';
   result: string;
   history?: string[];
+  checkpoint?: {
+    status?: string;
+    completed_items?: string[];
+    pending_items?: string[];
+  };
 }
 
 export interface AgentStoppedEvent {
