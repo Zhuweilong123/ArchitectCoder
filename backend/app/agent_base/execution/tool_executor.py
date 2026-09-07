@@ -123,15 +123,10 @@ class ToolExecutor:
         tool = self.tools.get(name)
         if tool is not None:
             try:
-                result = tool.run(parameters)
+                result = getattr(tool, "run_result", tool.run)(parameters)
                 if inspect.isawaitable(result):
                     result = await result
-                if isinstance(result, ToolResult):
-                    return result
-                text = str(result)
-                if text.lstrip().lower().startswith(("error:", "鉂?")):
-                    return ToolResult.error(text, "TOOL_REPORTED_ERROR")
-                return ToolResult.success(result)
+                return ToolResult.from_value(result)
             except Exception as exc:
                 return ToolResult.error(
                     f"鉂?宸ュ叿 '{name}' 鎵ц澶辫触: {exc}",

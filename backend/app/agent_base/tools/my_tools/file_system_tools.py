@@ -264,6 +264,9 @@ class WriteFileTool(AsyncTool):
         self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict):
         path = params.get("path", "")
         content = params.get("content", "")
         try:
@@ -284,7 +287,14 @@ class WriteFileTool(AsyncTool):
                 self._change_set.record(str(fp), before_exists, current, content)
         except Exception as e:
             return f"Error: {e}"
-        return f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})"
+        from app.agent_base.tools.result import ToolResult, FileChange
+        result = ToolResult.success(f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})")
+        if not before_exists or current != content:
+            result.changes.append(FileChange(
+                str(fp), "replace" if before_exists else "create",
+                _sha256_text(current) if before_exists else "", _sha256_text(content),
+            ))
+        return result
 
     def to_openai_schema(self) -> dict:
         return {
@@ -322,6 +332,9 @@ class EditFileTool(AsyncTool):
         self._change_set = change_set
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict):
         path = params.get("path", "")
         old_text = params.get("old_text", "")
         new_text = params.get("new_text", "")
@@ -350,7 +363,11 @@ class EditFileTool(AsyncTool):
             return f"Error: {e}"
         if self._change_set is not None:
             self._change_set.record(str(fp), True, text, updated)
-        return f"Edited {path} (sha256={_sha256_text(updated)})"
+        from app.agent_base.tools.result import ToolResult, FileChange
+        result = ToolResult.success(f"Edited {path} (sha256={_sha256_text(updated)})")
+        if text != updated:
+            result.changes.append(FileChange(str(fp), "replace", actual, _sha256_text(updated)))
+        return result
 
     def to_openai_schema(self) -> dict:
         return {
@@ -461,6 +478,9 @@ class BashTool(AsyncTool):
         )
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict):
         command = params.get("command", "")
         if not isinstance(command, str) or not command.strip():
             return "Error: command must be a non-empty string"
@@ -675,8 +695,9 @@ class BashTool(AsyncTool):
         out = (_decode_output(stdout) + _decode_output(stderr)).strip()
         out = out[:self._output_cap] if len(out) > self._output_cap else out
         if proc.returncode:
-            return f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
-        return out or "(no output)"
+            out = f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
+        from app.agent_base.tools.result import command_result
+        return command_result(command, cwd, proc.returncode, out or "(no output)")
 
     def to_openai_schema(self) -> dict:
         return {

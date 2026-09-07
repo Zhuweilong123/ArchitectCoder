@@ -30,6 +30,8 @@ from app.agent_base.core.orchestration import (
     load_orchestrator,
 )
 from app.agent_base.execution_summary import build_task_execution_summary
+from app.agent_base.evidence import update_checkpoint_evidence
+from app.agent_base.outcome import RunOutcome
 from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 from app.services.audit_log import get_audit_logger
@@ -46,7 +48,6 @@ logger = logging.getLogger(__name__)
 _TASK_BIND_TIMEOUT_SECONDS = 5.0
 _REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
 
-
 def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
     try:
         get_audit_logger().record(
@@ -54,7 +55,6 @@ def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -
         )
     except Exception:
         logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
-
 
 def _todo_progress_state() -> dict:
     runtime = get_runtime()
@@ -74,7 +74,6 @@ def _todo_progress_state() -> dict:
         "planning_mode": runtime.requires_acceptance_todos,
         "strategy_advised": runtime.strategy_subagent_used,
     }
-
 
 def _persist_run_checkpoint(
     run_id: str,
@@ -97,39 +96,30 @@ def _persist_run_checkpoint(
     except RunStateError:
         logger.warning("[RunState] Could not persist checkpoint for run %s", run_id, exc_info=True)
 
-
 def _should_archive_task_memory(
-    checkpoint_status: str, tool_calls_detail: list[dict],
+    checkpoint_status: str, tool_calls_detail: list[dict], checkpoint: dict | None = None,
 ) -> bool:
-    mutating_tools = {"write_file", "edit_file"}
     return bool(
         checkpoint_status == "completed"
-        and any(
-            detail.get("name") in mutating_tools
+        and ((checkpoint or {}).get("mutation_evidence") or any(
+            detail.get("changes")
             and detail.get("status") in {"success", "completed"}
             for detail in tool_calls_detail
             if isinstance(detail, dict)
-        )
+        ))
     )
 
-
 def _terminal_checkpoint_status(
-    final_answer: str, todos: list[dict],
+    outcome: RunOutcome | None, todos: list[dict],
 ) -> tuple[str, str | None]:
-    answer = (final_answer or "").lower()
-    if "token 预算" in answer:
-        return "budget_exceeded", "token budget exceeded"
-    if "时间预算" in answer or "llm 调用超过时间" in answer:
-        return "timed_out", "time budget exceeded"
-    if "task is not complete" in answer:
-        return "partial", "required task plan is incomplete"
+    if outcome is not None and outcome.status != "completed":
+        return outcome.status, outcome.stop_reason
     if any(
         isinstance(todo, dict) and todo.get("status") != "completed"
         for todo in todos
     ):
         return "partial", "task checklist has pending items"
     return "completed", None
-
 
 async def _archive_task_to_memory(
     memory: MemoryPort,
@@ -156,7 +146,6 @@ async def _archive_task_to_memory(
         )
     except Exception:
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
-
 
 async def _create_task_execution_async(
     *,
@@ -201,7 +190,6 @@ async def _create_task_execution_async(
         timeout=_TASK_BIND_TIMEOUT_SECONDS,
     )
 
-
 async def _load_review_baseline_async(project_file: str):
     """Read the review baseline without blocking the Agent event loop."""
     def _load():
@@ -225,7 +213,6 @@ async def _load_review_baseline_async(project_file: str):
         asyncio.to_thread(_load),
         timeout=_REVIEW_BASELINE_TIMEOUT_SECONDS,
     )
-
 
 async def handle_agent_execution(
     agent: ReActAgent,
@@ -275,6 +262,8 @@ async def handle_agent_execution(
         "pending_items": list(resume_checkpoint.get("pending_items") or []),
         "changed_files": list(resume_checkpoint.get("changed_files") or []),
         "verification": list(resume_checkpoint.get("verification") or []),
+        "verification_results": list(resume_checkpoint.get("verification_results") or []),
+        "mutation_evidence": dict(resume_checkpoint.get("mutation_evidence") or {}),
         "last_error": None,
         "stop_reason": None,
         "resume_available": False,
@@ -335,79 +324,15 @@ async def handle_agent_execution(
                     "question": ev.get("question", ""),
                 })
 
-    if progress:
-        logger.info("[AgentExecution] registering progress callback run=%s", run_id)
-        progress.on_progress(_on_progress)
-        logger.info("[AgentExecution] progress callback registered run=%s", run_id)
-
-    # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
-    # 存在 review_mgr 上（工具与 review_response 处理共享，可随 accept 刷新）。
-    logger.info(
-        "[AgentExecution] checking review baseline run=%s has_review=%s has_project=%s",
-        run_id,
-        review_mgr is not None,
-        bool(project_file),
-    )
-    if review_mgr is not None and project_file:
-        logger.info("[AgentExecution] loading review baseline run=%s", run_id)
-        try:
-            review_mgr.baseline = await _load_review_baseline_async(project_file)
-            logger.info(
-                "[AgentExecution] review baseline loaded run=%s available=%s",
-                run_id,
-                review_mgr.baseline is not None,
-            )
-        except asyncio.TimeoutError:
-            review_mgr.baseline = None
-            logger.error(
-                "[AgentExecution] review baseline timed out after %.1fs; continuing run=%s",
-                _REVIEW_BASELINE_TIMEOUT_SECONDS,
-                run_id,
-            )
-        except Exception:
-            review_mgr.baseline = None
-            logger.warning("[AgentExecution] review baseline unavailable run=%s", run_id, exc_info=True)
-
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None
-    if run_id:
-        try:
-            task_binding = await _create_task_execution_async(
-                scope=session_id or project_file or "default",
-                run_id=run_id,
-                owner=f"run:{run_id}",
-                subject=user_message,
-                description="Durable task state for one DevAgent execution.",
-            )
-            logger.info(
-                "[AgentExecution] task binding ready run=%s task=%s",
-                run_id,
-                task_binding.task_id,
-            )
-            agent.last_run_checkpoint["task_id"] = task_binding.task_id
-            _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
-            if trace_log:
-                trace_log.event(
-                    "task_binding",
-                    task_id=task_binding.task_id,
-                    status="bound",
-                )
-        except asyncio.TimeoutError:
-            logger.error(
-                "[TaskSystem] task binding timed out after %.1fs; continuing without binding run=%s",
-                _TASK_BIND_TIMEOUT_SECONDS,
-                run_id,
-            )
-        except Exception:
-            # Task persistence is an execution aid. A store failure must not
-            # turn an otherwise usable chat run into a false tool failure.
-            logger.warning("[TaskSystem] Could not bind run %s", run_id, exc_info=True)
     task_tool_calls: list[dict] = []
     task_summary_written = False
+    stream = None
 
     def _sync_task_execution() -> None:
         if task_binding is None:
@@ -458,6 +383,75 @@ async def handle_agent_execution(
         task_summary_written = True
 
     try:
+        if progress:
+            logger.info("[AgentExecution] registering progress callback run=%s", run_id)
+            progress.on_progress(_on_progress)
+            logger.info("[AgentExecution] progress callback registered run=%s", run_id)
+
+        # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
+        # 存在 review_mgr 上（工具与 review_response 处理共享，可随 accept 刷新）。
+        logger.info(
+            "[AgentExecution] checking review baseline run=%s has_review=%s has_project=%s",
+            run_id,
+            review_mgr is not None,
+            bool(project_file),
+        )
+        if review_mgr is not None and project_file:
+            logger.info("[AgentExecution] loading review baseline run=%s", run_id)
+            try:
+                review_mgr.baseline = (
+                    resume_checkpoint["review_baseline"]
+                    if "review_baseline" in resume_checkpoint
+                    else await _load_review_baseline_async(project_file)
+                )
+                logger.info(
+                    "[AgentExecution] review baseline loaded run=%s available=%s",
+                    run_id,
+                    review_mgr.baseline is not None,
+                )
+            except asyncio.TimeoutError:
+                review_mgr.baseline = None
+                logger.error(
+                    "[AgentExecution] review baseline timed out after %.1fs; continuing run=%s",
+                    _REVIEW_BASELINE_TIMEOUT_SECONDS,
+                    run_id,
+                )
+            except Exception:
+                review_mgr.baseline = None
+                logger.warning("[AgentExecution] review baseline unavailable run=%s", run_id, exc_info=True)
+
+        if run_id:
+            try:
+                task_binding = await _create_task_execution_async(
+                    scope=session_id or project_file or "default",
+                    run_id=run_id,
+                    owner=f"run:{run_id}",
+                    subject=user_message,
+                    description="Durable task state for one DevAgent execution.",
+                )
+                logger.info(
+                    "[AgentExecution] task binding ready run=%s task=%s",
+                    run_id,
+                    task_binding.task_id,
+                )
+                agent.last_run_checkpoint["task_id"] = task_binding.task_id
+                _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                if trace_log:
+                    trace_log.event(
+                        "task_binding",
+                        task_id=task_binding.task_id,
+                        status="bound",
+                    )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "[TaskSystem] task binding timed out after %.1fs; continuing without binding run=%s",
+                    _TASK_BIND_TIMEOUT_SECONDS,
+                    run_id,
+                )
+            except Exception:
+                # Task persistence is an execution aid. A store failure must not
+                # turn an otherwise usable chat run into a false tool failure.
+                logger.warning("[TaskSystem] Could not bind run %s", run_id, exc_info=True)
         change_set = getattr(agent, "change_set", None)
         if change_set is not None:
             change_set.project_file = project_file or change_set.project_file
@@ -531,11 +525,12 @@ async def handle_agent_execution(
                 token_budget_used=report.get("token_budget_used", 0),
                 keep_recent_steps=report.get("keep_recent_steps", 0),
             )
-        async for step_progress in agent.arun_stream(
+        stream = agent.arun_stream(
             user_message,
             context=context,
             **({"allowed_tools": main_allowed_tools} if main_allowed_tools is not None else {}),
-        ):
+        )
+        async for step_progress in stream:
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
             todo_state = _todo_progress_state()
@@ -552,22 +547,19 @@ async def handle_agent_execution(
                     for item in todos
                     if isinstance(item, dict) and item.get("status") != "completed"
                 ],
-                "verification": [
-                    detail.get("name", "")
-                    for detail in d.get("tool_calls_detail", [])
-                    if isinstance(detail, dict)
-                    and detail.get("name", "").lower() in {"pytest", "run_tests", "test"}
-                ],
                 "tool_calls": [
                     {
                         "name": detail.get("name", ""),
                         "status": detail.get("status", ""),
                         "error_code": detail.get("error_code", ""),
+                        "changes": detail.get("changes", []),
+                        "verification": detail.get("verification"),
                     }
                     for detail in task_tool_calls[-32:]
                     if isinstance(detail, dict)
                 ],
             })
+            update_checkpoint_evidence(agent.last_run_checkpoint, d.get("tool_calls_detail", []))
             _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
             _sync_task_execution()
 
@@ -693,13 +685,18 @@ async def handle_agent_execution(
                     manifest = []
                 todos = get_runtime().todos or []
                 terminal_status, stop_reason = _terminal_checkpoint_status(
-                    d["final_answer"], todos,
+                    step_progress.outcome, todos,
                 )
+                if terminal_status == "completed" and any(
+                    not item["passed"] for item in agent.last_run_checkpoint.get("verification_results", [])
+                ):
+                    terminal_status, stop_reason = "partial", "verification_failed"
                 agent.last_run_checkpoint = {
+                    **agent.last_run_checkpoint,
                     "run_id": run_id,
                     "task_id": task_binding.task_id if task_binding else "",
                     "status": "waiting_approval" if fallback_review_requested else terminal_status,
-                    "request_summary": user_message[:500],
+                    "request_summary": checkpoint_request_summary,
                     "completed_items": [
                         t.get("content", "") for t in todos
                         if isinstance(t, dict) and t.get("status") == "completed"
@@ -708,37 +705,35 @@ async def handle_agent_execution(
                         t.get("content", "") for t in todos
                         if isinstance(t, dict) and t.get("status") != "completed"
                     ],
-                    "changed_files": [m.get("path", "") for m in manifest],
-                    "verification": [
-                        td.get("name", "") for td in task_tool_calls
-                        if td.get("name", "") in {"bash", "test", "pytest"}
-                    ],
                     "last_error": None,
                     "stop_reason": stop_reason,
                 }
+                if step_progress.outcome is not None:
+                    agent.last_run_checkpoint["outcome"] = step_progress.outcome.to_dict()
                 if fallback_review_requested:
                     agent.last_run_checkpoint.update({
                         "review_status": "pending",
                         "post_review_status": terminal_status,
+                        "review_baseline": review_mgr.baseline,
                     })
 
                 summary_status = (
                     "waiting_approval" if fallback_review_requested else terminal_status
                 )
-                _write_task_summary(summary_status)
+                agent.last_run_checkpoint["task_summary"] = build_task_execution_summary(
+                    task_tool_calls, agent.last_run_checkpoint, summary_status,
+                )
 
                 # A fallback review has no Agent future waiting on it.  Do
                 # not announce success before the human has resolved it.
                 if fallback_review_requested:
                     if run_id:
-                        try:
-                            get_run_store().transition(
-                                run_id, RunStatus.WAITING_APPROVAL,
-                                expected={RunStatus.RUNNING}, owner_id=run_owner,
-                                metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                            )
-                        except RunStateError:
-                            logger.warning("[RunState] Could not mark run %s awaiting review", run_id, exc_info=True)
+                        get_run_store().transition(
+                            run_id, RunStatus.WAITING_APPROVAL,
+                            expected={RunStatus.RUNNING}, owner_id=run_owner,
+                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                        )
+                    _write_task_summary(summary_status)
                     await send( {
                         "event": "awaiting_review",
                         "run_id": run_id,
@@ -755,24 +750,22 @@ async def handle_agent_execution(
                 except Exception:
                     pass
                 if run_id:
-                    try:
-                        get_run_store().transition(
-                            run_id, run_status,
-                            expected={RunStatus.RUNNING}, owner_id=run_owner,
-                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                        )
-                    except RunStateError:
-                        logger.warning("[RunState] Could not mark run %s succeeded", run_id, exc_info=True)
+                    get_run_store().transition(
+                        run_id, run_status,
+                        expected={RunStatus.RUNNING}, owner_id=run_owner,
+                        metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                    )
                     _record_audit(
                         "run_succeeded" if terminal_status == "completed" else "run_partial",
                         run_id=run_id, session_id=session_id,
                         tool_call_count=len(task_tool_calls),
                     )
+                _write_task_summary(summary_status)
 
                 # 异步后台归档到记忆系统（不阻塞返回 done）
                 project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
                 if project_id and _should_archive_task_memory(
-                    terminal_status, task_tool_calls,
+                    terminal_status, task_tool_calls, agent.last_run_checkpoint,
                 ):
                     memory = getattr(agent, "memory_provider", None)
                     if memory is not None:
@@ -803,6 +796,8 @@ async def handle_agent_execution(
                 ok = await send( {
                     "event": "done",
                     "result": d["final_answer"],
+                    "run_id": run_id,
+                    "checkpoint": agent.last_run_checkpoint,
                 })
                 if not ok:
                     return
@@ -914,12 +909,12 @@ async def handle_agent_execution(
             "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
         })
     finally:
-        if 'previous_compaction_callback' in locals():
-            agent.on_context_compacted = previous_compaction_callback
-        reset_runtime(_runtime_token)
-
-
-
-
+        try:
+            if stream is not None:
+                await stream.aclose()
+        finally:
+            if 'previous_compaction_callback' in locals():
+                agent.on_context_compacted = previous_compaction_callback
+            reset_runtime(_runtime_token)
 
 __all__ = ["handle_agent_execution"]

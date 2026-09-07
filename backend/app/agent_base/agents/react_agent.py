@@ -43,6 +43,7 @@ from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 from ..tools.result import ToolResult
 from ..evidence import EvidenceLedger
+from ..outcome import RunOutcome
 from app.services.context_manager import ContextBudgetManager
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,7 @@ class ReActProgress:
     __slots__ = (
         "step", "actions", "tool_calls_detail", "thought",
         "is_final", "final_answer",
+        "outcome",
     )
 
     def __init__(
@@ -129,6 +131,7 @@ class ReActProgress:
         thought: str = "",
         is_final: bool = False,
         final_answer: str = "",
+        outcome: RunOutcome | None = None,
     ):
         self.step = step
         self.actions = actions or []
@@ -136,6 +139,7 @@ class ReActProgress:
         self.thought = thought
         self.is_final = is_final
         self.final_answer = final_answer
+        self.outcome = outcome
 
     def to_dict(self) -> dict:
         return {
@@ -145,6 +149,7 @@ class ReActProgress:
             "thought": self.thought[:500],
             "is_final": self.is_final,
             "final_answer": self.final_answer,
+            "outcome": self.outcome.to_dict() if self.outcome else None,
         }
 
 
@@ -370,6 +375,21 @@ class ReActAgent(Agent):
             final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
         return final_answer
 
+    def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+        self.last_context_report["token_budget_used"] = total_tokens
+        outcome = RunOutcome.from_stop(
+            self.last_context_report.get("token_budget_stop_reason", "model_answer"),
+            kwargs.get("final_answer", ""),
+            total_tokens=total_tokens,
+            plan_complete=todo_plan_complete(get_runtime()) and all(
+                todo.get("status") == "completed" for todo in get_runtime().todos
+            ),
+            verification_failed=any(
+                not passed for passed in getattr(self, "_run_verifications", {}).values()
+            ),
+        )
+        return ReActProgress(**kwargs, outcome=outcome)
+
     async def _arun_with_fc_stream(
         self, input_text: str, context: str = "", **kwargs
     ) -> AsyncIterator[ReActProgress]:
@@ -416,6 +436,8 @@ class ReActAgent(Agent):
         messages = built.messages
         current_user_index = built.current_user_index
         self.last_context_report = built.to_dict()
+        self.last_context_report["token_budget_stop_reason"] = "model_answer"
+        self._run_verifications = {}
         self.last_context_report.update({
             "compacted_messages": compacted.dropped_messages,
             "compacted_tokens": compacted.dropped_tokens,
@@ -469,7 +491,7 @@ class ReActAgent(Agent):
                     })
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
-                    yield ReActProgress(
+                    yield self._final_progress(total_tokens=total_tokens,
                         step=step, thought=final_answer,
                         is_final=True, final_answer=final_answer,
                     )
@@ -595,7 +617,7 @@ class ReActAgent(Agent):
                     final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
-                    yield ReActProgress(step=step, thought=final_answer,
+                    yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
                                         is_final=True, final_answer=final_answer)
                     return
 
@@ -624,7 +646,7 @@ class ReActAgent(Agent):
                         final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
                         self.add_message(Message(input_text, "user"))
                         self.add_message(Message(final_answer, "assistant"))
-                        yield ReActProgress(step=step, thought=final_answer,
+                        yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
                                             is_final=True, final_answer=final_answer)
                         return
                 get_hooks().trigger(
@@ -689,7 +711,7 @@ class ReActAgent(Agent):
                                 self.add_message(Message(input_text, "user"))
                                 self.add_message(Message(content, "assistant"))
                                 _turn_recorded = True
-                            yield ReActProgress(
+                            yield self._final_progress(total_tokens=total_tokens,
                                 step=step, thought=content,
                                 is_final=True, final_answer=content,
                             )
@@ -711,6 +733,7 @@ class ReActAgent(Agent):
                                 # final-summary request below instead.
                                 if self.force_final_summary_on_step_limit:
                                     break
+                                self.last_context_report["token_budget_stop_reason"] = "incomplete_plan"
                                 final_answer = (
                                     "Task is not complete: the required todo plan still has unfinished "
                                     "work or verification."
@@ -718,7 +741,7 @@ class ReActAgent(Agent):
                                 self.add_message(Message(input_text, "user"))
                                 self.add_message(Message(final_answer, "assistant"))
                                 _turn_recorded = True
-                                yield ReActProgress(
+                                yield self._final_progress(total_tokens=total_tokens,
                                     step=step, thought=content,
                                     is_final=True, final_answer=final_answer,
                                 )
@@ -737,7 +760,7 @@ class ReActAgent(Agent):
                             self.add_message(Message(content, "assistant"))
                             _turn_recorded = True
                         ended_by_model_answer = True
-                        yield ReActProgress(
+                        yield self._final_progress(total_tokens=total_tokens,
                             step=step, thought=content,
                             is_final=True, final_answer=content,
                         )
@@ -756,7 +779,7 @@ class ReActAgent(Agent):
                         })
                         self.add_message(Message(input_text, "user"))
                         self.add_message(Message(final_answer, "assistant"))
-                        yield ReActProgress(
+                        yield self._final_progress(total_tokens=total_tokens,
                             step=step, thought=final_answer,
                             is_final=True, final_answer=final_answer,
                         )
@@ -803,6 +826,7 @@ class ReActAgent(Agent):
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
                                    f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
                     elif tool_call_count >= self.max_tool_calls:
+                        self.last_context_report["token_budget_stop_reason"] = "tool_call_limit"
                         blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
                     else:
@@ -888,11 +912,14 @@ class ReActAgent(Agent):
                         observation_full, observation_fed, result, duration_ms = execution
                     if isinstance(tool_args, str):
                         observation_full = observation_fed = execution[0]
+                    if result.verification is not None:
+                        check = result.verification
+                        self._run_verifications[(check.kind, check.scope)] = check.passed
                     evidence = evidence_ledger.record(
                         call_id=str(tc.get("id") or ""), tool_name=tool_name,
                         arguments=tool_args if isinstance(tool_args, dict) else {},
                         observation=observation_full, status=result.status,
-                        error_code=result.error_code,
+                        error_code=result.error_code, effects=result.effects(),
                     )
                     self.last_evidence_summary.append(evidence.to_dict())
                     # Keep the public diagnostic surface bounded just like
@@ -915,6 +942,7 @@ class ReActAgent(Agent):
                         "retryable": result.retryable,
                         "duration_ms": round(duration_ms, 1),
                         "evidence": evidence.to_dict(),
+                        **result.effects(),
                     })
                     logger.info("  🔧 %s(%s) → %s", tool_name,
                                 json.dumps(tool_args, ensure_ascii=False)[:80],
@@ -974,7 +1002,7 @@ class ReActAgent(Agent):
                     self.add_message(Message(input_text, "user"))
                     self.add_message(Message(final_answer, "assistant"))
                     _turn_recorded = True
-                    yield ReActProgress(
+                    yield self._final_progress(total_tokens=total_tokens,
                         step=step, actions=actions, tool_calls_detail=details,
                         thought=final_answer, is_final=True, final_answer=final_answer,
                     )
@@ -1029,6 +1057,7 @@ class ReActAgent(Agent):
                     "step_limit_compacted_tokens": compacted_tokens,
                     "step_limit_dropped_messages": dropped,
                 })
+                summary_timed_out = False
                 try:
                     get_hooks().trigger(
                         HookEvent.LLM_BEFORE,
@@ -1057,6 +1086,7 @@ class ReActAgent(Agent):
                         str(response.get("content") or "")
                     )
                 except asyncio.TimeoutError:
+                    summary_timed_out = True
                     final_answer = "工作轮数已达上限，最终总结调用超时。"
                     summary_textual_tool_markup = False
 
@@ -1078,13 +1108,13 @@ class ReActAgent(Agent):
                     )
                 self.last_context_report.update({
                     "token_budget_used": total_tokens,
-                    "token_budget_stop_reason": "productive_step_limit",
+                    "token_budget_stop_reason": "final_summary_timeout" if summary_timed_out else "productive_step_limit",
                     "finalization_textual_tool_markup_blocked": summary_textual_tool_markup,
                 })
                 self.add_message(Message(input_text, "user"))
                 self.add_message(Message(final_answer, "assistant"))
                 _turn_recorded = True
-                yield ReActProgress(
+                yield self._final_progress(total_tokens=total_tokens,
                     step=self.max_steps + 1, thought=final_answer,
                     is_final=True, final_answer=final_answer,
                 )
@@ -1106,7 +1136,10 @@ class ReActAgent(Agent):
                 self.add_message(Message(final_answer, "assistant"))
             logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
             self.last_context_report.setdefault("token_budget_used", total_tokens)
-            self.last_context_report.setdefault("token_budget_stop_reason", "model_answer")
+            if not ended_by_model_answer:
+                self.last_context_report["token_budget_stop_reason"] = "productive_step_limit"
+                yield self._final_progress(total_tokens=total_tokens, step=self.max_steps,
+                                           is_final=True, final_answer=final_answer)
         finally:
             try:
                 get_hooks().trigger(

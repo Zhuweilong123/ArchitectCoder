@@ -6,6 +6,7 @@ from app.services.agent_chat_ws import (
     _todo_progress_state, DevPromptBuilder, _archive_task_to_memory,
 )
 from app.agent_base.core.memory import MemoryArchiveResult, MemoryRecallResult
+from app.agent_base.outcome import RunOutcome
 
 
 def test_todo_progress_state_uses_runtime_as_the_authoritative_snapshot():
@@ -52,20 +53,23 @@ def test_checkpoint_answer_uses_structured_checkpoint_data():
 
 
 def test_terminal_checkpoint_status_never_calls_budget_stop_completed():
-    assert _terminal_checkpoint_status("已达到 token 预算（100000），已停止继续调用工具。", []) == (
-        "budget_exceeded", "token budget exceeded",
+    assert _terminal_checkpoint_status(RunOutcome.from_stop("reserve_finalization", "All done"), []) == (
+        "budget_exceeded", "reserve_finalization",
     )
-    assert _terminal_checkpoint_status("完成", [{"status": "pending"}]) == (
+    assert _terminal_checkpoint_status(RunOutcome.from_stop("model_answer", "完成"), [{"status": "pending"}]) == (
         "partial", "task checklist has pending items",
     )
-    assert _terminal_checkpoint_status("完成", []) == ("completed", None)
+    assert _terminal_checkpoint_status(RunOutcome.from_stop("model_answer", "解释 token 预算和时间预算"), []) == ("completed", None)
 
 
 def test_memory_archive_requires_completed_mutation_evidence():
     details = [{"name": "find_nodes"}]
     assert not _should_archive_task_memory("completed", details)
     assert not _should_archive_task_memory("budget_exceeded", [{"name": "edit_file", "status": "success"}])
-    assert _should_archive_task_memory("completed", [{"name": "edit_file", "status": "success"}])
+    assert _should_archive_task_memory("completed", [{
+        "name": "apply_changes", "status": "success",
+        "changes": [{"path": "a.py", "operation": "replace"}],
+    }])
 
 
 def test_prompt_builder_reports_dynamic_sections_without_content():
