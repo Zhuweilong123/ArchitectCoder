@@ -17,6 +17,17 @@ class FileSystemOperationError(RuntimeError):
     """Raised when a native filesystem operation cannot be completed."""
 
 
+def workspace_root_for(*paths: str) -> str:
+    """Return the common absolute workspace root for configured directories."""
+    configured = [path for path in paths if path]
+    if not configured:
+        return ""
+    try:
+        return os.path.commonpath([os.path.abspath(path) for path in configured])
+    except ValueError:
+        return os.path.abspath(configured[0])
+
+
 class NativeFileSystem:
     """Native, OS-neutral file operations used by structured Agent tools."""
 
@@ -96,4 +107,4 @@ class NativeFileSystem:
             raise FileSystemOperationError(str(exc)) from exc
 
 
-__all__ = ["FileSystemOperationError", "NativeFileSystem"]
+__all__ = ["FileSystemOperationError", "NativeFileSystem", "workspace_root_for"]

@@ -28,6 +28,7 @@ from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
+from app.runtime import workspace_root_for
 
 
 # ── 进度事件转发 ──
@@ -117,12 +118,7 @@ def create_conversation_tools(
     design_dir = (os.path.dirname(os.path.abspath(project_file))
                   if project_file else os.path.abspath(get_settings().uml_dir))
     if not workspace_root:
-        configured = [path for path in (source_dir, test_dir, design_dir) if path]
-        if configured:
-            try:
-                workspace_root = os.path.commonpath([os.path.abspath(path) for path in configured])
-            except ValueError:
-                workspace_root = os.path.abspath(configured[0])
+        workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
     tools.extend(create_foundation_tools(
         source_dir, test_dir, design_dir,
         review_manager=review_mgr, progress=progress,

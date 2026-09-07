@@ -17,6 +17,7 @@ from pathlib import Path
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.execution import ExecutionEnvironmentError
 from app.agent_base.tools.base import Tool
+from app.agent_base.tools.result import ToolResult, FileChange, VerificationEvidence, command_result
 from app.agent_base.tools.my_tools.file_system_tools import (
     BashTool,
     GlobTool,
@@ -288,6 +289,12 @@ class ApplyChangesTool(ApplyPatchTool):
         }
 
     def run(self, parameters: dict) -> str:
+        return self.run_result(parameters).text
+
+    def run_result(self, parameters: dict) -> ToolResult:
+        return ToolResult.from_value(self._apply_changes(parameters))
+
+    def _apply_changes(self, parameters: dict):
         changes = parameters.get("changes")
         if changes is None and isinstance(parameters.get("patches"), list):
             changes = []
@@ -332,7 +339,26 @@ class ApplyChangesTool(ApplyPatchTool):
         except (OSError, ValueError, FileSystemOperationError) as exc:
             self._restore_states(states)
             return f"Error: changes rolled back: {exc}"
-        return "Applied changes: " + ", ".join(operations)
+        result = ToolResult.success("Applied changes: " + ", ".join(operations))
+        for state in states.values():
+            if (state["exists"], state["is_dir"], state["content"]) == (
+                state["initial_exists"], state["initial_is_dir"], state["initial_content"],
+            ):
+                continue
+            before = state["initial_raw"]
+            content = state["content"]
+            after = content.encode("utf-8") if isinstance(content, str) else content
+            operation = "delete" if not state["exists"] else (
+                "mkdir" if state["is_dir"] else (
+                    "create" if not state["initial_exists"] else "replace"
+                )
+            )
+            result.changes.append(FileChange(
+                str(state["path"]), operation,
+                hashlib.sha256(before).hexdigest() if before is not None else "",
+                hashlib.sha256(after).hexdigest() if state["exists"] and after is not None else "",
+            ))
+        return result
 
     def _path(self, value: Any, index: int, field: str) -> Path:
         if not isinstance(value, str) or not value.strip():
@@ -563,11 +589,16 @@ class RunProgramTool(ShellTool):
         super().__init__(*args, **kwargs)
         self.name = "run_program"
         self.description = (
-            "Run an executable with an argument list in the workspace. "
-            "Prefer this over shell when the operation does not need shell syntax."
+            "Run one allowlisted executable directly with literal argv in the workspace. "
+            "Use for Python/Node/pytest or another program when args can be separate strings; "
+            "do not pass powershell/cmd/bash, -Command, pipes, chaining, or shell syntax. "
+            "Use run_task for test/build/lint/format/typecheck/validate."
         )
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict):
         program = params.get("program", "")
         args = params.get("args", [])
         if not isinstance(program, str) or not program.strip():
@@ -586,7 +617,12 @@ class RunProgramTool(ShellTool):
                 _quote_program(program, args, self._command_executor)
             )
         if validation_error:
-            return f"Error: {validation_error}"
+            return (
+                f"Error: {validation_error} "
+                "run_program accepts a direct executable and literal argv only; "
+                "use run_task for standard project tasks; use shell only for one simple "
+                "native command that does not require interpreter code."
+            )
 
         display_command = _quote_program(program, args, self._command_executor)
         risk = self._risk_policy.evaluate("bash", {"command": display_command})
@@ -636,8 +672,11 @@ class RunProgramTool(ShellTool):
         output = (_decode_output(stdout) + _decode_output(stderr)).strip()
         output = output[:self._output_cap] if len(output) > self._output_cap else output
         if proc.returncode:
-            return f"Error: program exited with code {proc.returncode}: {output or '(no output)'}"
-        return output or "(no output)"
+            output = f"Error: program exited with code {proc.returncode}: {output or '(no output)'}"
+        return command_result(
+            _quote_program(program, args, self._command_executor), cwd,
+            proc.returncode, output or "(no output)", argv=[program, *args],
+        )
 
     def to_openai_schema(self) -> dict:
         return {
@@ -670,21 +709,29 @@ class RunTaskTool(RunProgramTool):
         super().__init__(*args, **kwargs)
         self.name = "run_task"
         self.description = (
-            "Run a semantic development task. Supported tasks: test, build, lint, "
-            "format, typecheck, validate. Validate checks UML project files directly "
-            "when target is a .umlproj/.uml/.json file; target paths are relative to "
-            "cwd when cwd is provided, and cwd accepts source, test, design, or workspace. "
-            "For a full test directory, use cwd=\"test\" with no target or target=\".\"."
+            "Run one fixed project task: test, build, lint, format, typecheck, or validate. "
+            "Prefer this for project verification/build work instead of composing commands. "
+            "validate checks UML project files directly for .umlproj/.uml/.json targets. "
+            "target is relative to cwd; cwd accepts source, test, design, or workspace. "
+            "For the full test suite use cwd=\"test\" with no target or target=\".\"."
         )
 
-    async def _execute(self, params: dict) -> str:
+    async def _execute_result(self, params: dict):
         task = str(params.get("task", "")).lower().strip()
         if task not in self.TASKS:
-            return f"Error: unsupported task '{task}'"
+            return (
+                f"Error: unsupported task '{task}'. "
+                "Choose one of: test, build, lint, format, typecheck, validate."
+            )
         if task == "validate" and params.get("target"):
             target = str(params["target"]).strip()
             if target.lower().endswith((".umlproj", ".uml", ".json")):
-                return self._validate_project_file(target, params.get("cwd"))
+                result = ToolResult.from_value(self._validate_project_file(target, params.get("cwd")))
+                result.verification = VerificationEvidence(
+                    "validate", str(params.get("cwd") or "") + "/" + target,
+                    result.status == "success",
+                )
+                return result
         program, base_args = self.TASKS[task]
         target = params.get("target")
         args = list(base_args)
@@ -701,9 +748,15 @@ class RunTaskTool(RunProgramTool):
                 and target.strip().lower() == raw_cwd.strip().lower()
             ):
                 args.append(target)
-        return await RunProgramTool._execute(self, {
+        result = ToolResult.from_value(await RunProgramTool._execute_result(self, {
             "program": program, "args": args, "cwd": params.get("cwd"),
-        })
+        }))
+        if task != "format" and result.execution is not None:
+            result.verification = VerificationEvidence(
+                task, result.execution.cwd + "/" + str(target or "."),
+                result.execution.exit_code == 0, result.execution.exit_code,
+            )
+        return result
 
     def _validate_project_file(self, target: str, raw_cwd) -> str:
         candidates: list[Path] = []

@@ -58,6 +58,8 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     }),
     RunStatus.WAITING_APPROVAL.value: frozenset({
         RunStatus.RUNNING.value,
+        RunStatus.SUCCEEDED.value,
+        RunStatus.TIMED_OUT.value,
         RunStatus.PAUSED.value,
         RunStatus.PARTIAL.value,
         RunStatus.FAILED.value,

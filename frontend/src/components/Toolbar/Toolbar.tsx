@@ -839,6 +839,7 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         {/* Diagram dropdowns — grouped by type */}
+        <div className={showTestCaseInCanvas ? 'toolbar-mode-controls is-hidden' : 'toolbar-mode-controls'}>
         {(() => {
           const TYPE_SPECS = [
             { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />, color: '#d48806' },
@@ -957,6 +958,7 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('redo') + ' Ctrl+Y'}>
           <Button icon={<RedoOutlined />} disabled={redoStack.length === 0} onClick={redo} />
         </Tooltip>
+        </div>
       </div>
       <div className="toolbar-right"><SettingsPopover /></div>
       </div>
@@ -1072,6 +1074,7 @@ const Toolbar: React.FC = () => {
       </div>
 
       <div className="toolbar-right">
+        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
         <Tooltip title={copy('grid')}>
           <Button
             icon={diagram.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
@@ -1090,6 +1093,7 @@ const Toolbar: React.FC = () => {
 
         <Divider type="vertical" />
 
+        </div>
         <Tooltip title={showTestCaseInCanvas ? (interfaceLanguage === 'en' ? 'Return to UML canvas' : '返回 UML 画布') : copy('testCases')}>
           <Button
             icon={<TableOutlined />}
@@ -1100,6 +1104,7 @@ const Toolbar: React.FC = () => {
           </Button>
         </Tooltip>
 
+        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
         <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>
@@ -1122,6 +1127,7 @@ const Toolbar: React.FC = () => {
           ]}
           style={{ width: 104, marginLeft: 8 }}
         />
+        </div>
       </div>
       </div>
 

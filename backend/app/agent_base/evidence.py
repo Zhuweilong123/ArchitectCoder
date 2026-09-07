@@ -76,6 +76,7 @@ class EvidenceRecord:
     facts: list[str] = field(default_factory=list)
     detail: str = ""
     pending_edit: bool = False
+    effects: dict[str, Any] = field(default_factory=dict)
 
     def render(self) -> str:
         state = "ok" if self.status == "success" else self.status
@@ -93,6 +94,7 @@ class EvidenceRecord:
             "facts": list(self.facts),
             "detail": self.detail,
             "pending_edit": self.pending_edit,
+            "effects": self.effects,
         }
 
 
@@ -119,16 +121,35 @@ class EvidenceLedger:
         observation: str,
         status: str = "success",
         error_code: str = "",
+        effects: dict[str, Any] | None = None,
     ) -> EvidenceRecord:
         """Capture a tool fact and return it for progress/trace telemetry."""
         self._sequence += 1
         record = EvidenceRecord(
             id=f"E{self._sequence}", call_id=call_id, tool_name=tool_name,
             status=status,
+            effects=effects or {},
         )
         path = str(arguments.get("path") or "").strip()
 
-        if tool_name == "read_file":
+        if effects and (effects.get("changes") or effects.get("execution") or effects.get("verification")):
+            for change in effects.get("changes") or []:
+                record.facts.append(f"{change['operation']} file={change['path']}")
+                if change.get("after_hash"):
+                    record.facts.append(f"after_sha={change['after_hash'][:12]}")
+                self._link_edit_to_reads(change["path"], record)
+            record.pending_edit = bool(effects.get("changes")) and status == "success"
+            execution = effects.get("execution")
+            if execution:
+                record.facts.extend((f"cwd={execution['cwd']}", f"exit_code={execution['exit_code']}"))
+            verification = effects.get("verification")
+            if verification:
+                record.facts.append(
+                    f"verification={verification['kind']} scope={verification['scope']} "
+                    f"passed={verification['passed']}"
+                )
+            record.detail = f"result={_short(observation, 180)!r}"
+        elif tool_name == "read_file":
             if path:
                 record.facts.append(f"file={path}")
             # This is a hash of the returned observation/range, not a whole
@@ -289,3 +310,30 @@ class EvidenceLedger:
             if record.pending_edit:
                 record.pending_edit = False
                 record.facts.append("verified")
+
+
+def update_checkpoint_evidence(checkpoint: dict, details: list[dict]) -> None:
+    """Accumulate actual effects across steps and resumptions, preserving failed checks."""
+    files = list(checkpoint.get("changed_files") or [])
+    mutations = dict(checkpoint.get("mutation_evidence") or {})
+    checks = list(checkpoint.get("verification_results") or [])
+    for detail in details:
+        for change in detail.get("changes") or []:
+            if detail.get("status") == "success":
+                mutations[change["path"]] = dict(change)
+                if change["path"] not in files:
+                    files.append(change["path"])
+        verification = detail.get("verification")
+        if verification:
+            # A retry replaces only the same check; unrelated failures remain visible.
+            checks = [item for item in checks if (item["kind"], item["scope"]) != (
+                verification["kind"], verification["scope"],
+            )]
+            checks.append(dict(verification))
+    checkpoint["changed_files"] = files
+    checkpoint["mutation_evidence"] = mutations
+    checkpoint["verification_results"] = checks
+    checkpoint["verification"] = [
+        f"{item['kind']} {item['scope']}: {'passed' if item['passed'] else 'failed'}"
+        for item in checks
+    ] or list(checkpoint.get("verification") or [])

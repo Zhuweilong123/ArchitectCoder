@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -10,6 +11,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 _SENSITIVE_KEYS = {"api_key", "authorization", "password", "secret", "token"}
@@ -93,3 +97,23 @@ def get_audit_logger() -> AuditLogger:
             if _default_logger is None:
                 _default_logger = AuditLogger()
     return _default_logger
+
+
+def record_audit(
+    event_type: str,
+    *,
+    run_id: str,
+    session_id: str,
+    logger_instance: AuditLogger | None = None,
+    **payload: Any,
+) -> None:
+    """Persist an audit event without allowing telemetry to break a run."""
+    try:
+        (logger_instance or get_audit_logger()).record(
+            event_type, run_id=run_id, session_id=session_id, **payload,
+        )
+    except Exception:
+        logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
+
+
+__all__ = ["AuditLogger", "get_audit_logger", "record_audit"]

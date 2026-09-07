@@ -1,7 +1,8 @@
 # BaseAgents 框架设计
 
 > 本文归档 ArchitectCoder 的 Agent 框架（`backend/app/agent_base/`）设计，
-> 反映最新代码（UML 优化已迁移 V2 引擎、文件系统原语工具集、记忆系统改造）。
+> 反映框架层的长期设计原则。当前生产组合、工具契约和运行时边界请以
+> [`current-architecture.md`](current-architecture.md) 为准；本文中的旧工具名、示例导入路径和目录树可能仅代表历史实现。
 > 作为后续扩展工具、接入新 Agent 范式、调整运行时的参考基线。
 
 ## 1. 定位与核心原则
@@ -157,9 +158,14 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 ## 6. 对话 Agent 工具集
 
-主 Agent 注册 `create_conversation_tools()` 装配的工具集（`agent_chat_ws.py` 运行时入口）。
+主 Agent 由 `app/agent_base/assembly.py` 统一装配工具集；`agent_chat_ws.py` 只负责 WebSocket 传输适配。
 代码生成闭环工具（`generate_code` / `validate_code` / `generate_tests` / `fix_code` /
 `run_tests` / `write_files`）已下线移除，当前助手通过**文件系统原语**自主读写代码。
+
+当前生产工具契约为 `list_files`、`read_file`、`search_text`、`apply_changes`、
+`run_task`、`run_program` 和 `shell`，完整边界见
+[`current-architecture.md`](current-architecture.md)。下列旧工具表保留用于说明
+底层兼容实现，不代表生产 Agent 的实际暴露名称。
 
 ### 6.1 文件系统原语（`file_system_tools.py`）
 
@@ -191,7 +197,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 - **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
   供 demo / 测试 / 未来按需接入使用。
-- **`file_search_tools.py` / `knowledge_graph_v2_tools.py`**：
+- **`file_search_tools.py` / `extensions/knowledge_graph/tools.py`**：
   文件搜索工具接入生产工具工厂；知识图谱实现保留供测试与显式 opt-in，当前默认不注册到
   DevAgent，也不注入子代理工具包。
 
@@ -199,7 +205,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 ### 7.1 WebSocket 驱动的对话 Agent
 
-`backend/app/services/agent_chat_ws.py` 是运行时入口：
+`backend/app/services/agent_chat_ws.py` 是 WebSocket 传输适配器，运行时组合入口是
+`backend/app/agent_base/assembly.py`，执行协调位于 `backend/app/services/agent_execution.py`：
 
 ```
 前端（React 对话面板）
@@ -295,7 +302,7 @@ Project Memory    跨任务的偏好、决策、约定、拒绝和洞察
 ### 10.1 继承 AsyncTool
 
 ```python
-from app.agent_base.tools.my_tools.conversation_tools import AsyncTool
+from app.agent_base.tools.async_tool import AsyncTool
 
 class MyNewTool(AsyncTool):
     def __init__(self, llm, **deps):
@@ -364,17 +371,21 @@ result = await run_optimize_v2(
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/agent_base/__init__.py` | 统一导出（20 符号） |
+| `backend/app/agent_base/__init__.py` | Agent 框架公开导出 |
 | `backend/app/agent_base/core/llm.py` | `BaseAgentsLLM`（6 provider + 同步/异步/流式/FC） |
 | `backend/app/agent_base/core/agent.py` | Agent ABC + 历史管理 |
 | `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
 | `backend/app/agent_base/agents/reflection_agent.py` | 反思优化 + Hook 机制 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
-| `backend/app/agent_base/tools/my_tools/conversation_tools.py` | AsyncTool + ProgressRelay + create_conversation_tools |
-| `backend/app/agent_base/tools/my_tools/file_system_tools.py` | 文件系统原语（read/write/edit/glob/bash + 两级防护） |
+| `backend/app/agent_base/tools/async_tool.py` | AsyncTool 基类 |
+| `backend/app/agent_base/tools/my_tools/conversation_tools.py` | ProgressRelay + create_conversation_tools |
+| `backend/app/agent_base/tools/my_tools/foundation_tools.py` | 当前生产基础工具和执行边界 |
+| `backend/app/agent_base/tools/my_tools/file_system_tools.py` | 底层文件/命令实现与兼容工具 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
 | `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
 | `backend/app/services/uml_optimizer_v2.py` | V2 直连优化引擎 |
-| `backend/app/services/agent_chat_ws.py` | 运行时入口 + 记忆归档/注入 + 工具注册 |
+| `backend/app/services/agent_chat_ws.py` | WebSocket 鉴权与协议适配 |
+| `backend/app/services/chat_session.py` | 会话协调与消息生命周期 |
+| `backend/app/services/agent_execution.py` | 单次 Agent 执行、checkpoint、审批和结果 |

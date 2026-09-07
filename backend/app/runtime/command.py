@@ -29,7 +29,7 @@ class LinuxExecutionProfile:
     @property
     def tool_description(self) -> str:
         return (
-            "Run one Linux/POSIX bash command in a configured workspace directory. "
+            "Run one simple Linux/POSIX bash command as a last resort in a configured workspace directory. "
             f"{self.cwd_note} "
             "Use cwd='source', 'test', 'design', or 'workspace' instead of cd. "
             "Use POSIX commands only (for example ls, find, grep, pytest, npm, git); "
@@ -38,6 +38,7 @@ class LinuxExecutionProfile:
             "For verification, run the requested focused test directly; do not probe python/pip/which or install packages after a command error. "
             "Do not chain commands, use pipes/redirection, nested shells, or inline interpreter code. "
             "Choose the available filesystem tool that best fits the operation. "
+            "Use run_task for project tasks and run_program for direct executable argv. "
             "High-risk commands are denied; sensitive commands require approval."
         )
 
@@ -178,12 +179,14 @@ class PowerShellExecutionProfile:
     @property
     def tool_description(self) -> str:
         return (
-            "Run one native PowerShell command in the configured workspace. "
+            "Run one simple native PowerShell command as a last resort in the configured workspace. "
             f"{self.cwd_note} Use cwd='source', 'test', 'design', or 'workspace'. "
-            "Use PowerShell syntax; do not invoke cmd.exe, bash, sh, wsl.exe, or nested shells. "
+            "Use PowerShell syntax, including safe read-only expressions such as "
+            "(Get-Content file).Count; do not invoke cmd.exe, bash, sh, wsl.exe, or nested shells. "
             "For file edits, prefer the structured file tools. Do not chain commands, use pipes, "
             "redirection, command substitution, or inline interpreter code. High-risk commands are "
-            "denied; sensitive commands require approval."
+            "denied; sensitive commands require approval. Use run_task for project tasks and "
+            "run_program for direct executable argv."
         )
 
 
@@ -208,7 +211,11 @@ class NativePowerShellExecutor:
         if len(command) > 4000:
             return "command is too long (maximum 4000 characters)"
         if any(token in command for token in ("\n", "\r", ";", "&&", "||", "|", ">", "<", "`", "$" + "(")):
-            return "PowerShell command chaining, redirection, and substitution are not allowed"
+            return (
+                "shell accepts one simple command only; chaining, pipes, redirection, "
+                "command substitution, and inline scripts are not allowed. "
+                "Use run_task for project tasks or run_program with literal argv."
+            )
         lowered = command.lower()
         if any(token in lowered for token in (
             "cmd.exe", "powershell -command", "pwsh -command", "wsl.exe", "bash -c", "sh -c",
@@ -216,7 +223,13 @@ class NativePowerShellExecutor:
             return "nested shell invocation is not allowed"
         if " -command " in lowered or lowered.startswith(("-command ", "-c ")):
             return "nested PowerShell invocation is not allowed"
-        executable = command.strip().split(None, 1)[0].strip('"').lower()
+        executable_source = command
+        expression = _SAFE_READONLY_EXPRESSION.match(command)
+        if expression:
+            # Permit common, read-only PowerShell aggregation over file content
+            # without opening the door to arbitrary parenthesized expressions.
+            executable_source = expression.group(1)
+        executable = executable_source.strip().split(None, 1)[0].strip('"').lower()
         if executable == "&":
             remainder = command.strip()[1:].lstrip()
             executable = remainder.split(None, 1)[0].strip("'\"").lower()
@@ -234,7 +247,10 @@ class NativePowerShellExecutor:
 
     def validate_program(self, program: str, args: list[str]) -> str | None:
         if not program or any(any(char in value for char in ("\n", "\r", ";", "|", ">", "<")) for value in [program, *args]):
-            return "program and args must not contain shell control characters"
+            return (
+                "program and args must be literal values without shell control characters "
+                "(; | > < or newlines); do not pass a command string"
+            )
         executable = os.path.basename(program).lower()
         if executable.endswith((".exe", ".cmd", ".bat")):
             executable = executable.rsplit(".", 1)[0]
@@ -243,6 +259,11 @@ class NativePowerShellExecutor:
             "ruff", "mypy", "cargo", "go", "dotnet", "java", "mvn", "gradle",
         }
         if executable not in allowed:
+            if executable in {"powershell", "pwsh", "cmd", "bash", "sh", "wsl"}:
+                return (
+                    f"executable '{executable}' is a shell interpreter and cannot be used by "
+                    "run_program; use shell for one simple command"
+                )
             return f"executable '{executable}' is not allowed"
         return None
 
@@ -286,6 +307,10 @@ class NativePowerShellExecutor:
 
 
 _WINDOWS_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+_SAFE_READONLY_EXPRESSION = re.compile(
+    r"^\s*\(\s*(Get-Content|gc)\s+.+?\s*\)\s*\.\s*(Count|Length)\s*$",
+    re.IGNORECASE,
+)
 
 
 def windows_path_to_wsl(path: str) -> str:

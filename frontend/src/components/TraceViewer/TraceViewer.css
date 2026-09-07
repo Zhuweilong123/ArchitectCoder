@@ -6,15 +6,38 @@
 
 /* 左侧会话列表 */
 .trace-session-list {
-  width: 240px;
+  width: 280px;
   flex-shrink: 0;
   border-right: 1px solid #f0f0f0;
   overflow-y: auto;
 }
 
+.trace-session-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.trace-session-toolbar .ant-typography {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
 .trace-session-item {
   cursor: pointer;
   padding: 8px 12px !important;
+}
+
+.trace-session-item .ant-list-item-meta-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
 }
 
 .trace-session-item:hover {

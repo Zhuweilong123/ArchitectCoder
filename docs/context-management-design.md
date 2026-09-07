@@ -3,6 +3,10 @@
 > 本文归档 ArchitectCoder 当前 DevAgent 的上下文预算、会话压缩和恢复机制，
 > 对应 `backend/app/services/context_manager.py` 与 `backend/app/agent_base/agents/react_agent.py`。
 
+> 长期记忆不再由文中旧的 `memory_system` 路径直接管理；当前通过
+> `MemoryPort` 接入 `extensions/memory`。当前总体边界见
+> [`current-architecture.md`](current-architecture.md)。
+
 ## 1. 设计目标
 
 上下文管理负责控制一次 LLM 请求实际携带的信息，不负责长期知识存储。它需要：
@@ -93,4 +97,3 @@ history checkpoint（可选）
 P1 计划包括结构化任务状态 checkpoint、上下文分区 token 观测、压缩原因 Trace 和基于
 真实任务集的上下文质量评测。语义摘要和模型专用 tokenizer 只有在评测证明轻量方案不足时
 再接入。
-

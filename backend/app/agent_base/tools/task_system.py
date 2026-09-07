@@ -668,6 +668,14 @@ def create_task_execution(
     return TaskExecutionBinding(store, task.id, run_id)
 
 
+def finalize_task_execution(*, scope: str, task_id: str, run_id: str, checkpoint: dict) -> None:
+    """Update an existing task projection after a deferred review is resolved."""
+    tasks_dir, _, _ = _default_dirs(scope)
+    TaskExecutionBinding(TaskStore(tasks_dir), task_id, run_id).finalize(
+        checkpoint["status"], checkpoint=checkpoint,
+    )
+
+
 def create_task_system_tools(scope: str = "") -> list[Tool]:
     tasks_dir, worktrees_dir, workdir = _default_dirs(scope)
     store = TaskStore(tasks_dir)

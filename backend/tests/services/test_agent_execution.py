@@ -57,4 +57,6 @@ def test_agent_execution_injects_enabled_tools_context(monkeypatch):
     ))
 
     assert "## Tool policy" in agent.received_context
-    assert sent[-1] == {"event": "done", "result": "hello"}
+    assert sent[-1]["event"] == "done"
+    assert sent[-1]["result"] == "hello"
+    assert sent[-1]["checkpoint"]["status"] == "completed"

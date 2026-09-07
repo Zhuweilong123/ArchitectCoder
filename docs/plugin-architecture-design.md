@@ -6,6 +6,9 @@
 > Related commits: `fa3b507` (`v3.2: Centralize Configuration Management`),
 > `9c439ed` (`feat: expose knowledge graph tools through plugin switch`)
 
+> 当前代码可能已超出本文所列的 v3.2 提交。本文继续作为插件所有权和加载契约说明；
+> 当前 Agent 组合与工具边界请参阅 [`current-architecture.md`](current-architecture.md)。
+
 ## 1. Purpose
 
 This document archives the plugin architecture introduced during the v3.2

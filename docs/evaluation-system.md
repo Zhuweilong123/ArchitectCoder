@@ -1,10 +1,24 @@
-# 智能体评测体系归档
+# DevAgent 评测体系
 
-> 归档版本：3.0 evaluation baseline / evaluation center iteration
+> 当前评测入口、实现详情和历史结果统一维护在本文。文中的指标均以所在章节标注的
+> commit、模型和 fixture 为准，不代表最新代码的即时结果。
+
+> 文档版本：evaluation system / implementation and history
 > 归档日期：2026-09-06
 > 适用范围：`extensions/evals` 执行代码、`backend/evals` 评测数据、`backend/app/api/evals.py` 评测 API、评测中心前端和运行结果治理
 
-本文档记录当前智能体评测体系的实际构建结果、目录约定、运行链路、历史基线和未完成事项。它是评测系统的总览归档；`docs/agent-v3.0-baseline.md` 继续承担 3.0 版本整体工程基线的职责。
+本文档记录当前智能体评测体系的规则、实际构建结果、目录约定、运行链路、历史基线和未完成事项。
+当前代码和工程基线入口见 [`current-architecture.md`](current-architecture.md)。
+
+## 当前口径
+
+- 评测代码位于 `extensions/evals`，版本化用例和 fixture 位于 `backend/evals`。
+- 运行采用固定 fixture、隔离工作区、Agent 执行、确定性 Checker、Trace 和结果归档。
+- 正式基线按 `understanding`、`single`、`multiturn` 三组统计；专项回归单独记录，不能混入正式通过率。
+- 每次正式运行应记录代码 commit、模型、提示词版本、fixture、依赖环境、预算和 Trace ID。
+- Checker 结果、工具调用和 Trace 必须同时保留，单独的自然语言最终答案不能作为唯一判定依据。
+
+历史评测数字只能在标注代码版本、模型和 fixture 后进行横向比较，不能跨版本直接当作当前质量结论。
 
 ## 1. 建设目标
 
@@ -473,3 +487,10 @@ conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --i
 2. 3.3.3 对资源消耗有积极作用，但尚未证明恢复指引能稳定提升成功率；后续应重点观察失败类型分布，而不是继续叠加 Prompt。
 3. 三轮中反复出现的能力缺口集中在领域校验、旧 UML 同步、UML 拓扑/时序流和预算边界行为；这些属于 Agent 执行与评测样本能力问题，不是结果文件或 Trace 落盘问题。
 4. 当前结果适合用于版本对比和问题定位，暂不作为单一发布门禁；应结合正向、负向、挑战用例以及每个用例的 Trace 共同判断。
+
+## 15. 历史档案索引
+
+- 本文第 8 节及第 14 节：评测系统自身的历史运行和优化归档。
+- 更早的 2026-09-01 能力基线和 `remove_01` 案例已从工作树移除；如需复盘，请通过 Git 历史查看。
+
+历史案例保持独立文件，便于追加 Trace 和逐用例证据；正式规则、目录约定和聚合结果只在本文维护。

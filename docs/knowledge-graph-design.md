@@ -1,7 +1,10 @@
-# 知识图谱设计
+# 知识图谱设计与实现归档
 
-> 本文归档 ArchitectCoder 的知识图谱系统（`backend/knowledge_graph/`）设计，
-> 反映最新代码（5 个内部工具、增量重建、项目作用域 id、jieba 预分词）。
+> 本文保留知识图谱的数据模型和检索设计。当前具体实现位于
+> `extensions/knowledge_graph/`，应用侧通过 `backend/app/agent_base/core/knowledge_graph.py`
+> 访问；文中的 `backend/knowledge_graph/`、`knowledge_graph_tools.py` 和
+> `explore_project_tools.py` 是历史路径。
+> 工具数量和默认注册状态以当前 provider 配置为准，不以本文旧版数字为准。
 > 为 AI 助手提供结构化的项目理解能力，让模型按需查询项目结构而非被动接收全部内容。
 
 ## 1. 核心理念
@@ -24,7 +27,7 @@ extensions/knowledge_graph/
 └── provider.py                     # 默认 SQLite provider 实现
 
 extensions/knowledge_graph/
-└── knowledge_graph_v2_tools.py    # 结构化图谱工具（显式 opt-in）
+└── extensions/knowledge_graph/tools.py    # 结构化图谱工具（显式 opt-in）
 ```
 
 ### 2.1 Provider boundary
@@ -198,7 +201,7 @@ Python 源文件 → AST 解析 (ast.parse)
 | `trace` | 依赖路径追踪（SQLite recursive CTE，防环） |
 | `diff` | 设计 vs 代码差异（missing_implementation / extra_code / mismatch / no_coverage） |
 
-## 7. Agent 工具（5 个，内部）
+## 7. Agent 工具（历史设计快照）
 
 5 个 `AsyncTool` 子类，遵循 `conversation_tools.py` 的 `run()→coroutine` 模式：
 
@@ -225,11 +228,11 @@ def save_project(project, filepath=None):
     return filepath
 ```
 
-### 8.2 explore_project_tools.py — 项目探索
+### 8.2 项目探索（历史设计）
 
-`explore_project` 的 `summary` / `locate` 模式内部调用 `kg_project_structure` 获取完整
-结构，并**与 `.umlproj` 文件交叉校验**（文件图签名 vs KG 图签名不一致时强制重建）。
-兜底 `_ensure_project_indexed` 的图签名比对。
+早期 `explore_project_tools.py` 的统一入口设计已下线。当前 KG v2 工具由
+`extensions/knowledge_graph/tools.py` 提供，是否暴露给 Agent 由插件开关和 provider
+配置决定；不要依据本节的旧工具名推断当前默认工具集。
 
 ### 8.3 自动代码层索引
 
@@ -292,6 +295,6 @@ retriever.close()
 | `extensions/knowledge_graph/database.py` | SQLite 图数据库 + FTS5 索引 + 幂等迁移 |
 | `extensions/knowledge_graph/builder.py` | `GraphBuilder`（设计层 + 代码层 + 跨图关联，项目作用域 id） |
 | `extensions/knowledge_graph/retriever.py` | `GraphRetriever`（query / expand / trace / diff） |
-| `backend/app/agent_base/tools/my_tools/knowledge_graph_tools.py` | 5 个内部 AsyncTool（kg_*） |
-| `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | 项目探索统一入口（内部调 kg_project_structure + 交叉校验） |
+| `extensions/knowledge_graph/tools.py` | KG v2 工具（`kg_*`）和统一工具工厂 |
+| `backend/app/agent_base/core/knowledge_graph.py` | 应用侧知识图谱 provider 端口和 fallback |
 | `backend/app/services/file_service.py` | `save_project` 触发 KG 增量重建 |

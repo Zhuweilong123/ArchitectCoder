@@ -1,7 +1,14 @@
-# Trace 回放机制设计
+# Trace 记录、回放与使用手册
 
 > 本文归档 ArchitectCoder 的 trace（会话结构化日志）回放机制的设计与实现，
 > 作为后续迭代（L3 混合回放、回归测试接入等）的参考基线。
+
+> 当前路径说明：运行时 Trace 端口位于 `backend/app/trace/tracing.py`；具体写入、读取和回放实现位于
+> `extensions/trace/`。文中 `backend/app/trace/chat_trace.py`、`replay.py` 和 `trace_reader.py`
+> 为旧实现路径。
+> 回放器仍需兼容历史 trace 中的 `glob`/`bash`/`write_file` 等工具名；生产 Agent 当前暴露的
+> `list_files`/`apply_changes`/`run_task`/`run_program`/`shell` 契约以
+> [`runtime-command-execution.md`](runtime-command-execution.md) 为准。
 
 ## 1. 背景与目标
 
@@ -38,7 +45,7 @@ ReActAgent 循环
 ## 4. trace 记录格式
 
 - **文件**：`temp/chat_log/trace_{session_id}.jsonl`。
-- **写入**：`backend/app/trace/chat_trace.py` 的 `ChatTraceLogger`；核心 Trace Port 与全局 hook 位于 `backend/app/trace/tracing.py`，LLM 通过 `_trace_hook` 转发。
+- **写入**：`extensions/trace/chat_trace.py` 的 `ChatTraceLogger`；核心 Trace Port 与全局 hook 位于 `backend/app/trace/tracing.py`，LLM 通过 `_trace_hook` 转发。
 - **事件类型**：
 
 | event_type | 含义 |
@@ -58,14 +65,14 @@ ReActAgent 循环
 
 ### 5.1 M1 — TraceViewer（可视化查看/调试）
 
-- **后端** `backend/app/trace/trace_reader.py`：`list_traces()` / `read_trace()`（复用 JSONL adapter 的目录策略，防路径穿越）。
+- **后端** `extensions/trace/trace_reader.py`：`list_traces()` / `read_trace()`（复用 JSONL adapter 的目录策略，防路径穿越）。
 - **后端** `backend/app/api/trace.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`。
 - **前端** `frontend/src/components/TraceViewer/`：Drawer，左会话列表 + 右时间轴；按 `user_message` 分轮次、按 `span_id` 配对 LLM/工具；支持「自动播放」逐条高亮滚动。
 - **入口**：Toolbar「Trace」按钮 → `uiStore.traceVisible`。
 
 ### 5.2 M2 — 确定性回放引擎
 
-- **后端** `backend/app/trace/replay.py`：
+- **后端** `extensions/trace/replay.py`：
   - `ReplayLLM` — 假 LLM，实现 `ainvoke_with_tools` / `ainvoke`，游标顺序 pop 记录的 `llm_response`。
   - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema；`graceful`（rerun 专用）耗尽时返回占位而非抛错。
   - `replay_agent_session(session_id, *, mode="mock", until_turn=None, tool_policy="readonly")` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
@@ -189,11 +196,76 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/trace/chat_trace.py` | JSONL trace 记录（ChatTraceLogger；user_message 带 source_dir/test_dir） |
+| `extensions/trace/chat_trace.py` | JSONL trace 记录（ChatTraceLogger；user_message 带 source_dir/test_dir） |
 | `backend/app/trace/tracing.py` | Trace Port、Provider loader、TraceSession、span 与全局 hook |
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
-| `backend/app/trace/trace_reader.py` | 读取解析 JSONL（list / read） |
-| `backend/app/trace/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
+| `extensions/trace/trace_reader.py` | 读取解析 JSONL（list / read） |
+| `extensions/trace/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
 | `backend/app/api/trace.py` | `/api/trace/*` 端点 |
 | `backend/app/services/agent_chat_ws.py` | agent 对话 WS，记录 tool_call/result/done，补 `start()` |
 | `frontend/src/components/TraceViewer/` | 前端查看/回放 UI |
+
+## 9. 使用手册
+
+### 9.1 快速开始
+
+1. 启动后端（`backend/`）与前端（`frontend/`，`npm run dev`）。
+2. 点击顶部工具栏的「Trace」按钮，打开 Trace 回放抽屉。
+3. 左侧选择会话，右侧查看完整时间轴。
+4. 点击「回放执行」，选择模式后执行离线或混合回放。
+
+### 9.2 查看 Trace
+
+会话列表按修改时间倒序显示 `session_id`、事件数、文件大小和开始时间；时间轴按
+`user_message` 分轮次展示 LLM、工具、Step、完成和错误事件。LLM 卡片可展开
+Prompt/Response，工具卡片可展开参数和返回值。自动播放按约 700ms 的节奏逐条高亮，
+支持暂停和重置。
+
+### 9.3 回放模式
+
+| 模式 | 行为 | 适用场景 |
+|---|---|---|
+| `Mock`（默认） | 不调用 LLM、不执行工具，按记录确定性重放 | 回归验证、Bug 复现、零成本调试 |
+| `Rerun` | 真实调用 LLM，工具按记录 mock | 模型/提示词 A/B 和漂移分析 |
+| `Live` | 真实调用 LLM，按 `tool_policy` 执行真实工具 | 验证当前工作区行为；默认只读 |
+
+`Rerun` 会消耗 API 并产生延迟；`Live` 可能读取或修改工作区，只有明确需要时才使用
+`tool_policy=full`。回放结果按 `session_id + mode` 缓存在浏览器 localStorage，点击
+「重新执行」可强制绕过缓存。
+
+### 9.4 结果判读
+
+- Mock 全匹配：控制流、工具调用和最终答案与原始记录一致，可作为回归基线。
+- Rerun 不一致：通常是 LLM 非确定性造成的预期差异，使用逐词 diff 分析漂移。
+- Mock 不匹配或中断：优先检查 trace 是否完整、工具 schema 是否变化以及游标是否错位。
+
+结果弹窗会显示模式、已执行轮次、LLM 调用数和工具调用数；每轮可展开查看匹配状态、
+逐词 diff、原始答案和回放答案。
+
+### 9.5 命令行和 HTTP 回放
+
+在 `backend/` 目录中可直接调用回放引擎：
+
+```python
+import asyncio
+from extensions.trace.replay import replay_agent_session
+
+async def main():
+    result = await replay_agent_session("<session_id>", mode="mock")
+    print(result["all_matched"])
+
+asyncio.run(main())
+```
+
+HTTP 接口：
+
+```text
+POST /api/trace/{session_id}/replay?mode=mock|rerun|live&turn=N&tool_policy=readonly|full
+```
+
+### 9.6 常见问题
+
+- 会话列表为空：确认后端已启动，并且 `temp/chat_log/` 下已有 `trace_*.jsonl`。
+- Rerun 不逐字一致：这是重新调用 LLM 的正常现象；确定性校验使用 Mock。
+- 点击回放没有重新执行：通常命中了缓存，点击结果弹窗中的「重新执行」。
+- 只想查看工具而不产生副作用：使用 Mock；Live 默认只读，但仍会访问当前工作区。
