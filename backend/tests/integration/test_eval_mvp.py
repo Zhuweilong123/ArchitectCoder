@@ -733,8 +733,18 @@ def test_devagent_baseline_snapshot_is_available():
     assert BASELINE_PATH.is_file()
     assert baseline["agent"] == "devagent"
     assert baseline["case_count"] == 16
-    assert baseline["passed"] == 6
-    assert baseline["pass_rate"] == 0.375
+    assert baseline["version"] == "4.0@4076efc"
+    assert baseline["passed"] == 8
+    assert baseline["failed"] == 5
+    assert baseline["errors"] == 3
+    assert baseline["pass_rate"] == 0.5
+    assert baseline["average_score"] == 0.7221
+    assert baseline["failure_categories"] == {
+        "agent_failure": 3,
+        "budget_exceeded": 2,
+        "none": 8,
+        "tool_failure": 3,
+    }
     assert len(baseline["groups"]) == 3
     assert all(not case_id.startswith("trace-") for case_id in baseline["case_ids"])
 

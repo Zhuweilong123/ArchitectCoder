@@ -1,10 +1,9 @@
 {
   "agent": "devagent",
-  "label": "16-case DevAgent baseline",
-  "version": "dev-3.0@48357febaae5371171eb85ed592d67ce40782610",
-  "model": "deepseek-v4-flash",
-  "captured_at": "2026-09-06T08:42:29.173828+00:00",
-  "batch_id": "import_baseline_infra_fixed_20260906",
+  "label": "16-case DevAgent 4.0 baseline",
+  "version": "4.0@4076efc",
+  "captured_at": "2026-09-07T11:11:33.590918+00:00",
+  "source_result": "temp/evals/results/baseline-4.0-run.jsonl",
   "case_ids": [
     "radar-multiturn-greeting-component-001",
     "radar-multiturn-greeting-create-001",
@@ -24,19 +23,60 @@
     "radar-understanding-sequence-trace-001"
   ],
   "case_count": 16,
-  "passed": 6,
-  "failed": 9,
+  "passed": 8,
+  "failed": 5,
   "timeout": 0,
-  "errors": 1,
+  "errors": 3,
   "budget_finalized": 4,
-  "pass_rate": 0.375,
-  "average_score": 0.7756,
-  "total_duration_ms": 1227170.0,
-  "total_tokens": 2904977,
-  "total_tool_calls": 420,
+  "pass_rate": 0.5,
+  "average_score": 0.7221,
+  "total_duration_ms": 1435766.0,
+  "total_tokens": 2918570,
+  "total_tool_calls": 418,
+  "failure_categories": {
+    "agent_failure": 3,
+    "budget_exceeded": 2,
+    "none": 8,
+    "tool_failure": 3
+  },
+  "eval_contract": {
+    "case_schema_version": "1.0",
+    "tool_protocol_version": "foundation-tools-v1",
+    "checker_protocol_version": "deterministic-checkers-v1",
+    "fixture_layout_version": "design-src-test-v1",
+    "pass_rule": "all_hard_checkers",
+    "score_rule": "mean_all_checkers"
+  },
   "groups": [
-    {"name": "multiturn", "total": 4, "passed": 1, "failed": 3, "timeout": 0, "pass_rate": 0.25, "average_score": 0.7917},
-    {"name": "single", "total": 8, "passed": 1, "failed": 6, "timeout": 0, "pass_rate": 0.125, "average_score": 0.6554},
-    {"name": "understanding", "total": 4, "passed": 4, "failed": 0, "timeout": 0, "pass_rate": 1.0, "average_score": 1.0}
+    {
+      "name": "multiturn",
+      "total": 4,
+      "passed": 2,
+      "failed": 1,
+      "timeout": 0,
+      "errors": 1,
+      "pass_rate": 0.5,
+      "average_score": 0.8472
+    },
+    {
+      "name": "single",
+      "total": 8,
+      "passed": 2,
+      "failed": 4,
+      "timeout": 0,
+      "errors": 2,
+      "pass_rate": 0.25,
+      "average_score": 0.5205
+    },
+    {
+      "name": "understanding",
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "timeout": 0,
+      "errors": 0,
+      "pass_rate": 1.0,
+      "average_score": 1.0
+    }
   ]
 }
