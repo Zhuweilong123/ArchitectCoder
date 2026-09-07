@@ -1,413 +1,174 @@
 # DevAgent 评测体系
 
-> 当前评测入口、实现详情和历史结果统一维护在本文。文中的指标均以所在章节标注的
-> commit、模型和 fixture 为准，不代表最新代码的即时结果。
+> 文档定位：3.4 评测体系
+>
+> 文档状态：当前实现说明 + 截至 3.3（含 3.3.x）的历史数据指标
+>
+> 适用范围：`extensions/evals`、`backend/evals`、`backend/app/api/evals.py` 和评测中心前端
 
-> 文档版本：evaluation system / implementation and history
-> 归档日期：2026-09-06
-> 适用范围：`extensions/evals` 执行代码、`backend/evals` 评测数据、`backend/app/api/evals.py` 评测 API、评测中心前端和运行结果治理
+本文只把 3.4 的评测结构和运行规则作为当前事实。历史性能数字统一保留至 3.3（含 3.3.1、3.3.2、3.3.3），并按采集时间归档；3.4 的新结果以 Evaluation Center 生成的运行批次、性能结果和归档快照为准，不再写入历史表。
 
-本文档记录当前智能体评测体系的规则、实际构建结果、目录约定、运行链路、历史基线和未完成事项。
-当前代码和工程基线入口见 [`current-architecture.md`](current-architecture.md)。
+## 1. 3.4 当前架构
 
-## 当前口径
-
-- 评测代码位于 `extensions/evals`，版本化用例和 fixture 位于 `backend/evals`。
-- 运行采用固定 fixture、隔离工作区、Agent 执行、确定性 Checker、Trace 和结果归档。
-- 正式基线按 `understanding`、`single`、`multiturn` 三组统计；专项回归单独记录，不能混入正式通过率。
-- 每次正式运行应记录代码 commit、模型、提示词版本、fixture、依赖环境、预算和 Trace ID。
-- Checker 结果、工具调用和 Trace 必须同时保留，单独的自然语言最终答案不能作为唯一判定依据。
-
-历史评测数字只能在标注代码版本、模型和 fixture 后进行横向比较，不能跨版本直接当作当前质量结论。
-
-## 1. 建设目标
-
-评测体系用于回答四个问题：
-
-1. Agent 能否在固定项目上下文中完成指定任务。
-2. Agent 是否修改了正确的资源，并遵守设计、源码和测试之间的边界。
-3. 一次运行失败时，能否通过 Checker、Trace 和运行元数据定位原因。
-4. 不同模型、版本和提示词之间，能力指标能否进行可重复的横向和纵向比较。
-
-当前体系采用“固定项目 fixture + 隔离工作区 + Agent 执行 + 确定性 Checker + Trace/结果归档”的闭环。评测不是直接在主项目目录上运行，因此评测过程中的错误修改不会污染真实设计文件。
-
-## 2. 当前目录和资源边界
-
-### 2.1 评测代码
+3.4 的评测链路由五层组成：
 
 ```text
-extensions/evals/           # 评测执行代码和本地 Provider
-├── models.py    # EvalCase、EvalResult、CheckerResult 等模型
-├── registry.py  # 用例注册和加载
-├── projects.py  # 项目清单加载、fixture 路径解析
-├── runner.py    # 单用例隔离执行器
-├── checkers.py  # 确定性检查器
-├── batches.py   # 批次、汇总、趋势和快照归档
-└── cli.py       # 命令行运行入口
-
-backend/evals/               # 版本化评测数据
-├── cases/                   # 用例定义，JSON，受控加载
-├── projects/                # 项目 manifest，声明 fixture 和资源边界
-├── fixtures/                # 可复制、可复现的项目快照（支持 base_fixture 覆盖层）
-└── baseline.json            # 基线指标
+版本化 Case/Project/Fixture
+          ↓
+Provider + Registry 加载评测资产
+          ↓
+Runner 在隔离工作区复用生产 DevAgent 执行
+          ↓
+确定性 Checker 校验文件、UML、测试、Trace 和保护路径
+          ↓
+EvalResult → Batch → Performance JSONL → Archive
 ```
 
-### 2.2 项目固定为三类资源
-
-每个项目 fixture 的标准结构是：
+### 1.1 代码与数据边界
 
 ```text
-<fixture>/
-├── design/      # UML 设计文件，通常为 *.umlproj
-├── src/         # Agent 可修改的源码
-├── test/        # 项目测试和评测辅助测试
-└── DESIGN.md    # 项目说明和任务上下文
+extensions/evals/
+├── models.py                # EvalCase、EvalTurn、EvalResult、CheckerResult、ProjectManifest
+├── registry.py              # Case 目录加载
+├── projects.py              # ProjectManifest 和 fixture 路径解析
+├── fixture_materializer.py  # base fixture + overlay 的隔离物化
+├── runner.py                # 单用例执行、预算、Trace、结果和工作区快照
+├── checkers.py              # 确定性检查器
+├── batches.py               # 批次、汇总、合并和快照归档
+├── performance.py           # 性能 JSONL 浏览、删除和归档
+└── provider.py              # Eval Provider 适配层
+
+backend/evals/
+├── cases/                   # 版本化用例 JSON
+├── projects/                # 项目 manifest
+├── fixtures/                # 可复制的设计/源码/测试快照
+└── baseline.json            # 受控的历史基线资产
 ```
 
-这是当前评测体系的资源契约：
+`extensions/evals` 只负责执行机制，`backend/evals` 只负责评测输入和受控基线。路径统一由 `extensions.evals.paths` 解析，运行代码不应自行拼接评测数据目录。
 
-- `design/` 代表设计事实源。
-- `src/` 代表实现事实源。
-- `test/` 代表行为验证事实源。
-- `DESIGN.md` 提供人类可读的领域背景，但默认属于受保护资源。
+### 1.2 Case、Project 和 Fixture 契约
 
-目前项目清单有 7 个：
+Case 支持单轮 `prompt` 和共享 Agent 历史的多轮 `turns`，并声明：
 
-| 项目 | 用途 |
-|---|---|
-| `radar_sim_v1` | 当前雷达信号处理基线项目 |
-| `radar_sim_delay_bug_v1` | 回波延迟方向缺陷修复 |
-| `radar_sim_padding_bug_v1` | PRT 脉冲序列补零缺陷修复 |
-| `radar_sim_validation_v1` | 领域参数有限值和边界校验 |
-| `radar_sim_noise_seed_v1` | 噪声随机种子和可复现性 |
-| `radar_sim_stale_uml_v1` | 旧版 UML 向当前代码和设计迁移 |
-| `radar_sim_broken_uml_v1` | 损坏 UML 文件恢复，同时保护主设计文件 |
+- `project_id`、检查器、单轮时间上限、工具调用上限和 Token 上限；
+- `suite`、`capability`、`operation`、`sample_type`、`release_gate` 等统计元数据；
+- `hard_checkers` 与普通 `checkers`，分别表达发布门禁证据和诊断/评分证据。
 
-项目 manifest 只允许相对路径，并由 `projects.py` 将 fixture 限制在 `backend/evals/fixtures/` 目录内。`base_fixture` 可选，用于声明一个完整基础快照；运行时由 `fixture_materializer.py` 先复制基础 fixture，再用当前 fixture 目录中的差异文件覆盖。默认保护路径是 `design/radar_sim_design.umlproj` 和 `DESIGN.md`，可写范围通常是 `src`、`test`，迁移项目额外允许 `legacy`。
+ProjectManifest 固定 fixture 的版本、入口设计文件、`source_dir`、`test_dir`、保护路径和允许写入路径。所有路径必须是 fixture 根目录下的相对路径。
 
-## 3. 用例资产和分层
+Fixture 采用 `design/`、`src/`、`test/` 三类资源边界，可选 `base_fixture` 先复制完整基础快照，再叠加当前项目的差异文件。物化过程只复制普通文件，不使用跨平台链接。
 
-当前 `backend/evals/cases/` 共有 18 个用例，按元数据中的 `suite` 分组：
+当前目录包含 18 个用例：
 
-| 分组 | 数量 | 主要验证内容 | 是否用于正式基线 |
+| Suite | 数量 | 作用 | 正式基线 |
 |---|---:|---|---|
-| `understanding` | 4 | 项目结构、组件、图清单、时序交互理解 | 是 |
-| `single` | 8 | 单轮读取、创建、更新、删除及跨设计/源码/测试联动 | 是 |
-| `multiturn` | 4 | 首轮问候不调用工具，以及多轮创建、变更和时序任务 | 是 |
-| `trace-3.1` | 2 | Trace 衍生的组件操作专项回归 | 否，保留但不作为基线 |
+| `understanding` | 4 | 项目、组件、图和时序理解 | 是 |
+| `single` | 8 | 单轮读取、创建、更新、删除和跨资源联动 | 是 |
+| `multiturn` | 4 | 共享历史的多轮任务及首轮零工具行为 | 是 |
+| `trace-3.1` | 2 | Trace 衍生的专项回归 | 否 |
 
-正式基线是 `understanding`、`single`、`multiturn` 三组共 16 个用例；`trace-3.1` 仅用于专项回归，不应混入基线通过率。当前正式基线不再使用旧的 `baseline`、`p0`、`p1`、`p2`、`diagnostic` 分组口径。
+正式基线只统计前三个 suite 的 16 个用例；`trace-3.1` 始终作为专项回归单独查看。
 
-用例 JSON 的主要字段是：
+### 1.3 单用例执行
 
-```json
-{
-  "id": "radar-single-update-delay-001",
-  "prompt": "修复回波延迟方向问题，并同步设计、源码和测试。",
-  "project_id": "project_radar_delay_bug_v1",
-  "hard_checkers": [],
-  "checkers": [],
-  "max_seconds": 720,
-  "max_tool_calls": 60,
-  "max_total_tokens": 70000,
-  "metadata": {
-    "suite": "single",
-    "capability": "cross_artifact_update",
-    "operation": "update",
-    "sample_type": "positive",
-    "release_gate": true
-  }
-}
-```
+`EvalRunner` 在执行前完成 fixture、manifest 和目录布局校验，然后：
 
-当前用例的能力覆盖包括：
+1. 将 fixture 物化到独立临时工作区，并记录 `paths_unchanged` 文件的 SHA-256；
+2. 通过生产组装函数创建 DevAgent，复用生产工具、提示词和执行协调器；
+3. 为每个用例创建独立 `TraceSession`，收集工具调用、模型、Token、预算停止原因和最终答案；
+4. 多轮 Case 复用 Agent、工作区和历史，但每个用户轮次使用独立的生产任务预算；
+5. 执行 hard/普通 Checker，生成带 Checker 明细和元数据的 `EvalResult`；
+6. 将最终物化工作区复制到 `temp/evals/artifacts/<run_id>`，便于复查和重放。
 
-- 项目理解和端到端流程理解。
-- 领域逻辑修复：延迟方向、PRT 补零、参数有限值、SNR 边界。
-- 可复现性：随机种子注入和噪声结果稳定性。
-- UML 正确性：文件可解析、图/类/组件/方法存在、关系存在、时序顺序正确。
-- UML 与代码一致性及旧版设计迁移。
-- 只读任务、受保护文件、损坏设计文件恢复和运行预算控制。
+评测只改变工作区和审批适配器，不注入评测专用工具或额外用户 Prompt。评测失败不会修改主项目目录。
 
-## 4. 单用例执行链路
+### 1.4 Checker 语义
 
-```text
-加载 Case
-   ↓
-解析 ProjectManifest，校验 fixture 边界
-   ↓
-复制 fixture 到临时工作区
-   ↓
-记录 paths_unchanged 文件的基线 hash
-   ↓
-创建独立 TraceSession
-   ↓
-创建带项目路径和任务预算的生产 DevAgent
-   ↓
-流式执行 Agent，收集工具调用、Token 和最终状态
-   ↓
-执行 hard_checkers 和 checkers
-   ↓
-汇总 EvalResult，追加写入 results.jsonl
-   ↓
-删除临时工作区，保留 Trace 路径和结果元数据
-```
+通用 Checker 包括 `file_exists`、`file_contains`、`json_field`、`pytest` 和 `paths_unchanged`；UML Checker 包括 `uml_valid`、`uml_contains`、`uml_relation`、`uml_method` 和 `uml_sequence`。结果统一包含 `passed`、`score`、`message` 和 `details`。
 
-实现位置：`extensions/evals/runner.py`。
+Runner 会分别执行两组 Checker，并把结果合并到最终结果中；当前 hard checker 是结果证据和门禁输入，不采用失败即停止的短路执行。发布流程应按 Case 的 `release_gate` 和 Checker 配置解释结果，不能只看自然语言回答或单一平均分。
 
-隔离执行的关键行为：
+## 2. 运行结果治理
 
-- 每个用例使用独立临时目录。
-- Agent 的 `source_dir`、`test_dir` 和 `project_file` 均指向临时工作区。
-- `paths_unchanged` 在执行前保存 SHA-256，执行后验证文件未发生改变。
-- 单用例受最大运行时间、工具调用数、总 Token 数和 LLM 调用超时共同约束。
-- Trace 使用独立的 `TraceSession`，结果包含 `run_id`、`trace_id`、`trace_path`、模型和运行时指标。
-- 临时工作区在用例结束后删除，因此结果中不会保留可直接继续编辑的 workspace。
+### 2.1 结果层级
 
-## 5. Checker 体系
+| 层级 | 内容 | 持久化位置 |
+|---|---|---|
+| 单次结果 | `EvalResult`、Checker 明细、Trace 关联 | `temp/evals/results/results.jsonl` |
+| 运行批次 | 同一次执行的 Case 集合和 `EvalSummary` | `temp/evals/batches.jsonl` |
+| 性能结果 | 同版本完成批次合并后的 canonical JSONL | `temp/evals/results/performance-*.jsonl` |
+| 归档快照 | 完整批次、结果、备注和归档 ID | `temp/evals/archives/archive_*.json` |
+| 工作区快照 | 用于审计的最终 fixture 状态 | `temp/evals/artifacts/<run_id>/` |
+| Trace | 工具、LLM、任务和执行摘要事件 | `temp/evals/traces/` |
 
-### 5.1 通用 Checker
+`baseline.json` 是仓库内受控资产；运行批次和性能 JSONL 是运行时数据。合并批次不会自动修改基线，只有显式的基线提升或归档操作才会写入基线/归档数据。
 
-| Checker | 作用 |
-|---|---|
-| `file_exists` | 验证目标文件存在 |
-| `file_contains` | 验证文件包含指定文本 |
-| `json_field` | 验证 JSON 路径上的字段值 |
-| `pytest` | 在隔离工作区运行项目测试 |
-| `paths_unchanged` | 验证指定文件的内容 hash 未改变 |
+### 2.2 Batch、Performance 和 Archive 边界
 
-### 5.2 UML Checker
+- 一个执行请求对应一个 runtime batch；批次按 Case ID 顺序执行，同一进程只允许一个活动批次。
+- 只有已完成且版本相同的批次才能合并；同一 `case_id` 的完全相同结果去重，冲突结果拒绝合并。
+- 合并只生成性能 JSONL，不伪造新的执行批次，也不改变 `baseline.json`。
+- 批次和性能结果可以删除，但删除不影响代码仓、受控基线和已归档快照。
+- 归档保存完整快照，包含 Checker、模型、Trace ID、运行元数据和汇总指标；归档快照不可由删除运行结果反向修改。
 
-| Checker | 作用 |
-|---|---|
-| `uml_valid` | 验证 UML 项目可解析且包含有效图列表 |
-| `uml_contains` | 验证图、组件、类或消息存在 |
-| `uml_relation` | 验证两个 UML 元素间的关系及关系类型 |
-| `uml_method` | 验证类中存在指定方法 |
-| `uml_sequence` | 验证时序图中的消息标签和顺序 |
+每次正式运行还应记录代码 commit、模型和配置、提示词版本、Case/Fixture 版本、依赖环境、预算、Trace ID 以及结果 schema 版本，保证结果可解释、可复查。
 
-所有 Checker 当前都属于确定性检查器，执行结果包含 `passed`、`score`、`message` 和 `details`。这使得相同 fixture 在不调用 LLM 的情况下可以重复验证。
+## 3. API 与评测中心
 
-### 5.3 当前语义边界
-
-`hard_checkers` 和 `checkers` 已在数据模型中区分，但当前 Runner 会分别执行两组检查器，并将两组结果一起计算最终 `passed` 和平均 `score`；hard checker 目前不是“失败即立即停止”的短路门禁。这个实现足以支持 MVP，但发布门禁前应进一步明确：
-
-- hard checker 失败是否直接判定该用例不可发布。
-- soft checker 是否只影响分数而不影响通过状态。
-- pytest、UML 合法性和保护路径是否应统一作为强门禁。
-
-## 6. 结果、Trace 和归档
-
-### 6.1 单用例结果
-
-`EvalResult` 当前包含：
-
-- `run_id`、`case_id`、`status`、`passed`、`score`。
-- `started_at`、`duration_ms`、`model`。
-- `tool_calls`、`total_tokens`。
-- `checker_results` 和 `error`。
-- `trace_id`、`trace_path`。
-- `metadata`，目前用于记录 `project_id`、`batch_id`、`version` 等上下文。
-
-单用例结果默认追加到：
-
-```text
-<uml_dir 的父目录>/evals/results/results.jsonl
-```
-
-评测专用 Trace 统一写入 `<uml_dir 的父目录>/evals/traces/`；普通聊天 Trace 仍写入同级的 `chat_log/`。
-
-评测运行时目录统一约定如下：
-
-```text
-temp/evals/
-├── results/       # 单次评测和性能评测 JSONL
-├── traces/        # 评测专用 Trace
-├── archives/      # 正式批次快照
-├── runs/          # 历史评测结果
-├── reports/       # 评测分析报告
-└── batches.jsonl  # 批次索引
-```
-
-JSONL 用于保留本地运行历史。性能结果列表读取 `results/` 下的 `performance-*.jsonl`；批次合并时会对相同 case 结果去重，并在结果内容完全一致时复用已有性能文件，避免重复创建。
-
-### 6.2 批次结果
-
-`EvalBatchManager` 支持按 suite 或指定 `case_ids` 启动批次，并按用例 ID 顺序串行执行。批次汇总指标包括：
-
-- 总用例数、完成数、通过数、失败数、超时数、错误数。
-- 通过率和平均得分。
-- 平均耗时、总 Token、总工具调用数。
-- 当前用例、开始时间和完成时间。
-
-真实执行批次完成后追加到：
-
-```text
-<uml_dir 的父目录>/evals/batches.jsonl
-```
-
-当前批次管理器是进程内实现：同一进程只允许一个活动批次；服务重启后，已持久化的真实执行批次可查询，但运行中的任务不能自动恢复。将多个完成批次合并为性能结果时，只生成性能结果文件，不会创建或持久化一个 `merged` 批次。
-
-性能结果和运行批次均支持前端确认删除。删除只作用于本地 JSONL/批次索引数据，不修改代码仓、基线文件或已归档快照。
-
-### 6.3 快照归档
-
-归档操作将完整批次对象复制到：
-
-```text
-<uml_dir 的父目录>/evals/archives/archive_<UTC时间>_<随机后缀>.json
-```
-
-快照包含归档 ID、创建时间、备注和完整批次结果，包括 Checker 明细、模型、Trace ID 和运行元数据。归档 ID 已包含时间标识和随机后缀；单次 Trace 文件名仍以 run/session ID 为主，时间通过 `started_at` 和 Trace 事件记录表达。当前设计不要求再把时间重复写入 Trace 文件名。
-
-## 7. API 和前端闭环
-
-评测 API 位于 `backend/app/api/evals.py`，并由统一认证依赖保护：
+评测 API 位于 `backend/app/api/evals.py`，由统一认证依赖保护：
 
 | API | 作用 |
 |---|---|
-| `GET /api/evals/cases` | 获取用例目录 |
-| `POST /api/evals/run` | 执行单个用例 |
-| `GET /api/evals/results` | 查询最近单用例结果 |
-| `POST /api/evals/runs` | 按 suite 或 case IDs 启动批次 |
+| `GET /api/evals/cases` | 获取 Case 目录 |
+| `POST /api/evals/run` | 执行单个 Case |
+| `GET /api/evals/results` | 查询单次结果 |
+| `POST /api/evals/runs` | 按 suite 或 Case ID 启动批次 |
 | `GET /api/evals/runs` | 查询批次列表 |
 | `GET /api/evals/runs/{batch_id}` | 查询批次进度和明细 |
-| `DELETE /api/evals/runs/{batch_id}` | 删除已完成的本地运行批次 |
-| `POST /api/evals/runs/merge` | 合并同版本完成批次并生成性能结果，不新增运行批次 |
-| `GET /api/evals/trends` | 查询按版本组织的趋势数据 |
-| `GET /api/evals/performance` | 查询本地性能结果列表 |
-| `GET /api/evals/performance/detail` | 查询单个性能结果明细 |
-| `DELETE /api/evals/performance` | 删除本地性能结果 JSONL |
-| `POST /api/evals/performance/archive` | 将性能结果生成归档快照 |
+| `DELETE /api/evals/runs/{batch_id}` | 删除已完成批次 |
+| `POST /api/evals/runs/merge` | 合并同版本批次并生成性能结果 |
+| `GET /api/evals/trends` | 查询版本趋势摘要 |
+| `GET /api/evals/performance` | 查询性能结果列表 |
+| `GET /api/evals/performance/detail` | 查询性能结果明细 |
+| `DELETE /api/evals/performance` | 删除性能 JSONL |
+| `POST /api/evals/performance/archive` | 归档性能结果 |
 | `POST /api/evals/archives` | 创建批次快照 |
 | `GET /api/evals/archives` | 查询归档摘要 |
 
-前端 `EvaluationCenter` 已接入工具栏，提供：
+`EvaluationCenter` 对应“运行批次 → 性能结果 → 多版本对比 → 已归档”的流程：启动并轮询批次、查看逐 Case 结果、合并同版本批次、删除本地运行数据、归档可复查快照。当前数据应从这些运行时接口读取，不应把新版本数字硬编码进设计文档。
 
-1. 选择评测 suite 和版本号并启动批次。
-2. 每 2 秒轮询批次进度。
-3. 在“运行批次”中查看、展开、选择和删除真实执行批次。
-4. 合并同一版本的多个完成批次，生成一条性能结果。
-5. 在“性能结果”中查看、删除、归档和勾选结果进行多版本对比。
-6. 在“已归档”中查看本地归档快照。
+## 4. 历史数据指标归档（截至 3.3）
 
-前端标签按递进流程排列为“运行批次 → 性能结果 → 多版本对比 → 已归档”。运行批次和性能结果的删除均要求二次确认；详情请求遇到已删除数据时会自动清理失效选择，避免显示误导性的详情加载错误。
+以下数字按采集时间排列，范围截至 3.3（含 3.3.x）。它们仅用于回溯，不能代表 3.4 当前质量，也不能在 Case 集、模型、fixture 或预算不同的情况下直接横向比较。`—` 表示原始记录未提供该指标；“测试基线”行是工程测试，不是模型评测通过率。
 
-## 8. 历史运行基线
+| 时间 | 版本/记录 | 场景 | 结果/用例 | 通过率 | 平均分 | 耗时 | Total Tokens | Tool Calls | 其他指标 |
+|---|---|---|---|---:|---:|---:|---:|---:|---|
+| 日期未记录 | 工程测试基线 | `hello_agents` 评测基础设施和 Agent 测试 | 150 passed | — | — | — | — | — | 工程测试通过数 |
+| 2026-08-31 | 首轮正式评测 | DeepSeek Flash，12 个正式用例 | 9 通过 / 2 失败 / 1 超时 | 75.0% | 0.822 | 约 18.1 分钟 | 约 3,565,346 | 460 | 含领域校验、旧 UML、预算边界诊断样本 |
+| 2026-09-01 | `dev-3.0` 能力基线（`a1122e8`） | 16 用例完整运行 | 10 通过 / 1 失败 / 5 超时 | 62.50% | 66.67% | 1,930.2 s | 6,639,458 | 602 | 正式用例 12 个：8 通过、1 失败、3 超时 |
+| 2026-09-04 | `remove_01` 修复前 | `radar_trace_remove_v1`，7 轮对话 | 超时，6/7 轮完成 | 0% | 0.0 | 300.6 s | 380,710 | 97 | 7 个工具错误，19 个 Checker 已执行 |
+| 2026-09-05 | `remove_01` 修复后 | `radar_trace_remove_v1`，7 轮对话 | 通过，7/7 轮完成 | 100% | 1.0 | 191.0 s | 352,542 | 86 | 1 个工具错误，43/43 Checker 通过 |
+| 2026-09-05 | 3.3 基线 | 16 性能用例 | 5 通过 / 11 未通过 | 31.3% | 0.570 | 95.2 s（平均） | 2,701,897 | 496 | — |
+| 2026-09-05 | 3.3.1 | 16 性能用例 | 6 通过 / 10 未通过 | 37.5% | 0.664 | 74.6 s（平均） | 2,811,558 | 360 | 相对 3.3：通过率 +6.2 pp |
+| 2026-09-05 | 3.3.2 | 16 性能用例 | 8 通过 / 8 未通过 | 50.0% | 0.736 | 74.1 s（平均） | 2,953,943 | 398 | 相对 3.3：通过率 +18.8 pp |
+| 2026-09-05 | 3.3.3 | 16 性能用例 | 7 通过 / 9 未通过 | 43.8% | 0.674 | 75.7 s（平均） | 2,754,828 | 386 | 配套定向回归测试 24 项通过 |
+| 2026-09-05 | 工具/评测基础设施回归 | `remove_01` 修复相关集成测试 | 39 passed | — | — | — | — | — | 记录于修复后评测报告 |
+| 2026-09-06 | `dev-3.0` 16 用例基线快照 | `backend/evals/baseline.json` | 6 通过 / 9 失败 / 0 超时 / 1 错误 | 37.5% | 0.7756 | 1,227.2 s | 2,904,977 | 420 | 版本标记早于 3.3，快照登记时间晚于部分 3.3 实验 |
 
-### 8.1 工程测试基线
+历史表中的 3.3.x 指标来自独立性能 JSONL；`dev-3.0` 快照来自仓库内 `backend/evals/baseline.json`。两者 Case 集和运行目的不同，不能合并计算总通过率。
 
-在 `hello_agents` conda 环境中，后端工程测试曾达到：
+## 5. 3.4 使用规则
 
-```text
-150 passed
-```
+1. 正式基线只统计 `understanding`、`single`、`multiturn`；专项回归单独报告。
+2. 正向、负向、挑战样本分开解释，不能用一个通过率掩盖安全性和能力边界。
+3. 发布判断至少同时查看 Checker、工作区快照、Trace、工具调用和运行元数据。
+4. 性能比较必须固定版本、模型、Prompt、Fixture、依赖和预算；缺少这些字段的结果只能作为诊断数据。
+5. 新的 3.4 数字写入运行时性能结果或正式归档，不再追加到本文的历史指标表。
 
-这是评测基础设施和 Agent 工程测试的基线，不等同于模型评测通过率。
+## 6. 推荐运行入口
 
-### 8.2 首轮正式评测
-
-2026-08-31 使用配置的 DeepSeek Flash 模型运行 12 个正式基线用例，历史记录为：
-
-| 指标 | 结果 |
-|---|---:|
-| 用例数 | 12 |
-| 通过 | 9 |
-| 失败 | 2 |
-| 超时 | 1 |
-| 平均 Checker 得分 | 0.822 |
-| 工具调用 | 460 |
-| Trace 汇总 Token | 约 3,565,346 |
-| 总耗时 | 约 18.1 分钟 |
-
-历史失败中，`radar-p0-validation-001` 只完成了部分非有限参数校验；`radar-p1-uml-stale-001` 未补齐旧 UML 的目标类、方法和时序消息；`radar-p2-budget-001` 按预期在 5 秒预算耗尽后停止。最后一个属于负向/边界行为验证，不应简单等同于普通功能失败。
-
-后续诊断运行表明，领域参数和 SNR 校验已经可以单独通过；旧版 UML 的 API 流程和拓扑迁移仍是当前挑战能力。当前已将上述汇总转换为本地历史归档：`temp/evals/archives/archive_20260831T000000Z_historical_v3_0_initial.json`。该文件位于运行目录并被 Git 忽略，包含汇总指标但不包含原始逐用例结果，因此可以被前端趋势和归档列表读取，但不能替代完整可复查的正式归档。
-
-### 8.3 当前 16 用例正式基线
-
-2026-09-06 基于当前 `project_radar` 用例目录完成正式基线登记。基线只统计 `understanding`、`single`、`multiturn` 三组 16 个用例，不包含 `trace-3.1`：
-
-| 指标 | 结果 |
-|---|---:|
-| 用例数 | 16 |
-| 通过 | 6 |
-| 失败 | 9 |
-| 超时 | 0 |
-| 错误 | 1 |
-| 平均 Checker 得分 | 0.7756 |
-| 总 Token | 2,904,977 |
-| 工具调用 | 420 |
-| 总耗时 | 1,227.2 s |
-
-基线版本为 `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`，基线指标来源为 `backend/evals/baseline.json`，对应性能结果为 `temp/evals/results/performance-16-20260906-v20260906.jsonl`。基线文件跟随代码仓提交；临时性能结果、Trace 和归档数据仍属于本地评测运行数据。
-
-## 9. 样本解释规则
-
-评测结果应至少分成三类：
-
-- 正向样本：目标是完成任务并通过全部发布门禁，用于计算正式通过率。
-- 负向样本：目标是拒绝危险操作、保护文件、遵守只读约束或在预算耗尽时安全停止。失败通常表示安全性问题。
-- 挑战样本：允许当前模型失败，用于记录能力边界、引导后续改进，不应混入正向发布通过率。
-
-当前用例通过 `suite`、`capability`、`operation`、`sample_type`、`release_gate` 和部分 `expected_runtime_behavior` 表达这些信息；`trace-3.1` 通过 suite 单独保留为专项回归，不进入 16 用例正式基线。
-
-## 10. 已完成能力评估
-
-### 已完成
-
-- 用例和项目 manifest 受控加载。
-- 每个项目固定为 `design/src/test` 三资源边界。
-- fixture 复制到临时工作区，避免污染真实项目。
-- Agent 运行预算、工具调用预算和 Token 预算。
-- 文件、pytest、UML 和受保护路径 Checker。
-- 单用例 Trace、运行结果和 Agent Metrics 关联。
-- CLI 单用例/套件运行入口。
-- API 单用例运行、批次运行、趋势查询和归档。
-- 前端评测中心的运行批次、性能结果、合并、删除和归档闭环。
-- 正向、负向、挑战样本的解释原则已经确定。
-
-### 尚未完成或仅有 MVP 实现
-
-- 批次管理是进程内的，不能跨进程、跨重启恢复。
-- 没有统一的评测运行 manifest，模型、系统提示词、代码 commit、依赖锁定和环境快照未形成不可变组合。
-- hard checker 还没有完全落实为发布门禁语义。
-- 结果 JSONL 没有 schema version、唯一性约束和写入锁。
-- 归档有完整快照写入，但没有归档内容 hash、签名、导出下载和恢复接口。
-- 运行批次趋势目前仍是列表，没有指标折线图和版本回归标识；结果明细已支持用例查看和 Trace 直达。
-- 失败诊断仍主要依赖 Checker message 和人工查看 Trace，尚未统一生成失败分类。
-- Checker 对领域行为的覆盖仍少于对文件存在性、字符串和 UML 结构的覆盖。
-- 没有稳定的多模型/多温度重复运行策略，随机性和置信区间尚未纳入正式报告。
-
-## 11. 后续演进优先级
-
-### P0：上线评测门禁前必须完成
-
-1. 为用例增加 `sample_type`、`expected_status`、`release_gate`、`case_version` 和 `owner`。
-2. 明确 hard checker 的门禁规则，至少将 pytest、UML 合法性和受保护路径设为可配置强门禁。
-3. 建立 `EvalRunManifest`，固定代码 commit、模型、模型配置、提示词版本、依赖环境、fixture 版本和预算。
-4. 为结果和归档增加 schema version、原子写入、文件锁和内容 hash。
-5. 为批次增加取消、失败重试策略和服务重启后的状态恢复，避免“前端还在轮询但任务已丢失”。
-
-### P1：提高评测解释能力和迭代效率
-
-1. 前端增加通过率、得分、耗时和 Token 的折线趋势图，并标记版本回归。
-2. 支持从批次 → 用例 → Checker → Trace 的逐级钻取。
-3. 增加 UML-代码语义一致性、行为输出、边界值和回归测试 Checker，降低对 `file_contains` 的依赖。
-4. 为失败结果生成标准化分类：模型拒答、工具选择错误、参数错误、实现不完整、测试失败、预算耗尽、基础设施错误。
-5. 将专项回归用例与正式用例建立显式关联，自动生成“正式能力 → 专项回归”的报告。
-
-### P2：规模化和长期治理
-
-1. 将进程内批次管理迁移到持久化队列或数据库，支持多 Worker。
-2. 增加成本估算、延迟分位数、重试率、模型路由和 Token 价格维度。
-3. 支持多次重复运行、置信区间、随机种子矩阵和模型对比。
-4. 建立评测集版本、fixture 版本和变更审批流程。
-5. 接入 CI、Prometheus 或其他监控系统，把正向门禁和挑战集报告分开发布。
-
-## 12. 推荐运行方式
-
-在项目根目录执行正式基线的三个 suite：
+在项目根目录分别执行正式基线 suite：
 
 ```powershell
 conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite understanding
@@ -415,82 +176,11 @@ conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --s
 conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite multiturn
 ```
 
-执行专项 Trace 用例或单个用例时：
+执行专项 Trace 回归或单个 Case：
 
 ```powershell
 conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --suite trace-3.1
 conda run --no-capture-output -n hello_agents python -m extensions.evals.cli --ids radar-understanding-component-map-001
 ```
 
-实际执行前应确认：
-
-- 后端 `.env` 中的模型和 API 配置已固定。
-- 使用的 conda 环境为 `hello_agents`。
-- 评测结果目录和 Trace 目录具有写权限。
-- 运行版本号填写 Git commit 或明确的工作区标签。
-- 正向、负向、挑战样本分别统计，不用单一通过率掩盖安全性和能力边界。
-
-## 13. 归档结论
-
-当前体系已经从“手动调用 Agent、人工查看结果”升级为可重复的评测 MVP：有固定项目、有隔离执行、有确定性判定、有 Trace、有批次指标、有前端入口和结果快照能力。
-
-它已经足够支撑早期模型对比和能力诊断，但还不应直接视为生产级发布门禁。下一阶段最重要的工作不是继续扩充用例数量，而是先完成评测样本语义、运行 manifest、强门禁规则和可恢复批次这四项治理能力；完成后，评测结果才具备稳定的版本比较和上线决策价值。
-
-## 14. 3.3.1–3.3.3 三轮优化归档
-
-本节归档 2026-09-05 针对 16 个性能用例完成的三轮探索。每轮均使用生产环境相同的单次 Agent 探索预算、用户输入形式和既有工具集合；没有新增工具、没有改变主流程、没有扩大预算，也没有向用户用例注入额外 Prompt。每轮结果均写入独立 JSONL 文件，互不覆盖。
-
-### 14.1 版本指标
-
-| 版本 | 通过 | 通过率 | 平均得分 | 平均耗时 | 总 Token | 工具调用 | 相对 3.3 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 3.3 基线 | 5/16 | 31.3% | 0.570 | 95.2 s | 2,701,897 | 496 | — |
-| 3.3.1 | 6/16 | 37.5% | 0.664 | 74.6 s | 2,811,558 | 360 | +6.2 pp |
-| 3.3.2 | 8/16 | 50.0% | 0.736 | 74.1 s | 2,953,943 | 398 | +18.8 pp |
-| 3.3.3 | 7/16 | 43.8% | 0.674 | 75.7 s | 2,754,828 | 386 | +12.5 pp |
-
-指标来源：
-
-- 3.3 基线：`temp/evals/results/performance-16-20260905.jsonl`
-- 3.3.1：`temp/evals/results/performance-16-20260905-v3.3.1.jsonl`
-- 3.3.2：`temp/evals/results/performance-16-20260905-v3.3.2.jsonl`
-- 3.3.3：`temp/evals/results/performance-16-20260905-v3.3.3.jsonl`
-
-### 14.2 每轮改动和验证
-
-#### 3.3.1：减少工具输出截断造成的重复探索
-
-- 修改 `backend/app/agent_base/core/hooks.py` 的默认 `TruncateHook` 配置：`read_file` 上限调整为 6000 字符，`search_text` 为 4000，`run_task` 为 6000，`skill` 保持 20000；全局默认上限仍保持 1200。
-- 目标是让 Agent 一次获得足够的代码上下文，减少因输出被截断而反复读取同一文件。
-- 结果：工具调用从基线 496 降至 360，平均耗时从 95.2 s 降至 74.6 s，通过率提升 6.2 个百分点。
-- 代表性 Trace：`temp/evals/traces/trace_20260905_172343_96609abbfb974d73_eval.jsonl`
-
-#### 3.3.2：在既有预算阈值触发一次收敛检查点
-
-- 修改 `backend/app/agent_base/agents/react_agent.py`：沿用既有的工具步数/Token 预算阈值，首次达到阈值时追加一次运行时 system checkpoint。
-- 约束 Agent 停止继续广泛探索，转入修改、验证和收尾，并避免重复读取已确认文件；没有修改用户原始 Prompt，也没有改变预算值。
-- 结果：16 个用例中通过 8 个，为三轮最佳；平均得分 0.736，平均耗时 74.1 s。
-- 代表性 Trace：`temp/evals/traces/trace_20260905_174426_44913bb1773940ca_eval.jsonl`
-
-#### 3.3.3：对工具失败提供一次性恢复指引
-
-- 修改 `backend/app/agent_base/agents/react_agent.py`：按不同的工具名/错误码识别失败签名，每种新失败只追加一次 recovery checkpoint。
-- 指引 Agent 将失败视为已知证据，禁止机械重试，要求检查目标、进行最小修复并做聚焦验证；无法继续时明确报告限制。
-- 结果：通过 7/16，平均得分 0.674；总 Token 降至 2,754,828，工具调用降至 386，较 3.3.2 更节省资源，但通过率回落 6.2 个百分点。
-- 代表性 Trace：`temp/evals/traces/trace_20260905_180631_e90b7dd681dd4e87_eval.jsonl`
-
-三轮代码修改均通过定向回归测试：`tests/agent_base/test_react_agent.py` 与 `tests/agent_base/test_evidence.py` 共 24 项通过。
-
-### 14.3 结果判断
-
-1. 3.3.2 是当前质量最好的组合：收敛检查点在不增加预算的前提下改善了通过率和平均得分。
-2. 3.3.3 对资源消耗有积极作用，但尚未证明恢复指引能稳定提升成功率；后续应重点观察失败类型分布，而不是继续叠加 Prompt。
-3. 三轮中反复出现的能力缺口集中在领域校验、旧 UML 同步、UML 拓扑/时序流和预算边界行为；这些属于 Agent 执行与评测样本能力问题，不是结果文件或 Trace 落盘问题。
-4. 当前结果适合用于版本对比和问题定位，暂不作为单一发布门禁；应结合正向、负向、挑战用例以及每个用例的 Trace 共同判断。
-
-## 15. 历史档案索引
-
-- 本文第 8 节及第 14 节：评测系统自身的历史运行和优化归档。
-- 更早的 2026-09-01 能力基线和 `remove_01` 案例已从工作树移除；如需复盘，请通过 Git 历史查看。
-
-历史案例保持独立文件，便于追加 Trace 和逐用例证据；正式规则、目录约定和聚合结果只在本文维护。
+运行前确认模型配置、`hello_agents` 环境、结果/Trace 目录写权限和 Git 版本标签均已固定。需要复盘更早的设计讨论时，通过 Git 历史查看，不在当前文档恢复已删除的旧归档文件。
