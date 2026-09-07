@@ -35,7 +35,7 @@ const App: React.FC = () => {
   const {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
-    showTestCaseInCanvas, interfaceLanguage,
+    showTestCaseInCanvas, agentChatVisible, interfaceLanguage,
   } = useUiStore();
   const diagramType = useDiagramStore((s) => selectActiveDiagram(s).diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
@@ -133,14 +133,14 @@ const App: React.FC = () => {
           </div>
         </Content>
 
-        {rightPanelVisible && (
+        {rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
           <div
             className="resize-handle"
             onMouseDown={(e) => handleResize(e, 'left')}
           />
         )}
 
-        {rightPanelVisible && (
+        {rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
           <div className="right-panel" style={{ width: rightPanelWidth }}>
             <div className="right-panel-tabs">
               <Tabs
@@ -162,7 +162,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {!rightPanelVisible && (
+        {!rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
           <Tooltip title={interfaceLanguage === 'en' ? 'Show side panel' : '显示右侧面板'}>
             <Button
               type="primary"

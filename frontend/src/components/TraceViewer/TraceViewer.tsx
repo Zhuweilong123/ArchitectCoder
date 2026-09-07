@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as Diff from 'diff';
 import {
-  Drawer, Button, List, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented, Timeline, Row, Col,
+  Drawer, Button, Input, List, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented, Timeline, Row, Col,
 } from 'antd';
 import {
   ReloadOutlined, CaretRightOutlined, PauseOutlined, StepBackwardOutlined,
@@ -615,6 +615,7 @@ const TraceViewer: React.FC = () => {
 
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
+  const [traceQuery, setTraceQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -685,6 +686,11 @@ const TraceViewer: React.FC = () => {
   }, [traceVisible, traceSessionId]);
 
   const turns = useMemo(() => (detail ? buildTurns(detail.events) : []), [detail]);
+  const filteredTraces = useMemo(() => {
+    const query = traceQuery.trim().toLowerCase();
+    if (!query) return traces;
+    return traces.filter((item) => `${item.session_id} ${item.events} ${item.size}`.toLowerCase().includes(query));
+  }, [traceQuery, traces]);
 
   // 回放弹窗的轮次清单：直接取自已加载的 trace（无需先跑全量回放）。
   // 与后端轮次切分口径一致（一个 user_message = 一轮）；无 user_message 时
@@ -841,6 +847,16 @@ const TraceViewer: React.FC = () => {
       <div className="trace-viewer-body">
         {/* 左侧：会话列表 */}
         <div className="trace-session-list">
+          <div className="trace-session-toolbar">
+            <Input.Search
+              allowClear
+              size="small"
+              value={traceQuery}
+              onChange={(event) => setTraceQuery(event.target.value)}
+              placeholder="搜索会话 ID"
+            />
+            <Typography.Text type="secondary">{filteredTraces.length} / {traces.length} 个会话</Typography.Text>
+          </div>
           {loadingList && traces.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
           ) : traces.length === 0 ? (
@@ -848,7 +864,7 @@ const TraceViewer: React.FC = () => {
           ) : (
             <List
               size="small"
-              dataSource={traces}
+              dataSource={filteredTraces}
               renderItem={(t) => (
                 <List.Item
                   className={selected === t.session_id ? 'trace-session-item active' : 'trace-session-item'}

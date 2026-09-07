@@ -40,6 +40,26 @@
   padding: 2px 8px;
 }
 
+.toolbar-design-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-design-controls.is-hidden {
+  display: none;
+}
+
+.toolbar-mode-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-mode-controls.is-hidden {
+  display: none;
+}
+
 .settings-button {
   color: #475569;
   border-color: #e2e8f0;

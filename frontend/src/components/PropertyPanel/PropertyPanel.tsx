@@ -98,6 +98,9 @@ const PropertyPanel: React.FC = () => {
         <Form layout="vertical" size="small">
           <Form.Item label="类名">
             <Input
+              id={`class-${selectedClass.id}-name`}
+              name="class-name"
+              aria-label="类名"
               value={draftValue(`class:${selectedClass.id}:name`, selectedClass.name)}
               onChange={(e) => {
                 const value = e.target.value;
@@ -112,6 +115,7 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="构造型">
             <Select
+              aria-label="构造型"
               value={selectedClass.stereotype}
               onChange={(v) => handleClassChange('stereotype', v)}
               options={Object.values(Stereotype).map((s) => ({ value: s, label: s }))}
@@ -119,6 +123,9 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="备注">
             <TextArea
+              id={`class-${selectedClass.id}-note`}
+              name="class-note"
+              aria-label="备注"
               value={draftValue(`class:${selectedClass.id}:note`, selectedClass.note)}
               onChange={(e) => {
                 const value = e.target.value;
@@ -135,6 +142,9 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="提供的接口 (◉ provided)">
             <TextArea
+              id={`class-${selectedClass.id}-provided-interfaces`}
+              name="provided-interfaces"
+              aria-label="提供的接口，每行一个"
               value={draftValue(`class:${selectedClass.id}:provided_interfaces`,
                 (selectedClass.provided_interfaces || []).join('\n'))}
               onChange={(e) => {
@@ -156,6 +166,9 @@ const PropertyPanel: React.FC = () => {
           </Form.Item>
           <Form.Item label="依赖的接口 (◡ required)">
             <TextArea
+              id={`class-${selectedClass.id}-required-interfaces`}
+              name="required-interfaces"
+              aria-label="依赖的接口，每行一个"
               value={draftValue(`class:${selectedClass.id}:required_interfaces`,
                 (selectedClass.required_interfaces || []).join('\n'))}
               onChange={(e) => {
@@ -189,6 +202,7 @@ const PropertyPanel: React.FC = () => {
                 {selectedClass.attributes.map((attr, idx) => (
                   <div key={idx} className="property-row">
                     <Select
+                      aria-label={`属性 ${idx + 1} 可见性`}
                       value={attr.visibility}
                       size="small"
                       style={{ width: 50 }}
@@ -200,6 +214,9 @@ const PropertyPanel: React.FC = () => {
                       options={Object.values(Visibility).map((v) => ({ value: v, label: v }))}
                     />
                     <Input
+                      id={`class-${selectedClass.id}-attribute-${idx}-name`}
+                      name={`attribute-${idx}-name`}
+                      aria-label={`属性 ${idx + 1} 名称`}
                       size="small"
                       style={{ width: 80 }}
                       value={draftValue(`class:${selectedClass.id}:attribute:${idx}:name`, attr.name)}
@@ -216,6 +233,9 @@ const PropertyPanel: React.FC = () => {
                     />
                     <span className="attr-colon">:</span>
                     <Input
+                      id={`class-${selectedClass.id}-attribute-${idx}-type`}
+                      name={`attribute-${idx}-type`}
+                      aria-label={`属性 ${idx + 1} 类型`}
                       size="small"
                       style={{ width: 80 }}
                       value={draftValue(`class:${selectedClass.id}:attribute:${idx}:type`, attr.type)}
@@ -231,6 +251,7 @@ const PropertyPanel: React.FC = () => {
                       }}
                     />
                     <Switch
+                      aria-label={`属性 ${idx + 1} 静态成员`}
                       size="small"
                       checked={attr.is_static}
                       onChange={(v) => {
@@ -243,6 +264,7 @@ const PropertyPanel: React.FC = () => {
                     <Button
                       type="text" size="small" danger
                       icon={<MinusCircleOutlined />}
+                      aria-label={`删除属性 ${idx + 1}`}
                       onClick={() => {
                         const attrs = selectedClass.attributes.filter((_, i) => i !== idx);
                         handleClassChange('attributes', attrs);

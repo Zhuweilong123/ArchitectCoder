@@ -1,5 +1,6 @@
 .evaluation-control-card { margin-bottom: 12px; background: #fafafa; }
 .evaluation-baseline-card { margin-bottom: 12px; }
+.evaluation-baseline-scope { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .evaluation-baseline-meta { margin-bottom: 4px; color: #8c8c8c; font-size: 12px; }
 .evaluation-hint { margin-top: 8px; color: #8c8c8c; font-size: 12px; }
 .evaluation-batch-line { display: flex; gap: 10px; align-items: center; margin: 12px 0 8px; flex-wrap: wrap; }
@@ -8,9 +9,14 @@
 .evaluation-trend-values { color: #595959; font-size: 12px; }
 .evaluation-trend-item { cursor: pointer; }
 .evaluation-run-main { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 12px; }
-.evaluation-run-main .ant-list-item-meta { flex: 1 1 360px; min-width: 300px; }
-.evaluation-run-main .ant-list-item-meta-title { overflow-wrap: anywhere; }
-.evaluation-run-main .evaluation-trend-values { flex: 0 1 auto; justify-content: flex-end; flex-wrap: wrap; white-space: nowrap; }
+.evaluation-run-copy { flex: 1 1 360px; min-width: 0; }
+.evaluation-run-copy .ant-list-item-meta { min-width: 0; }
+.evaluation-run-copy .ant-list-item-meta-title { overflow: hidden; }
+.evaluation-run-heading { max-width: 100%; min-width: 0; }
+.evaluation-run-heading .ant-typography { min-width: 0; }
+.evaluation-run-copy .evaluation-trend-values { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; white-space: nowrap; }
+.evaluation-version-cell, .evaluation-file-cell { display: inline-block; max-width: 100%; vertical-align: middle; }
+.evaluation-file-cell { font-family: Consolas, Monaco, monospace; font-size: 12px; }
 .evaluation-trend-item .ant-list-item-action { flex: 0 0 auto; margin-inline-start: 12px; }
 .evaluation-filter-row { margin: 0 0 12px; }
 .evaluation-case-detail { margin-top: 12px; background: #fafafa; }
@@ -18,6 +24,8 @@
 .evaluation-control-card .ant-space { row-gap: 8px; }
 .evaluation-selected-row > td { background: #e6f4ff !important; }
 .evaluation-suite-select-all { padding: 0 12px 4px; }
+.evaluation-center-modal .ant-table-thead > tr > th { white-space: nowrap; }
+.evaluation-center-modal .ant-table-cell { vertical-align: middle; }
 
 @media (max-width: 900px) {
   .evaluation-trend-values { display: none; }

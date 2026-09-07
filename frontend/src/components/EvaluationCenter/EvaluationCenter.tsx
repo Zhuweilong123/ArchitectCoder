@@ -33,6 +33,10 @@ function fmtTime(value: string): string {
   return new Date(value).toLocaleString();
 }
 
+function fileName(value: string): string {
+  return value.split(/[\\/]/).pop() || value;
+}
+
 function archiveExecutionTimestamp(archive: EvalArchive): number {
   const timestamp = Date.parse(archive.started_at || archive.created_at);
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -423,6 +427,10 @@ const EvaluationCenter: React.FC = () => {
   const activeSummary = batch?.summary;
   const renderLegacyBaseline = () => baseline ? (
     <Card size="small" className="evaluation-baseline-card" title={<Space><LineChartOutlined />性能基线</Space>} extra={<Space><Tag color="blue">{EVAL_AGENT_LABEL}</Tag><Text type="secondary">{baseline.version}</Text></Space>}>
+      <div className="evaluation-baseline-scope">
+        <Tag color="green">正式基线 {baselineCaseIds.length} 个用例</Tag>
+        {cases.length !== baselineCaseIds.length ? <Tag>当前目录 {cases.length} 个用例（含诊断集）</Tag> : null}
+      </div>
       <div className="evaluation-baseline-meta">{baseline.label} · {baseline.model} · 快照时间：{fmtTime(baseline.captured_at)}</div>
       <Row gutter={[12, 12]} className="evaluation-stat-row">
         <Col xs={12} sm={8} md={4}><Statistic title="用例数" value={baseline.case_count} /></Col>
@@ -498,15 +506,18 @@ const EvaluationCenter: React.FC = () => {
   ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未运行评测批次" />;
 
   const performanceColumns = [
-    { title: '版本', dataIndex: 'version', key: 'version', render: (v: string) => v || <Text type="secondary">未标记</Text> },
-    { title: '结果文件', dataIndex: 'source_path', key: 'source_path', ellipsis: true },
-    { title: '执行时间', dataIndex: 'started_at', key: 'started_at', render: fmtTime },
+    { title: '版本', dataIndex: 'version', key: 'version', width: 220, render: (v: string) => v ? <Text className="evaluation-version-cell" ellipsis={{ tooltip: v }} title={v}>{v}</Text> : <Text type="secondary">未标记</Text> },
+    { title: '结果文件', dataIndex: 'source_path', key: 'source_path', width: 220, render: (v: string, row: EvalPerformanceRun) => {
+      const value = v || row.file_name || '-';
+      return <Text className="evaluation-file-cell" ellipsis={{ tooltip: value }} title={value}>{fileName(value)}</Text>;
+    } },
+    { title: '执行时间', dataIndex: 'started_at', key: 'started_at', width: 150, render: fmtTime },
     { title: '用例数', dataIndex: 'result_count', key: 'result_count', width: 75 },
-    { title: '通过率', key: 'pass_rate', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.pass_rate * 100).toFixed(1)}%` },
-    { title: '平均得分', key: 'score', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.average_score * 100).toFixed(1)}%` },
-    { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
-    { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
-    { title: '归档', key: 'archived', render: (_: unknown, row: EvalPerformanceRun) => row.archived ? <Tag color="success">已归档</Tag> : <Tag>未归档</Tag> },
+    { title: '通过率', key: 'pass_rate', width: 90, render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.pass_rate * 100).toFixed(1)}%` },
+    { title: '平均得分', key: 'score', width: 100, render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.average_score * 100).toFixed(1)}%` },
+    { title: '平均耗时', key: 'duration', width: 100, render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
+    { title: 'Token', key: 'tokens', width: 110, render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
+    { title: '归档', key: 'archived', width: 90, render: (_: unknown, row: EvalPerformanceRun) => row.archived ? <Tag color="success">已归档</Tag> : <Tag>未归档</Tag> },
       { title: '操作', key: 'action', width: 170, render: (_: unknown, row: EvalPerformanceRun) => (
         <Space>
           <Button size="small" onClick={(event) => { event.stopPropagation(); selectPerformance(row); }}>查看</Button>
@@ -549,7 +560,7 @@ const EvaluationCenter: React.FC = () => {
     <>
       <Alert type="info" showIcon message="先查看独立 performance JSONL 结果，再由你决定是否生成正式归档快照。" description="原始结果不会被覆盖；归档后会出现在‘已归档’页签，并按评测执行时间倒序展示。" style={{ marginBottom: 12 }} />
       <Space wrap className="evaluation-filter-row"><Input.Search allowClear value={performanceQuery} onChange={(event) => setPerformanceQuery(event.target.value)} placeholder="搜索版本、结果文件、评测集" style={{ width: 280 }} /><Select value={performanceArchiveFilter} onChange={setPerformanceArchiveFilter} style={{ width: 130 }} options={[{ value: 'all', label: '全部结果' }, { value: 'pending', label: '待归档' }, { value: 'archived', label: '已归档' }]} /><Text type="secondary">已加载 {filteredPerformanceRuns.length} / {performanceRuns.length} 个结果</Text></Space>
-      <Table size="small" rowKey="result_id" loading={performanceLoading} dataSource={filteredPerformanceRuns} pagination={{ pageSize: 6 }} rowSelection={{ selectedRowKeys: comparisonIds, onChange: (keys) => setComparisonIds(keys as string[]) }} rowClassName={(row) => selectedPerformance?.result_id === row.result_id ? 'evaluation-selected-row' : ''} onRow={(row) => ({ onClick: (event) => { const target = event.target as HTMLElement; if (target.closest('button, a, [role="button"]')) return; selectPerformance(row); } })} columns={performanceColumns} />
+      <Table size="small" rowKey="result_id" loading={performanceLoading} dataSource={filteredPerformanceRuns} pagination={{ pageSize: 6 }} scroll={{ x: 1180 }} rowSelection={{ selectedRowKeys: comparisonIds, onChange: (keys) => setComparisonIds(keys as string[]) }} rowClassName={(row) => selectedPerformance?.result_id === row.result_id ? 'evaluation-selected-row' : ''} onRow={(row) => ({ onClick: (event) => { const target = event.target as HTMLElement; if (target.closest('button, a, [role="button"]')) return; selectPerformance(row); } })} columns={performanceColumns} />
       {selectedPerformance && (
         <Card size="small" title={<Space>{selectedPerformance.version || selectedPerformance.file_name}{selectedPerformance.archived ? <Tag color="success">已归档</Tag> : <Tag>待归档</Tag>}</Space>} style={{ marginTop: 12 }} extra={!selectedPerformance.archived ? (
           <Popconfirm title="确认归档这份性能结果？" description={`版本：${performanceVersion || '未填写'}，用例数：${selectedPerformance.summary.total}`} okText="确认归档" cancelText="取消" onConfirm={archivePerformance}><Button type="primary" icon={<FileDoneOutlined />} loading={performanceArchiving}>确认归档</Button></Popconfirm>
@@ -692,8 +703,13 @@ const EvaluationCenter: React.FC = () => {
               : current.filter((id) => id !== item.batch_id))}
             style={{ marginRight: 12 }}
           />
-          <List.Item.Meta title={<Space>{item.version}{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>} description={fmtTime(item.started_at)} />
-          <Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space>
+          <div className="evaluation-run-copy">
+            <List.Item.Meta
+              title={<Space className="evaluation-run-heading"><Text className="evaluation-version-cell" ellipsis={{ tooltip: item.version }} title={item.version}>{item.version}</Text>{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>}
+              description={fmtTime(item.started_at)}
+            />
+            <Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space>
+          </div>
           </div>
         </List.Item>
         {selectedTrendBatch?.batch_id === item.batch_id ? (
@@ -729,7 +745,7 @@ const EvaluationCenter: React.FC = () => {
   );
 
   return (
-    <Modal title={<Space><LineChartOutlined />ArchitectCoder 能力基准中心</Space>} open={evaluationVisible} onCancel={() => setEvaluationVisible(false)} footer={null} width={1220} styles={{ body: { maxHeight: 'calc(100vh - 150px)', overflowY: 'auto' } }}>
+    <Modal className="evaluation-center-modal" title={<Space><LineChartOutlined />ArchitectCoder 能力基准中心</Space>} open={evaluationVisible} onCancel={() => setEvaluationVisible(false)} footer={null} width={1220} styles={{ body: { maxHeight: 'calc(100vh - 150px)', overflowY: 'auto' } }}>
       <Card size="small" className="evaluation-control-card">
         <Space wrap>
           <Tag color="blue">{EVAL_AGENT_LABEL}</Tag>
@@ -758,7 +774,8 @@ const EvaluationCenter: React.FC = () => {
               </>
             )}
           />
-          <Tag color={selectedCaseIds.length === cases.length && cases.length > 0 ? 'green' : 'blue'}>{selectedCaseIds.length} / {cases.length || '-'} 用例</Tag>
+          <Tag color="green">正式基线 {baselineCaseIds.length} 个</Tag>
+          <Tag color={selectedCaseIds.length === cases.length && cases.length > 0 ? 'green' : 'blue'}>当前选择 {selectedCaseIds.length} / {cases.length || '-'} 个</Tag>
           <Tag color={repository?.dirty ? 'warning' : 'green'} title={repository?.commit || undefined}>{repository ? `${repository.branch}@${repository.commit.slice(0, 12)}${repository.dirty ? ' · dirty' : ''}` : '读取仓库版本中…'}</Tag>
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={runBatch} loading={loading} disabled={!selectedCaseIds.length || !repository?.version || repository.version === 'unknown' || !!batch && ['running', 'queued'].includes(batch.status)}>一键运行</Button>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
