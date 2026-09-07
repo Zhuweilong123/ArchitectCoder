@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-create-remove-target-001",
   "name": "新增目标删除能力",
   "prompt": "为 TargetSceneManager 增加 removeTarget(distance) -> bool：删除第一个匹配距离的目标，删除成功返回 true，不存在返回 false；同步 UML 方法契约，并通过项目测试和隐藏回归测试。不要修改原有测试文件。",

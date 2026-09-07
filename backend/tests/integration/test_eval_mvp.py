@@ -10,11 +10,18 @@ from pathlib import Path
 import pytest
 
 from app.agent_base.agents.react_agent import ReActProgress
-from extensions.evals.models import EvalCase, EvalResult, ProjectManifest
+from extensions.evals.models import (
+    EVAL_CASE_SCHEMA_VERSION,
+    EVAL_CHECKER_PROTOCOL_VERSION,
+    EVAL_TOOL_PROTOCOL_VERSION,
+    EvalCase,
+    EvalResult,
+    ProjectManifest,
+)
 from extensions.evals.checkers import build_checkers
 from extensions.evals.fixture_materializer import materialize_fixture
 from extensions.evals.projects import load_projects, resolve_fixture
-from extensions.evals.registry import load_cases
+from extensions.evals.registry import EvalCatalogError, load_cases
 from extensions.evals.runner import (
     EvalRunner,
     _agent_budget,
@@ -73,7 +80,13 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     )
     assert result.metadata["workspace_ephemeral"] is False
     assert result.metadata["eval_contract"]["tool_protocol_version"] == (
-        "foundation-tools-v1"
+        EVAL_TOOL_PROTOCOL_VERSION
+    )
+    assert result.metadata["eval_contract"]["case_schema_version"] == (
+        EVAL_CASE_SCHEMA_VERSION
+    )
+    assert result.metadata["eval_contract"]["checker_protocol_version"] == (
+        EVAL_CHECKER_PROTOCOL_VERSION
     )
     assert result.metadata["eval_contract"]["fixture_layout_version"] == (
         "design-src-test-v1"
@@ -254,6 +267,7 @@ def test_eval_runner_persists_missing_fixture_result(tmp_path):
     result = __import__("asyncio").run(EvalRunner(results_path).run_case(case, _factory))
 
     assert result.status == "error"
+    assert result.failure_category == "environment_failure"
     assert "fixture not found" in result.error
     assert results_path.read_text(encoding="utf-8").count("missing-fixture") == 1
 
@@ -285,6 +299,11 @@ def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
     assert len(cases) == 18
+    assert all(case.schema_version == EVAL_CASE_SCHEMA_VERSION for case in cases.values())
+    assert all(
+        case.tool_protocol_version == EVAL_TOOL_PROTOCOL_VERSION
+        for case in cases.values()
+    )
     assert "radar-understanding-component-map-001" in cases
     assert "radar-single-create-remove-target-001" in cases
     assert "project_radar_v1" in projects
@@ -469,6 +488,7 @@ def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, mon
 
     assert result.status == "failed"
     assert result.passed is False
+    assert result.failure_category == "agent_failure"
     assert any(
         item.checker == "file_contains" and not item.passed
         for item in result.checker_results
@@ -555,6 +575,7 @@ def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeyp
 
     assert result.status == "budget_exceeded"
     assert result.passed is False
+    assert result.failure_category == "budget_exceeded"
     assert result.error == "evaluation stopped after a hard execution budget was exhausted"
     assert result.metadata["token_budget_stop_reasons"][0]["reason"] == (
         "hard_limit_before_next_llm"
@@ -602,6 +623,110 @@ def test_eval_cases_are_pinned_to_devagent():
         EvalCase(id="legacy-agent", prompt="legacy", agent="legacy")
 
 
+def test_eval_case_rejects_contract_drift():
+    with pytest.raises(ValueError, match="legacy tool names"):
+        EvalCase(
+            id="legacy-tool-name",
+            prompt="edit",
+            hard_checkers=[{
+                "type": "trace_policy",
+                "required_tools": ["edit_file"],
+            }],
+        )
+    with pytest.raises(ValueError, match="tool_protocol_version"):
+        EvalCase(
+            id="future-tool-contract",
+            prompt="edit",
+            tool_protocol_version="foundation-tools-v2",
+        )
+    with pytest.raises(ValueError, match="unsupported checker type"):
+        EvalCase(
+            id="unknown-checker",
+            prompt="edit",
+            hard_checkers=[{"type": "llm_judge"}],
+        )
+    with pytest.raises(ValueError, match="outside the fixed"):
+        EvalCase(
+            id="knowledge-graph-trace-contract",
+            prompt="inspect",
+            hard_checkers=[{
+                "type": "trace_policy",
+                "required_tools": ["get_project_map"],
+            }],
+        )
+    with pytest.raises(ValueError, match="missing required fields"):
+        EvalCase(
+            id="malformed-checker",
+            prompt="inspect",
+            hard_checkers=[{"type": "file_contains", "path": "result.txt"}],
+        )
+
+
+def test_eval_catalog_fails_closed_for_invalid_case(tmp_path, monkeypatch):
+    (tmp_path / "valid.json").write_text(
+        json.dumps({"id": "valid", "prompt": "ok"}), encoding="utf-8"
+    )
+    (tmp_path / "invalid.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr("extensions.evals.registry.cases_dir", lambda: tmp_path)
+
+    with pytest.raises(EvalCatalogError, match="invalid.json"):
+        load_cases()
+
+
+def test_soft_checkers_affect_score_but_not_hard_gate(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    case = EvalCase(
+        id="hard-gate-soft-score",
+        prompt="create result",
+        hard_checkers=[{"type": "file_exists", "path": "result.txt"}],
+        checkers=[{"type": "answer_contains_all", "texts": ["missing phrase"]}],
+    )
+
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert result.status == "passed"
+    assert result.passed is True
+    assert result.failure_category == "none"
+    assert result.score == 0.5
+    assert result.metadata["criterion_summary"] == {
+        "hard": {"total": 1, "passed": 1},
+        "score": {"total": 1, "passed": 0},
+    }
+    assert [item.details["criterion_role"] for item in result.checker_results] == [
+        "hard",
+        "score",
+    ]
+
+
+def test_checker_crash_is_not_reported_as_agent_failure(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+
+    class _BrokenChecker:
+        async def check(self, workspace):
+            raise RuntimeError("checker crashed")
+
+    monkeypatch.setattr(
+        "extensions.evals.runner.build_checkers", lambda *args, **kwargs: [_BrokenChecker()]
+    )
+    case = EvalCase(
+        id="checker-crash",
+        prompt="create result",
+        hard_checkers=[{"type": "file_exists", "path": "result.txt"}],
+    )
+
+    result = asyncio.run(
+        EvalRunner(tmp_path / "results.jsonl").run_case(case, _factory)
+    )
+
+    assert result.status == "error"
+    assert result.failure_category == "checker_failure"
+    assert "checker crashed" in result.error
+
+
 def test_devagent_baseline_snapshot_is_available():
     baseline = asyncio.run(get_baseline())
 
@@ -638,9 +763,9 @@ def test_paths_unchanged_detects_mutation(tmp_path):
 
 def test_eval_batch_summary_aggregates_runtime_metrics():
     results = [
-        type("Result", (), {"status": "passed", "score": 1.0, "duration_ms": 100.0, "total_tokens": 10, "tool_calls": 2})(),
-        type("Result", (), {"status": "failed", "score": 0.5, "duration_ms": 300.0, "total_tokens": 30, "tool_calls": 4})(),
-        type("Result", (), {"status": "timeout", "score": 0.0, "duration_ms": 500.0, "total_tokens": 20, "tool_calls": 1})(),
+        type("Result", (), {"status": "passed", "failure_category": "none", "score": 1.0, "duration_ms": 100.0, "total_tokens": 10, "tool_calls": 2})(),
+        type("Result", (), {"status": "failed", "failure_category": "agent_failure", "score": 0.5, "duration_ms": 300.0, "total_tokens": 30, "tool_calls": 4})(),
+        type("Result", (), {"status": "timeout", "failure_category": "timeout", "score": 0.0, "duration_ms": 500.0, "total_tokens": 20, "tool_calls": 1})(),
     ]
 
     summary = summarize(results, total=4)
@@ -654,6 +779,7 @@ def test_eval_batch_summary_aggregates_runtime_metrics():
     assert summary.average_score == 0.5
     assert summary.total_tokens == 60
     assert summary.total_tool_calls == 7
+    assert summary.failure_categories == {"agent_failure": 1, "timeout": 1}
 
 
 def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monkeypatch):

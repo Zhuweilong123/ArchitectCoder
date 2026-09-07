@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-understanding-api-contract-001",
   "name": "类和 API 契约理解",
   "prompt": "检查 UML、源码和测试，按组件列出核心类及其公开方法，至少覆盖 ModeController、TransmitCoordinator、EchoSimulator、TargetSceneManager、PulseCompressor 和 PeakDetector。不要修改任何文件。",

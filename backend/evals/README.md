@@ -41,6 +41,29 @@ protect the files that are outside the requested change scope. Answer and trace
 checkers also verify factual responses and required tool behavior, including the
 zero-tool greeting turns.
 
+## Evaluation contract
+
+The current catalog is pinned to case schema `1.0`, tool protocol
+`foundation-tools-v1`, checker protocol `deterministic-checkers-v1`, and fixture
+layout `design-src-test-v1`. Every tracked case declares its case/tool versions;
+an unsupported checker, version mismatch, malformed JSON, or legacy mutation
+tool name such as `edit_file` makes the complete catalog fail to load. This
+fail-closed behavior prevents a broken case from silently reducing the scoring
+denominator.
+
+Criterion roles are intentionally separate:
+
+- `hard_checkers` are acceptance gates. Every hard criterion must pass.
+- `checkers` are diagnostic scoring criteria. They affect the mean score but do
+  not turn a hard-gate pass into a failure.
+- A legacy/local case with no hard criteria keeps the old all-checkers pass rule.
+
+Every checker result records its criterion role and scope. Every run records a
+machine-readable `failure_category`: `agent_failure`, `tool_failure`,
+`environment_failure`, `checker_failure`, `timeout`, or `budget_exceeded` (and
+`none` for a successful run). Batch summaries aggregate these categories so
+capability regressions are not mixed with harness failures.
+
 ## Runtime parity
 
 Official evaluations use the same `DevAgent` assembly and

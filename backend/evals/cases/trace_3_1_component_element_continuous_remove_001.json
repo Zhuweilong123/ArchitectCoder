@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "trace-3-1-component-element-continuous-remove-001",
   "name": "组件图 Element 标识移除连续对话",
   "project_id": "radar_trace_remove_v1",

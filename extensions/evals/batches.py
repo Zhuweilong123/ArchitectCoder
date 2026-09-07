@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import json
 import uuid
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ class EvalSummary(BaseModel):
     average_duration_ms: float = 0.0
     total_tokens: int = 0
     total_tool_calls: int = 0
+    failure_categories: dict[str, int] = Field(default_factory=dict)
 
 
 class EvalBatch(BaseModel):
@@ -90,6 +92,11 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
     budget_exceeded = sum(item.status == "budget_exceeded" for item in results)
     budget_finalized = sum(item.status == "budget_finalized" for item in results)
     errors = sum(item.status == "error" for item in results)
+    failure_categories = Counter(
+        str(getattr(item, "failure_category", "none") or "none")
+        for item in results
+        if str(getattr(item, "failure_category", "none") or "none") != "none"
+    )
     return EvalSummary(
         total=total if total is not None else completed,
         completed=completed,
@@ -104,6 +111,7 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
         average_duration_ms=round(sum(item.duration_ms for item in results) / completed, 1) if completed else 0.0,
         total_tokens=sum(item.total_tokens for item in results),
         total_tool_calls=sum(item.tool_calls for item in results),
+        failure_categories=dict(sorted(failure_categories.items())),
     )
 
 

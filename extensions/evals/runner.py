@@ -35,13 +35,19 @@ from app.trace.tracing import TraceSession
 
 from .checkers import build_checkers
 from .fixture_materializer import materialize_fixture
-from .models import CheckerResult, EvalCase, EvalResult
+from .models import (
+    EVAL_CASE_SCHEMA_VERSION,
+    EVAL_CHECKER_PROTOCOL_VERSION,
+    EVAL_TOOL_PROTOCOL_VERSION,
+    CheckerResult,
+    EvalCase,
+    EvalResult,
+)
 from .projects import load_projects, resolve_fixture
 
 AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
 logger = logging.getLogger(__name__)
 
-EVAL_TOOL_PROTOCOL_VERSION = "foundation-tools-v1"
 EVAL_FIXTURE_LAYOUT_VERSION = "design-src-test-v1"
 
 _HARD_BUDGET_STOP_REASONS = {
@@ -82,6 +88,32 @@ def _trace_event_count(trace_path: str, event_type: str) -> int:
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return 0
     return count
+
+
+def _trace_has_tool_failure(trace_path: str) -> bool:
+    """Return whether production tracing recorded a failed tool result."""
+    if not trace_path:
+        return False
+    try:
+        for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            if event.get("event_type") == "tool_result" and event.get("error"):
+                return True
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return False
+
+
+def _tag_criteria(
+    results: list[CheckerResult], role: str, scope: str, turn: int | None = None,
+) -> list[CheckerResult]:
+    """Attach stable criterion semantics without changing checker payloads."""
+    for item in results:
+        item.details.setdefault("criterion_role", role)
+        item.details.setdefault("criterion_scope", scope)
+        if turn is not None:
+            item.details.setdefault("turn", turn)
+    return results
 
 
 def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str, Any]]:
@@ -235,8 +267,12 @@ class EvalRunner:
         factory = agent_factory or dev_agent_factory
         result.metadata["project_id"] = case.project_id
         result.metadata["eval_contract"] = {
+            "case_schema_version": EVAL_CASE_SCHEMA_VERSION,
             "tool_protocol_version": EVAL_TOOL_PROTOCOL_VERSION,
+            "checker_protocol_version": EVAL_CHECKER_PROTOCOL_VERSION,
             "fixture_layout_version": EVAL_FIXTURE_LAYOUT_VERSION,
+            "pass_rule": "all_hard_checkers",
+            "score_rule": "mean_all_checkers",
             "execution_path": "production_agent_execution",
             "prompt_source": "case_user_message_only",
             "budget_scope": (
@@ -265,7 +301,9 @@ class EvalRunner:
         try:
             fixture, manifest = resolve_fixture(case)
         except ValueError as exc:
-            finished = self._finish(result, "error", str(exc), started)
+            finished = self._finish(
+                result, "error", str(exc), started, "environment_failure"
+            )
             self._append_result(finished)
             get_agent_metrics().record_run("eval_error")
             return finished
@@ -282,17 +320,40 @@ class EvalRunner:
             result.metadata["workspace_ephemeral"] = True
             if fixture is not None:
                 if not fixture.is_dir():
-                    finished = self._finish(result, "error", f"fixture not found: {fixture}", started)
+                    finished = self._finish(
+                        result,
+                        "error",
+                        f"fixture not found: {fixture}",
+                        started,
+                        "environment_failure",
+                    )
                     finished.workspace = ""
                     self._append_result(finished)
                     get_agent_metrics().record_run("eval_error")
                     return finished
-                materialize_fixture(fixture, workspace, manifest)
+                try:
+                    materialize_fixture(fixture, workspace, manifest)
+                except (OSError, ValueError) as exc:
+                    finished = self._finish(
+                        result,
+                        "error",
+                        f"fixture materialization failed: {exc}",
+                        started,
+                        "environment_failure",
+                    )
+                    finished.workspace = ""
+                    self._append_result(finished)
+                    get_agent_metrics().record_run("eval_error")
+                    return finished
 
             layout_errors = _validate_project_layout(workspace, manifest)
             if layout_errors:
                 finished = self._finish(
-                    result, "error", "; ".join(layout_errors), started,
+                    result,
+                    "error",
+                    "; ".join(layout_errors),
+                    started,
+                    "environment_failure",
                 )
                 finished.workspace = ""
                 self._append_result(finished)
@@ -320,6 +381,7 @@ class EvalRunner:
                     else:
                         baseline_hashes[relative_path] = None
 
+            failure_phase = "environment"
             try:
                 source_dir = workspace / manifest.source_dir if manifest else workspace
                 test_dir = workspace / manifest.test_dir if manifest else workspace
@@ -332,6 +394,7 @@ class EvalRunner:
                 ) as tracer:
                     result.trace_id = tracer.trace_id
                     agent = await factory(workspace, case)
+                    failure_phase = "agent"
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
                     result.metadata["agent"] = "devagent"
                     production_agent = isinstance(agent, ReActAgent)
@@ -373,6 +436,7 @@ class EvalRunner:
                     review_mgr = getattr(agent, "_eval_review_manager", None)
                     progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
+                    turn_score_checker_results: list[CheckerResult] = []
                     active_turn: dict[str, Any] = {
                         "turn": 0,
                         "details": [],
@@ -417,7 +481,7 @@ class EvalRunner:
 
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
-                        nonlocal execution_error
+                        nonlocal execution_error, failure_phase
                         from app.agent_base.core.hooks import (
                             AgentRuntime, get_runtime, set_runtime, reset_runtime,
                         )
@@ -785,6 +849,7 @@ class EvalRunner:
                             turn_hard_configs = turn_spec.hard_checkers
                             turn_score_configs = turn_spec.checkers
                             if turn_hard_configs or turn_score_configs:
+                                failure_phase = "checker"
                                 turn_hard_results = await asyncio.gather(*(
                                     checker.check(workspace)
                                     for checker in build_checkers(
@@ -817,6 +882,12 @@ class EvalRunner:
                                         },
                                     )
                                 ))
+                                _tag_criteria(
+                                    turn_hard_results, "hard", "turn", turn_index
+                                )
+                                _tag_criteria(
+                                    turn_score_results, "score", "turn", turn_index
+                                )
                                 turn_results = [*turn_hard_results, *turn_score_results]
                                 result.checker_results.extend(turn_results)
                                 # A turn-local hard checker is an acceptance
@@ -824,6 +895,8 @@ class EvalRunner:
                                 # it in the final aggregate so a later turn
                                 # cannot mask an incomplete earlier task.
                                 turn_hard_checker_results.extend(turn_hard_results)
+                                turn_score_checker_results.extend(turn_score_results)
+                                failure_phase = "agent"
                                 turn_records[-1]["checker_results"] = [
                                     item.model_dump() for item in turn_results
                                 ]
@@ -914,6 +987,7 @@ class EvalRunner:
                         str((result.metadata.get("turns") or [])[-1].get("answer") or "")
                         if result.metadata.get("turns") else ""
                     )
+                    failure_phase = "checker"
                     hard_results = await asyncio.gather(*(
                         checker.check(workspace)
                         for checker in build_checkers(
@@ -934,27 +1008,58 @@ class EvalRunner:
                             runtime={"total_tool_calls": result.tool_calls},
                         )
                     ))
+                    _tag_criteria(hard_results, "hard", "case")
+                    _tag_criteria(score_results, "score", "case")
                     # Keep non-file execution checkers (notably
-                    # review_auto_stub).  Turn-local file checkers are
-                    # diagnostic evidence and are rerun below against final
-                    # workspace state, so including them again would skew the
-                    # final score.
+                    # review_auto_stub), then combine the retained per-turn
+                    # criteria with the final case-level criteria exactly once.
                     execution_results = [
                         item for item in result.checker_results
                         if item.checker == "review_auto_stub"
                     ]
-                    checker_results = [
+                    _tag_criteria(execution_results, "hard", "execution")
+                    gate_results = [
                         *execution_results,
                         *turn_hard_checker_results,
                         *hard_results,
+                    ]
+                    scored_results = [
+                        *gate_results,
+                        *turn_score_checker_results,
                         *score_results,
+                    ]
+                    checker_results = [
+                        *scored_results,
                     ]
                     result.checker_results = list(checker_results)
                     result.score = (
                         sum(item.score for item in checker_results) / len(checker_results)
                         if checker_results else 1.0
                     )
-                    result.passed = bool(checker_results) and all(item.passed for item in checker_results)
+                    # Hard criteria are the release gate; score criteria are
+                    # diagnostic and affect only the score. Cases without any
+                    # hard criterion retain the legacy all-checkers behavior.
+                    pass_inputs = gate_results or checker_results
+                    result.passed = bool(pass_inputs) and all(
+                        item.passed for item in pass_inputs
+                    )
+                    result.metadata["eval_contract"]["pass_rule"] = (
+                        "all_hard_checkers"
+                        if gate_results else "all_checkers_legacy_fallback"
+                    )
+                    result.metadata["criterion_summary"] = {
+                        "hard": {
+                            "total": len(gate_results),
+                            "passed": sum(item.passed for item in gate_results),
+                        },
+                        "score": {
+                            "total": len(turn_score_checker_results) + len(score_results),
+                            "passed": sum(
+                                item.passed
+                                for item in [*turn_score_checker_results, *score_results]
+                            ),
+                        },
+                    }
                     budget_events = result.metadata.get("token_budget_stop_reasons", [])
                     budget_reasons = {
                         str(event.get("reason") or "")
@@ -964,14 +1069,26 @@ class EvalRunner:
                         result.status = "error"
                         result.passed = False
                         result.error = execution_error
+                        result.failure_category = (
+                            "tool_failure"
+                            if _trace_has_tool_failure(tracer.path)
+                            else "agent_failure"
+                        )
                     elif budget_reasons & _HARD_BUDGET_STOP_REASONS:
                         result.status = "budget_exceeded"
                         result.passed = False
                         result.error = "evaluation stopped after a hard execution budget was exhausted"
+                        result.failure_category = "budget_exceeded"
                     elif budget_reasons & _FINALIZATION_BUDGET_STOP_REASONS:
                         result.status = "budget_finalized"
+                        result.failure_category = (
+                            "none" if result.passed else "budget_exceeded"
+                        )
                     else:
                         result.status = "passed" if result.passed else "failed"
+                        result.failure_category = (
+                            "none" if result.passed else "agent_failure"
+                        )
                     finalize_task(
                         "budget_exceeded"
                         if budget_reasons & _HARD_BUDGET_STOP_REASONS
@@ -1007,6 +1124,7 @@ class EvalRunner:
                     change_set.rollback()
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {evaluation_deadline_seconds}s"
+                result.failure_category = "timeout"
                 timeout_checkpoint = dict(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
@@ -1041,6 +1159,15 @@ class EvalRunner:
                     change_set.rollback()
                 result.status = "error"
                 result.error = f"{type(exc).__name__}: {exc}"
+                result.failure_category = (
+                    "checker_failure"
+                    if failure_phase == "checker"
+                    else "tool_failure"
+                    if "tracer" in locals() and _trace_has_tool_failure(tracer.path)
+                    else "agent_failure"
+                    if failure_phase == "agent"
+                    else "environment_failure"
+                )
                 failed_checkpoint = dict(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
@@ -1077,9 +1204,16 @@ class EvalRunner:
         return result
 
     @staticmethod
-    def _finish(result: EvalResult, status: str, error: str, started: float) -> EvalResult:
+    def _finish(
+        result: EvalResult,
+        status: str,
+        error: str,
+        started: float,
+        failure_category: str = "environment_failure",
+    ) -> EvalResult:
         result.status = status
         result.error = error
+        result.failure_category = failure_category
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         return result
 

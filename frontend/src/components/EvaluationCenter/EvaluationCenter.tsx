@@ -51,6 +51,20 @@ function statusTag(status: string, passed?: boolean): React.ReactNode {
   return <Tag>{status || '未知'}</Tag>;
 }
 
+const FAILURE_CATEGORY_LABELS: Record<string, string> = {
+  agent_failure: 'Agent',
+  tool_failure: '工具',
+  environment_failure: '环境',
+  checker_failure: 'Checker',
+  timeout: '超时',
+  budget_exceeded: '预算',
+};
+
+function failureCategoryTag(category?: string): React.ReactNode {
+  if (!category || category === 'none') return <Text type="secondary">-</Text>;
+  return <Tag color="error">{FAILURE_CATEGORY_LABELS[category] || category}</Tag>;
+}
+
 function traceSessionFromResult(result: EvalResult): string | null {
   const path = result.trace_path || '';
   const fileName = path.split(/[\\/]/).pop() || '';
@@ -413,6 +427,7 @@ const EvaluationCenter: React.FC = () => {
     { title: '用例', dataIndex: 'case_id', key: 'case_id', ellipsis: true },
     { title: 'Agent', dataIndex: 'agent', key: 'agent', width: 100, render: () => EVAL_AGENT_LABEL },
     { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string, row: EvalResult) => statusTag(v, row.passed) },
+    { title: '失败归因', dataIndex: 'failure_category', key: 'failure_category', width: 95, render: failureCategoryTag },
     { title: '得分', dataIndex: 'score', key: 'score', width: 80, render: (v: number) => `${(v * 100).toFixed(0)}%` },
     { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', width: 90, render: fmtDuration },
     { title: '模型', dataIndex: 'model', key: 'model', width: 130, ellipsis: true },
@@ -546,6 +561,7 @@ const EvaluationCenter: React.FC = () => {
 
   const renderFailureDetail = () => selectedCase ? (
     <Card size="small" className="evaluation-case-detail" title={<Space>用例钻取：{selectedCase.case_id}{statusTag(selectedCase.status, selectedCase.passed)}</Space>}>
+      {selectedCase.failure_category && selectedCase.failure_category !== 'none' ? <div>失败归因：{failureCategoryTag(selectedCase.failure_category)}</div> : null}
       {selectedCase.error ? <Alert type="error" showIcon message={selectedCase.error} /> : null}
       <div className="evaluation-checker-list">{(selectedCase.checker_results || []).length === 0 ? <Text type="secondary">没有 checker 诊断信息</Text> : (
         <List size="small" dataSource={selectedCase.checker_results} renderItem={(checker, index) => (

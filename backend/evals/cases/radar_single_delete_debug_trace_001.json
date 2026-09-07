@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-delete-debug-trace-001",
   "name": "删除临时调试跟踪器",
   "prompt": "删除 DebugTrace 功能，清理其源码文件、UML 类和对应测试；保留正常端到端雷达处理链路，并运行全部测试。",

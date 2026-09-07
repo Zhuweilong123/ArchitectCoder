@@ -234,6 +234,8 @@ export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEn
 // ── Evaluation center ───────────────────────────────────────────────────────
 
 export interface EvalCaseInfo {
+  schema_version: string;
+  tool_protocol_version: string;
   id: string;
   agent: string;
   name: string;
@@ -256,6 +258,7 @@ export interface EvalSummary {
   average_duration_ms: number;
   total_tokens: number;
   total_tool_calls: number;
+  failure_categories?: Record<string, number>;
 }
 
 export interface EvalBaselineGroup {
@@ -311,6 +314,7 @@ export interface EvalResult {
   trace_path?: string;
   checker_results: Array<Record<string, any>>;
   error: string;
+  failure_category?: 'none' | 'agent_failure' | 'tool_failure' | 'environment_failure' | 'checker_failure' | 'timeout' | 'budget_exceeded';
 }
 
 export interface EvalBatch {

@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-delete-legacy-debug-001",
   "name": "删除遗留调试探针",
   "prompt": "删除 LegacyDebugProbe 功能，清理其源码文件、UML 类和对应测试；不得影响其他雷达功能，删除后运行全部测试。",

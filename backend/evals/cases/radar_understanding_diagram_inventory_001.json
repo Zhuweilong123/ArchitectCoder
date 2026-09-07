@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-understanding-diagram-inventory-001",
   "name": "UML 图清单理解",
   "prompt": "读取 UML 和源码，列出项目的 6 张图及其图类型，并说明每张图对应的源码模块或运行职责。不要修改任何文件。",

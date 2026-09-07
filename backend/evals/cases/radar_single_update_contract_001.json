@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-update-contract-001",
   "name": "修复 UML 方法契约漂移",
   "prompt": "检查并修复 UML 中 PeakDetector.detect 的方法签名，使其与当前源码一致；不要修改源码和原有测试，并运行源码一致性测试。",

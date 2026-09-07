@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-read-echo-dependency-001",
   "name": "回波组件依赖读取",
   "prompt": "分析 EchoSimulator 的协作者、组件依赖和测试覆盖，说明 TargetSceneManager、DelayProcessor、NoiseAdder 分别负责什么。不要修改项目文件。",

@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "trace-3-1-component-element-multiturn-001",
   "name": "组件图 Element 标识增删与审核连续性",
   "project_id": "radar_sim_v1",
