@@ -424,6 +424,34 @@ def _write_performance_result(batch: EvalBatch) -> Path:
     return path
 
 
+def write_performance_result(
+    results: list[EvalResult],
+    *,
+    version: str,
+    label: str = "",
+) -> Path:
+    """Register one completed CLI run in the Performance Results catalog.
+
+    The interactive batch flow reaches this through ``merge``. CLI runs do not
+    have a pair of batch IDs to merge, so they use this explicit single-run
+    registration point instead of leaving their raw ``results.jsonl`` hidden
+    from the Evaluation Center.
+    """
+    if not results:
+        raise ValueError("cannot register an empty performance result")
+    batch = EvalBatch(
+        batch_id=f"cli_{uuid.uuid4().hex[:16]}",
+        suite="cli",
+        version=version,
+        label=label,
+        case_ids=sorted({result.case_id for result in results}),
+        status="completed",
+        results=results,
+    )
+    batch.summary = summarize(results, len(batch.case_ids))
+    return _write_performance_result(batch)
+
+
 def _write_performance_jsonl(path: Path, results: list[EvalResult]) -> None:
     """Write one canonical JSONL performance result."""
 

@@ -98,3 +98,10 @@ or archive operation changes the tracked baseline.
 
 The baseline remains a versioned repository asset under `backend/evals`, while
 runtime batches and merged performance results remain under `temp/evals`.
+
+The CLI follows the same performance-result boundary as the Evaluation Center.
+Use `python -m extensions.evals.cli --version <version> --label <label>` for a
+run; it writes the raw JSONL output and, after the run completes, registers the
+same result rows as a `performance-*.jsonl` artifact under `temp/evals/results`.
+The latter is what the frontend Performance Results view indexes, so CLI runs
+are visible there without a separate manual merge step.

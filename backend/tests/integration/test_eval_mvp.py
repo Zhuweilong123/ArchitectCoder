@@ -30,7 +30,7 @@ from extensions.evals.runner import (
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
-from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize
+from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize, write_performance_result
 from app.api.evals import BASELINE_PATH, get_baseline, get_repository
 
 
@@ -835,6 +835,29 @@ def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monke
     assert performance_path.is_file()
     assert len(performance_path.read_text(encoding="utf-8").splitlines()) == 1
     assert not (tmp_path / "batches.jsonl").exists()
+
+
+def test_cli_performance_registration_writes_catalog_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    result = EvalResult(
+        run_id="cli-run-1",
+        case_id="case-cli",
+        status="passed",
+        passed=True,
+        score=1.0,
+        started_at="2026-09-07T00:00:00+00:00",
+        metadata={"version": "4.0"},
+    )
+
+    performance_path = write_performance_result(
+        [result], version="4.0", label="CLI baseline",
+    )
+
+    assert performance_path.name.startswith("performance-")
+    assert performance_path.parent == tmp_path / "results"
+    payload = json.loads(performance_path.read_text(encoding="utf-8").strip())
+    assert payload["case_id"] == "case-cli"
+    assert payload["metadata"]["version"] == "4.0"
 
 
 def test_eval_batch_summary_counts_budget_statuses():
