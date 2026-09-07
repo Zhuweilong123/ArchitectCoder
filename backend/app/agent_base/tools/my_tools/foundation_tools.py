@@ -589,8 +589,10 @@ class RunProgramTool(ShellTool):
         super().__init__(*args, **kwargs)
         self.name = "run_program"
         self.description = (
-            "Run an executable with an argument list in the workspace. "
-            "Prefer this over shell when the operation does not need shell syntax."
+            "Run one allowlisted executable directly with literal argv in the workspace. "
+            "Use for Python/Node/pytest or another program when args can be separate strings; "
+            "do not pass powershell/cmd/bash, -Command, pipes, chaining, or shell syntax. "
+            "Use run_task for test/build/lint/format/typecheck/validate."
         )
 
     async def _execute(self, params: dict) -> str:
@@ -615,7 +617,12 @@ class RunProgramTool(ShellTool):
                 _quote_program(program, args, self._command_executor)
             )
         if validation_error:
-            return f"Error: {validation_error}"
+            return (
+                f"Error: {validation_error} "
+                "run_program accepts a direct executable and literal argv only; "
+                "use run_task for standard project tasks; use shell only for one simple "
+                "native command that does not require interpreter code."
+            )
 
         display_command = _quote_program(program, args, self._command_executor)
         risk = self._risk_policy.evaluate("bash", {"command": display_command})
@@ -702,17 +709,20 @@ class RunTaskTool(RunProgramTool):
         super().__init__(*args, **kwargs)
         self.name = "run_task"
         self.description = (
-            "Run a semantic development task. Supported tasks: test, build, lint, "
-            "format, typecheck, validate. Validate checks UML project files directly "
-            "when target is a .umlproj/.uml/.json file; target paths are relative to "
-            "cwd when cwd is provided, and cwd accepts source, test, design, or workspace. "
-            "For a full test directory, use cwd=\"test\" with no target or target=\".\"."
+            "Run one fixed project task: test, build, lint, format, typecheck, or validate. "
+            "Prefer this for project verification/build work instead of composing commands. "
+            "validate checks UML project files directly for .umlproj/.uml/.json targets. "
+            "target is relative to cwd; cwd accepts source, test, design, or workspace. "
+            "For the full test suite use cwd=\"test\" with no target or target=\".\"."
         )
 
     async def _execute_result(self, params: dict):
         task = str(params.get("task", "")).lower().strip()
         if task not in self.TASKS:
-            return f"Error: unsupported task '{task}'"
+            return (
+                f"Error: unsupported task '{task}'. "
+                "Choose one of: test, build, lint, format, typecheck, validate."
+            )
         if task == "validate" and params.get("target"):
             target = str(params["target"]).strip()
             if target.lower().endswith((".umlproj", ".uml", ".json")):

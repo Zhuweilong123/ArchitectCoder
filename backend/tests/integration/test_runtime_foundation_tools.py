@@ -114,6 +114,18 @@ def test_foundation_tool_surface_has_seven_stable_tools(tmp_path):
     ]
 
 
+def test_execution_tools_advertise_disjoint_routing_contract(tmp_path):
+    tools = create_foundation_tools(str(tmp_path))
+    descriptions = {tool.name: tool.description for tool in tools}
+
+    assert "fixed project task" in descriptions["run_task"]
+    assert "literal argv" in descriptions["run_program"]
+    assert "shell" in descriptions["run_program"]
+    assert "last resort" in descriptions["shell"]
+    assert "run_task" in descriptions["shell"]
+    assert "run_program" in descriptions["shell"]
+
+
 def test_apply_changes_keeps_apply_patch_as_non_schema_compatibility_alias(tmp_path):
     target = tmp_path / "main.py"
     target.write_text("value = 1\n", encoding="utf-8")
@@ -370,4 +382,5 @@ def test_run_task_does_not_duplicate_test_alias_as_target(tmp_path):
 def test_power_shell_adapter_owns_shell_syntax_validation():
     executor = NativePowerShellExecutor()
     assert executor.validate_shell_command("Get-ChildItem -Force") is None
+    assert executor.validate_shell_command(r"(Get-Content .\main.py).Count") is None
     assert "nested shell" in executor.validate_shell_command("bash -c ls")

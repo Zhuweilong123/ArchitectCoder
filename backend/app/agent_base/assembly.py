@@ -33,14 +33,17 @@ from app.services.context_manager import ContextBudget, ContextBudgetManager, es
 
 
 def enabled_tools_context() -> str:
-    """Describe the stable core tool surface for an Agent prompt."""
+    """Describe the stable core tool surface and its routing order."""
     return (
         "## Tool policy\n"
         "Use only the supplied tool schemas; do not invent tools.\n"
         "Core workspace tools are: list_files, read_file, search_text, apply_changes, "
-        "run_program, run_task, and shell. Use apply_changes for all file creation, "
-        "editing, deletion, moving, and copying; use shell only when the operation "
-        "cannot be expressed otherwise."
+        "run_task, run_program, and shell. Route execution in this order: run_task "
+        "for test/build/lint/format/typecheck/validate; run_program for a direct "
+        "allowlisted executable with literal argv (never powershell/cmd/bash or shell "
+        "syntax); shell only for one simple allowlisted native command with no pipes, "
+        "chaining, redirection, substitution, or nested shell. Use apply_changes for "
+        "all file creation, editing, deletion, moving, and copying."
     )
 
 
