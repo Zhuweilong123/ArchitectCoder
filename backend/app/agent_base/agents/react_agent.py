@@ -262,6 +262,11 @@ class ReActAgent(Agent):
         # ContextBudgetManager and remains hidden from the user-facing chat.
         self._history.append(Message(value, "summary"))
 
+    def _record_turn(self, input_text: str, answer: str) -> None:
+        """Append the user request and final answer as one conversational turn."""
+        self.add_message(Message(input_text, "user"))
+        self.add_message(Message(answer, "assistant"))
+
     # ═══════════════════════════════════════════════════════
     # Public API
     # ═══════════════════════════════════════════════════════
@@ -331,8 +336,7 @@ class ReActAgent(Agent):
             # 4. 检查是否完成
             if action and action.startswith("Finish"):
                 final_answer = self._parse_action_input(action)
-                self.add_message(Message(input_text, "user"))
-                self.add_message(Message(final_answer, "assistant"))
+                self._record_turn(input_text, final_answer)
                 logger.info("🏁 %s 完成", self.name)
                 return final_answer
 
@@ -351,8 +355,7 @@ class ReActAgent(Agent):
 
         # 达到最大步数
         final_answer = "抱歉，我无法在限定步数内完成这个任务。"
-        self.add_message(Message(input_text, "user"))
-        self.add_message(Message(final_answer, "assistant"))
+        self._record_turn(input_text, final_answer)
         logger.warning("⚠️ %s 达到最大步数 %d", self.name, self.max_steps)
         return final_answer
 
@@ -489,8 +492,7 @@ class ReActAgent(Agent):
                         "token_budget_used": total_tokens,
                         "token_budget_stop_reason": "hard_limit_before_next_llm",
                     })
-                    self.add_message(Message(input_text, "user"))
-                    self.add_message(Message(final_answer, "assistant"))
+                    self._record_turn(input_text, final_answer)
                     yield self._final_progress(total_tokens=total_tokens,
                         step=step, thought=final_answer,
                         is_final=True, final_answer=final_answer,
@@ -615,8 +617,7 @@ class ReActAgent(Agent):
                         "token_budget_stop_reason": "time_limit",
                     })
                     final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
-                    self.add_message(Message(input_text, "user"))
-                    self.add_message(Message(final_answer, "assistant"))
+                    self._record_turn(input_text, final_answer)
                     yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
                                         is_final=True, final_answer=final_answer)
                     return
@@ -644,8 +645,7 @@ class ReActAgent(Agent):
                             "token_budget_stop_reason": "llm_timeout",
                         })
                         final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
-                        self.add_message(Message(input_text, "user"))
-                        self.add_message(Message(final_answer, "assistant"))
+                        self._record_turn(input_text, final_answer)
                         yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
                                             is_final=True, final_answer=final_answer)
                         return
@@ -708,8 +708,7 @@ class ReActAgent(Agent):
                                 "finalization_textual_tool_markup_blocked": textual_tool_markup,
                             })
                             if not _turn_recorded:
-                                self.add_message(Message(input_text, "user"))
-                                self.add_message(Message(content, "assistant"))
+                                self._record_turn(input_text, content)
                                 _turn_recorded = True
                             yield self._final_progress(total_tokens=total_tokens,
                                 step=step, thought=content,
@@ -738,8 +737,7 @@ class ReActAgent(Agent):
                                     "Task is not complete: the required todo plan still has unfinished "
                                     "work or verification."
                                 )
-                                self.add_message(Message(input_text, "user"))
-                                self.add_message(Message(final_answer, "assistant"))
+                                self._record_turn(input_text, final_answer)
                                 _turn_recorded = True
                                 yield self._final_progress(total_tokens=total_tokens,
                                     step=step, thought=content,
@@ -756,8 +754,7 @@ class ReActAgent(Agent):
                         # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
                         # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
                         if not _turn_recorded:
-                            self.add_message(Message(input_text, "user"))
-                            self.add_message(Message(content, "assistant"))
+                            self._record_turn(input_text, content)
                             _turn_recorded = True
                         ended_by_model_answer = True
                         yield self._final_progress(total_tokens=total_tokens,
@@ -777,8 +774,7 @@ class ReActAgent(Agent):
                             "token_budget_stop_reason": "reserve_finalization_empty_response",
                             "finalization_textual_tool_markup_blocked": textual_tool_markup,
                         })
-                        self.add_message(Message(input_text, "user"))
-                        self.add_message(Message(final_answer, "assistant"))
+                        self._record_turn(input_text, final_answer)
                         yield self._final_progress(total_tokens=total_tokens,
                             step=step, thought=final_answer,
                             is_final=True, final_answer=final_answer,
@@ -999,8 +995,7 @@ class ReActAgent(Agent):
                         "token_budget_used": total_tokens,
                         "token_budget_stop_reason": "hard_limit_after_current_tools",
                     })
-                    self.add_message(Message(input_text, "user"))
-                    self.add_message(Message(final_answer, "assistant"))
+                    self._record_turn(input_text, final_answer)
                     _turn_recorded = True
                     yield self._final_progress(total_tokens=total_tokens,
                         step=step, actions=actions, tool_calls_detail=details,
@@ -1111,8 +1106,7 @@ class ReActAgent(Agent):
                     "token_budget_stop_reason": "final_summary_timeout" if summary_timed_out else "productive_step_limit",
                     "finalization_textual_tool_markup_blocked": summary_textual_tool_markup,
                 })
-                self.add_message(Message(input_text, "user"))
-                self.add_message(Message(final_answer, "assistant"))
+                self._record_turn(input_text, final_answer)
                 _turn_recorded = True
                 yield self._final_progress(total_tokens=total_tokens,
                     step=self.max_steps + 1, thought=final_answer,
@@ -1132,8 +1126,7 @@ class ReActAgent(Agent):
             # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
             # _turn_recorded 防止与「模型直接回复」分支重复写入。
             if not _turn_recorded:
-                self.add_message(Message(input_text, "user"))
-                self.add_message(Message(final_answer, "assistant"))
+                self._record_turn(input_text, final_answer)
             logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
             self.last_context_report.setdefault("token_budget_used", total_tokens)
             if not ended_by_model_answer:

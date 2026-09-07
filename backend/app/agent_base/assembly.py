@@ -26,7 +26,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
 from app.agent_base.tools.registry import ToolRegistry
-from app.runtime import build_command_executor, build_environment_context
+from app.runtime import build_command_executor, build_environment_context, workspace_root_for
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
@@ -42,16 +42,6 @@ def enabled_tools_context() -> str:
         "editing, deletion, moving, and copying; use shell only when the operation "
         "cannot be expressed otherwise."
     )
-
-
-def _workspace_root(source_dir: str, test_dir: str, design_dir: str) -> str:
-    paths = [path for path in (source_dir, test_dir, design_dir) if path]
-    if not paths:
-        return ""
-    try:
-        return os.path.commonpath([os.path.abspath(path) for path in paths])
-    except ValueError:
-        return os.path.abspath(paths[0])
 
 
 class DevPromptBuilder:
@@ -71,7 +61,7 @@ class DevPromptBuilder:
         self.prompt_version = "3.1-r4"
         if environment_context is None:
             design_dir = design_dir or ""
-            workspace_root = _workspace_root(source_dir, test_dir, design_dir)
+            workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
             environment_context = build_environment_context(
                 cwd=workspace_root or source_dir or design_dir or None,
                 workspace_roots=(workspace_root,) if workspace_root else (),
@@ -221,7 +211,7 @@ async def create_dev_agent(
         os.path.dirname(os.path.abspath(project_file))
         if project_file else os.path.abspath(settings.uml_dir)
     )
-    workspace_root = _workspace_root(source_dir, test_dir, design_dir)
+    workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
     tools, review_mgr = create_conversation_tools(
         llm,
         source_dir=source_dir,

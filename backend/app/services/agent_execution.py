@@ -34,7 +34,7 @@ from app.agent_base.evidence import update_checkpoint_evidence
 from app.agent_base.outcome import RunOutcome
 from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
-from app.services.audit_log import get_audit_logger
+from app.services.audit_log import record_audit as _record_audit
 from app.services.run_state import (
     RunStateError,
     RunStatus,
@@ -47,14 +47,6 @@ logger = logging.getLogger(__name__)
 
 _TASK_BIND_TIMEOUT_SECONDS = 5.0
 _REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
-
-def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
-    try:
-        get_audit_logger().record(
-            event_type, run_id=run_id, session_id=session_id, **payload,
-        )
-    except Exception:
-        logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
 
 def _todo_progress_state() -> dict:
     runtime = get_runtime()

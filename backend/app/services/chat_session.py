@@ -28,7 +28,6 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Callable, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from app.core.security import validate_agent_workspace_path
 from backend.config import get_settings
@@ -36,7 +35,6 @@ from backend.config import get_settings
 from app.agent_base.assembly import (
     DevPromptBuilder,
     create_dev_agent,
-    enabled_tools_context,
 )
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
@@ -55,22 +53,11 @@ from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.run_state import (
     RunStateError, RunStatus, get_run_store, run_status_for_completion,
 )
-from app.services.audit_log import get_audit_logger
+from app.services.audit_log import record_audit as _record_audit
 from app.services.run_lifecycle import RunLifecycle
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
-
-def _record_audit(event_type: str, *, run_id: str, session_id: str, **payload) -> None:
-    """Keep audit failures observable without breaking the Agent response."""
-    try:
-        get_audit_logger().record(
-            event_type, run_id=run_id, session_id=session_id, **payload,
-        )
-    except Exception:
-        logger.exception("[Audit] Could not persist %s for run %s", event_type, run_id)
-
-
 
 def _trace_hook_bridge(kind: str, *args, **kwargs):
     """全局 LLM trace hook 处理器 — 转发到当前会话的 ChatTraceLogger。
@@ -123,22 +110,11 @@ def _set_trace_bridge(tracer: TraceSink | None):
     _TRACE_BRIDGE.set(tracer)
 
 
-from app.agent_base.execution_summary import build_task_execution_summary
 from app.services.agent_execution import (
     _archive_task_to_memory,
-    _persist_run_checkpoint,
     _should_archive_task_memory,
-    _terminal_checkpoint_status,
-    _todo_progress_state,
     handle_agent_execution,
 )
-
-# Compatibility exports for existing application and test callers.  New
-# entry points must import these capabilities from agent_base, never from this
-# WebSocket transport module.
-_create_dev_agent = create_dev_agent
-_enabled_tools_context = enabled_tools_context
-_build_task_execution_summary = build_task_execution_summary
 
 
 def _history_structure(agent: ReActAgent | None) -> dict:
@@ -186,8 +162,9 @@ def _checkpoint_answer(checkpoint: dict) -> str:
     return "\n".join(lines)
 
 
-def _latest_persisted_checkpoint(session_id: str, *, store_factory=get_run_store) -> dict:
+def _latest_persisted_checkpoint(session_id: str, *, store_factory=None) -> dict:
     """Read the newest run checkpoint for reconnects without invoking an LLM."""
+    store_factory = store_factory or get_run_store
     if not session_id:
         return {}
     try:
@@ -231,8 +208,9 @@ def _resume_supplement(message: str) -> str | None:
     return None
 
 
-def _latest_resumable_run(session_id: str, *, store_factory=get_run_store):
+def _latest_resumable_run(session_id: str, *, store_factory=None):
     """Return the newest non-terminal run that has a resumable checkpoint."""
+    store_factory = store_factory or get_run_store
     if not session_id:
         return None
     resumable_statuses = {

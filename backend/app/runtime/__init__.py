@@ -13,7 +13,7 @@ from app.runtime.command import (
     resolve_command_environment,
 )
 from app.runtime.environment import EnvironmentContext, build_environment_context
-from app.runtime.filesystem import FileSystemOperationError, NativeFileSystem
+from app.runtime.filesystem import FileSystemOperationError, NativeFileSystem, workspace_root_for
 
 from app.runtime.agent_runtime import (
     AgentRuntime,
@@ -45,6 +45,7 @@ __all__ = [
     "build_environment_context",
     "FileSystemOperationError",
     "NativeFileSystem",
+    "workspace_root_for",
     "ExecutionEnvironmentError",
     "CommandExecutor",
     "HostShellExecutor",

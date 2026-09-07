@@ -1,9 +1,12 @@
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
-from app.services.agent_chat_ws import (
+from app.services.chat_session import (
     _checkpoint_answer, _latest_persisted_checkpoint,
     _is_resume_request, _latest_resumable_run, _resume_prompt, _resume_supplement,
+)
+from app.agent_base.assembly import DevPromptBuilder
+from app.services.agent_execution import (
     _should_archive_task_memory, _terminal_checkpoint_status,
-    _todo_progress_state, DevPromptBuilder, _archive_task_to_memory,
+    _todo_progress_state, _archive_task_to_memory,
 )
 from app.agent_base.core.memory import MemoryArchiveResult, MemoryRecallResult
 from app.agent_base.outcome import RunOutcome
@@ -185,7 +188,7 @@ def test_latest_persisted_checkpoint_reads_run_metadata(monkeypatch):
             assert session_id == "session-1"
             return [_Record({"checkpoint": {"status": "succeeded"}})]
 
-    monkeypatch.setattr("app.services.agent_chat_ws.get_run_store", lambda: _Store())
+    monkeypatch.setattr("app.services.chat_session.get_run_store", lambda: _Store())
     assert _latest_persisted_checkpoint("session-1") == {"status": "succeeded"}
 def test_resume_request_uses_persisted_checkpoint(monkeypatch):
     assert _is_resume_request("继续")
@@ -212,7 +215,7 @@ def test_resume_request_uses_persisted_checkpoint(monkeypatch):
             assert session_id == "session-1"
             return [_Record()]
 
-    monkeypatch.setattr("app.services.agent_chat_ws.get_run_store", lambda: _Store())
+    monkeypatch.setattr("app.services.chat_session.get_run_store", lambda: _Store())
     record, checkpoint = _latest_resumable_run("session-1")
     assert record.run_id == "run-paused"
     assert "inspect design and source" in _resume_prompt(checkpoint)
