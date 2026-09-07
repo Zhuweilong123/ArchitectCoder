@@ -305,8 +305,9 @@ draft → analyzing → design_pending → waiting_approval
 - 处理 Windows 临时目录权限与 `tests` 包名冲突；
 - 将 `design_constraints` 正式持久化；
 - 为设计影响型任务自动启用 `compare_design_code`；
-- **进行中**：结果与批次已区分 Agent、工具、环境、Checker、超时和预算失败；待完整
-  重跑当前 HEAD 后晋升正式新基线；
+- **已完成（2026-09-07）**：结果与批次已区分 Agent、工具、环境、Checker、超时和
+  预算失败；当前 HEAD 已晋升为 `4.0@4076efc` 正式基线（通过率 50.0%，平均得分
+  72.21%）。
 - 对外只承诺 Python 深度闭环。
 
 验收：
