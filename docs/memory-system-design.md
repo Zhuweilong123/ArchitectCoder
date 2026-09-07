@@ -1,7 +1,9 @@
-# 记忆系统设计
+# 记忆系统设计与实现归档
 
-> 本文完整归档 ArchitectCoder 的 Agent 记忆系统（`backend/memory_system/`）设计，
-> 反映最新实现（含 subject 后写覆盖、recency 检索、类型化衰退、写入门禁和召回治理）。
+> 本文保留早期记忆系统设计。当前具体实现位于 `extensions/memory/`，应用侧只依赖
+> `backend/app/agent_base/core/memory.py` 的 `MemoryPort`；文中的 `backend/memory_system/`
+> 路径仅作为历史路径，不应用于新增代码。
+> 反映的治理原则包括 subject 后写覆盖、recency 检索、类型化衰退、写入门禁和召回治理。
 > 作为后续接入向量/混合检索、调参、生命周期策略迭代的参考基线。
 
 ## 1. 定位与目标
@@ -37,7 +39,7 @@ MemoryManager ── 顶层 API / 编排
 - **检索**：`recall` → FTS5 BM25 → recency 重排 → 截断 top_k → 注入。
 - **维护**：机会式触发 `decay + prune`，维护时间持久化在 SQLite 中。
 
-## 3. 数据模型（`backend/memory_system/models.py`）
+## 3. 数据模型（`extensions/memory/models.py`）
 
 ### 3.1 MemoryEntry
 
@@ -72,7 +74,7 @@ MemoryManager ── 顶层 API / 编排
 
 见 §12 配置项。
 
-## 4. 存储层（`backend/memory_system/database.py`）
+## 4. 存储层（`extensions/memory/database.py`）
 
 - **SQLite**：WAL + `synchronous=NORMAL` + `check_same_thread=False`，`memories` 主表。
 - **FTS5**：独立虚拟表 `memories_fts(summary)`，非 content-synced——写入时把
@@ -205,10 +207,11 @@ durable    → importance * decay_factor           # 0.98，慢
 
 | 调用方 | 写入 | 检索 |
 |---|---|---|
-| `backend/app/services/agent_chat_ws.py` | `_archive_task_to_memory`（done 后异步归档） | `_build_memory_system_prompt`（每轮对话前 recall + inject） |
-| `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | `_archive_result`（explore 后归档） | `_recall_inject`（当前计算但未使用，死代码） |
+| `backend/app/services/agent_execution.py` | 任务完成后通过 `MemoryArchiveRequest` 异步归档 | — |
+| `backend/app/agent_base/assembly.py` / `DevPromptBuilder` | — | 每轮通过 `MemoryRecallRequest` 受预算约束地 recall + inject |
 
-均通过 `MemoryManager(db_path=…)` 每次新建实例使用。
+具体 provider 由 `app/agent_base/core/memory.py` 加载；记忆不可用时回退到 `NoOpMemory`，
+不阻断主 Agent 流程。
 
 ## 11. 关键设计点（踩坑）
 
@@ -315,24 +318,25 @@ manager.maintenance("blog_system")
 
 | 文件 | 职责 |
 |---|---|
-| `backend/memory_system/manager.py` | `MemoryManager`：remember/recall/inject/forget/reinforce/maintenance + 提取 prompt + subject 分叉 |
-| `backend/memory_system/policy.py` | `MemoryWritePolicy` / `MemoryRecallPolicy`：写入门禁和召回筛选 |
-| `backend/memory_system/database.py` | `MemoryDatabase`：SQLite + FTS5 存储、幂等迁移、BM25、`get_by_subject`、类型化 decay |
-| `backend/memory_system/models.py` | `MemoryEntry` / `MemoryType` / `MemoryConfig` / `RecallResult` / `RetrieveMode` |
-| `backend/memory_system/lifecycle.py` | `LifecycleManager`：reinforce / decay / prune / maintenance / pin |
-| `backend/memory_system/tokenizer.py` | jieba / bigram 分词（`tokenize` / `tokenize_for_fts`） |
-| `backend/memory_system/embedding.py` | `EmbeddingService` 协议 + 向量工具（预留） |
-| `backend/memory_system/migrate.py` | 旧 JSON → SQLite 迁移脚本（一次性） |
-| `backend/app/services/agent_chat_ws.py` | 归档 + 注入集成 |
-| `backend/app/agent_base/tools/my_tools/explore_project_tools.py` | explore 归档集成 |
+| `extensions/memory/manager.py` | `MemoryManager`：remember/recall/archive/reinforce 等记忆流程 |
+| `extensions/memory/policy.py` | `MemoryWritePolicy` / `MemoryRecallPolicy`：写入门禁和召回筛选 |
+| `extensions/memory/database.py` | `MemoryDatabase`：SQLite + FTS5 存储、幂等迁移、BM25 |
+| `extensions/memory/models.py` | `MemoryEntry` / `MemoryType` / `MemoryConfig` / 结果模型 |
+| `extensions/memory/lifecycle.py` | `LifecycleManager`：reinforce / decay / prune / maintenance |
+| `extensions/memory/tokenizer.py` | jieba / bigram 分词（`tokenize` / `tokenize_for_fts`） |
+| `extensions/memory/embedding.py` | `EmbeddingService` 协议 + 向量工具（预留） |
+| `extensions/memory/migrate.py` | 旧 JSON → SQLite 迁移脚本（一次性） |
+| `backend/app/agent_base/core/memory.py` | 应用侧 `MemoryPort`、请求模型和 no-op / resilient fallback |
+| `backend/app/services/agent_execution.py` | 任务完成后的记忆归档触发 |
 
-## 17. 当前治理实现（2026-09-01）
+## 17. 治理实现快照（2026-09-01）
 
-本节覆盖前文旧版本描述的修订内容，以当前代码为准。
+本节记录 2026-09-01 的治理实现快照；路径已按当前扩展布局修正，但具体行为仍应以
+`extensions/memory` 和 `MemoryPort` 的最新代码为准。
 
 ### 17.1 写入门禁与来源
 
-`MemoryWritePolicy` 位于 `backend/memory_system/policy.py`，位于 LLM 提取和数据库写入之间。
+`MemoryWritePolicy` 位于 `extensions/memory/policy.py`，位于 LLM 提取和数据库写入之间。
 它拒绝空摘要、超长摘要、非法类型、显式临时/拒绝候选和低置信度候选。候选缺少
 `confidence` 时使用兼容默认值 `0.7`，新提取器应显式返回置信度。
 
