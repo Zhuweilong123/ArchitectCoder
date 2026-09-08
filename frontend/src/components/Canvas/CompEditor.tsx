@@ -29,6 +29,7 @@ const componentThemeVisuals: Record<CanvasTheme, {
   light: { surface: '#fffaf1', accent: '#b7791f' },
   dark: { surface: '#172033', accent: '#60a5fa' },
   blueprint: { surface: '#f6fbff', accent: '#0284c7' },
+  'eye-care': { surface: '#f8f7ee', accent: '#547a5d' },
 };
 
 // ── Register X6 shapes (once) ────────────────────────
@@ -527,14 +528,16 @@ const CompEditor: React.FC = () => {
       rels.forEach((r) => {
         const selected = r.id === selectedCompRelationId;
         const stroke = selected
-          ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
+          ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
           : r.type === 'delegation'
-            ? (canvasTheme === 'dark' ? '#4ade80' : '#389e0d')
-            : (canvasTheme === 'dark' ? '#fbbf24' : '#b7791f');
+            ? (canvasTheme === 'dark' ? '#4ade80' : canvasTheme === 'eye-care' ? '#4f805d' : '#389e0d')
+            : (canvasTheme === 'dark' ? '#fbbf24' : canvasTheme === 'eye-care' ? '#a9782c' : '#b7791f');
         const dash = r.type === 'delegation' ? '' : '6,4';
         const labelColor = canvasTheme === 'dark' ? '#f8fafc' : stroke;
-        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
-        const labelBorder = canvasTheme === 'dark' ? '#475569' : '#e2e8f0';
+        const labelBackground = canvasTheme === 'dark'
+          ? '#111827' : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff';
+        const labelBorder = canvasTheme === 'dark'
+          ? '#475569' : canvasTheme === 'eye-care' ? '#cbd7c9' : '#e2e8f0';
         const lineAttrs = {
           stroke, strokeWidth: selected ? 2.5 : 2, strokeDasharray: dash,
           targetMarker: { name: 'block', width: 10, height: 6, fill: stroke, stroke },

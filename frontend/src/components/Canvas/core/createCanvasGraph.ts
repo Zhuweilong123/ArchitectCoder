@@ -5,7 +5,7 @@ import { Selection } from '@antv/x6-plugin-selection';
 import { Snapline } from '@antv/x6-plugin-snapline';
 import { Export } from '@antv/x6-plugin-export';
 
-export type CanvasTheme = 'light' | 'dark' | 'blueprint';
+export type CanvasTheme = 'light' | 'dark' | 'blueprint' | 'eye-care';
 
 export interface CanvasGraphOptions {
   container: HTMLElement;
@@ -28,6 +28,7 @@ const canvasThemeVisuals: Record<CanvasTheme, { background: string; grid: string
   light: { background: '#fafafa', grid: '#e0e0e0' },
   dark: { background: '#111827', grid: '#334155' },
   blueprint: { background: '#eaf5ff', grid: '#bae6fd' },
+  'eye-care': { background: '#f3f5ef', grid: '#d8e1d5' },
 };
 
 /** Keep X6's generated background/grid in sync with the HTML node theme. */

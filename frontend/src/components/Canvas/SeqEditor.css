@@ -33,12 +33,23 @@
   border-color: #0284c7;
 }
 
+.seq-inline-editor.theme-eye-care {
+  color: #33443a;
+  background: #f8f7ee;
+  border-color: #6e9677;
+  box-shadow: 0 4px 12px rgba(84, 122, 93, 0.18);
+}
+
 .seq-canvas-container.theme-dark {
   --seq-canvas-bg: #0f172a;
 }
 
 .seq-canvas-container.theme-blueprint {
   --seq-canvas-bg: #eaf5ff;
+}
+
+.seq-canvas-container.theme-eye-care {
+  --seq-canvas-bg: #f3f5ef;
 }
 
 /* Lifeline node */
@@ -202,6 +213,34 @@
 }
 .seq-lifeline-node.theme-blueprint.message-endpoint .seq-lifeline-dash { border-color: #0284c7; }
 
+.seq-lifeline-node.theme-eye-care .seq-lifeline-name {
+  color: #33443a;
+  background: linear-gradient(180deg, #f8f7ee 0%, #e6efe3 100%);
+  border-color: #9db6a0;
+  box-shadow: 0 2px 5px rgba(84, 122, 93, 0.1);
+}
+.seq-lifeline-node.theme-eye-care .seq-lifeline-dash { border-color: #8ea594; }
+.seq-lifeline-node.theme-eye-care .seq-click-hint { color: #547a5d; }
+.seq-lifeline-node.theme-eye-care .seq-activation {
+  background: #dfeade;
+  border-color: #6e9677;
+  box-shadow: 0 1px 3px rgba(84, 122, 93, 0.14);
+}
+.seq-lifeline-node.theme-eye-care .seq-activation-auto {
+  background: linear-gradient(90deg, rgba(110, 150, 119, 0.58), rgba(223, 234, 222, 0.86));
+  border-color: #6e9677;
+}
+.seq-lifeline-node.theme-eye-care .seq-lifeline-name::before { color: #6e9677; }
+.seq-lifeline-node.theme-eye-care.selected .seq-lifeline-name {
+  border-color: #547a5d;
+  box-shadow: 0 0 0 3px rgba(84, 122, 93, 0.16), 0 3px 8px rgba(84, 122, 93, 0.12);
+}
+.seq-lifeline-node.theme-eye-care.message-endpoint .seq-lifeline-name {
+  border-color: #6e9677;
+  box-shadow: 0 0 0 2px rgba(110, 150, 119, 0.15), 0 2px 6px rgba(84, 122, 93, 0.1);
+}
+.seq-lifeline-node.theme-eye-care.message-endpoint .seq-lifeline-dash { border-color: #6e9677; }
+
 /* Edge labels */
 .seq-canvas-container .x6-edge {
   cursor: pointer;
@@ -261,4 +300,8 @@
 .seq-canvas-container.theme-blueprint .x6-edge .x6-edge-label {
   fill: #075985;
   stroke: #eaf5ff;
+}
+.seq-canvas-container.theme-eye-care .x6-edge .x6-edge-label {
+  fill: #3f5145;
+  stroke: #f3f5ef;
 }

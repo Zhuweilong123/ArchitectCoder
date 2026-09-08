@@ -689,8 +689,8 @@ const UMLEditor: React.FC = () => {
 
         const lineAttrs = {
           stroke: isSelected
-            ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
-            : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
+            ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
+            : (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#52675a' : '#64748b'),
           strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
           sourceMarker: isComposition || isAggregation
@@ -699,8 +699,8 @@ const UMLEditor: React.FC = () => {
               width: 16,
               height: 12,
                 fill: isComposition
-                  ? (canvasTheme === 'dark' ? '#94a3b8' : '#64748b')
-                  : '#ffffff',
+                  ? (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#8ea594' : '#64748b')
+                  : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff',
               }
             : undefined,
           targetMarker: {
@@ -708,19 +708,22 @@ const UMLEditor: React.FC = () => {
             width: 12,
             height: 8,
             fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
-              ? '#ffffff'
+              ? canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff'
               : isSelected
-                ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
-                : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
+                ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
+                : (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#52675a' : '#64748b'),
           },
         };
         const labelColor = canvasTheme === 'dark'
           ? '#f8fafc'
-          : isSelected ? '#1d4ed8' : '#475569';
-        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+          : canvasTheme === 'eye-care' ? (isSelected ? '#547a5d' : '#3f5145')
+            : isSelected ? '#1d4ed8' : '#475569';
+        const labelBackground = canvasTheme === 'dark'
+          ? '#111827' : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff';
         const labelBorder = canvasTheme === 'dark'
           ? (isSelected ? '#60a5fa' : '#475569')
-          : isSelected ? '#93c5fd' : '#cbd5e1';
+          : canvasTheme === 'eye-care' ? (isSelected ? '#6e9677' : '#cbd7c9')
+            : isSelected ? '#93c5fd' : '#cbd5e1';
         const edgeLabels = labelText ? [{
           attrs: {
             text: {

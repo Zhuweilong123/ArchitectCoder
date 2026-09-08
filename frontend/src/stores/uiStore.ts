@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
 
 export type RightPanelTab = 'properties' | 'diff' | 'testcase';
-export type CanvasTheme = 'light' | 'dark' | 'blueprint';
+export type CanvasTheme = 'light' | 'dark' | 'blueprint' | 'eye-care';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
 export type { InterfaceLanguage } from '../i18n';
@@ -123,7 +123,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   interfaceLanguage: localStorage.getItem('interfaceLanguage') === 'zh' ? 'zh' : 'en',
   canvasTheme: (() => {
     const value = localStorage.getItem('canvasTheme');
-    return value === 'dark' || value === 'blueprint' ? value : 'light';
+    return value === 'dark' || value === 'blueprint' || value === 'eye-care' ? value : 'light';
   })(),
   generatedTestCode: null,
   activeTestFile: null,

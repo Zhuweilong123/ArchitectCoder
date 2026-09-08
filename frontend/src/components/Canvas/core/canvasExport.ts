@@ -17,6 +17,7 @@ interface ExportPalette {
 function getExportPalette(root: Element | null): ExportPalette {
   const isDark = root?.classList.contains('theme-dark');
   const isBlueprint = root?.classList.contains('theme-blueprint');
+  const isEyeCare = root?.classList.contains('theme-eye-care');
   if (isDark) {
     return {
       body: '#172033', header: '#1d3557', surface: '#1e293b',
@@ -27,6 +28,12 @@ function getExportPalette(root: Element | null): ExportPalette {
     return {
       body: '#f6fbff', header: '#dbeafe', surface: '#eff6ff',
       text: '#164e63', secondary: '#0369a1', divider: '#bae6fd', accent: '#0284c7',
+    };
+  }
+  if (isEyeCare) {
+    return {
+      body: '#f8f7ee', header: '#e1ecdf', surface: '#f1f5ed',
+      text: '#33443a', secondary: '#66736a', divider: '#cbd7c9', accent: '#547a5d',
     };
   }
   return {
@@ -249,9 +256,10 @@ function flattenHtmlDiagramNodes(graph: Graph, svg: SVGSVGElement): void {
 
 function normalizeExportEdgeLabels(svg: SVGSVGElement, backgroundColor: string): void {
   const isDark = backgroundColor.toLowerCase() === '#111827';
-  const textColor = isDark ? '#f8fafc' : '#334155';
+  const isEyeCare = backgroundColor.toLowerCase() === '#f3f5ef';
+  const textColor = isDark ? '#f8fafc' : isEyeCare ? '#3f5145' : '#334155';
   const haloColor = isDark ? '#111827' : backgroundColor;
-  const borderColor = isDark ? '#475569' : '#cbd5e1';
+  const borderColor = isDark ? '#475569' : isEyeCare ? '#cbd7c9' : '#cbd5e1';
 
   svg.querySelectorAll('.x6-edge-label text').forEach((element) => {
     const text = element as SVGTextElement;
@@ -263,7 +271,7 @@ function normalizeExportEdgeLabels(svg: SVGSVGElement, backgroundColor: string):
   });
   svg.querySelectorAll('.x6-edge-label rect').forEach((element) => {
     const rect = element as SVGRectElement;
-    rect.style.setProperty('fill', isDark ? '#172033' : '#ffffff');
+    rect.style.setProperty('fill', isDark ? '#172033' : isEyeCare ? '#f8f7ee' : '#ffffff');
     rect.style.setProperty('stroke', borderColor);
     rect.style.setProperty('stroke-width', '0.8px');
   });

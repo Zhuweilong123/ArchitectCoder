@@ -728,7 +728,8 @@ const Toolbar: React.FC = () => {
       const extension = format === 'png' ? 'png' : 'svg';
       const backgroundColor = canvasTheme === 'dark'
         ? '#111827'
-        : canvasTheme === 'blueprint' ? '#eaf5ff' : '#fafafa';
+        : canvasTheme === 'blueprint' ? '#eaf5ff'
+          : canvasTheme === 'eye-care' ? '#f3f5ef' : '#fafafa';
       await exportCanvasGraph(
         graph,
         format,
@@ -1124,8 +1125,9 @@ const Toolbar: React.FC = () => {
             { value: 'light', label: interfaceLanguage === 'en' ? 'Light' : '浅色' },
             { value: 'dark', label: interfaceLanguage === 'en' ? 'Dark' : '深色' },
             { value: 'blueprint', label: interfaceLanguage === 'en' ? 'Blueprint' : '蓝图' },
+            { value: 'eye-care', label: interfaceLanguage === 'en' ? 'Eye care' : '护眼豆沙绿' },
           ]}
-          style={{ width: 104, marginLeft: 8 }}
+          style={{ width: 126, marginLeft: 8 }}
         />
         </div>
       </div>
