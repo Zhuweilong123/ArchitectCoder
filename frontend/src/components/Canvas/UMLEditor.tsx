@@ -16,7 +16,8 @@ import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistr
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid,
+  centerCanvasContent, getParallelEdgeVertices, materializeEdgeRouteVertices,
+  resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import {
   type UmlClass,
@@ -314,6 +315,12 @@ const UMLEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
+  const edgeSelectionCycle = useRef({
+    point: null as { x: number; y: number } | null,
+    ids: [] as string[],
+    index: 0,
+    timestamp: 0,
+  });
   const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
 
   const {
@@ -404,6 +411,10 @@ const UMLEditor: React.FC = () => {
           node.setPosition(nextPosition.x, nextPosition.y);
           isInternalUpdate.current = false;
         }
+        graph.getConnectedEdges(node).forEach((edge) => {
+          const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
+          if (relation?.vertices === undefined) edge.setVertices([]);
+        });
         moveClass(node.id, nextPosition);
       },
       onNodeResized: (node) => {
@@ -412,16 +423,35 @@ const UMLEditor: React.FC = () => {
           height: node.size().height,
         });
       },
-      onEdgeClick: (edge) => {
-        selectRelation(edge.id);
+      onEdgeClick: (edge, point) => {
+        const selectedEdge = point
+          ? resolveEdgeSelection(graph, edge, point, edgeSelectionCycle.current)
+          : edge;
+        selectRelation(selectedEdge.id);
         setRightPanelTab('properties');
       },
+      onEdgeMouseEnter: (edge) => {
+        const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
+        if (!relation || relation.vertices !== undefined) return;
+        isInternalUpdate.current = true;
+        materializeEdgeRouteVertices(graph, edge);
+        isInternalUpdate.current = false;
+      },
       onEdgeEndpointChanged: (edge) => {
-        if (!(getActiveDiagram().relations || []).some((relation) => relation.id === edge.id)) return;
+        const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
+        if (!relation) return;
         const source = edge.getSourceCellId();
         const target = edge.getTargetCellId();
         if (!source || !target || source === target) return;
+        if (relation.vertices === undefined) edge.setVertices([]);
         updateRelation(edge.id, { source, target });
+      },
+      onEdgeVerticesChanged: (edge) => {
+        const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
+        if (!relation) return;
+        const vertices = edge.getVertices().map(({ x, y }) => ({ x, y }));
+        if (JSON.stringify(relation.vertices) === JSON.stringify(vertices)) return;
+        updateRelation(edge.id, { vertices });
       },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
@@ -431,6 +461,10 @@ const UMLEditor: React.FC = () => {
       },
       onEdgeRemoved: (edge) => removeRelation(edge.id),
       edgeTools: [
+        // Segment handles let users move a 90-degree turn without changing
+        // the connected ports. Vertex handles provide fine-grained cleanup.
+        { name: 'segments', args: { threshold: 20, snapRadius: 12 } },
+        { name: 'vertices', args: { addable: false, removable: true, snapRadius: 12 } },
         { name: 'source-arrowhead' },
         { name: 'target-arrowhead' },
         { name: 'button-remove', args: { distance: -40 } },
@@ -689,8 +723,8 @@ const UMLEditor: React.FC = () => {
 
         const lineAttrs = {
           stroke: isSelected
-            ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
-            : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
+            ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
+            : (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#52675a' : '#64748b'),
           strokeWidth: isSelected ? 2.5 : 1.5,
           strokeDasharray: isDashed ? '5,5' : '',
           sourceMarker: isComposition || isAggregation
@@ -699,8 +733,8 @@ const UMLEditor: React.FC = () => {
               width: 16,
               height: 12,
                 fill: isComposition
-                  ? (canvasTheme === 'dark' ? '#94a3b8' : '#64748b')
-                  : '#ffffff',
+                  ? (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#8ea594' : '#64748b')
+                  : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff',
               }
             : undefined,
           targetMarker: {
@@ -708,19 +742,22 @@ const UMLEditor: React.FC = () => {
             width: 12,
             height: 8,
             fill: rel.type === RelationType.INHERITANCE || rel.type === RelationType.REALIZATION
-              ? '#ffffff'
+              ? canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff'
               : isSelected
-                ? (canvasTheme === 'dark' ? '#93c5fd' : '#2563eb')
-                : (canvasTheme === 'dark' ? '#94a3b8' : '#64748b'),
+                ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
+                : (canvasTheme === 'dark' ? '#94a3b8' : canvasTheme === 'eye-care' ? '#52675a' : '#64748b'),
           },
         };
         const labelColor = canvasTheme === 'dark'
           ? '#f8fafc'
-          : isSelected ? '#1d4ed8' : '#475569';
-        const labelBackground = canvasTheme === 'dark' ? '#111827' : '#ffffff';
+          : canvasTheme === 'eye-care' ? (isSelected ? '#547a5d' : '#3f5145')
+            : isSelected ? '#1d4ed8' : '#475569';
+        const labelBackground = canvasTheme === 'dark'
+          ? '#111827' : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff';
         const labelBorder = canvasTheme === 'dark'
           ? (isSelected ? '#60a5fa' : '#475569')
-          : isSelected ? '#93c5fd' : '#cbd5e1';
+          : canvasTheme === 'eye-care' ? (isSelected ? '#6e9677' : '#cbd7c9')
+            : isSelected ? '#93c5fd' : '#cbd5e1';
         const edgeLabels = labelText ? [{
           attrs: {
             text: {
@@ -739,10 +776,17 @@ const UMLEditor: React.FC = () => {
           },
           position: { distance: 0.5, offset: -10 },
         }] : [];
-        const vertices = getParallelEdgeVertices(rel, diagram.relations, classRects);
+        // An explicit (including empty) vertices array is a user override.
+        // Only untouched relations fall back to the automatic parallel-edge lane.
+        const existingVertices = (graph.getCellById(rel.id) as Edge | null)?.getVertices() || [];
+        const vertices = rel.vertices !== undefined
+          ? rel.vertices
+          : existingVertices.length > 0
+            ? existingVertices
+            : getParallelEdgeVertices(rel, diagram.relations, classRects);
         const interactionAttrs = {
           stroke: 'transparent',
-          strokeWidth: 18,
+          strokeWidth: 10,
           fill: 'none',
           pointerEvents: 'stroke',
         };

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import json
 import uuid
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ class EvalSummary(BaseModel):
     average_duration_ms: float = 0.0
     total_tokens: int = 0
     total_tool_calls: int = 0
+    failure_categories: dict[str, int] = Field(default_factory=dict)
 
 
 class EvalBatch(BaseModel):
@@ -90,6 +92,11 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
     budget_exceeded = sum(item.status == "budget_exceeded" for item in results)
     budget_finalized = sum(item.status == "budget_finalized" for item in results)
     errors = sum(item.status == "error" for item in results)
+    failure_categories = Counter(
+        str(getattr(item, "failure_category", "none") or "none")
+        for item in results
+        if str(getattr(item, "failure_category", "none") or "none") != "none"
+    )
     return EvalSummary(
         total=total if total is not None else completed,
         completed=completed,
@@ -104,6 +111,7 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
         average_duration_ms=round(sum(item.duration_ms for item in results) / completed, 1) if completed else 0.0,
         total_tokens=sum(item.total_tokens for item in results),
         total_tool_calls=sum(item.tool_calls for item in results),
+        failure_categories=dict(sorted(failure_categories.items())),
     )
 
 
@@ -414,6 +422,34 @@ def _write_performance_result(batch: EvalBatch) -> Path:
     path = result_root / f"performance-merged-{timestamp}-{uuid.uuid4().hex[:8]}.jsonl"
     _write_performance_jsonl(path, batch.results)
     return path
+
+
+def write_performance_result(
+    results: list[EvalResult],
+    *,
+    version: str,
+    label: str = "",
+) -> Path:
+    """Register one completed CLI run in the Performance Results catalog.
+
+    The interactive batch flow reaches this through ``merge``. CLI runs do not
+    have a pair of batch IDs to merge, so they use this explicit single-run
+    registration point instead of leaving their raw ``results.jsonl`` hidden
+    from the Evaluation Center.
+    """
+    if not results:
+        raise ValueError("cannot register an empty performance result")
+    batch = EvalBatch(
+        batch_id=f"cli_{uuid.uuid4().hex[:16]}",
+        suite="cli",
+        version=version,
+        label=label,
+        case_ids=sorted({result.case_id for result in results}),
+        status="completed",
+        results=results,
+    )
+    batch.summary = summarize(results, len(batch.case_ids))
+    return _write_performance_result(batch)
 
 
 def _write_performance_jsonl(path: Path, results: list[EvalResult]) -> None:

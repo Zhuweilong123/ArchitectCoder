@@ -153,9 +153,13 @@ function getMessageVisual(type: MessageType, theme: CanvasTheme) {
     ? {
         sync: '#60a5fa', async: '#4ade80', return: '#cbd5e1', simple: '#e2e8f0', self: '#a78bfa',
       }
-    : {
+    : theme === 'eye-care'
+      ? {
+          sync: '#547a5d', async: '#4f805d', return: '#718078', simple: '#52675a', self: '#89745d',
+        }
+      : {
         sync: '#2563eb', async: '#16a34a', return: '#64748b', simple: '#475569', self: '#7c3aed',
-      };
+        };
   const color = palette[type];
   return {
     color,
@@ -628,8 +632,10 @@ const SeqEditor: React.FC = () => {
           canvasTheme, endpointHighlighted,
         ]);
         const lineColor = endpointHighlighted
-          ? (canvasTheme === 'dark' ? '#60a5fa' : '#2563eb')
-          : canvasTheme === 'blueprint' ? '#0284c7' : canvasTheme === 'dark' ? '#64748b' : '#94a3b8';
+          ? (canvasTheme === 'dark' ? '#60a5fa' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
+          : canvasTheme === 'blueprint' ? '#0284c7'
+            : canvasTheme === 'dark' ? '#64748b'
+              : canvasTheme === 'eye-care' ? '#8ea594' : '#94a3b8';
         const lifelineLine = {
           x1: LIFELINE_WIDTH / 2,
           y1: 45,
@@ -720,8 +726,11 @@ const SeqEditor: React.FC = () => {
             ? activation.auto ? '#1e3a5f' : '#1e3a5f'
             : canvasTheme === 'blueprint'
               ? '#e0f2fe'
-              : activation.auto ? '#dbeafe' : '#eff6ff';
-          const stroke = canvasTheme === 'blueprint' ? '#0284c7' : '#3b82f6';
+              : canvasTheme === 'eye-care'
+                ? activation.auto ? '#dfeade' : '#dfeade'
+                : activation.auto ? '#dbeafe' : '#eff6ff';
+          const stroke = canvasTheme === 'blueprint'
+            ? '#0284c7' : canvasTheme === 'eye-care' ? '#6e9677' : '#3b82f6';
           const nodeAttrs = {
             body: {
               fill,
@@ -795,7 +804,7 @@ const SeqEditor: React.FC = () => {
         const isHovered = msg.id === hoveredMessageId;
         const visual = getMessageVisual(msg.type, canvasTheme);
         const strokeColor = isSelected
-          ? (canvasTheme === 'dark' ? '#93c5fd' : '#1d4ed8')
+          ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#547a5d' : '#1d4ed8')
           : visual.color;
         const strokeDash = visual.dash;
         const labelPosition = {
@@ -823,8 +832,11 @@ const SeqEditor: React.FC = () => {
               fill: strokeColor,
             },
             rect: {
-              fill: canvasTheme === 'dark' ? '#172033' : '#ffffff',
-              stroke: isSelected ? strokeColor : canvasTheme === 'dark' ? '#334155' : '#e2e8f0',
+              fill: canvasTheme === 'dark'
+                ? '#172033' : canvasTheme === 'eye-care' ? '#f8f7ee' : '#ffffff',
+              stroke: isSelected
+                ? strokeColor : canvasTheme === 'dark' ? '#334155'
+                  : canvasTheme === 'eye-care' ? '#cbd7c9' : '#e2e8f0',
               strokeWidth: isSelected ? 1 : 0.6,
               rx: 4,
               ry: 4,
@@ -913,13 +925,21 @@ const SeqEditor: React.FC = () => {
         const w = f.width || 280;
         const yStart = Math.max(f.y_start || 80, 80);  // ensure fragment clears toolbar
         const h = Math.max(60, (f.y_end || (yStart + 120)) - yStart);
-        const stroke = f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
+        const stroke = canvasTheme === 'eye-care'
+          ? f.type === 'alt' ? '#89745d' : f.type === 'loop' ? '#547a5d' : '#718078'
+          : f.type === 'alt' ? '#722ed1' : f.type === 'loop' ? '#1890ff' : '#555';
         const dash = f.type === 'opt' ? '4,2' : '';
-        const fill = f.type === 'alt'
-          ? 'rgba(114,46,209,0.05)'
-          : f.type === 'loop'
-            ? 'rgba(24,144,255,0.05)'
-            : 'rgba(100,116,139,0.04)';
+        const fill = canvasTheme === 'eye-care'
+          ? f.type === 'alt'
+            ? 'rgba(137,116,93,0.06)'
+            : f.type === 'loop'
+              ? 'rgba(84,122,93,0.06)'
+              : 'rgba(113,128,120,0.05)'
+          : f.type === 'alt'
+            ? 'rgba(114,46,209,0.05)'
+            : f.type === 'loop'
+              ? 'rgba(24,144,255,0.05)'
+              : 'rgba(100,116,139,0.04)';
         const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash, fill]);
         try {
           const existing = graph.getCellById(f.id);
@@ -942,6 +962,9 @@ const SeqEditor: React.FC = () => {
             fn.setAttrByPath('body/stroke', stroke);
             fn.setAttrByPath('body/strokeDasharray', dash);
             fn.setAttrByPath('body/fill', fill);
+            if (canvasTheme === 'eye-care') {
+              fn.setAttrByPath('labelText/html', `<span style="color:#3f5145;background:#f8f7ee;border-color:#cbd7c9">${escapeHtml(label)}</span>`);
+            }
             // Fragments are visual containers. Keep them behind lifelines and
             // message edges so elements inside a loop remain selectable.
             fn.toBack();

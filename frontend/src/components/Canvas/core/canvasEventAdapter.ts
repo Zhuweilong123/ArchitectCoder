@@ -4,6 +4,12 @@ interface MutableFlag {
   current: boolean;
 }
 
+export interface EdgeClickPosition {
+  x: number;
+  y: number;
+  altKey?: boolean;
+}
+
 export interface CanvasEventAdapterOptions {
   graph: Graph;
   isInternalUpdate: MutableFlag;
@@ -12,8 +18,10 @@ export interface CanvasEventAdapterOptions {
   onBlankClick?: () => void;
   onNodeMoved?: (node: Node) => void;
   onNodeResized?: (node: Node) => void;
-  onEdgeClick?: (edge: Edge) => void;
+  onEdgeClick?: (edge: Edge, position?: EdgeClickPosition) => void;
+  onEdgeMouseEnter?: (edge: Edge) => void;
   onEdgeEndpointChanged?: (edge: Edge) => void;
+  onEdgeVerticesChanged?: (edge: Edge) => void;
   onNewEdge?: (edge: Edge, sourceId: string, targetId: string) => void;
   onEdgeRemoved?: (edge: Edge) => void;
   edgeTools?: Parameters<Edge['addTools']>[0];
@@ -33,7 +41,9 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     onNodeMoved,
     onNodeResized,
     onEdgeClick,
+    onEdgeMouseEnter,
     onEdgeEndpointChanged,
+    onEdgeVerticesChanged,
     onNewEdge,
     onEdgeRemoved,
     edgeTools,
@@ -50,7 +60,11 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   const handleNodeResized = ({ node }: { node: Node }) => {
     if (!isInternalUpdate.current) onNodeResized?.(node);
   };
-  const handleEdgeClick = ({ edge }: { edge: Edge }) => onEdgeClick?.(edge);
+  const handleEdgeClick = ({ edge, x, y, e }: { edge: Edge; x?: number; y?: number; e?: any }) => {
+    onEdgeClick?.(edge, typeof x === 'number' && typeof y === 'number'
+      ? { x, y, altKey: Boolean(e?.altKey || e?.evt?.altKey) }
+      : undefined);
+  };
   const handleEdgeEndpointChanged = ({ edge }: { edge: Edge }) => {
     if (!isInternalUpdate.current) onEdgeEndpointChanged?.(edge);
   };
@@ -60,9 +74,36 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     const targetId = edge.getTargetCellId();
     if (sourceId && targetId) onNewEdge?.(edge, sourceId, targetId);
   };
+  const decorateVertexTools = (tools: CanvasEventAdapterOptions['edgeTools']) => {
+    if (!tools || !onEdgeVerticesChanged) return tools;
+    const decorate = (tool: any) => {
+      if (!tool || typeof tool !== 'object' || !['segments', 'vertices'].includes(tool.name)) {
+        return tool;
+      }
+      const originalArgs = tool.args || {};
+      return {
+        ...tool,
+        args: {
+          ...originalArgs,
+          onChanged: (payload: { edge: Edge }) => {
+            originalArgs.onChanged?.(payload);
+            if (!isInternalUpdate.current) onEdgeVerticesChanged(payload.edge);
+          },
+        },
+      };
+    };
+    if (Array.isArray(tools)) return tools.map(decorate) as typeof tools;
+    if (typeof tools === 'object' && 'items' in tools) {
+      const toolGroup = tools as { items: any[] };
+      return { ...toolGroup, items: toolGroup.items.map(decorate) } as typeof tools;
+    }
+    return decorate(tools) as typeof tools;
+  };
+  const vertexAwareEdgeTools = decorateVertexTools(edgeTools);
   const handleEdgeMouseEnter = ({ edge }: { edge: Edge }) => {
-    if (!edgeTools) return;
-    try { edge.addTools(edgeTools); } catch { /* ignore disposed cells */ }
+    onEdgeMouseEnter?.(edge);
+    if (!vertexAwareEdgeTools) return;
+    try { edge.addTools(vertexAwareEdgeTools); } catch { /* ignore disposed cells */ }
   };
   const handleEdgeMouseLeave = ({ edge }: { edge: Edge }) => {
     if (!edgeTools) return;

@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-understanding-component-map-001",
   "name": "组件源码测试映射理解",
   "prompt": "检查项目 UML、源码和测试，回答项目有多少个组件，并列出每个组件对应的源码模块、核心类和测试文件。不要修改任何文件。",

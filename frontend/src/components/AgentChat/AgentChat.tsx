@@ -154,6 +154,17 @@ const AgentChat: React.FC = () => {
   const review = useReviewStore();
   // 实时步骤的真相来源：WS 回调闭包可能过期，直接读写 ref 避免丢失
   const liveStepsRef = useRef<AgentProgressEvent[]>([]);
+  const liveTodosRef = useRef<AgentTodoItem[]>([]);
+  const settleTodos = useCallback((terminalStatus: 'completed' | 'pending') => {
+    const next = liveTodosRef.current.map((item) => (
+      item.status === 'in_progress'
+        ? { ...item, status: terminalStatus as AgentTodoItem['status'] }
+        : item
+    ));
+    liveTodosRef.current = next;
+    setCurrentTodos(next);
+    return next;
+  }, []);
 
   // 流式元素的 LLM ID → 真实 ID 映射表，跨事件共享
   const idMapRef = useRef<Map<string, string>>(new Map());
@@ -171,7 +182,11 @@ const AgentChat: React.FC = () => {
     if (todoStateRestoredRef.current) return;
     const previous = latestTodoState(messages);
     if (previous.todos.length) {
-      setCurrentTodos(previous.todos);
+      const restoredTodos = previous.todos.map((item) => (
+        item.status === 'in_progress' ? { ...item, status: 'pending' as const } : item
+      ));
+      liveTodosRef.current = restoredTodos;
+      setCurrentTodos(restoredTodos);
       setTodoPlanningMode(previous.planningMode);
       setStrategyAdvised(previous.strategyAdvised);
     }
@@ -262,6 +277,7 @@ const AgentChat: React.FC = () => {
           // 只同步最新一步触发渲染，避免每步全量 setState
           setCurrentSteps([...liveStepsRef.current]);
           if (Array.isArray(event.todos) && event.todos.length > 0) {
+            liveTodosRef.current = event.todos;
             setCurrentTodos(event.todos);
             setTodoPlanningMode(Boolean(event.planning_mode));
             setStrategyAdvised(Boolean(event.strategy_advised));
@@ -359,6 +375,7 @@ const AgentChat: React.FC = () => {
           useDiagramStore.getState().endBatch();
           useReviewStore.getState().expire('连接中断期间后端已取消该任务');
           setBusy(false);
+          settleTodos('pending');
           setMessages((prev) => [
             ...prev,
             {
@@ -378,6 +395,15 @@ const AgentChat: React.FC = () => {
           const steps = liveStepsRef.current;
           liveStepsRef.current = [];
           setCurrentSteps([]);
+          const todoStatus = !event.checkpoint || event.checkpoint.status === 'completed'
+            ? 'completed'
+            : 'pending';
+          const finalTodos = settleTodos(todoStatus);
+          const finalSteps = steps.map((step) => (
+            Array.isArray(step.todos) && step.todos.length
+              ? { ...step, todos: finalTodos }
+              : step
+          ));
           setMessages((prev) => {
             const hasStream = prev.some((m) => m.id.startsWith('stream_'));
             if (hasStream) {
@@ -388,7 +414,7 @@ const AgentChat: React.FC = () => {
                       ...m,
                       id: m.id.replace('stream_', 'agent_'),
                       content: event.result || m.content,
-                      steps: steps.length ? steps : undefined,
+                      steps: finalSteps.length ? finalSteps : undefined,
                     }
                   : m,
               );
@@ -401,7 +427,7 @@ const AgentChat: React.FC = () => {
                 role: 'agent' as const,
                 content: event.result || '(空回复)',
                 timestamp: Date.now(),
-                steps: steps.length ? steps : undefined,
+                steps: finalSteps.length ? finalSteps : undefined,
               },
             ];
           });
@@ -418,6 +444,7 @@ const AgentChat: React.FC = () => {
         case 'stopped': {
           useDiagramStore.getState().endBatch();
           setBusy(false);
+          settleTodos('pending');
           liveStepsRef.current = [];
           setCurrentSteps([]);
           // 任务中断时挂起的审核已无人消费，置为失效
@@ -446,6 +473,7 @@ const AgentChat: React.FC = () => {
         case 'error': {
           useDiagramStore.getState().endBatch();
           setBusy(false);
+          settleTodos('pending');
           liveStepsRef.current = [];
           setCurrentSteps([]);
           // 任务出错时挂起的审核已无人消费，置为失效
@@ -473,7 +501,7 @@ const AgentChat: React.FC = () => {
     }, token, open);
 
     return ws;
-  }, []);
+  }, [handleDesignElementWrapper, settleTodos]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -502,6 +530,7 @@ const AgentChat: React.FC = () => {
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
+    liveTodosRef.current = [];
     setCurrentTodos([]);
     setTodoPlanningMode(false);
     setStrategyAdvised(false);
@@ -560,6 +589,7 @@ const AgentChat: React.FC = () => {
     setMessages([]);
     liveStepsRef.current = [];
     setCurrentSteps([]);
+    liveTodosRef.current = [];
     setCurrentTodos([]);
     setTodoPlanningMode(false);
     setStrategyAdvised(false);
@@ -600,6 +630,7 @@ const AgentChat: React.FC = () => {
       })));
       liveStepsRef.current = [];
       setCurrentSteps([]);
+      liveTodosRef.current = [];
       setCurrentTodos([]);
       setTodoPlanningMode(false);
       setStrategyAdvised(false);
@@ -644,6 +675,7 @@ const AgentChat: React.FC = () => {
         setBusy(true);
         liveStepsRef.current = [];
         setCurrentSteps([]);
+        liveTodosRef.current = [];
         setCurrentTodos([]);
         setTodoPlanningMode(false);
         setStrategyAdvised(false);
@@ -668,6 +700,7 @@ const AgentChat: React.FC = () => {
         setBusy(false);
         liveStepsRef.current = [];
         setCurrentSteps([]);
+        settleTodos('pending');
         useReviewStore.getState().expire('连接中断，审核随之失效');
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -799,7 +832,7 @@ const AgentChat: React.FC = () => {
               <div key={`${index}_${item.content}`} className={`agent-todo-item ${item.status}`}>
                 <span className="agent-todo-status" aria-label={item.status}>
                   {item.status === 'completed' ? <CheckCircleOutlined />
-                    : item.status === 'in_progress' ? <LoadingOutlined spin />
+                    : item.status === 'in_progress' && busy ? <LoadingOutlined spin />
                       : <span className="agent-todo-pending-dot" />}
                 </span>
                 <div className="agent-todo-content">

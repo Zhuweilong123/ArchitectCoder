@@ -1,135 +1,433 @@
-# 产品差异化与创新方向
+# 产品差异化与联合演进路线
 
-> 本文归档 ArchitectCoder 与主流编程 Agent 的定位对比，以及基于当前
-> 架构（V1 固定流水线已下线、V2 自主 Agent 为主）的创新方向优先级。
-> 作为后续产品路线与竞争力论证的参考基线，避免重复讨论「我们不一样在哪」。
+> 文档定位：ArchitectCoder 当前产品战略、差异化边界与实施优先级
+>
+> 状态：vNext 规划基线
+>
+> 更新日期：2026-09-07
+>
+> 当前架构以 [`current-architecture.md`](current-architecture.md) 为准；本文不替代具体子系统设计。
 
-## 1. 一句话定位
+## 1. 核心结论
 
-**设计即真相源（Design as source of truth）。** 架构图是驱动代码生成、验证、
-测试的唯一真相源；代码是「生成物」，受设计约束。
+ArchitectCoder 不应继续被定义为“带 UML 的 Coding Agent”，也不应与通用编程
+Agent 比拼模型、ReAct、子代理或聊天体验。更有竞争力的定位是：
 
-这与通用编程 Agent 的默认假设**相反** —— 它们把代码当唯一真相源，架构只是
-文档/记忆，会随迭代漂移。
+> **面向复杂存量系统的可执行架构治理与联合演进平台：让每次变更都能证明需求、
+> 设计、代码和测试仍然一致。**
 
-## 2. 与已有产品的对比
+“设计即真相源”仍是核心理念，但这里的设计不能只是一组图，也不能只依赖 Agent
+遵守提示词。它必须升级为：
 
-### 2.1 通用编程 Agent（Cursor / Copilot / Claude Code）
+- **可持久化**：需求、架构决策、约束和验收标准是工程资产；
+- **可计算**：设计元素能稳定映射到代码符号和测试；
+- **可执行**：违规变更能够在写入、完成任务和合并代码前被阻断；
+- **可演进**：设计与代码可以双向同步，并明确区分实现错误、设计过期和有意偏离；
+- **可证明**：每次变更都有审核、验证、Trace 和运行证据。
 
-| 维度 | 通用编程 Agent | ArchitectCoder | 是否真差异 |
-|------|---------------|----------------|-----------|
-| 真相源 | 代码是唯一真相，架构是副产物 | 架构图是唯一真相，代码是生成物 | ✅ 核心差异 |
-| 工作对象 | 在既有代码库上改代码 | 需求 → UML → 代码 → 验证全生命周期 | ✅ 差异 |
-| 项目理解 | embedding RAG / grep / 读文件 | 确定性 KG（design+code 双层、语义边、可 diff） | ✅ 差异 |
-| 可观测性 | 基本没有 | trace + L1/L2/L3 确定性回放、逐词 diff | ✅ 差异（当前是基建非卖点） |
-| 记忆 | 单层（历史/向量） | 双层：「系统长什么样」=KG、「为什么长这样」=memory | 🟡 概念清晰，机制已趋同 |
-| 护栏 | 审批/沙箱 | UML diff 审核 + bash 分级 + 子代理审核透传 | 🟡 标准能力，做得细 |
-| ReAct 循环 / FC / 子代理 | — | — | ❌ 非差异，table stakes |
+最终目标不是让用户“画更多图”，而是降低复杂系统变更中的理解成本、架构漂移和
+评审风险。
 
-### 2.2 设计 / 低代码生成器（v0 / Lovable / 低代码平台）
+## 2. 竞争边界
 
-| 维度 | 设计生成器 | ArchitectCoder |
-|------|-----------|----------------|
-| 产物 | 主要是前端 UI / 页面 | 架构级设计（类图/时序图/组件图）+ 后端代码 |
-| 抽象层次 | 组件/页面 | 类 / 关系 / 依赖 / 跨图一致性 |
-| 验证 | 视觉/运行 | 跨图一致性程序化校验 + pytest 真实执行 |
-| 演进 | 一次性生成为主 | 设计 + 代码**持续协同演进** |
+### 2.1 “规格驱动”已经成为行业能力
 
-**差异化结论**：ArchitectCoder 卡在「编程 Agent」和「设计生成器」之间——
-有编程 Agent 没有的**架构级产物**，有设计生成器没有的**代码验证与持续演进**。
+GitHub Spec Kit、Kiro 等产品已经把 requirements → design → tasks → implementation
+做成标准工作流，并开始支持 Design-First、Brownfield、Hooks、Skills、MCP 和 PR
+交付。因此，以下能力只能算 table stakes：
 
-## 3. 当前架构的三条主线
+- 先写规格再生成代码；
+- Markdown 形式的需求、设计和任务；
+- ReAct、native function calling、子代理；
+- 记忆、沙箱、工具审批；
+- 通用代码生成和测试执行。
 
-V1 固定流水线（optimize_uml → generate_code → validate_code → … → write_files）
-已下线并删除。当前真正在跑的三条线：
+参考：
 
+- [GitHub Spec Kit — Spec-Driven Development](https://github.com/github/spec-kit/blob/main/docs/concepts/sdd.md)
+- [Kiro Feature Specs](https://kiro.dev/docs/specs/feature-specs/)
+- [Kiro Hooks](https://kiro.dev/docs/hooks/)
+- [GitHub Copilot Hooks](https://docs.github.com/en/copilot/concepts/agents/hooks)
+
+### 2.2 ArchitectCoder 应建立的真差异
+
+| 维度 | 通用 Spec/Coding Agent | ArchitectCoder 目标 |
+|---|---|---|
+| 设计载体 | Markdown 规格或临时计划 | 结构化、可交互、可计算的架构契约 |
+| 存量系统 | 读取代码后直接修改 | 代码逆向成设计基线，再受控演进 |
+| 一致性 | 主要依赖模型理解和测试 | 确定性的设计—代码—测试图谱与 Diff |
+| 约束执行 | Prompt、规则文件或通用 Hook | 与设计元素绑定的架构策略和硬门禁 |
+| 评审对象 | 代码 Diff | 需求、设计、代码、测试和风险的联合 Diff |
+| 证据 | 最终回答、测试日志、PR | 可回放 Run、审批记录、架构检查和验证证据包 |
+| 治理 | 项目级指令 | owner、waiver、有效期、设计债务和趋势 |
+
+核心护城河应当是：
+
+1. **可执行设计契约**；
+2. **存量代码与设计的双向演进**；
+3. **不可绕过的架构门禁**；
+4. **从变更意图到验证证据的完整追溯链**；
+5. **历史 Run/Trace 转化为持续评测资产的数据飞轮**。
+
+## 3. 当前产品基线
+
+### 3.1 已经形成的优势
+
+当前项目已经具备较完整的平台底座：
+
+- 类图、时序图、组件图及跨图验证；
+- V2 全局设计生成、流式绘图和多图 Diff；
+- 统一生产 DevAgent 装配与受控工具边界；
+- ChangeSet、SHA 冲突检测、原子变更和回滚基础；
+- UML Diff 人工审核与敏感命令审核；
+- SQLite 持久化 Run、checkpoint、暂停/恢复和审计事件；
+- Trace 记录及 mock/rerun/live 回放；
+- 生产链路复用的 Evals、Fixture、Checker 和归档；
+- KG、长期记忆和插件 Provider 边界。
+
+主 DevAgent 已经接入 `get_project_map`、`find_nodes`、`expand_neighbors` 三个知识图谱
+工具。旧规划中“主 Agent 完全碰不到 KG”的描述已经失效。
+
+### 3.2 尚未闭合的关键断点
+
+#### A. 设计优先仍是软约束
+
+系统 Prompt 要求设计影响型任务遵循“修改 UML → 审核 → 接受后实现”，但文件变更工具
+没有根据设计审核状态建立写入屏障。当前兜底逻辑是在 Agent 结束时发现未审核的 UML
+变更并补推审核；它能够发现遗漏，但不能阻止模型提前修改业务代码。
+
+#### B. 设计—代码 Diff 没有进入默认执行链
+
+KG 已实现 `compare_design_code`，可以发现：
+
+- `missing_implementation`；
+- `extra_code`；
+- `mismatch`；
+- `no_coverage`。
+
+但该工具仍是显式 opt-in，没有作为设计影响型任务的自动前置/后置检查，也没有形成
+发布门禁。
+
+#### C. 设计约束不是持久化真相源
+
+V2 优化结果包含 `design_constraints`，但 `.umlproj` 的 Project 模型当前只持久化
+名称、版本、revision 和 diagrams。需求、决策、约束、验收标准和豁免尚未成为工程内
+的正式资产。
+
+#### D. 追溯链缺少需求和决策层
+
+当前 KG 覆盖设计、源码和测试，但没有 Requirement、Acceptance Criterion、ADR、
+Constraint、Run、Evidence、Waiver 等一等节点。因此系统能回答“代码长什么样”，还
+不能确定性回答“为什么这样设计、满足哪条需求、由什么证据证明”。
+
+#### E. Harness 尚未完全产品化
+
+后端已有 `/api/runs`、`/api/audit` 和 `/api/metrics`，但前端仍以画布、工具栏、聊天、
+Trace 和评测中心为主要入口。用户看到的是多个功能模块，而不是一个连续的变更生命周期。
+
+#### F. 质量表现是“理解强、执行弱”
+
+4.0 受控基线（16 Case）为 8 通过、5 门禁失败、3 执行错误，通过率 50.0%，平均得分
+72.21%；其中 understanding 4/4，multiturn 2/4，single 2/8。当前优先级仍是提升跨
+设计、源码、测试任务的稳定执行，而不是继续增加 Agent 范式。
+
+评测口径已于 2026-09-07 完成第一轮清理：当前 Case 统一使用 `apply_changes`，并固定
+Case Schema、Tool Protocol、Checker Protocol 与 Fixture Layout 版本；损坏或契约漂移的
+Case 将使目录加载失败，不再静默改变分母。`hard_checkers` 现在只负责通过门禁，普通
+`checkers` 只影响得分；结果及批次可区分 Agent、工具、环境、Checker、超时和预算失败。
+旧的 37.5% 结果仅作为历史对照，不与 4.0 口径混合；后续版本必须沿用同一套 Case、
+工具协议和失败归因，才能进行趋势比较。
+
+#### G. 多语言广度与深度不一致
+
+界面保留 12 种语言名称，但 KG 的代码层和测试覆盖目前只解析 Python。短期应明确
+“Python 深度闭环”，随后通过语言适配器逐个认证 Java、TypeScript 等能力，不应把
+通用 LLM 能生成某种语言等同于该语言已支持完整联合演进。
+
+## 4. 目标用户和首要场景
+
+### 4.1 优先用户
+
+- 有复杂存量 Python 后端的研发团队；
+- 工业软件、仿真、通信、金融等强契约场景；
+- 架构负责人、技术负责人和需要跨模块评审的高级工程师；
+- 有接口稳定性、测试证据、审计或合规要求的组织。
+
+雷达仿真项目适合作为第一套标杆工程：它包含明确的组件边界、领域类、调用链和
+设计—源码一致性测试，可以完整展示产品价值。
+
+### 4.2 三个黄金场景
+
+#### 场景一：存量代码 → 可信设计基线
+
+导入仓库后自动生成组件图、核心类图和关键时序图，标记映射置信度和未识别部分，
+由用户审核后成为受控设计基线。
+
+#### 场景二：需求 → 设计 → 实现 → 证据
+
+用户提出需求，系统给出影响分析和设计 Diff；设计被接受后才能实施源码变更，随后
+自动执行设计—代码检查和测试，生成可交付证据包。
+
+#### 场景三：代码偏离 → 修复、同步或豁免
+
+当人工提交或外部 Agent 修改代码导致设计漂移时，CI/PR Check 自动识别，并提供：
+
+1. 按现有设计修复代码；
+2. 将实现变化反向同步为设计 Diff；
+3. 创建带责任人和到期时间的临时豁免。
+
+第三个场景最能证明 ArchitectCoder 是持续演进平台，而不是一次性生成器。
+
+## 5. 目标产品闭环
+
+```text
+需求 / 缺陷 / 变更意图
+          ↓
+需求澄清 + 验收标准
+          ↓
+影响分析（设计 + 代码 + 测试）
+          ↓
+设计契约 Diff
+          ↓
+人工审核 ──拒绝──> 修订设计
+          ↓ 接受
+受控代码与测试变更
+          ↓
+架构一致性门禁 + 测试门禁
+          ↓
+证据包 / PR Check / 可审计 Run
+          ↓
+更新设计基线、KG、记忆和回归集
 ```
-1. 全局优化（V2 引擎）
-   自然语言 → 完整 UML 设计（scope 分析 → 单次生成 → 程序化跨图校验）
-   走 REST /api/optimize_v2，流式绘图，可中途取消
 
-2. DevAgent（ReActAgent，主对话）
-   设计 + 代码协同演进，工具集：文件原语 / todo / skill / 子代理 /
-   任务 DAG / 人工审核
+每个阶段必须有明确输入、产物、状态和证据，不能只存在于对话文本中。
 
-3. 基础设施
-   KG（项目理解）· trace/回放（可观测）· memory（跨会话）· 人工审核（护栏）
+## 6. Design Contract v2
+
+`.umlproj` 应从“图集合”升级为“设计契约”。建议增加以下一等实体：
+
+| 实体 | 作用 |
+|---|---|
+| Requirement | 描述必须实现的用户或业务结果 |
+| AcceptanceCriterion | 给需求提供可验证的完成条件 |
+| Decision | 记录架构决策、原因和替代方案 |
+| Constraint | 表达依赖、分层、接口、兼容性和 NFR 规则 |
+| DesignElement | 现有组件、类、接口、生命线和消息 |
+| CodeSymbol | 文件、类、方法、字段和调用点 |
+| TestCase | 自动测试、TestHub 用例或人工验证 |
+| Run | 一次联合演进任务及其状态 |
+| Evidence | 测试、构建、静态检查、Diff 和审批结果 |
+| Waiver | 有理由、有责任人、有期限的临时偏离 |
+
+核心关系至少包括：
+
+```text
+Requirement ──satisfied_by──> DesignElement
+DesignElement ──implemented_by──> CodeSymbol
+Requirement / DesignElement ──verified_by──> TestCase
+Run ──produces──> Evidence
+Constraint ──governs──> DesignElement / CodeSymbol
+Waiver ──temporarily_allows──> ConstraintViolation
+Decision ──explains──> DesignElement / Constraint
 ```
 
-## 4. 真差异 vs 通用能力（诚实评估）
+所有实体都应有稳定 ID、版本、来源和 provenance；设计—代码映射必须区分
+`confirmed`、`inferred` 和 `unresolved`，避免把启发式结果伪装成事实。
 
-**是真差异：**
-- 设计即真相源 + 设计-代码协同演进（方向反过来了）
-- 确定性 KG（非 LLM 生成、可复现，能 diff「设计 vs 实现」）
-- trace 确定性回放（L1/L2/L3，可做回归/A-B/调试）
+## 7. 架构门禁设计
 
-**不是差异（别在对外讲时当卖点）：**
-- ReAct 循环、native function calling、子代理 —— 框架标配
-- 记忆/审核/沙箱 —— 标准护栏，只是做得细
+应新增独立的 `ArchitecturePolicyEngine`，由执行层调用，而不是依赖模型自行遵守。
 
-## 5. 创新方向（优先级排序）
+### 7.1 写入前门禁
 
-> 排序依据：差异化 × 可行性，并考虑「删掉 V1 后代码侧理解只剩 KG 一层
-> AST，逆向成为最明显空白」这一事实。
+- 根据目标路径、任务分类和 ChangeSet 判断是否影响设计；
+- 设计影响型任务在写入 `src/` 前必须绑定已接受的设计 revision；
+- 若设计为空、审核过期或 revision 冲突，则拒绝写入并返回结构化原因；
+- 纯实现修复可以按策略直接执行，但仍需后置一致性检查。
 
-### ① 逆向闭环：既有代码 → 自动生成架构图（头号机会）
+### 7.2 写入后门禁
 
-V1 的「设计 → 代码」流水线已删，而「代码 → 设计」这条路**从头到尾不存在**。
-`knowledge_graph/builder.py` 已用 AST 解析出 class/method/关系节点，并建了
-`IMPLEMENTS` 边 —— 逆向原料现成。
+- 对 ChangeSet 涉及的节点做增量 KG 重建和影响分析；
+- 自动运行 `compare_design_code` 和项目自定义架构规则；
+- 自动选择受影响测试，而不是默认全量扫描；
+- 任何 release-gate 失败都不允许 Run 报告 `completed`。
 
-- 价值：ArchitectCoder 从「greenfield 脚手架」变成「丢一个遗留工程进来，
-  自动产出可交互、可 diff、可校验的架构图」。
-- 对标：Cursor/Copilot 最想有却做不好的「理解现有代码」，你有它们没有的
-  架构级产物。
+### 7.3 交付门禁
 
-### ② 架构即约束：把「设计是真相源」变成可执行拦截器
+- 设计 revision、代码 SHA、测试结果和审批记录必须一致；
+- 支持严格阻断、警告和带期限豁免三种策略；
+- 输出稳定 JSON/SARIF 和退出码，供 CLI、CI 和 PR Check 使用；
+- 所有绕过行为必须写入 audit 和最终证据包。
 
-现在设计只驱动「生成」，不驱动「约束」—— agent 改代码时无人检查是否破坏设计。
+## 8. 产品体验：以 Evolution Run 为中心
 
-- 做法：代码变更后跑 `kg_diff` + 设计约束（依赖方向、分层、测试覆盖），
-  违规进 `submit_uml_review` 审核卡。
-- 价值：把「设计即真相源」从口号变成规则，是企业「架构治理」的抓手。
-- 与 ① 共用同一套「设计-代码 gap」设施（KG + diff + 校验），建议一起做。
+现有画布、聊天、DiffViewer、TraceViewer、TestHub 和 Evaluation Center 应保留，但
+导航和信息架构要围绕一次变更重组。
 
-### ③ trace 语料飞轮（长期）
+建议新增统一的 **Evolution Run 工作台**：
 
-把 L1/L2/L3 回放从「调试工具」升级为「每次 prompt/模型改动自动跑 N 个历史
-场景断言」的回归集，再走向针对性微调。可观测性从成本项变成护城河。
+- 顶部：需求、状态、设计 revision、责任人和风险等级；
+- 左侧：阶段时间线与 TODO/验收条件；
+- 中部：设计 Diff、代码 Diff、测试结果按阶段切换；
+- 右侧：影响范围、约束违规、审批和证据；
+- 底部：Agent 实时进度、失败原因和恢复入口。
 
-### ④ 设计债务仪表盘（较快、面向演示/卖点）
+Run 的标准状态建议统一为：
 
-KG 已能 `diff`（missing_implementation / extra_code / mismatch / no_coverage），
-把它从 agent 内部查询变成前端面板：哪些图 stale、哪些类没实现、哪些组件破了
-依赖规则。演示效果强，差异化中等。
-
-### ⑤ 设计评审委员会（多 agent，差异化一般）
-
-一个 agent 提方案、另一个按 `uml-design-guide` skill 挑刺、走现有审核通道
-收敛。本质是 prompt 编排，差异化一般，排最后。
-
-## 6. 当前缺口（必须补的前提，不是创新）
-
-`explore_project`（KG 的整套检索面，5 个 `kg_*` 工具）在
-`conversation_tools.py` 中仍被注释 —— **主 DevAgent 目前碰不到 KG**。
-「结构化项目理解」这一差异化目前只活在文档里。要讲 ① ② 的差异化，
-得先把它接进主循环。
-
-## 7. 建议路线
-
-```
-先补缺口 ⑥ → 再做 ① + ②（闭环 + 约束，共用基础设施）→ ③ 穿插 → ④ 按需
+```text
+draft → analyzing → design_pending → waiting_approval
+      → implementing → verifying → succeeded / partial / failed / waived
 ```
 
-短期：接通 `explore_project`，让「项目理解」成为真能力。
-中期：① 逆向 + ② 架构 Lint，把「设计-代码 gap」做成双向闭环。
-长期：③ trace 数据飞轮。
+同时增加 **设计债务面板**，展示：
 
-## 8. 相关文档
+- 过期设计和未映射节点；
+- 缺失实现、多余代码和签名漂移；
+- 未覆盖设计元素；
+- 被破坏的依赖/分层规则；
+- waiver 数量、责任人、到期时间和债务趋势。
+
+## 9. 实施路线
+
+当前 Agent 执行能力优化阶段采用三条边界：不把知识图谱作为执行依赖，不新增或扩展
+工具集合，不引入任务分类器。先在同一套 DevAgent、固定工具协议和统一执行闭环下，
+通过评测口径、状态管理、失败恢复和证据约束提升稳定性；知识图谱与任务分类相关设想
+保留为远期选项，不进入当前里程碑。
+
+### P0：可信基线（第 1–3 周）
+
+目标：先让当前能力可信、可测、口径一致。
+
+- **已完成（2026-09-07）**：修复 Case 工具名与生产工具契约漂移；
+- **部分完成**：Case、Tool Protocol、Fixture、Checker 和结果已带版本口径；Prompt 与
+  具体 Tool Schema 指纹仍待补齐；
+- 统一从仓库根目录和 `backend/` 执行测试的入口；
+- 处理 Windows 临时目录权限与 `tests` 包名冲突；
+- 将 `design_constraints` 正式持久化；
+- 为设计影响型任务自动启用 `compare_design_code`；
+- **已完成（2026-09-07）**：结果与批次已区分 Agent、工具、环境、Checker、超时和
+  预算失败；当前 HEAD 已晋升为 `4.0@4076efc` 正式基线（通过率 50.0%，平均得分
+  72.21%）。
+- 对外只承诺 Python 深度闭环。
+
+验收：
+
+- 评测无基础设施假失败；
+- 所有 `completed` Run 都有 mutation evidence 和 verification evidence；
+- single/multiturn release-gate 通过率达到 80% 以上；
+- 审核前越权写入能够被测试稳定复现并阻断。
+
+### P1：联合演进 MVP（第 4–8 周）
+
+目标：把理念转化为可演示、可交付的闭环。
+
+- 实现 Design Contract v2 与稳定 ID；
+- 从 Python 项目逆向生成可审核的设计基线；
+- 实现代码变更的增量影响分析和漂移检测；
+- 将设计审核状态接入源码写入硬门禁；
+- 将 TestHub 用例纳入 Requirement/DesignElement 的追溯关系；
+- 上线 Evolution Run 工作台；
+- 上线设计债务面板；
+- 以雷达项目制作完整黄金路径和回归集。
+
+验收：
+
+- 三个黄金场景端到端跑通；
+- 需求→设计→代码→测试追溯覆盖率达到 90%；
+- 架构漂移检查支持修代码、同步设计和申请豁免；
+- 失败 Run 可以从 checkpoint 恢复且不重复已完成变更。
+
+### P2：进入真实研发流程（第 9–12 周）
+
+目标：让 ArchitectCoder 成为团队交付门禁，而不只是独立工作台。
+
+- 提供 `architectcoder import/impact/check/evidence` CLI；
+- 接入 Git diff、GitHub/GitLab PR Check；
+- 输出结构化评论、SARIF、退出码和证据附件；
+- 增加规则配置、owner、waiver、有效期和审计查询；
+- 支持根据变更影响自动选择测试；
+- 提供本地/CI 完全一致的检查器执行入口。
+
+验收：
+
+- 外部开发者或其他 Coding Agent 修改代码时，门禁仍然有效；
+- PR 能直接展示受影响设计、违规项、测试证据和处理建议；
+- 架构检查结果可复现，不依赖自然语言最终回答。
+
+### P3：数据与生态护城河（3–6 个月）
+
+- 将失败 Trace 和人工修订自动沉淀为候选 Eval Case；
+- 模型、Prompt、工具或策略升级前自动重放历史变更集；
+- 建立真实项目、负向样本、拒绝/恢复和漂移检测 benchmark；
+- 通过语言适配器逐步支持 Java、TypeScript；
+- 建立分层架构、领域边界、API 兼容、安全和合规规则包；
+- 将插件 Provider 扩展到远程 KG、企业策略和托管评测服务。
+
+## 10. 产品指标
+
+### 10.1 北极星指标
+
+> **完整满足设计契约并一次通过人工审核的联合变更比例。**
+
+该指标同时约束设计质量、Agent 执行质量、测试证据和评审成本，比调用次数或生成代码量
+更接近实际产品价值。
+
+### 10.2 90 天目标
+
+| 指标 | 目标 |
+|---|---:|
+| single/multiturn release-gate 通过率 | ≥ 90% |
+| 审核前源码越权写入 | 0 |
+| 需求→设计→代码→测试可追溯覆盖率 | ≥ 95% |
+| 架构漂移误报率 | < 5% |
+| Python 存量项目导入到首张可信架构图 | < 10 分钟 |
+| 单任务 Token 中位数 | 相对当前基线下降 50% |
+| 失败原因可归类率 | 100% |
+| 过期 waiver 自动告警率 | 100% |
+
+还应持续跟踪：首次审核接受率、评审耗时、工具错误率、恢复成功率、违规拦截率、
+设计债务净变化、周活跃项目数和 PR 合并率。
+
+## 11. 商业化形态建议
+
+| 形态 | 主要能力 | 目标 |
+|---|---|---|
+| Community / Local | UML、Python import、基础 check、单机 DevAgent | 获取开发者和真实项目反馈 |
+| Team | Run 工作台、共享规则、PR Check、债务面板、协作审核 | 进入团队研发流程 |
+| Enterprise | 私有化、SSO/RBAC、策略包、审计、waiver 治理、远程 Provider | 架构治理和合规预算 |
+
+开源或免费层应优先开放设计契约格式、CLI 检查和本地运行，以形成事实标准；企业价值
+主要放在团队协作、治理策略、审计、规模化索引和托管评测。
+
+## 12. 暂不优先
+
+以下方向可以保留，但在 P0/P1 闭环完成前不应成为主要投入：
+
+- 增加更多 Agent 范式或多 Agent 评审委员会；
+- 向量化记忆和复杂记忆推荐；
+- 扩充更多 UML 图类型；
+- 通用聊天和普通代码补全；
+- 未经完整验证的多语言广度；
+- 只改善 TraceViewer 展示但不生成可执行回归；
+- 与设计契约无关的插件数量扩张。
+
+判断新功能是否进入路线图时，应回答三个问题：
+
+1. 是否提高设计—实现一致性的确定性？
+2. 是否缩短一次可信变更的交付时间？
+3. 是否形成可复用的数据、规则或集成壁垒？
+
+若三个问题都是否定答案，则不应成为当前优先项。
+
+## 13. 相关文档
 
 | 文档 | 关联 |
-|------|------|
-| `baseagents-design.md` | Agent 框架与工具系统架构 |
-| `knowledge-graph-design.md` | KG 数据模型与检索接口（① ② 的原料） |
-| `trace-replay-design.md` | 回放机制（③ 的基础） |
-| `memory-system-design.md` | 双层记忆中的「为什么」层 |
+|---|---|
+| [`current-architecture.md`](current-architecture.md) | 当前 Agent 装配、工具和运行边界 |
+| [`baseagents-design.md`](baseagents-design.md) | BaseAgents 框架与工具系统 |
+| [`knowledge-graph-design.md`](knowledge-graph-design.md) | 双向演进、影响分析和一致性 Diff 基础 |
+| [`evaluation-system.md`](evaluation-system.md) | Case、Fixture、Checker、基线和发布门禁 |
+| [`trace-replay-design.md`](trace-replay-design.md) | 证据回放和历史场景回归基础 |
+| [`memory-system-design.md`](memory-system-design.md) | “为什么这样设计”的历史参考层 |
+| [`context-management-design.md`](context-management-design.md) | Run/Session 上下文预算与恢复 |
+| [`plugin-architecture-design.md`](plugin-architecture-design.md) | Provider 边界和后续生态扩展 |

@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-multiturn-greeting-sequence-001",
   "name": "问候后理解并验证端到端时序",
   "project_id": "project_radar_v1",

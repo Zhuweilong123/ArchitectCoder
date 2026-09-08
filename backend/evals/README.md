@@ -41,6 +41,35 @@ protect the files that are outside the requested change scope. Answer and trace
 checkers also verify factual responses and required tool behavior, including the
 zero-tool greeting turns.
 
+## Evaluation contract
+
+The current catalog is pinned to case schema `1.0`, tool protocol
+`foundation-tools-v1`, checker protocol `deterministic-checkers-v1`, and fixture
+layout `design-src-test-v1`. Every tracked case declares its case/tool versions;
+an unsupported checker, version mismatch, malformed JSON, or legacy mutation
+tool name such as `edit_file` makes the complete catalog fail to load. This
+fail-closed behavior prevents a broken case from silently reducing the scoring
+denominator.
+
+Criterion roles are intentionally separate:
+
+- `hard_checkers` are acceptance gates. Every hard criterion must pass.
+- `checkers` are diagnostic scoring criteria. They affect the mean score but do
+  not turn a hard-gate pass into a failure.
+- A legacy/local case with no hard criteria keeps the old all-checkers pass rule.
+
+Trace policies check semantic evidence for verification tasks. A `run_task`
+call satisfies a project-test requirement directly; a `run_program` call is an
+equivalent only when its trace contains structured, successful test-verification
+evidence. This prevents tool-name mismatches from masking a passing test while
+still rejecting arbitrary program execution as test evidence.
+
+Every checker result records its criterion role and scope. Every run records a
+machine-readable `failure_category`: `agent_failure`, `tool_failure`,
+`environment_failure`, `checker_failure`, `timeout`, or `budget_exceeded` (and
+`none` for a successful run). Batch summaries aggregate these categories so
+capability regressions are not mixed with harness failures.
+
 ## Runtime parity
 
 Official evaluations use the same `DevAgent` assembly and
@@ -75,3 +104,10 @@ or archive operation changes the tracked baseline.
 
 The baseline remains a versioned repository asset under `backend/evals`, while
 runtime batches and merged performance results remain under `temp/evals`.
+
+The CLI follows the same performance-result boundary as the Evaluation Center.
+Use `python -m extensions.evals.cli --version <version> --label <label>` for a
+run; it writes the raw JSONL output and, after the run completes, registers the
+same result rows as a `performance-*.jsonl` artifact under `temp/evals/results`.
+The latter is what the frontend Performance Results view indexes, so CLI runs
+are visible there without a separate manual merge step.

@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-multiturn-greeting-component-001",
   "name": "问候后查询组件映射",
   "project_id": "project_radar_v1",

@@ -18,6 +18,12 @@
   --uml-edge-label-halo: #eaf5ff;
 }
 
+.uml-canvas-container.theme-eye-care {
+  --uml-canvas-bg: #f3f5ef;
+  --uml-edge-label: #3f5145;
+  --uml-edge-label-halo: #f3f5ef;
+}
+
 /* ── UML Class Node Styling ────────────────────────── */
 .uml-class-node {
   --uml-node-bg: #ffffff;
@@ -113,6 +119,21 @@
   --uml-selection: #0284c7;
 }
 
+.uml-class-node.theme-eye-care {
+  --uml-node-bg: #f8f7ee;
+  --uml-header-start: #eef4ea;
+  --uml-header-end: #e1ecdf;
+  --uml-header-text: #2f3e35;
+  --uml-accent: #547a5d;
+  --uml-divider: #cbd7c9;
+  --uml-surface: #f1f5ed;
+  --uml-primary-text: #33443a;
+  --uml-secondary-text: #66736a;
+  --uml-muted-text: #9eaba0;
+  --uml-selection: #6e9677;
+  color: #33443a;
+}
+
 /* The graph container is the source of truth for the active theme. Keep the
  * node variables synchronized from the container as well, so a stale HTML
  * fragment from the previous theme cannot remain visually mixed after a
@@ -158,6 +179,28 @@
   --uml-muted-text: #7dd3fc;
   --uml-selection: #0284c7;
 }
+
+.uml-canvas-container.theme-eye-care .uml-class-node {
+  --uml-node-bg: #f8f7ee;
+  --uml-header-start: #eef4ea;
+  --uml-header-end: #e1ecdf;
+  --uml-header-text: #2f3e35;
+  --uml-accent: #547a5d;
+  --uml-divider: #cbd7c9;
+  --uml-surface: #f1f5ed;
+  --uml-primary-text: #33443a;
+  --uml-secondary-text: #66736a;
+  --uml-muted-text: #9eaba0;
+  --uml-selection: #6e9677;
+}
+
+.uml-canvas-container.theme-eye-care .uml-class-node.selected {
+  box-shadow: 0 0 0 3px rgba(84, 122, 93, 0.18);
+}
+
+.uml-canvas-container.theme-eye-care .visibility-public { color: #4f805d; }
+.uml-canvas-container.theme-eye-care .visibility-private { color: #b8574f; }
+.uml-canvas-container.theme-eye-care .visibility-protected { color: #a9782c; }
 
 .uml-class-name {
   word-wrap: break-word;
@@ -318,4 +361,20 @@
 .uml-canvas-container.theme-dark .x6-edge-selected .x6-edge-label {
   fill: #bfdbfe;
   stroke: #0b1220;
+}
+
+.uml-canvas-container.theme-eye-care .x6-edge .x6-edge-label {
+  fill: #3f5145;
+  stroke: #f3f5ef;
+}
+
+.uml-canvas-container.theme-eye-care .x6-edge .x6-edge-label text {
+  fill: #3f5145;
+  stroke: #f3f5ef;
+}
+
+.uml-canvas-container.theme-eye-care .x6-edge:hover .x6-edge-label,
+.uml-canvas-container.theme-eye-care .x6-edge-selected .x6-edge-label {
+  fill: #547a5d;
+  stroke: #f3f5ef;
 }

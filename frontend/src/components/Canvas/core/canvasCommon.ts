@@ -1,4 +1,4 @@
-import type { Graph } from '@antv/x6';
+import type { Edge, Graph } from '@antv/x6';
 
 export interface CanvasViewport {
   zoom: number;
@@ -17,6 +17,19 @@ export interface CanvasEdgeEndpoint {
   id: string;
   source: string;
   target: string;
+}
+
+export interface EdgeSelectionPoint {
+  x: number;
+  y: number;
+  altKey?: boolean;
+}
+
+export interface EdgeSelectionCycleState {
+  point: { x: number; y: number } | null;
+  ids: string[];
+  index: number;
+  timestamp: number;
 }
 
 export interface CanvasNodeRect {
@@ -55,6 +68,74 @@ export function getParallelEdgeVertices(
     x: (sourceCenter.x + targetCenter.x) / 2 - (dy / length) * laneOffset,
     y: (sourceCenter.y + targetCenter.y) / 2 + (dx / length) * laneOffset,
   }];
+}
+
+/** Promote automatic Manhattan route turns to editable edge vertices. */
+export function materializeEdgeRouteVertices(graph: Graph, edge: Edge): boolean {
+  const view = graph.findViewByCell(edge) as any;
+  const routePoints = view?.routePoints;
+  if (!Array.isArray(routePoints) || routePoints.length < 3) return false;
+  const points = routePoints
+    .slice(1, -1)
+    .map((point: any) => ({ x: Number(point.x), y: Number(point.y) }))
+    .filter((point: { x: number; y: number }) => (
+      Number.isFinite(point.x) && Number.isFinite(point.y)
+    ))
+    .filter((point: { x: number; y: number }, index: number, list: Array<{ x: number; y: number }>) => (
+      index === 0 || point.x !== list[index - 1].x || point.y !== list[index - 1].y
+    ));
+  if (points.length === 0 || edge.getVertices().length >= points.length) return false;
+  edge.setVertices(points, { ui: true, toolId: 'materialize-route' });
+  return true;
+}
+
+
+/**
+ * Resolve an edge click when several X6 edge paths occupy the same location.
+ * Normal clicks preserve the native topmost-edge behavior. Alt/Option-click
+ * cycles through every edge whose rendered path is within the hit tolerance.
+ */
+export function resolveEdgeSelection(
+  graph: Graph,
+  clickedEdge: Edge,
+  point: EdgeSelectionPoint,
+  cycle: EdgeSelectionCycleState,
+  tolerance = 10,
+): Edge {
+  const candidates = graph.getEdges()
+    .map((edge) => {
+      const view = graph.findViewByCell(edge) as any;
+      const closest = view?.getClosestPoint?.({ x: point.x, y: point.y });
+      if (!closest) return null;
+      const distance = Math.hypot(closest.x - point.x, closest.y - point.y);
+      return distance <= tolerance ? { edge, distance } : null;
+    })
+    .filter((item): item is { edge: Edge; distance: number } => item !== null)
+    .sort((a, b) => a.distance - b.distance || a.edge.id.localeCompare(b.edge.id));
+  if (candidates.length <= 1) {
+    cycle.point = { x: point.x, y: point.y };
+    cycle.ids = candidates.map(({ edge }) => edge.id);
+    cycle.index = 0;
+    cycle.timestamp = Date.now();
+    return clickedEdge;
+  }
+
+  const ids = candidates.map(({ edge }) => edge.id);
+  const samePoint = cycle.point
+    && Math.hypot(cycle.point.x - point.x, cycle.point.y - point.y) <= tolerance;
+  const sameCandidates = samePoint && cycle.ids.length === ids.length
+    && cycle.ids.every((id, index) => id === ids[index]);
+  const clickedIndex = ids.indexOf(clickedEdge.id);
+  const shouldCycle = Boolean(point.altKey) && sameCandidates
+    && Date.now() - cycle.timestamp < 2000;
+  const nextIndex = shouldCycle
+    ? (cycle.index + 1) % ids.length
+    : Math.max(0, clickedIndex);
+  cycle.point = { x: point.x, y: point.y };
+  cycle.ids = ids;
+  cycle.index = nextIndex;
+  cycle.timestamp = Date.now();
+  return candidates[nextIndex]?.edge || clickedEdge;
 }
 
 /** Apply the persisted viewport without creating a scale/translate feedback loop. */

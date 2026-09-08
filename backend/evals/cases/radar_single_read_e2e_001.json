@@ -1,4 +1,6 @@
 {
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-read-e2e-001",
   "name": "端到端运行结果读取",
   "prompt": "运行项目端到端示例或等价测试，报告完整处理链路以及 5 km、25 km、150 km 三个目标是否被正确检测，并说明涉及的源码和测试。不要修改项目文件。",
