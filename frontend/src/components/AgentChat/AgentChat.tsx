@@ -622,12 +622,17 @@ const AgentChat: React.FC = () => {
     try {
       const history = await getTraceHistory(targetId);
       switchSession(targetId);
-      setMessages(history.map((h, i) => ({
+      // Task checkpoints are internal recovery context, not user-facing chat
+      // messages. Keep them in the trace/backend history for future resume,
+      // but do not render them as assistant replies when loading a session.
+      setMessages(history
+        .filter((h) => h.role === 'user' || h.role === 'assistant')
+        .map((h, i) => ({
         id: `resume_${Date.now()}_${i}`,
         role: (h.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
         content: h.content,
         timestamp: Date.now(),
-      })));
+        })));
       liveStepsRef.current = [];
       setCurrentSteps([]);
       liveTodosRef.current = [];

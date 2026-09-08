@@ -10,13 +10,14 @@ import { Button, Select, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { getCanvasLabels, getFragmentLabels, getMessageTypeLabels } from './canvasLabels';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
 import { snapCanvasPosition } from './core/snapToGrid';
 import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
-import { MESSAGE_TYPE_LABELS, FRAGMENT_LABELS, type FragmentType } from '../../types/sequence';
+import type { FragmentType } from '../../types/sequence';
 import './SeqEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
 
@@ -124,13 +125,14 @@ function buildLifelineHTML(
   selected: boolean,
   endpointHighlighted: boolean,
   theme: CanvasTheme,
+  language: Parameters<typeof getCanvasLabels>[0],
 ): string {
   const selClass = [
     selected ? 'selected' : '',
     endpointHighlighted ? 'message-endpoint' : '',
   ].filter(Boolean).join(' ');
   const hint = selected
-    ? '<div class="seq-click-hint">▼ 已选中，点击另一生命线创建消息 ▼</div>'
+    ? `<div class="seq-click-hint">${getCanvasLabels(language).sequenceDiagram.selectedLifelineHint}</div>`
     : '';
   return `<div class="seq-lifeline-node theme-${theme} ${selClass}">
     <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
@@ -220,7 +222,7 @@ const SeqEditor: React.FC = () => {
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab, canvasTheme } = useUiStore();
+  const { setRightPanelTab, canvasTheme, interfaceLanguage } = useUiStore();
 
   const beginInlineEdit = useCallback((edit: InlineEditState) => {
     setInlineEdit(edit);
@@ -625,7 +627,7 @@ const SeqEditor: React.FC = () => {
           && cachedRender.autoActivationSignature === autoActivationSignature
           && cachedRender.theme === canvasTheme
           ? cachedRender.html
-          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme);
+          : buildLifelineHTML(ll, selected, endpointHighlighted, canvasTheme, interfaceLanguage);
         const cached = htmlCache.current.get(ll.id);
         const signature = JSON.stringify([
           htmlContent, ll.x, LIFELINE_Y, LIFELINE_WIDTH, neededHeight,
@@ -997,7 +999,7 @@ const SeqEditor: React.FC = () => {
       console.error('[SeqEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId, selectedMessageId, canvasTheme]);
+  }, [diagram.lifelines, diagram.messages, diagram.fragments, selectedLifelineId, selectedMessageId, canvasTheme, interfaceLanguage]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -1029,6 +1031,9 @@ const SeqEditor: React.FC = () => {
 
   // ── Floating toolbar ────────────────────────────────
   const [showToolbar, setShowToolbar] = useState(true);
+  const labels = getCanvasLabels(interfaceLanguage).sequenceDiagram;
+  const messageLabels = getMessageTypeLabels(interfaceLanguage);
+  const fragmentLabels = getFragmentLabels(interfaceLanguage);
 
   const handleAddLifeline = useCallback(() => {
     const lifelines = getActiveDiagram().lifelines || [];
@@ -1068,10 +1073,10 @@ const SeqEditor: React.FC = () => {
           boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
           flexWrap: 'wrap', maxWidth: 480,
         }}>
-          <Tooltip title="添加生命线">
-            <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>生命线</Button>
+          <Tooltip title={labels.addLifelineTitle}>
+            <Button size="small" icon={<PlusOutlined />} onClick={handleAddLifeline}>{labels.addLifeline}</Button>
           </Tooltip>
-          <Tooltip title="先选择消息类型，再依次点击发送方和接收方生命线">
+          <Tooltip title={labels.chooseMessageType}>
             <Select
               size="small"
               value={messageMode}
@@ -1079,43 +1084,44 @@ const SeqEditor: React.FC = () => {
                 messageModeRef.current = value;
                 setMessageMode(value);
               }}
-              options={(Object.keys(MESSAGE_TYPE_LABELS) as MessageType[]).map((type) => ({
+              options={(Object.keys(messageLabels) as MessageType[]).map((type) => ({
                 value: type,
-                label: MESSAGE_TYPE_LABELS[type],
+                label: messageLabels[type],
               }))}
               style={{ width: 104 }}
             />
           </Tooltip>
           {(diagram.lifelines || []).length > 0 && (
-            <Tooltip title="均匀排列生命线并整理消息时间轴">
-              <Button size="small" onClick={arrangeSequence}>整理</Button>
+            <Tooltip title={labels.arrangeTitle}>
+              <Button size="small" onClick={arrangeSequence}>{labels.arrange}</Button>
             </Tooltip>
           )}
           {(diagram.lifelines || []).length > 0 && (
-            <Tooltip title="将时序图自动居中到可视画布">
-              <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>居中</Button>
+            <Tooltip title={labels.centerTitle}>
+              <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>{labels.center}</Button>
             </Tooltip>
           )}
           {(diagram.fragments || []).length > 0 && (
-            <Tooltip title="根据片段内消息自动调整 loop、alt 等片段范围">
-              <Button size="small" onClick={fitSequenceFragments}>适配片段</Button>
+            <Tooltip title={labels.fitFragmentsTitle}>
+              <Button size="small" onClick={fitSequenceFragments}>{labels.fitFragments}</Button>
             </Tooltip>
           )}
-          <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>片段:</span>
-          {(Object.keys(FRAGMENT_LABELS) as FragmentType[]).map((t) => (
-            <Tooltip key={t} title={`添加 ${FRAGMENT_LABELS[t]} 片段`}>
+          <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>{labels.fragments}:</span>
+          {(Object.keys(fragmentLabels) as FragmentType[]).map((t) => (
+            <Tooltip key={t} title={labels.addFragment(fragmentLabels[t])}>
               <Button size="small" onClick={() => handleAddFragment(t)}
-                style={{ fontSize: 11, padding: '0 6px' }}>{FRAGMENT_LABELS[t]}</Button>
+                style={{ fontSize: 11, padding: '0 6px' }}>{fragmentLabels[t]}</Button>
             </Tooltip>
           ))}
-          <div className="seq-legend" aria-label="消息类型图例">
-            <span className="seq-legend-item"><i className="seq-legend-line" />同步</span>
-            <span className="seq-legend-item"><i className="seq-legend-line async" />异步</span>
-            <span className="seq-legend-item"><i className="seq-legend-line return" />返回</span>
-            <span className="seq-legend-item"><i className="seq-legend-line self" />自反</span>
+          <div className="seq-legend" aria-label={labels.messageLegend}>
+            <span className="seq-legend-item"><i className="seq-legend-line" />{labels.sync}</span>
+            <span className="seq-legend-item"><i className="seq-legend-line async" />{labels.async}</span>
+            <span className="seq-legend-item"><i className="seq-legend-line return" />{labels.return}</span>
+            <span className="seq-legend-item"><i className="seq-legend-line self" />{labels.self}</span>
           </div>
           <Button size="small" type="text"
             onClick={() => setShowToolbar(false)}
+            title={labels.hideToolbar}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>
       )}
@@ -1124,7 +1130,7 @@ const SeqEditor: React.FC = () => {
         <div style={{
           position: 'absolute', top: 8, left: 8, zIndex: 100,
         }}>
-          <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
+          <Button size="small" type="dashed" title={labels.showToolbar} onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
 
@@ -1155,7 +1161,7 @@ const SeqEditor: React.FC = () => {
             width: inlineEdit.width,
             zIndex: 1200,
           }}
-          aria-label="图内编辑"
+          aria-label={labels.inCanvasEdit}
         />
       )}
 
@@ -1182,7 +1188,7 @@ const SeqEditor: React.FC = () => {
                   ctxMenu.messageY,
                 );
               }}
-            >添加自反消息</div>
+            >{labels.addSelfMessage}</div>
           )}
           {ctxMenu.kind === 'fragment' && (
             <>
@@ -1194,7 +1200,7 @@ const SeqEditor: React.FC = () => {
                   const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
                   if (fn) (fn as Node).toBack();
                 }}
-              >置于底层</div>
+              >{labels.sendToBack}</div>
               <div
                 style={{ padding: '4px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f0f0')}
@@ -1203,7 +1209,7 @@ const SeqEditor: React.FC = () => {
                   const fn = graphRef.current?.getCellById(ctxMenu.nodeId);
                   if (fn) (fn as Node).toFront();
                 }}
-              >置于上层</div>
+              >{labels.bringToFront}</div>
             </>
           )}
         </div>

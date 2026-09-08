@@ -123,7 +123,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   interfaceLanguage: localStorage.getItem('interfaceLanguage') === 'zh' ? 'zh' : 'en',
   canvasTheme: (() => {
     const value = localStorage.getItem('canvasTheme');
-    return value === 'dark' || value === 'blueprint' || value === 'eye-care' ? value : 'light';
+    return value === 'light' || value === 'dark' || value === 'blueprint' || value === 'eye-care'
+      ? value
+      : 'eye-care';
   })(),
   generatedTestCode: null,
   activeTestFile: null,

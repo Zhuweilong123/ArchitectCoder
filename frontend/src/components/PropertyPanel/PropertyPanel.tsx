@@ -16,13 +16,16 @@ import {
   Visibility, Stereotype, RelationType,
   type UmlAttribute, type UmlMethod,
 } from '../../types/uml';
-import { MESSAGE_TYPE_LABELS } from '../../types/sequence';
+import { useUiStore } from '../../stores/uiStore';
+import { getPropertyLabels } from './propertyLabels';
 import { useDebouncedDraft } from '../../hooks/useDebouncedDraft';
 import './PropertyPanel.css';
 
 const { TextArea } = Input;
 
 const PropertyPanel: React.FC = () => {
+  const interfaceLanguage = useUiStore((state) => state.interfaceLanguage);
+  const labels = getPropertyLabels(interfaceLanguage);
   const {
     diagram, selectedClassId, selectedRelationId,
     selectedLifelineId, selectedMessageId,
@@ -85,22 +88,22 @@ const PropertyPanel: React.FC = () => {
     return (
       <div className="property-panel">
         <div className="property-panel-header">
-          <h3>类属性</h3>
+          <h3>{labels.class.title}</h3>
           <Popconfirm
-            title="确认删除此类？"
+            title={labels.class.deleteConfirm}
             onConfirm={() => removeClass(selectedClass.id)}
-            okText="删除" cancelText="取消"
+            okText={labels.common.delete} cancelText={labels.common.cancel}
           >
-            <Button danger size="small" icon={<DeleteOutlined />}>删除</Button>
+            <Button danger size="small" icon={<DeleteOutlined />}>{labels.common.delete}</Button>
           </Popconfirm>
         </div>
 
         <Form layout="vertical" size="small">
-          <Form.Item label="类名">
+          <Form.Item label={labels.class.className}>
             <Input
               id={`class-${selectedClass.id}-name`}
               name="class-name"
-              aria-label="类名"
+              aria-label={labels.class.className}
               value={draftValue(`class:${selectedClass.id}:name`, selectedClass.name)}
               onChange={(e) => {
                 const value = e.target.value;
@@ -113,19 +116,19 @@ const PropertyPanel: React.FC = () => {
               }}
             />
           </Form.Item>
-          <Form.Item label="构造型">
+          <Form.Item label={labels.class.stereotype}>
             <Select
-              aria-label="构造型"
+              aria-label={labels.class.stereotype}
               value={selectedClass.stereotype}
               onChange={(v) => handleClassChange('stereotype', v)}
               options={Object.values(Stereotype).map((s) => ({ value: s, label: s }))}
             />
           </Form.Item>
-          <Form.Item label="备注">
+          <Form.Item label={labels.common.note}>
             <TextArea
               id={`class-${selectedClass.id}-note`}
               name="class-note"
-              aria-label="备注"
+              aria-label={labels.common.note}
               value={draftValue(`class:${selectedClass.id}:note`, selectedClass.note)}
               onChange={(e) => {
                 const value = e.target.value;
@@ -137,14 +140,14 @@ const PropertyPanel: React.FC = () => {
                 if (typeof value === 'string') updateClass(selectedClass.id, { note: value });
               }}
               rows={2}
-              placeholder="添加备注..."
+              placeholder={labels.common.addNote}
             />
           </Form.Item>
-          <Form.Item label="提供的接口 (◉ provided)">
+          <Form.Item label={`${labels.common.providedInterfaces} (◉ provided)`}>
             <TextArea
               id={`class-${selectedClass.id}-provided-interfaces`}
               name="provided-interfaces"
-              aria-label="提供的接口，每行一个"
+              aria-label={labels.common.providedInterfaces}
               value={draftValue(`class:${selectedClass.id}:provided_interfaces`,
                 (selectedClass.provided_interfaces || []).join('\n'))}
               onChange={(e) => {
@@ -164,11 +167,11 @@ const PropertyPanel: React.FC = () => {
               placeholder="IService&#10;IRepository"
             />
           </Form.Item>
-          <Form.Item label="依赖的接口 (◡ required)">
+          <Form.Item label={`${labels.common.requiredInterfaces} (◡ required)`}>
             <TextArea
               id={`class-${selectedClass.id}-required-interfaces`}
               name="required-interfaces"
-              aria-label="依赖的接口，每行一个"
+              aria-label={labels.common.requiredInterfaces}
               value={draftValue(`class:${selectedClass.id}:required_interfaces`,
                 (selectedClass.required_interfaces || []).join('\n'))}
               onChange={(e) => {
@@ -196,13 +199,13 @@ const PropertyPanel: React.FC = () => {
           defaultActiveKey={['attrs']}
           items={[{
             key: 'attrs',
-            label: `属性 (${selectedClass.attributes.length})`,
+            label: labels.class.attributes(selectedClass.attributes.length),
             children: (
               <div>
                 {selectedClass.attributes.map((attr, idx) => (
                   <div key={idx} className="property-row">
                     <Select
-                      aria-label={`属性 ${idx + 1} 可见性`}
+                      aria-label={labels.class.attributeVisibility(idx + 1)}
                       value={attr.visibility}
                       size="small"
                       style={{ width: 50 }}
@@ -216,11 +219,11 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       id={`class-${selectedClass.id}-attribute-${idx}-name`}
                       name={`attribute-${idx}-name`}
-                      aria-label={`属性 ${idx + 1} 名称`}
+                      aria-label={labels.class.attributeName(idx + 1)}
                       size="small"
                       style={{ width: 80 }}
                       value={draftValue(`class:${selectedClass.id}:attribute:${idx}:name`, attr.name)}
-                      placeholder="名称"
+                      placeholder={labels.class.attributeNamePlaceholder}
                       onChange={(e) => {
                         const value = e.target.value;
                         scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:name`, value,
@@ -235,11 +238,11 @@ const PropertyPanel: React.FC = () => {
                     <Input
                       id={`class-${selectedClass.id}-attribute-${idx}-type`}
                       name={`attribute-${idx}-type`}
-                      aria-label={`属性 ${idx + 1} 类型`}
+                      aria-label={labels.class.attributeType(idx + 1)}
                       size="small"
                       style={{ width: 80 }}
                       value={draftValue(`class:${selectedClass.id}:attribute:${idx}:type`, attr.type)}
-                      placeholder="类型"
+                      placeholder={labels.class.attributeTypePlaceholder}
                       onChange={(e) => {
                         const value = e.target.value;
                         scheduleDraft(`class:${selectedClass.id}:attribute:${idx}:type`, value,
@@ -251,7 +254,7 @@ const PropertyPanel: React.FC = () => {
                       }}
                     />
                     <Switch
-                      aria-label={`属性 ${idx + 1} 静态成员`}
+                      aria-label={labels.class.staticMember(idx + 1)}
                       size="small"
                       checked={attr.is_static}
                       onChange={(v) => {
@@ -264,7 +267,7 @@ const PropertyPanel: React.FC = () => {
                     <Button
                       type="text" size="small" danger
                       icon={<MinusCircleOutlined />}
-                      aria-label={`删除属性 ${idx + 1}`}
+                      aria-label={labels.class.deleteAttribute(idx + 1)}
                       onClick={() => {
                         const attrs = selectedClass.attributes.filter((_, i) => i !== idx);
                         handleClassChange('attributes', attrs);
@@ -282,7 +285,7 @@ const PropertyPanel: React.FC = () => {
                     handleClassChange('attributes', attrs);
                   }}
                 >
-                  添加属性
+                  {labels.class.addAttribute}
                 </Button>
               </div>
             ),
@@ -295,7 +298,7 @@ const PropertyPanel: React.FC = () => {
           defaultActiveKey={['methods']}
           items={[{
             key: 'methods',
-            label: `方法 (${selectedClass.methods.length})`,
+            label: labels.class.methods(selectedClass.methods.length),
             children: (
               <div>
                 {selectedClass.methods.map((method, idx) => (
@@ -315,7 +318,7 @@ const PropertyPanel: React.FC = () => {
                       size="small"
                       style={{ width: 80 }}
                       value={draftValue(`class:${selectedClass.id}:method:${idx}:name`, method.name)}
-                      placeholder="方法名"
+                      placeholder={labels.class.methodName}
                       onChange={(e) => {
                         const value = e.target.value;
                         scheduleDraft(`class:${selectedClass.id}:method:${idx}:name`, value,
@@ -331,7 +334,7 @@ const PropertyPanel: React.FC = () => {
                       size="small"
                       style={{ width: 70 }}
                       value={draftValue(`class:${selectedClass.id}:method:${idx}:params`, method.params)}
-                      placeholder="参数"
+                      placeholder={labels.class.params}
                       onChange={(e) => {
                         const value = e.target.value;
                         scheduleDraft(`class:${selectedClass.id}:method:${idx}:params`, value,
@@ -347,7 +350,7 @@ const PropertyPanel: React.FC = () => {
                       size="small"
                       style={{ width: 70 }}
                       value={draftValue(`class:${selectedClass.id}:method:${idx}:return_type`, method.return_type)}
-                      placeholder="返回"
+                      placeholder={labels.class.returnType}
                       onChange={(e) => {
                         const value = e.target.value;
                         scheduleDraft(`class:${selectedClass.id}:method:${idx}:return_type`, value,
@@ -379,7 +382,7 @@ const PropertyPanel: React.FC = () => {
                     handleClassChange('methods', methods);
                   }}
                 >
-                  添加方法
+                  {labels.class.addMethod}
                 </Button>
               </div>
             ),
@@ -401,13 +404,13 @@ const PropertyPanel: React.FC = () => {
     return (
       <div className="property-panel">
         <div className="property-panel-header">
-          <h3>连接属性</h3>
+          <h3>{labels.relation.title}</h3>
           <Popconfirm
-            title="确认删除此连接？"
+            title={labels.relation.deleteConfirm}
             onConfirm={() => removeRelation(selectedRelation.id)}
-            okText="删除" cancelText="取消"
+            okText={labels.common.delete} cancelText={labels.common.cancel}
           >
-            <Button danger size="small" icon={<DeleteOutlined />}>删除</Button>
+            <Button danger size="small" icon={<DeleteOutlined />}>{labels.common.delete}</Button>
           </Popconfirm>
         </div>
 
@@ -418,7 +421,7 @@ const PropertyPanel: React.FC = () => {
         </div>
 
         <Form layout="vertical" size="small">
-          <Form.Item label="关系类型">
+          <Form.Item label={labels.relation.type}>
             <Select
               value={selectedRelation.type}
               onChange={(v) => handleRelChange('type', v)}
@@ -427,7 +430,7 @@ const PropertyPanel: React.FC = () => {
               }))}
             />
           </Form.Item>
-          <Form.Item label="源多重性">
+          <Form.Item label={labels.relation.sourceMultiplicity}>
             <Input
               value={draftValue(`relation:${selectedRelation.id}:multiplicity_source`, selectedRelation.multiplicity_source)}
               onChange={(e) => {
@@ -439,10 +442,10 @@ const PropertyPanel: React.FC = () => {
                 const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_source`);
                 if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_source: value });
               }}
-              placeholder="如: 0..1, 1..*, *"
+              placeholder={labels.relation.multiplicityPlaceholder}
             />
           </Form.Item>
-          <Form.Item label="目标多重性">
+          <Form.Item label={labels.relation.targetMultiplicity}>
             <Input
               value={draftValue(`relation:${selectedRelation.id}:multiplicity_target`, selectedRelation.multiplicity_target)}
               onChange={(e) => {
@@ -454,10 +457,10 @@ const PropertyPanel: React.FC = () => {
                 const value = flushDraft(`relation:${selectedRelation.id}:multiplicity_target`);
                 if (typeof value === 'string') updateRelation(selectedRelation.id, { multiplicity_target: value });
               }}
-              placeholder="如: 0..1, 1..*, *"
+              placeholder={labels.relation.multiplicityPlaceholder}
             />
           </Form.Item>
-          <Form.Item label="角色名">
+          <Form.Item label={labels.relation.roleName}>
             <Input
               value={draftValue(`relation:${selectedRelation.id}:role_name`, selectedRelation.role_name)}
               onChange={(e) => {
@@ -469,10 +472,10 @@ const PropertyPanel: React.FC = () => {
                 const value = flushDraft(`relation:${selectedRelation.id}:role_name`);
                 if (typeof value === 'string') updateRelation(selectedRelation.id, { role_name: value });
               }}
-              placeholder="角色名称"
+              placeholder={labels.relation.roleNamePlaceholder}
             />
           </Form.Item>
-          <Form.Item label="连接备注">
+          <Form.Item label={labels.relation.note}>
             <TextArea
               value={draftValue(`relation:${selectedRelation.id}:note`, selectedRelation.note)}
               onChange={(e) => {
@@ -485,7 +488,7 @@ const PropertyPanel: React.FC = () => {
                 if (typeof value === 'string') updateRelation(selectedRelation.id, { note: value });
               }}
               rows={2}
-              placeholder="添加备注..."
+              placeholder={labels.common.addNote}
             />
           </Form.Item>
         </Form>
@@ -501,20 +504,20 @@ const PropertyPanel: React.FC = () => {
     return (
       <div className="property-panel">
         <div className="property-panel-header">
-          <h3>消息属性</h3>
+          <h3>{labels.message.title}</h3>
           <Popconfirm
-            title="确认删除此消息？"
+            title={labels.message.deleteConfirm}
             onConfirm={() => removeMessage(selectedMessage.id)}
-            okText="删除" cancelText="取消"
+            okText={labels.common.delete} cancelText={labels.common.cancel}
           >
-            <Button danger size="small" icon={<DeleteOutlined />}>删除</Button>
+            <Button danger size="small" icon={<DeleteOutlined />}>{labels.common.delete}</Button>
           </Popconfirm>
         </div>
 
         <div className="relation-summary">{srcName} → {tgtName}</div>
 
         <Form layout="vertical" size="small">
-          <Form.Item label="方法名">
+          <Form.Item label={labels.message.methodName}>
             <Input
               value={draftValue(`message:${selectedMessage.id}:label`, selectedMessage.label)}
               onChange={(e) => {
@@ -528,20 +531,20 @@ const PropertyPanel: React.FC = () => {
               }}
             />
           </Form.Item>
-          <Form.Item label="消息类型">
+          <Form.Item label={labels.message.type}>
             <Select
               value={selectedMessage.type}
               onChange={(v) => updateMessage(selectedMessage.id, { type: v })}
               options={[
-                { value: 'sync', label: '→ 同步消息' },
-                { value: 'async', label: '⇢ 异步消息' },
-                { value: 'return', label: '-->> 返回消息' },
-                { value: 'simple', label: '→ 简单消息' },
-                { value: 'self', label: '↻ 自反消息' },
+                { value: 'sync', label: labels.message.typeLabels.sync },
+                { value: 'async', label: labels.message.typeLabels.async },
+                { value: 'return', label: labels.message.typeLabels.return },
+                { value: 'simple', label: labels.message.typeLabels.simple },
+                { value: 'self', label: labels.message.typeLabels.self },
               ]}
             />
           </Form.Item>
-          <Form.Item label="功能备注">
+          <Form.Item label={labels.message.note}>
             <Input.TextArea
               value={draftValue(`message:${selectedMessage.id}:note`, selectedMessage.note || '')}
               onChange={(e) => {
@@ -554,7 +557,7 @@ const PropertyPanel: React.FC = () => {
                 if (typeof value === 'string') updateMessage(selectedMessage.id, { note: value });
               }}
               rows={2}
-              placeholder="描述此消息的业务含义..."
+              placeholder={labels.message.notePlaceholder}
             />
           </Form.Item>
         </Form>
@@ -571,18 +574,18 @@ const PropertyPanel: React.FC = () => {
     return (
       <div className="property-panel">
         <div className="property-panel-header">
-          <h3>生命线属性</h3>
+          <h3>{labels.lifeline.title}</h3>
           <Popconfirm
-            title="确认删除此生命线？关联的消息也会被删除"
+            title={labels.lifeline.deleteConfirm}
             onConfirm={() => removeLifeline(selectedLifeline.id)}
-            okText="删除" cancelText="取消"
+            okText={labels.common.delete} cancelText={labels.common.cancel}
           >
-            <Button danger size="small" icon={<DeleteOutlined />}>删除</Button>
+            <Button danger size="small" icon={<DeleteOutlined />}>{labels.common.delete}</Button>
           </Popconfirm>
         </div>
 
         <Form layout="vertical" size="small">
-          <Form.Item label="名称">
+          <Form.Item label={labels.lifeline.name}>
             <Input
               value={draftValue(`lifeline:${selectedLifeline.id}:name`, selectedLifeline.name)}
               onChange={(e) => {
@@ -594,10 +597,10 @@ const PropertyPanel: React.FC = () => {
                 const value = flushDraft(`lifeline:${selectedLifeline.id}:name`);
                 if (typeof value === 'string') updateLifeline(selectedLifeline.id, { name: value });
               }}
-              placeholder="如: ota: OtaTask"
+              placeholder={labels.lifeline.namePlaceholder}
             />
           </Form.Item>
-          <Form.Item label="关联类（可选）">
+          <Form.Item label={labels.lifeline.linkedClass}>
             <Input
               value={draftValue(`lifeline:${selectedLifeline.id}:class_ref`, selectedLifeline.class_ref || '')}
               onChange={(e) => {
@@ -609,16 +612,16 @@ const PropertyPanel: React.FC = () => {
                 const value = flushDraft(`lifeline:${selectedLifeline.id}:class_ref`);
                 if (typeof value === 'string') updateLifeline(selectedLifeline.id, { class_ref: value });
               }}
-              placeholder="UML 类图中类的名称"
+              placeholder={labels.lifeline.linkedClassPlaceholder}
             />
           </Form.Item>
         </Form>
 
         <Divider orientation="left" plain style={{ fontSize: 12 }}>
-          激活条 ({selectedLifeline.activations?.length || 0} 个)
+          {labels.lifeline.activations(selectedLifeline.activations?.length || 0)}
         </Divider>
         <p style={{ fontSize: 11, color: '#888' }}>
-          激活条在创建消息时自动添加。删除消息不会自动移除激活条（可手动清理）。
+          {labels.lifeline.activationHint}
         </p>
       </div>
     );
@@ -633,14 +636,14 @@ const PropertyPanel: React.FC = () => {
     return (
       <div className="property-panel">
         <div className="property-panel-header">
-          <h3>组件属性</h3>
-          <Popconfirm title="确认删除此组件？" onConfirm={() => removeComponent(selectedComponent.id)}
-            okText="删除" cancelText="取消">
-            <Button danger size="small" icon={<DeleteOutlined />}>删除</Button>
+          <h3>{labels.component.title}</h3>
+          <Popconfirm title={labels.component.deleteConfirm} onConfirm={() => removeComponent(selectedComponent.id)}
+            okText={labels.common.delete} cancelText={labels.common.cancel}>
+            <Button danger size="small" icon={<DeleteOutlined />}>{labels.common.delete}</Button>
           </Popconfirm>
         </div>
         <Form layout="vertical" size="small">
-          <Form.Item label="名称">
+          <Form.Item label={labels.common.name}>
             <Input
               value={draftValue(`component:${selectedComponent.id}:name`, selectedComponent.name)}
               onChange={(e) => {
@@ -654,7 +657,7 @@ const PropertyPanel: React.FC = () => {
               }}
             />
           </Form.Item>
-          <Form.Item label="提供的接口（每行一个）">
+          <Form.Item label={labels.component.providedInterfaces}>
             <Input.TextArea
               value={draftValue(`component:${selectedComponent.id}:provided_interfaces`,
                 (selectedComponent.provided_interfaces || []).join('\n'))}
@@ -673,7 +676,7 @@ const PropertyPanel: React.FC = () => {
               }}
               rows={2} placeholder="IService&#10;IRepository" />
           </Form.Item>
-          <Form.Item label="依赖的接口（每行一个）">
+          <Form.Item label={labels.component.requiredInterfaces}>
             <Input.TextArea
               value={draftValue(`component:${selectedComponent.id}:required_interfaces`,
                 (selectedComponent.required_interfaces || []).join('\n'))}
@@ -705,10 +708,10 @@ const PropertyPanel: React.FC = () => {
           return (
             <>
               <Divider orientation="left" plain style={{ fontSize: 12 }}>
-                关联图 ({linkedClass.length + linkedSeq.length})
+                {labels.component.linkedDiagrams(linkedClass.length + linkedSeq.length)}
               </Divider>
               {linkedClass.length === 0 && linkedSeq.length === 0 && (
-                <p style={{ fontSize: 12, color: '#bbb' }}>暂无关联的类图或时序图</p>
+                <p style={{ fontSize: 12, color: '#bbb' }}>{labels.component.noLinkedDiagrams}</p>
               )}
               {linkedClass.map((d) => (
                 <div key={d.name} style={{
@@ -745,10 +748,10 @@ const PropertyPanel: React.FC = () => {
               <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
                 <Button size="small" type="dashed" style={{ fontSize: 11 }}
                   onClick={() => addDiagram('class', `${selectedComponent.name}_class`, selectedComponent.id)}
-                >+ 类图</Button>
+                >{labels.component.classDiagram}</Button>
                 <Button size="small" type="dashed" style={{ fontSize: 11 }}
                   onClick={() => addDiagram('sequence', `${selectedComponent.name}_seq`, selectedComponent.id)}
-                >+ 时序图</Button>
+                >{labels.component.sequenceDiagram}</Button>
               </div>
             </>
           );
@@ -761,17 +764,16 @@ const PropertyPanel: React.FC = () => {
   return (
     <div className="property-panel">
       <Empty
-        description="选择类或连接以编辑属性"
+        description={labels.common.noSelection}
         image={Empty.PRESENTED_IMAGE_SIMPLE}
       />
       <div className="property-hints">
-        <p><strong>提示:</strong></p>
+        <p><strong>{labels.common.hint}</strong></p>
         <ul>
-          <li>双击画布空白区域添加类</li>
-          <li>从节点端口拖拽创建连接</li>
-          <li>Ctrl+滚轮缩放画布</li>
-          <li>空格/中键拖拽平移</li>
-          <li>Ctrl+Z 撤销 | Ctrl+Y 重做</li>
+          <li>{labels.common.connectHint}</li>
+          <li>{labels.common.zoomHint}</li>
+          <li>{labels.common.panHint}</li>
+          <li>{labels.common.undoHint}</li>
         </ul>
       </div>
     </div>
