@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Button, Select, Tooltip, Dropdown, Modal, List, message, Tag,
-  Divider, Input, Form, Slider, Checkbox,
+  Divider, Input, Form, Slider,
 } from 'antd';
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
@@ -28,7 +28,7 @@ import {
   exportMarkdown,
   browseDirectory, type BrowseResult,
 } from '../../services/api';
-import { handleDesignElement, processDesignUpdated } from '../../services/designElementHandler';
+import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
 import './Toolbar.css';
@@ -158,20 +158,11 @@ const Toolbar: React.FC = () => {
   const [globalOptimizeVisible, setGlobalOptimizeVisible] = useState(false);
   const [globalInstructions, setGlobalInstructions] = useState('');
   const [globalOptimizing, setGlobalOptimizing] = useState(false);
-  const [globalStreamMode, setGlobalStreamMode] = useState(true);
 
-  // ── Global optimize handler (SSE 流式 / REST 非流式) ─────────
-  const handleGlobalOptimize = async () => {
-    const proj = useDiagramStore.getState().getProjectSnapshot();
-
+  const handleGlobalOptimizeViaAgent = async () => {
     setGlobalOptimizing(true);
     setGlobalOptimizeVisible(false);
-    const loadText = globalStreamMode ? '正在分析影响范围...' : '全局优化中...';
-    message.loading({ content: loadText, key: 'globalOpt', duration: 0 });
 
-    const uiState = useUiStore.getState();
-
-    // ── 空 project 时自动另存为获取文件路径 ──
     let projectFile = currentFilepath;
     if (!projectFile) {
       try {
@@ -188,154 +179,23 @@ const Toolbar: React.FC = () => {
         setCurrentFilepath(result.filepath);
         markSaved(result.revision);
       } catch {
-        message.error({ content: '优化前需要先保存项目文件', key: 'globalOpt' });
+        message.error('请先保存项目文件，再执行全局优化');
         setGlobalOptimizing(false);
         return;
       }
     }
 
-    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
-    useDiagramStore.getState().beginBatch();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    if (!globalStreamMode) {
-      // ── 非流式: REST API ──
-      try {
-        const response = await fetch('/api/optimize_v2/optimize', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            project_file: projectFile || '',
-            instructions: globalInstructions.trim(),
-          }),
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const result = await response.json();
-        const diagrams = result.diagrams;
-        if (Array.isArray(diagrams) && diagrams.length > 0) {
-          processDesignUpdated(
-            diagrams,
-            result.consistency_report || [],
-            useUiStore.getState(),
-            useDiagramStore.getState(),
-          );
-        }
-        message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
-      } catch {
-        message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
-      } finally {
-        useDiagramStore.getState().endBatch();
-        setGlobalOptimizing(false);
-      }
-      return;
-    }
-
-    // ── 流式: SSE fetch + ReadableStream ──
-    const idMap = new Map<string, string>();
-    const clearedDiagrams = new Set<string>();   // 记录流式已清空旧数据的图
-    const abortController = new AbortController();
-
-    // 保存原始图快照（供 diff 对比用，流式阶段 store 会被覆盖）
-    const originalsSnapshot: Record<string, any> = {};
-    for (const d of proj.diagrams) {
-      const dkey = `${d.diagram_type || 'class'}:${d.name}`;
-      if (Object.keys(d).length > 1) {  // >1 排除仅含 name/type 的默认空图
-        originalsSnapshot[dkey] = { ...d };
-      }
-    }
-
-    try {
-      const response = await fetch('/api/optimize_v2/stream', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          project_file: projectFile || '',
-          instructions: globalInstructions.trim(),
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      // 显示优化画布
-      if (!uiState.rightPanelVisible) {
-        uiState.setRightPanelVisible(true);
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6);
-          if (!payload) continue;
-
-          if (payload === 'DONE') {
-            // 流式元素结束，等待 design_updated
-          } else if (payload.startsWith('status:')) {
-            // Phase 1 完成：显示影响范围摘要
-            try {
-              const status = JSON.parse(payload.slice(7));
-              message.loading({ content: status.message, key: 'globalOpt', duration: 0 });
-            } catch { /* ignore */ }
-          } else if (payload.startsWith('error:')) {
-            try {
-              const err = JSON.parse(payload.slice(6));
-              message.error({ content: `优化失败: ${err.message}`, key: 'globalOpt' });
-            } catch {
-              message.error({ content: '优化失败', key: 'globalOpt' });
-            }
-          } else if (payload.startsWith('design_updated:')) {
-            try {
-              const data = JSON.parse(payload.slice(15)); // "design_updated:".length === 15
-              const diagrams = data.diagrams;
-              if (Array.isArray(diagrams) && diagrams.length > 0) {
-                processDesignUpdated(
-                  diagrams,
-                  data.consistency_report || [],
-                  useUiStore.getState(),
-                  useDiagramStore.getState(),
-                  originalsSnapshot,
-                );
-              }
-              message.success({ content: '全局优化完成，请审核变更', key: 'globalOpt' });
-            } catch { /* ignore parse errors */ }
-          } else {
-            // 设计元素: <type>:<json>
-            const colonIdx = payload.indexOf(':');
-            if (colonIdx > 0) {
-              const elemType = payload.slice(0, colonIdx);
-              const elemData = payload.slice(colonIdx + 1);
-              handleDesignElement(
-                useDiagramStore.getState(),
-                { type: elemType, data: elemData },
-                idMap,
-                clearedDiagrams,
-              );
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        message.error({ content: '优化连接失败，请确认后端已启动', key: 'globalOpt' });
-      }
-    } finally {
-      useDiagramStore.getState().endBatch();
-      setGlobalOptimizing(false);
-    }
+    const prompt = globalInstructions.trim()
+      ? `请对当前项目进行全局 UML 优化：${globalInstructions.trim()}`
+      : '请对当前项目进行全局 UML 优化，检查类图、时序图和组件图的一致性。';
+    setAgentChatVisible(true);
+    sendAgentMessage(prompt, {
+      source_dir: sourceDir,
+      test_dir: testDir,
+      project_file: projectFile || '',
+    });
+    setGlobalOptimizing(false);
+    message.info('全局优化请求已发送到 AI 开发助手');
   };
 
   // ── Ctrl+S global save ──────────────────────────────
@@ -1362,7 +1222,7 @@ const Toolbar: React.FC = () => {
         title="全局综合优化"
         open={globalOptimizeVisible}
         onCancel={() => setGlobalOptimizeVisible(false)}
-        onOk={handleGlobalOptimize}
+        onOk={handleGlobalOptimizeViaAgent}
         confirmLoading={globalOptimizing}
         okText="提交优化"
         cancelText="取消"
@@ -1376,13 +1236,6 @@ const Toolbar: React.FC = () => {
             return <>当前项目包含：{types.join('、')}</>;
           })()}
         </p>
-        <Checkbox
-          checked={globalStreamMode}
-          onChange={(e) => setGlobalStreamMode(e.target.checked)}
-          style={{ marginBottom: 8 }}
-        >
-          动态绘图（勾选后实时生成到画布，实验性功能）
-        </Checkbox>
         <Input.TextArea
           value={globalInstructions}
           onChange={(e) => setGlobalInstructions(e.target.value)}

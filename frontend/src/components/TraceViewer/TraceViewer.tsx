@@ -694,7 +694,7 @@ const TraceViewer: React.FC = () => {
 
   // 回放弹窗的轮次清单：直接取自已加载的 trace（无需先跑全量回放）。
   // 与后端轮次切分口径一致（一个 user_message = 一轮）；无 user_message 时
-  // （optimize_v2 独立 trace）退化为单条占位，仍可单步执行第 1 轮。
+  // 历史独立优化 trace 退化为单条占位，仍可单步执行第 1 轮。
   const userTurns = useMemo(() => {
     if (!detail) return [];
     const msgs = detail.events

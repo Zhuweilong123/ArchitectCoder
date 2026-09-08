@@ -172,4 +172,3 @@ async for progress in agent.arun_stream("帮我实现登录模块"):
 | API | 说明 |
 |---|---|
 | `/api/agent/ws/chat`（`agent_chat_ws.py`） | 对话 Agent 运行时入口，装配 `create_conversation_tools()` |
-| `/api/optimize_v2/*` | 全局优化 V2 引擎（独立于 Agent 工具集） |

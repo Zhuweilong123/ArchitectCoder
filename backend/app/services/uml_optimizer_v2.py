@@ -1,4 +1,9 @@
 """
+保留的逐元素 UML 生成引擎（未挂载 HTTP 路由）。
+
+该模块仅作为后续动态绘图/流式生成能力的独立实现保留，当前全局优化
+入口统一走 AgentChat，不会自动调用本模块。
+
 UML 全局优化 v2 — 简洁版
 
 对比 v1 (uml_optimizer.py + ReflectionAgent + ReActAgent 工具链):
