@@ -10,6 +10,7 @@ import { Graph, Edge, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { getCanvasLabels } from './canvasLabels';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
@@ -151,7 +152,8 @@ function ensureShapeRegistered() {
 }
 
 // ── Helper: Generate HTML for a UML class ──────────────
-function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): string {
+function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme, language: Parameters<typeof getCanvasLabels>[0]): string {
+  const labels = getCanvasLabels(language).classDiagram;
   const visibilityClass = (visibility: string) => ({
     '+': 'public',
     '-': 'private',
@@ -205,12 +207,12 @@ function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme): s
       </div>
       ${ifaceHTML}
       <div class="uml-class-attrs">
-        <div class="uml-section-label">ATTRIBUTES</div>
+        <div class="uml-section-label">${labels.attributes}</div>
         ${attrLines || '<div class="uml-empty">—</div>'}
       </div>
       <div class="uml-class-divider"></div>
       <div class="uml-class-methods">
-        <div class="uml-section-label">OPERATIONS</div>
+        <div class="uml-section-label">${labels.operations}</div>
         ${methodLines || '<div class="uml-empty">—</div>'}
       </div>
       ${cls.note ? `<div class="uml-class-note">${escapeHtml(cls.note)}</div>` : ''}
@@ -354,6 +356,7 @@ const UMLEditor: React.FC = () => {
 
   const setRightPanelTab = useUiStore((s) => s.setRightPanelTab);
   const canvasTheme = useUiStore((s) => s.canvasTheme);
+  const interfaceLanguage = useUiStore((s) => s.interfaceLanguage);
 
   // ── Initialize graph (once) ──────────────────────────
   useEffect(() => {
@@ -618,7 +621,7 @@ const UMLEditor: React.FC = () => {
         const isSelected = cls.id === selectedClassId;
         // Theme is part of the rendered HTML. Always rebuild this small HTML
         // fragment so a theme change can never reuse a stale node fragment.
-        const htmlContent = buildClassHTML(cls, isSelected, canvasTheme);
+        const htmlContent = buildClassHTML(cls, isSelected, canvasTheme, interfaceLanguage);
         const cached = htmlCache.current.get(cls.id);
         const layout = classLayouts.get(cls.id) || {
           x: cls.position.x,
@@ -874,7 +877,7 @@ const UMLEditor: React.FC = () => {
       console.error('[UML Editor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId, canvasTheme]);
+  }, [diagram.classes, diagram.relations, selectedClassId, selectedRelationId, canvasTheme, interfaceLanguage]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -909,6 +912,7 @@ const UMLEditor: React.FC = () => {
   }, []);
 
   const [showToolbar, setShowToolbar] = useState(true);
+  const labels = getCanvasLabels(interfaceLanguage).classDiagram;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -922,16 +926,16 @@ const UMLEditor: React.FC = () => {
           boxShadow: '0 2px 8px rgba(15,23,42,0.12)',
         }}>
           <span style={{ fontSize: 11, color: '#64748b', marginRight: 3 }}>
-            {selectedClassIds.length} selected
+            {labels.selected(selectedClassIds.length)}
           </span>
-          <Button size="small" type="text" title="Align left" onClick={() => alignClasses('left')}>L</Button>
-          <Button size="small" type="text" title="Align center" onClick={() => alignClasses('center')}>C</Button>
-          <Button size="small" type="text" title="Align right" onClick={() => alignClasses('right')}>R</Button>
-          <Button size="small" type="text" title="Align top" onClick={() => alignClasses('top')}>T</Button>
-          <Button size="small" type="text" title="Align middle" onClick={() => alignClasses('middle')}>M</Button>
-          <Button size="small" type="text" title="Align bottom" onClick={() => alignClasses('bottom')}>B</Button>
-          <Button size="small" type="text" title="Distribute horizontally" onClick={() => distributeClasses('horizontal')}>↔</Button>
-          <Button size="small" type="text" title="Distribute vertically" onClick={() => distributeClasses('vertical')}>↕</Button>
+          <Button size="small" type="text" title={labels.alignLeft} onClick={() => alignClasses('left')}>L</Button>
+          <Button size="small" type="text" title={labels.alignCenter} onClick={() => alignClasses('center')}>C</Button>
+          <Button size="small" type="text" title={labels.alignRight} onClick={() => alignClasses('right')}>R</Button>
+          <Button size="small" type="text" title={labels.alignTop} onClick={() => alignClasses('top')}>T</Button>
+          <Button size="small" type="text" title={labels.alignMiddle} onClick={() => alignClasses('middle')}>M</Button>
+          <Button size="small" type="text" title={labels.alignBottom} onClick={() => alignClasses('bottom')}>B</Button>
+          <Button size="small" type="text" title={labels.distributeHorizontal} onClick={() => distributeClasses('horizontal')}>↔</Button>
+          <Button size="small" type="text" title={labels.distributeVertical} onClick={() => distributeClasses('vertical')}>↕</Button>
         </div>
       )}
       {showToolbar && (
@@ -940,17 +944,21 @@ const UMLEditor: React.FC = () => {
           background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6,
           padding: '4px 6px', boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
         }}>
-          <Button size="small" icon={<PlusOutlined />} onClick={handleAddClass}>类</Button>
+          <Button size="small" icon={<PlusOutlined />} title={labels.add} onClick={handleAddClass}>
+            {labels.add}
+          </Button>
           {diagram.classes.length >= 2 && (
-            <Button size="small" type="text" title="Auto layout" onClick={autoLayoutClasses}>布局</Button>
+            <Button size="small" type="text" title={labels.autoLayoutTitle} onClick={autoLayoutClasses}>
+              {labels.autoLayout}
+            </Button>
           )}
-          <Button size="small" type="text" onClick={() => setShowToolbar(false)}
+          <Button size="small" type="text" title={labels.hideToolbar} onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>
       )}
       {!showToolbar && (
         <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 100 }}>
-          <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
+          <Button size="small" type="dashed" title={labels.showToolbar} onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
       <div ref={containerRef} className={`uml-canvas-container theme-${canvasTheme}`} />

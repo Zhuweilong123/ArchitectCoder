@@ -128,6 +128,8 @@ function flattenUmlClass(
     .map((element) => element.textContent || '');
   const interfaces = Array.from(root.querySelectorAll('.uml-iface-row'))
     .map((element) => element.textContent || '');
+  const sectionLabels = Array.from(root.querySelectorAll('.uml-section-label'))
+    .map((element) => element.textContent || '');
   const note = root.querySelector('.uml-class-note')?.textContent || '';
   const maxChars = Math.max(18, Math.floor((width - 20) / 7));
   const headerHeight = stereotype ? 58 : 42;
@@ -185,8 +187,8 @@ function flattenUmlClass(
       x1: 0, y1: y, x2: width, y2: y, stroke: palette.divider, 'stroke-width': 1,
     }));
   }
-  appendSection('ATTRIBUTES', attributes, palette.surface);
-  appendSection('OPERATIONS', methods, palette.body);
+  appendSection(sectionLabels[0] || 'ATTRIBUTES', attributes, palette.surface);
+  appendSection(sectionLabels[1] || 'OPERATIONS', methods, palette.body);
   if (note) {
     appendExportText(native, document, note, 10, y + 22, {
       fill: palette.secondary, fontSize: 10, maxChars,

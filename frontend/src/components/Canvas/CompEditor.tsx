@@ -10,6 +10,7 @@ import { Edge, Graph, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
+import { getCanvasLabels } from './canvasLabels';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
@@ -93,7 +94,8 @@ function ensureShapesRegistered() {
 
 // ── HTML builder ─────────────────────────────────────
 
-function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme): string {
+function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme, language: Parameters<typeof getCanvasLabels>[0]): string {
+  const labels = getCanvasLabels(language).componentDiagram;
   const isChild = !!comp.parent_id;
   const selClass = selected ? 'selected' : '';
   const childClass = isChild ? 'child' : '';
@@ -109,8 +111,8 @@ function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme): s
   return `<div class="comp-node theme-${theme} ${childClass} ${selClass}">
     <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
     <div class="comp-name">${escapeHtml(comp.name)}</div>
-    ${provided ? `<div class="comp-block"><div class="comp-block-label">provided interfaces</div>${provided}</div>` : ''}
-    ${required ? `<div class="comp-block"><div class="comp-block-label">required interfaces</div>${required}</div>` : ''}
+    ${provided ? `<div class="comp-block"><div class="comp-block-label">${labels.providedInterfaces}</div>${provided}</div>` : ''}
+    ${required ? `<div class="comp-block"><div class="comp-block-label">${labels.requiredInterfaces}</div>${required}</div>` : ''}
   </div>`;
 }
 
@@ -181,7 +183,7 @@ const CompEditor: React.FC = () => {
   })));
   const viewport = useDiagramStore((s) => s.viewport);
 
-  const { setRightPanelTab, canvasTheme } = useUiStore();
+  const { setRightPanelTab, canvasTheme, interfaceLanguage } = useUiStore();
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
@@ -496,7 +498,7 @@ const CompEditor: React.FC = () => {
         const selected = c.id === selectedComponentId;
         // Theme is part of the rendered HTML. Always rebuild this small HTML
         // fragment so a theme change can never reuse a stale node fragment.
-        const htmlContent = buildCompHTML(c, selected, canvasTheme);
+        const htmlContent = buildCompHTML(c, selected, canvasTheme, interfaceLanguage);
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
           htmlContent, c.x, c.y, w, h, c.parent_id || '', canvasTheme,
@@ -678,7 +680,7 @@ const CompEditor: React.FC = () => {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
     }
-  }, [diagram.components, diagram.comp_relations, selectedComponentId, selectedCompRelationId, canvasTheme]);
+  }, [diagram.components, diagram.comp_relations, selectedComponentId, selectedCompRelationId, canvasTheme, interfaceLanguage]);
 
   // ── Apply store zoom to the graph (toolbar zoom buttons) ──
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
@@ -706,6 +708,7 @@ const CompEditor: React.FC = () => {
   }, [recenterCounter]);
 
   const [showToolbar, setShowToolbar] = useState(true);
+  const labels = getCanvasLabels(interfaceLanguage).componentDiagram;
 
   const handleAddComponent = useCallback(() => {
     const store = useDiagramStore.getState();
@@ -731,21 +734,21 @@ const CompEditor: React.FC = () => {
           background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6,
           padding: '4px 6px', boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
         }}>
-          <Tooltip title="选中组件时创建子组件，未选中时创建顶层组件">
-            <Button size="small" icon={<PlusOutlined />} onClick={handleAddComponent}>组件</Button>
+          <Tooltip title={labels.addTitle}>
+            <Button size="small" icon={<PlusOutlined />} onClick={handleAddComponent}>{labels.add}</Button>
           </Tooltip>
           {(diagram.components || []).length >= 2 && (
-            <Tooltip title="按依赖关系排列组件，并整理子组件层级">
-              <Button size="small" onClick={autoLayoutComponents}>整理</Button>
+            <Tooltip title={labels.autoLayoutTitle}>
+              <Button size="small" onClick={autoLayoutComponents}>{labels.autoLayout}</Button>
             </Tooltip>
           )}
-          <Button size="small" type="text" onClick={() => setShowToolbar(false)}
+          <Button size="small" type="text" title={labels.hideToolbar} onClick={() => setShowToolbar(false)}
             style={{ fontSize: 10, marginLeft: 4 }}>✕</Button>
         </div>
       )}
       {!showToolbar && (
         <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 100 }}>
-          <Button size="small" type="dashed" onClick={() => setShowToolbar(true)}>🔧</Button>
+          <Button size="small" type="dashed" title={labels.showToolbar} onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
       <div ref={containerRef} className={`comp-canvas-container theme-${canvasTheme}`} />
@@ -780,11 +783,11 @@ const CompEditor: React.FC = () => {
 
               {/* Linked class diagrams */}
               <div style={{ padding: '2px 12px 6px', fontSize: 11, color: '#999', fontWeight: 500 }}>
-                关联的类图 ({linkedClassDiagrams.length})
+                {labels.linkedClassDiagrams(linkedClassDiagrams.length)}
               </div>
               {linkedClassDiagrams.length === 0 ? (
                 <div style={{ padding: '2px 12px 6px', fontSize: 12, color: '#bbb' }}>
-                  暂无关联类图
+                  {labels.noLinkedClassDiagrams}
                 </div>
               ) : (
                 linkedClassDiagrams.map((d, i) => (
@@ -809,11 +812,11 @@ const CompEditor: React.FC = () => {
                 padding: '2px 12px 6px', fontSize: 11, color: '#999', fontWeight: 500,
                 borderTop: '1px solid #f0f0f0', marginTop: 4, paddingTop: 6,
               }}>
-                关联的时序图 ({linkedSeqDiagrams.length})
+                {labels.linkedSequenceDiagrams(linkedSeqDiagrams.length)}
               </div>
               {linkedSeqDiagrams.length === 0 ? (
                 <div style={{ padding: '2px 12px 6px', fontSize: 12, color: '#bbb' }}>
-                  暂无关联时序图
+                  {labels.noLinkedSequenceDiagrams}
                 </div>
               ) : (
                 linkedSeqDiagrams.map((d, i) => (
@@ -847,7 +850,7 @@ const CompEditor: React.FC = () => {
                     closeMenu();
                   }}
                 >
-                  <span>➕</span> <span>为此组件新建类图</span>
+                  <span>➕</span> <span>{labels.createClassDiagram}</span>
                 </div>
                 <div style={{
                   padding: '5px 12px', cursor: 'pointer', fontSize: 12, borderRadius: 4,
@@ -861,7 +864,7 @@ const CompEditor: React.FC = () => {
                     closeMenu();
                   }}
                 >
-                  <span>➕</span> <span>为此组件新建时序图</span>
+                  <span>➕</span> <span>{labels.createSequenceDiagram}</span>
                 </div>
               </div>
             </div>
