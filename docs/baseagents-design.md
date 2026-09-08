@@ -336,25 +336,11 @@ class MyNewTool(AsyncTool):
 
 工具内部运行子 Agent 时，通过 `ProgressRelay` 推送 `sub_agent` 事件到前端。
 
-## 12. UML 全局优化（V2）
+## 12. UML 全局优化
 
-V1 的 `UmlOptimizer`（ReflectionAgent 三阶段反射）已下线，现由 **V2 直连优化引擎**
-（`backend/app/services/uml_optimizer_v2.py` 的 `run_optimize_v2`）取代：
-
-```python
-from app.services.uml_optimizer_v2 import run_optimize_v2
-
-result = await run_optimize_v2(
-    project_file="project.umlproj",
-    instructions="增加支付模块，完善异常处理",
-)
-# result 包含: diagrams / design_constraints / changes_summary / consistency_report
-```
-
-流程：**scope 分析（识别影响范围）→ 单次 LLM 生成 → 程序化跨图一致性验证**，
-替代 V1 的「initial 生成 → 程序化验证 → 反馈注入 messages → LLM 修正」多轮反射。
-
-`code_generator.py` 保留 `optimize_project()` / `optimize_project_stream()` 作为 V1 优化入口的兼容委托。
+全局优化现统一作为普通 AgentChat 请求执行，复用 DevAgent 的上下文、工具和 UML 审核闭环。
+旧的独立 V2 模型调用、Prompt 组装和自动布局链路已移除。
+逐元素绘制仅保留流式事件解析与前端 `design_element` 交互协议。
 
 ## 13. 设计参考
 
@@ -385,7 +371,6 @@ result = await run_optimize_v2(
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
 | `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
-| `backend/app/services/uml_optimizer_v2.py` | V2 直连优化引擎 |
 | `backend/app/services/agent_chat_ws.py` | WebSocket 鉴权与协议适配 |
 | `backend/app/services/chat_session.py` | 会话协调与消息生命周期 |
 | `backend/app/services/agent_execution.py` | 单次 Agent 执行、checkpoint、审批和结果 |

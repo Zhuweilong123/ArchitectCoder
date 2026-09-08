@@ -39,7 +39,7 @@ ReActAgent 循环
 ```
 
 - LLM 是循环里唯一真正不确定、昂贵、外部的组件；工具结果已记录，mock 掉即可。
-- 在边界替换能**一次覆盖所有 agent**（ReActAgent、reflection_agent、uml_optimizer_v2、pipeline），不用每个循环单独写回放逻辑。
+- 在边界替换能**一次覆盖所有 agent**（ReActAgent、reflection_agent、historical standalone optimizer、pipeline），不用每个循环单独写回放逻辑。
 - **最小回放原语**：按 monotonic 顺序遍历 `llm_request`，按 `span_id` 配对 `llm_response`，用游标顺序 pop。
 
 ## 4. trace 记录格式

@@ -6,47 +6,6 @@ import logging
 
 from .uml_index import _build_reference_index
 
-def _normalize_optimize_result(raw: dict) -> dict:
-    """Convert LLM response to canonical format with a ``diagrams`` array.
-
-    Handles both:
-    - New format: ``{"diagrams": [...], "consistency_report": [...], ...}``
-    - Old format: ``{"optimized": {"class": {...}, "sequence": {...}, "component": {...}}, ...}``
-    """
-    if "diagrams" in raw and isinstance(raw["diagrams"], list):
-        return raw  # already new format
-
-    if "optimized" in raw:
-        optimized = raw["optimized"]
-        diagrams = []
-        for dtype in ("class", "sequence", "component"):
-            opt_data = optimized.get(dtype)
-            if opt_data and isinstance(opt_data, dict):
-                # A non-empty type-specific diagram — include it
-                diagrams.append({
-                    "type": dtype,
-                    "name": opt_data.get("name", dtype.capitalize()),
-                    "component_id": opt_data.get("component_id", ""),
-                    "data": opt_data,
-                })
-        return {
-            "diagrams": diagrams,
-            "consistency_report": raw.get("consistency_report", []),
-            "changes_summary": raw.get("changes_summary", ""),
-            "design_constraints": raw.get("design_constraints", {}),
-            "diff": raw.get("diff", ""),
-        }
-
-    # Fallback: empty result
-    return {
-        "diagrams": [],
-        "consistency_report": [],
-        "changes_summary": "No diagrams generated",
-        "design_constraints": {},
-        "diff": "",
-    }
-
-
 def _fuzzy_match_class(ref: str, classes: dict) -> str | None:
     """Try to match an invalid class_ref to an actual class ID by name similarity."""
     if not ref or not classes:
@@ -461,7 +420,6 @@ def _normalize_llm_output(data: dict) -> dict:
 
 
 __all__ = [
-    "_normalize_optimize_result",
     "_fuzzy_match_class",
     "_apply_auto_fixes",
     "_validate_cross_references",
