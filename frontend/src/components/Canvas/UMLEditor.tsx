@@ -810,14 +810,14 @@ const UMLEditor: React.FC = () => {
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
-              edge.setAttrByPath(
-                'line/sourceMarker/name',
-                lineAttrs.sourceMarker?.name || 'none',
-              );
-              edge.setAttrByPath(
-                'line/sourceMarker/fill',
-                lineAttrs.sourceMarker?.fill || 'none',
-              );
+              // X6 has no built-in marker named "none".  Writing that name
+              // leaves an invalid marker definition on ordinary associations
+              // and crashes the edge-tool render on the next click/hover.
+              if (lineAttrs.sourceMarker) {
+                edge.setAttrByPath('line/sourceMarker', lineAttrs.sourceMarker);
+              } else {
+                edge.removeAttrByPath('line/sourceMarker');
+              }
               edge.setAttrByPath('line/targetMarker/name', arrowStyle);
               edge.setAttrByPath('line/targetMarker/fill', lineAttrs.targetMarker.fill);
               edge.setAttrByPath('wrap/stroke', interactionAttrs.stroke);

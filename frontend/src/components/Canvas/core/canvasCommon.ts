@@ -102,6 +102,9 @@ export function resolveEdgeSelection(
   cycle: EdgeSelectionCycleState,
   tolerance = 10,
 ): Edge {
+  // Keep the common click path O(1). Geometry scanning is only needed when
+  // the user explicitly asks to cycle through overlapping edges.
+  if (!point.altKey) return clickedEdge;
   const candidates = graph.getEdges()
     .map((edge) => {
       const view = graph.findViewByCell(edge) as any;
