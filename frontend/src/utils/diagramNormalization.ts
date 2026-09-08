@@ -35,6 +35,14 @@ function enumValue<T extends string>(value: unknown, values: readonly T[], fallb
   return values.includes(value as T) ? value as T : fallback;
 }
 
+function vertices(value: unknown): Array<{ x: number; y: number }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map((point) => record(point))
+    .map((point) => ({ x: Number(point.x), y: Number(point.y) }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
 function uniqueId(value: unknown, prefix: string, index: number, used: Set<string>): string {
   const base = text(value).trim() || `${prefix}_${index + 1}`;
   let id = base;
@@ -96,6 +104,7 @@ function normalizeRelation(value: unknown, index: number, used: Set<string>): Um
     source: text(item.source),
     target: text(item.target),
     type: enumValue(item.type, Object.values(RelationType), RelationType.ASSOCIATION),
+    vertices: vertices(item.vertices),
     multiplicity_source: text(item.multiplicity_source),
     multiplicity_target: text(item.multiplicity_target),
     role_name: text(item.role_name),
@@ -168,6 +177,7 @@ function normalizeComponentRelation(value: unknown, index: number, used: Set<str
     source: text(item.source),
     target: text(item.target),
     type: item.type === 'delegation' ? 'delegation' : 'dependency',
+    vertices: vertices(item.vertices),
   };
 }
 

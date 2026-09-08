@@ -67,6 +67,8 @@ export interface UmlRelation {
   source: string;
   target: string;
   type: RelationType;
+  /** User-adjusted orthogonal routing points. Undefined means use auto-routing. */
+  vertices?: Array<{ x: number; y: number }>;
   multiplicity_source: string;
   multiplicity_target: string;
   role_name: string;

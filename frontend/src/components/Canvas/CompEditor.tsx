@@ -6,7 +6,7 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { Graph, Node } from '@antv/x6';
+import { Edge, Graph, Node } from '@antv/x6';
 import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
@@ -16,7 +16,8 @@ import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistr
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getParallelEdgeVertices, syncCanvasGrid,
+  centerCanvasContent, getParallelEdgeVertices, materializeEdgeRouteVertices,
+  resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
@@ -140,6 +141,12 @@ const CompEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
+  const edgeSelectionCycle = useRef({
+    point: null as { x: number; y: number } | null,
+    ids: [] as string[],
+    index: 0,
+    timestamp: 0,
+  });
   const clipboard = useRef<ComponentClipboard | null>(null);
 
   // ── Context menu state ──────────────────────────────
@@ -225,6 +232,10 @@ const CompEditor: React.FC = () => {
           node.setPosition(nextPosition.x, nextPosition.y);
           isInternalUpdate.current = false;
         }
+        graph.getConnectedEdges(node).forEach((edge) => {
+          const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
+          if (relation?.vertices === undefined) edge.setVertices([]);
+        });
         moveComponent(node.id, nextPosition.x, nextPosition.y);
       },
       onNodeResized: (node) => {
@@ -233,16 +244,35 @@ const CompEditor: React.FC = () => {
           height: node.size().height,
         });
       },
-      onEdgeClick: (edge) => {
-        selectCompRelation(edge.id);
+      onEdgeClick: (edge, point) => {
+        const selectedEdge = point
+          ? resolveEdgeSelection(graph, edge, point, edgeSelectionCycle.current)
+          : edge;
+        selectCompRelation(selectedEdge.id);
         setRightPanelTab('properties');
       },
+      onEdgeMouseEnter: (edge) => {
+        const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
+        if (!relation || relation.vertices !== undefined) return;
+        isInternalUpdate.current = true;
+        materializeEdgeRouteVertices(graph, edge);
+        isInternalUpdate.current = false;
+      },
       onEdgeEndpointChanged: (edge) => {
-        if (!(getActiveDiagram().comp_relations || []).some((relation) => relation.id === edge.id)) return;
+        const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
+        if (!relation) return;
         const source = edge.getSourceCellId();
         const target = edge.getTargetCellId();
         if (!source || !target || source === target) return;
+        if (relation.vertices === undefined) edge.setVertices([]);
         updateCompRelation(edge.id, { source, target });
+      },
+      onEdgeVerticesChanged: (edge) => {
+        const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
+        if (!relation) return;
+        const vertices = edge.getVertices().map(({ x, y }) => ({ x, y }));
+        if (JSON.stringify(relation.vertices) === JSON.stringify(vertices)) return;
+        updateCompRelation(edge.id, { vertices });
       },
       onNewEdge: (edge, sourceId, targetId) => {
         isInternalUpdate.current = true;
@@ -252,6 +282,10 @@ const CompEditor: React.FC = () => {
       },
       onEdgeRemoved: (edge) => removeCompRelation(edge.id),
       edgeTools: [
+        // Segment handles move orthogonal runs and therefore control the
+        // length of a 90-degree turn without introducing port re-layout.
+        { name: 'segments', args: { threshold: 20, snapRadius: 12 } },
+        { name: 'vertices', args: { addable: false, removable: true, snapRadius: 12 } },
         { name: 'source-arrowhead' },
         { name: 'target-arrowhead' },
         { name: 'button-remove', args: { distance: -30 } },
@@ -346,7 +380,14 @@ const CompEditor: React.FC = () => {
               const relations = getActiveDiagram().comp_relations || [];
               const pastedRelation = relations[relations.length - 1];
               if (pastedRelation && pastedRelation.type !== relation.type) {
-                useDiagramStore.getState().updateCompRelation(pastedRelation.id, { type: relation.type });
+                useDiagramStore.getState().updateCompRelation(pastedRelation.id, {
+                  type: relation.type,
+                  vertices: relation.vertices?.map(({ x, y }) => ({ x: x + 30, y: y + 30 })),
+                });
+              } else if (pastedRelation && relation.vertices) {
+                useDiagramStore.getState().updateCompRelation(pastedRelation.id, {
+                  vertices: relation.vertices.map(({ x, y }) => ({ x: x + 30, y: y + 30 })),
+                });
               }
             });
           } finally {
@@ -358,7 +399,10 @@ const CompEditor: React.FC = () => {
               x: component.x + 30,
               y: component.y + 30,
             })),
-            relations: copied.relations.map((relation) => ({ ...relation })),
+            relations: copied.relations.map((relation) => ({
+              ...relation,
+              vertices: relation.vertices?.map(({ x, y }) => ({ x: x + 30, y: y + 30 })),
+            })),
           };
         }
       } else if (modifier && key === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
@@ -549,10 +593,17 @@ const CompEditor: React.FC = () => {
           },
           position: { distance: 0.5, offset: -10 },
         }];
-        const vertices = getParallelEdgeVertices(r, rels, componentRects);
+        // An explicit (including empty) vertices array is a user override.
+        // Only untouched relations fall back to the automatic parallel-edge lane.
+        const existingVertices = (graph.getCellById(r.id) as Edge | null)?.getVertices() || [];
+        const vertices = r.vertices !== undefined
+          ? r.vertices
+          : existingVertices.length > 0
+            ? existingVertices
+            : getParallelEdgeVertices(r, rels, componentRects);
         const interactionAttrs = {
           stroke: 'transparent',
-          strokeWidth: 18,
+          strokeWidth: 10,
           fill: 'none',
           pointerEvents: 'stroke',
         };

@@ -83,6 +83,8 @@ class UmlRelation(BaseModel):
     source: str
     target: str
     type: RelationType = RelationType.ASSOCIATION
+    # User-adjusted orthogonal routing points; None keeps automatic routing.
+    vertices: Optional[list[Position]] = None
     multiplicity_source: str = ""
     multiplicity_target: str = ""
     role_name: str = ""
@@ -147,6 +149,8 @@ class CompRelation(BaseModel):
     source: str  # CompNode.id
     target: str  # CompNode.id
     type: str = "dependency"  # "dependency" | "delegation"
+    # User-adjusted orthogonal routing points; None keeps automatic routing.
+    vertices: Optional[list[Position]] = None
 
 
 # ---------- UML Diagram (file format) ----------

@@ -17,6 +17,8 @@ export interface CompRelation {
   source: string;
   target: string;
   type: 'dependency' | 'delegation';
+  /** User-adjusted orthogonal routing points. Undefined means use auto-routing. */
+  vertices?: Array<{ x: number; y: number }>;
 }
 
 export function createDefaultComponent(x?: number, y?: number, parentId = ''): CompNode {

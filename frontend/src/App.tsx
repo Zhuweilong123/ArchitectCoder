@@ -129,7 +129,11 @@ const App: React.FC = () => {
 
           <div className="status-bar">
             <span>{statusText}</span>
-            <span>{interfaceLanguage === 'en' ? 'Ctrl + Z Undo · Ctrl + Y Redo' : 'Ctrl + Z 撤销 · Ctrl + Y 重做'}</span>
+            <span>
+              {interfaceLanguage === 'en'
+                ? 'Ctrl + Z Undo · Ctrl + Y Redo · Drag edge segments to adjust bends · Alt + click overlapping edges'
+                : 'Ctrl + Z 撤销 · Ctrl + Y 重做 · 拖动连线线段调整折点 · Alt + 点击重叠连线切换'}
+            </span>
           </div>
         </Content>
 
