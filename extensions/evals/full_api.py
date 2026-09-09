@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
+from extensions.evals.api import router as trace_case_router
+
 from app.agent_base.core.evals import (
     EvalArchiveRequest,
     EvalBatchMergeRequest,
@@ -17,7 +19,7 @@ from app.agent_base.core.evals import (
 )
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # Compatibility export for existing integrations; baseline reads now go
 # through EvalProvider.get_baseline().
 BASELINE_PATH = REPOSITORY_ROOT / "backend" / "evals" / "baseline.json"
@@ -229,3 +231,6 @@ async def archive_eval(request: EvalArchiveRequest):
 @router.get("/archives")
 async def list_eval_archives(limit: int = 20):
     return {"archives": load_evals().list_archives(limit)}
+
+
+router.include_router(trace_case_router)

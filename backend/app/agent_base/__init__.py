@@ -25,10 +25,8 @@ from .core.llm import BaseAgentsLLM
 from .core.agent import Agent
 from .core.knowledge_graph import (
     KnowledgeGraphProvider,
-    KnowledgeGraphToolFactory,
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
-    load_knowledge_graph_tools,
 )
 from .core.plugins import (
     PluginManager,
@@ -55,10 +53,8 @@ __all__ = [
     "BaseAgentsLLM",
     "Agent",
     "KnowledgeGraphProvider",
-    "KnowledgeGraphToolFactory",
     "NoOpKnowledgeGraphProvider",
     "load_knowledge_graph",
-    "load_knowledge_graph_tools",
     "PluginManager",
     "PluginSpec",
     "PluginState",

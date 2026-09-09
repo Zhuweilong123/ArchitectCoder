@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from app.agent_base.core.knowledge_graph import (
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
-    load_knowledge_graph_tools,
 )
 from app.models.uml import Project, UmlClass, UmlDiagram
+from app.agent_base.core.plugins import get_plugin_manager
 from extensions.knowledge_graph.provider import LocalKnowledgeGraphProvider
 
 
@@ -51,8 +51,10 @@ def test_disabled_knowledge_graph_uses_noop_provider():
     assert isinstance(provider, NoOpKnowledgeGraphProvider)
     assert provider.rebuild_project({}, "project-1") is None
     assert provider.search_diagrams("project-1", ["login"]) == {}
-    assert load_knowledge_graph_tools(
+    assert get_plugin_manager().load_contribution(
+        "knowledge_graph", "create_tools",
         settings=SimpleNamespace(agent_knowledge_graph_enabled=False),
+        default=[],
     ) == []
 
 
@@ -91,10 +93,11 @@ def test_knowledge_graph_tools_follow_the_provider_switch(monkeypatch):
         agent_knowledge_graph_provider=f"{module_name}:create",
     )
 
-    tools = load_knowledge_graph_tools(
+    tools = get_plugin_manager().load_contribution(
+        "knowledge_graph", "create_tools",
         settings=settings,
-        project_file="demo.umlproj",
-        source_dir="src",
+        kwargs={"project_file": "demo.umlproj", "source_dir": "src"},
+        default=[],
     )
 
     assert tools == [{

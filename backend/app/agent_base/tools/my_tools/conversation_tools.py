@@ -158,11 +158,17 @@ def create_conversation_tools(
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
     # 关闭或 Provider 不可用时不会注册任何 KG 工具。
-    from app.agent_base.core.knowledge_graph import load_knowledge_graph_tools
-    tools.extend(load_knowledge_graph_tools(
+    from app.agent_base.core.plugins import get_plugin_manager
+    tools.extend(get_plugin_manager().load_contribution(
+        "knowledge_graph",
+        "create_tools",
         settings=get_settings(),
-        project_file=project_file,
-        source_dir=source_dir,
+        kwargs={
+            "project_file": project_file,
+            "source_dir": source_dir,
+            "include_compare": False,
+        },
+        default=[],
     ))
 
     if include_review:

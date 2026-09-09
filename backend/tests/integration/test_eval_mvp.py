@@ -32,7 +32,7 @@ from extensions.evals.runner import (
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
 from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize, write_performance_result
-from app.api.evals import BASELINE_PATH, get_baseline, get_repository
+from extensions.evals.full_api import BASELINE_PATH, get_baseline, get_repository
 
 
 class _FakeAgent:

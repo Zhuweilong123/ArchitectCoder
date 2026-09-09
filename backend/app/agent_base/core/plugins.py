@@ -71,6 +71,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         provider_setting="agent_trace_provider",
         default_provider="extensions.trace:create",
         required_methods=("create",),
+        router_provider="extensions.trace.api:router",
     ),
     PluginSpec(
         name="evals",
@@ -78,7 +79,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         provider_setting="agent_evals_provider",
         default_provider="extensions.evals:create",
         required_methods=("list_cases", "get_case", "run_case", "list_results"),
-        router_provider="extensions.evals.api:router",
+        router_provider="extensions.evals.full_api:router",
     ),
     PluginSpec(
         name="knowledge_graph",
@@ -185,6 +186,28 @@ class PluginManager:
             )
             return None
 
+    def load_contribution(
+        self,
+        name: str,
+        method: str,
+        *,
+        settings=None,
+        kwargs: Mapping[str, Any] | None = None,
+        default=None,
+    ):
+        """Call an optional provider contribution without domain-specific host code."""
+        instance = self.load(name, settings=settings, kwargs=kwargs)
+        if instance is None:
+            return default if default is not None else []
+        contributor = getattr(instance, method, None)
+        if not callable(contributor):
+            return default if default is not None else []
+        try:
+            result = contributor(**dict(kwargs or {}))
+            return result if result is not None else (default if default is not None else [])
+        except Exception:
+            logger.warning("[Plugins] %s contribution %s failed", name, method, exc_info=True)
+            return default if default is not None else []
     def load_router(self, name: str, *, settings=None):
         """Load an optional plugin-owned FastAPI router without loading its provider."""
         spec = self._specs.get(name)

@@ -17,7 +17,7 @@ from .trace_cases import (
     TraceCaseReviewRequest,
 )
 
-router = APIRouter(prefix="/api/evals", tags=["evals.trace_cases"])
+router = APIRouter(tags=["evals.trace_cases"])
 
 
 @router.get("/trace-cases/projects")
