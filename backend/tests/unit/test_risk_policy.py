@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from app.agent_base.tools.my_tools.file_system_tools import BashTool
+from app.agent_base.tools.my_tools.foundation_tools import ShellTool
 from app.agent_base.tools.review import ReviewManager
 from app.core.risk_policy import RiskPolicy
 
@@ -17,19 +17,19 @@ class _Progress:
 def test_risk_policy_classifies_and_scopes_approval():
     policy = RiskPolicy(deny_patterns=["wipe"], approval_patterns=["git reset"])
 
-    assert policy.evaluate("bash", {"command": "echo ok"}).action == "allow"
-    assert policy.evaluate("bash", {"command": "git reset --hard"}).level == "high"
-    assert policy.evaluate("bash", {"command": "wipe disk"}).action == "deny"
+    assert policy.evaluate("shell", {"command": "echo ok"}).action == "allow"
+    assert policy.evaluate("shell", {"command": "git reset --hard"}).level == "high"
+    assert policy.evaluate("shell", {"command": "wipe disk"}).action == "deny"
 
-    scope = policy.approval_scope("bash", {"command": "git reset --hard"})
-    assert policy.approval_is_valid("bash", {"command": "git reset --hard"}, scope)
-    assert not policy.approval_is_valid("bash", {"command": "git reset --soft"}, scope)
+    scope = policy.approval_scope("shell", {"command": "git reset --hard"})
+    assert policy.approval_is_valid("shell", {"command": "git reset --hard"}, scope)
+    assert not policy.approval_is_valid("shell", {"command": "git reset --soft"}, scope)
 
 
 def test_bash_review_contains_risk_and_scope_metadata(tmp_path):
     progress = _Progress()
     manager = ReviewManager()
-    bash = BashTool(str(tmp_path), review_manager=manager, progress=progress)
+    bash = ShellTool(str(tmp_path), review_manager=manager, progress=progress)
 
     async def scenario():
         task = asyncio.create_task(
@@ -44,4 +44,4 @@ def test_bash_review_contains_risk_and_scope_metadata(tmp_path):
 
     assert "git reset --hard is risky" in result
     assert review["metadata"]["risk_level"] == "high"
-    assert review["metadata"]["approval_scope"]["tool"] == "bash"
+    assert review["metadata"]["approval_scope"]["tool"] == "shell"

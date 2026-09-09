@@ -68,7 +68,7 @@ def test_terminal_checkpoint_status_never_calls_budget_stop_completed():
 def test_memory_archive_requires_completed_mutation_evidence():
     details = [{"name": "find_nodes"}]
     assert not _should_archive_task_memory("completed", details)
-    assert not _should_archive_task_memory("budget_exceeded", [{"name": "edit_file", "status": "success"}])
+    assert not _should_archive_task_memory("budget_exceeded", [{"name": "apply_changes", "status": "success"}])
     assert _should_archive_task_memory("completed", [{
         "name": "apply_changes", "status": "success",
         "changes": [{"path": "a.py", "operation": "replace"}],
@@ -148,11 +148,11 @@ def test_memory_archive_helper_only_depends_on_memory_port():
         project_id="project",
         user_message="repair",
         final_answer="done",
-        tool_calls_detail=[{"name": "edit_file", "status": "success"}],
+        tool_calls_detail=[{"name": "apply_changes", "status": "success"}],
     ))
 
     assert memory.request.project_id == "project"
-    assert memory.request.tool_steps[0]["name"] == "edit_file"
+    assert memory.request.tool_steps[0]["name"] == "apply_changes"
 
 
 def test_static_prompt_is_fixed_31_and_retains_verification_and_uml_rules():

@@ -74,7 +74,7 @@ def _reconstruct_original_context(events: list[dict], first_turn_msg: str) -> tu
 
     rerun 模式真调 LLM，需要拿到与原始运行一致的初始上下文（system prompt +
     workspace/记忆/日期），否则模型不知工作区路径、可用工具与任务规则，轨迹会
-    大幅漂移（如原始跑 glob/bash，rerun 却去 read_file）。
+    大幅漂移（如原始跑 list_files/shell，rerun 却去 read_file）。
 
     trace 每条步级 llm_request 都记录了 system_prompt（拆出独立字段），并把
     workspace 上下文拼在首个 user 消息内容开头（`context + "\n\n" + 原始输入`）。
@@ -99,7 +99,7 @@ def _reconstruct_original_context(events: list[dict], first_turn_msg: str) -> tu
 def _reconstruct_workspace(events: list[dict]) -> tuple[str, str, str, str]:
     """还原 (source_dir, test_dir, design_dir, project_file)。
 
-    live 模式真实工具（read_file/glob/...）需要真实目录做 safe_path 守卫。
+    live 模式真实工具（read_file/list_files/...）需要真实目录做 safe_path 守卫。
     优先级：user_message 事件记录（新 trace 带 source_dir/test_dir）→
     从首个步级 llm_request 的 context 文本解析（旧 trace 回退）。
     design_dir 由 project_file 推导（与 create_conversation_tools 同口径）。
@@ -385,33 +385,26 @@ def _build_live_registry(
 ):
     """构建 live 模式的混合工具注册表。
 
-    readonly（默认）：read_file/glob 真实执行，其余（write/edit/bash/子代理）mock。
-    full：A 层文件系统工具全部真实执行（写盘/跑命令有副作用，风险自负）；
-         bash 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
+    readonly（默认）：read_file/list_files/search_text 真实执行，其余 mock。
+    full：foundation 工具全部真实执行（写盘/跑命令有副作用，风险自负）；
+         shell 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
     """
     from app.agent_base.tools.registry import ToolRegistry
-    from app.agent_base.tools.my_tools.file_system_tools import (
-        ReadFileTool, GlobTool, WriteFileTool, EditFileTool, BashTool,
-    )
+    from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 
     if tool_policy not in ("readonly", "full"):
         tool_policy = "readonly"
 
-    real_policy = {"read_file", "glob"}
+    real_policy = {"read_file", "list_files", "search_text"}
     if tool_policy == "full":
-        real_policy |= {"write_file", "edit_file", "bash"}
+        real_policy |= {
+            "apply_changes", "run_program", "run_task", "shell",
+        }
 
     real = ToolRegistry()
-    if "read_file" in real_policy:
-        real.register_tool(ReadFileTool(source_dir, test_dir, design_dir))
-    if "glob" in real_policy:
-        real.register_tool(GlobTool(source_dir, test_dir, design_dir))
-    if "write_file" in real_policy:
-        real.register_tool(WriteFileTool(source_dir, test_dir, design_dir))
-    if "edit_file" in real_policy:
-        real.register_tool(EditFileTool(source_dir, test_dir, design_dir))
-    if "bash" in real_policy:
-        real.register_tool(BashTool(source_dir, test_dir, design_dir))
+    for tool in create_foundation_tools(source_dir, test_dir):
+        if tool.name in real_policy:
+            real.register_tool(tool)
 
     return HybridToolRegistry(events, real, real_policy, graceful=True)
 
@@ -435,7 +428,7 @@ async def replay_agent_session(
             单步执行：复用同一个 agent 实例逐轮 arun，历史自然累积到第 N 轮，
             等价于全量重放的前 N 轮前缀（mock 模式下逐字一致；rerun 下省后续 token）。
         tool_policy: live 模式下真实执行的工具策略："readonly"（默认，read_file/
-            glob 真实）或 "full"（write_file/edit_file/bash 也真实，有副作用风险）。
+            list_files 真实）或 "full"（apply_changes/run_program/run_task/shell 也真实，有副作用风险）。
 
     返回：
         turns: [{user_message, final_answer, recorded_answer, matches, error, steps,
@@ -502,7 +495,7 @@ async def replay_agent_session(
         events, turns[0]["message"] if turns else ""
     )
 
-    # live 模式还原真实 workspace 目录，供真实工具（read_file/glob/...）定位文件。
+    # live 模式还原真实 workspace 目录，供真实工具（read_file/list_files/...）定位文件。
     source_dir, test_dir, design_dir, _project_file = _reconstruct_workspace(events)
 
     if mode == "live":

@@ -8,15 +8,15 @@
 
 </div>
 
-ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It supports **Class Diagrams**, **Sequence Diagrams**, and **Component Diagrams**, connecting design, code generation, testing, repair, and replay into one traceable workflow. It includes the **DevAgent development assistant**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
+ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It connects architecture design, code changes, testing, review, and replay into one traceable workflow. The current `dev-4.0` line includes the **DevAgent development assistant**, **Global UML Optimization**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
 ![ArchitectCoder workspace](workSpace_en.PNG)
 
 ## Why ArchitectCoder?
 
-- **Design as source of truth**: Architecture diagrams drive code generation, verification, and testing.
-- **AI-powered validation**: cross-diagram consistency checks with fuzzy-match auto-repair — machines catch what humans miss.
-- **Natural language to running code**: Describe requirements → auto-generate UML → human diff review → the Agent implements code and runs real pytest → auto-repair on failure.
+- **Design as a source of truth**: Class, sequence, and component diagrams stay at the center of the development workflow.
+- **Controlled AI development**: The Agent reads the smallest useful context, makes scoped changes, verifies them, and pauses for human review where required.
+- **Traceable execution**: Tool calls, reviews, checkpoints, tests, and final results can be inspected and replayed.
 
 ## Core Capabilities
 
@@ -30,7 +30,10 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 
 - Undo/Redo (50 steps), Zoom (toolbar + Ctrl+Scroll), Grid snapping
 - Ctrl+C/V copy-paste, Ctrl+S save
-- Property panel, Space+Drag to pan
+- Property panel, configurable grid, and Space+Drag to pan
+- Orthogonal edge segments can be adjusted directly; Alt+click cycles through overlapping edges
+- Light, dark, blueprint, and eye-care canvas themes
+- Export the current diagram as PNG/SVG, the complete project as `.umlproj`, or a diagram as Markdown
 
 ### Project Management
 
@@ -38,22 +41,23 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 - **Component-Diagram hierarchy**: `Project → Component → Class/Sequence Diagram` three-tier organization. Right-click a component to create/switch linked diagrams
 - Toolbar groups diagrams by type with color-coded dropdowns (orange/blue/green)
 - Legacy `.uml` files auto-wrapped into projects
+- Project, source, and test directories can be selected separately for Agent work
+- Workspace and safe-path policies keep Agent file access within configured roots
 
 ### AI Development Assistant
 
-The bottom-right robot button opens the floating chat panel. The production **DevAgent** (implemented with the ReActAgent runtime) handles every message and supports coordinated development from UML design to code implementation. Depending on the task, it can analyze, generate, modify, and validate code. In v3.2, the main loop remains a direct ReAct workflow, with optional task orchestration and a bounded read-only strategy worker available through a pluggable provider:
+The bottom-right robot button opens the floating chat panel. The production **DevAgent** is a native-function-calling `ReActAgent` assembled through one shared runtime for interactive chat and evaluation. It handles both casual conversation and end-to-end engineering tasks:
 
-- **File system primitives**: `read_file` / `write_file` / `edit_file` / `glob` / `bash` — reading code, writing code, running pytest, and fixing failures are all orchestrated by the Agent itself
-- **Task planning**: `todo_write` maintains a session task list — multi-step tasks create 3–5 concise todos, include verification, and update status as work progresses
-- **Design-first workflow**: design-impacting requirements follow `inspect → update UML → validate → human review → implementation → verification`; business code should be changed only after the affected design is accepted. Implementation-only tasks can proceed directly.
-- **Optional task orchestration**: a planner can create a bounded plan, delegate read-only cross-artifact exploration, and hand structured evidence back to the main Agent; disabling the provider falls back to the direct ReAct path
-- **Controlled sub-agent** `spawn_subagent`: only explicitly enabled strategy work is delegated with a separate context and restricted read-only tools; the main Agent remains responsible for edits and verification
-- **Human review**: UML design changes go through `submit_uml_review` diff approval before the implementation phase; sensitive `bash` commands (force-delete, process kill, `git reset --hard`, etc.) pause for an approve/reject review card before running, while high-risk commands (format, partition, boot-record writes) are denied outright — keeping AI development within guardrails
-- **UML 2.5.1 skill pack**: on-demand class, sequence, component, and cross-diagram guides, including a small loadable `.umlproj` reference case; advanced project cases remain outside the skill pack
-- **Streaming progress**: every tool call, arguments, and results pushed in real time
-- **Interrupt control**: stop the Agent at any time
-- **Multi-session persistence**: create / switch sessions; conversation history survives refresh; session logs saved to disk (Markdown + JSONL trace)
-- **Pluggable memory system**: cross-session memory is archived on completion and recalled by relevance into new tasks; the default SQLite/BM25 provider can be disabled or replaced without changing the Agent loop
+- **Foundation tools**: `list_files`, `read_file`, `search_text`, `apply_changes`, `run_task`, `run_program`, and `shell`. All file creation, editing, deletion, moving, and copying goes through `apply_changes`; standard checks use `run_task` before lower-level command execution.
+- **Design-first workflow**: design-impacting requests follow `inspect → update UML → validate and submit review → implement → verify`. Implementation-only requests can proceed directly. Business-code changes wait for accepted UML review when the request changes architecture.
+- **Human review and safety**: `submit_uml_review` presents UML diffs for approval. Sensitive shell commands require approval, while high-risk operations are denied by policy.
+- **Planning and delegation**: `todo_write` tracks multi-phase work with explicit verification. Optional orchestration can prepare a bounded plan and delegate read-only strategy exploration; the main Agent remains responsible for changes and verification. `spawn_subagent` is separately controlled and single-use per task.
+- **Streaming and interruption**: tool calls, arguments, observations, thoughts, and todo progress stream to the UI. Users can stop a run; the execution checkpoint records completed, pending, changed, and verified items and can be resumed explicitly.
+- **Context and evidence**: context budgets, history compaction, structured tool evidence, convergence guards, and final summaries keep long tasks recoverable and auditable.
+- **Sessions and memory**: create or switch sessions, restore history after refresh, archive completed work to memory, and recall relevant project history in later tasks. SQLite/BM25 memory can be disabled or replaced through the provider boundary.
+- **UML skill pack**: the Agent can load the UML 2.5.1 class, sequence, component, and cross-diagram guides on demand, including a small loadable `.umlproj` reference case.
+
+The production Agent no longer depends on separate code-generation, code-fixer, or standalone UML-optimizer tool chains. It uses the shared workspace tools and the normal review/verification lifecycle.
 
 ### DevAgent Capability Benchmark
 
@@ -64,7 +68,7 @@ The evaluation system now covers only the production **DevAgent** path. Legacy /
 - **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
 - **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
 - **Runtime limits**: normal cases use the production DevAgent limits: 50 steps, 100 tool calls, 600 seconds, and 200,000 total tokens per single task. Multi-turn cases receive a fresh task budget per user turn; cumulative usage is report-only.
-- **Current baseline snapshot**: version `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`, 6 of 16 cases passed, 9 failed, 0 timed out, and 1 errored; average score 0.7756, with 2,904,977 total tokens and 420 tool calls. Metrics are tracked in `backend/evals/baseline.json`.
+- **Tracked baseline snapshot**: `backend/evals/baseline.json` records `4.0@4076efc`: 8 of 16 cases passed, 5 failed, 0 timed out, and 3 errored; average score `0.7221`, with 2,918,570 total tokens and 418 tool calls.
 - **Version identity**: the Evaluation Center automatically reads the current Git branch and HEAD commit and uses `branch@commit` as the version. An uncommitted working tree is marked `dirty`.
 - **Run, merge, and archive**: the Evaluation Center guides users through `运行批次 → 性能结果 → 多版本对比 → 已归档`. Completed same-version batches can be merged into one performance JSONL result; exact duplicate results reuse an existing file. Batch and performance-result entries can be deleted after confirmation; baseline files and archived snapshots are not modified.
 - **CLI**: run the three formal baseline suites separately, or run the retained Trace suite for regression:
@@ -78,14 +82,11 @@ The evaluation system now covers only the production **DevAgent** path. Legacy /
 
   The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
 
-### Global Optimization
+### Global UML Optimization
 
-Click "Global Optimization" in the toolbar, describe your needs:
+The toolbar's **Optimize / 全局优化** action now submits a natural-language request to the same DevAgent chat runtime. It saves the current project first when necessary, opens the assistant, and passes the project/source/test paths as context. The Agent then inspects and updates the relevant `.umlproj` artifacts through its normal tools, review gates, trace recording, and verification flow.
 
-- **Generate from scratch**: no blank diagrams needed — LLM auto-creates all required diagrams and tabs
-- **V2 direct engine**: scope analysis (lightweight model) → single LLM pass (pro model) → programmatic cross-diagram validation + auto-repair + auto-layout
-- **Streaming render**: elements appear on canvas in real time, cancelable mid-stream
-- **Multi-diagram Diff**: per-diagram tab comparison, accept or iterate independently
+There is no separate `/api/optimize_v2` pipeline in the current branch. Global optimization follows the same safety, checkpoint, memory, and audit behavior as every other Agent task.
 
 ### TestHub Test Center
 
@@ -100,7 +101,8 @@ Excel test-case-driven test code generation:
 - **Full recording**: every Agent session is persisted as a JSONL trace (LLM requests/responses + step-by-step tool call events)
 - **TraceViewer**: a drawer-style UI for browsing historical sessions, expanding each tool call's arguments and results
 - **Long prompt inspection**: oversized LLM prompts and tool schemas stay compact by default and can be expanded to inspect the complete content in a scrollable panel
-- **Deterministic replay**: `mock` mode replays from the recording with zero network access (with cursor-consistency checks); `rerun` mode re-runs the real LLM while tools stay mocked from the recording — for prompt debugging and regression comparison
+- **Deterministic replay**: `mock` mode replays from the recording with zero network access; `rerun` mode re-runs the real LLM while tools stay mocked; `live` mode runs the real LLM with real tools according to policy (`readonly` by default, `full` explicitly side-effecting)
+- Replay supports whole-session execution, cumulative per-turn replay, match status, and original-vs-replay step comparison
 
 ### Knowledge Graph
 
@@ -109,6 +111,7 @@ knowledge-graph plugin is enabled, giving the AI assistant structured project un
 
 - **Three knowledge layers**: Project → Entity → Relationship (inheritance/composition/dependency + design-code mapping + test coverage)
 - **Dual-source build**: design layer (UML JSON auto-sync) + code layer (AST parsing of source directories)
+- **Agent queries**: project maps, node search, and neighbor expansion complement file-level reading and search
 
 ### Auto-Layout Engine
 
@@ -155,10 +158,10 @@ ArchitectCoder/
 ├── backend/                        # FastAPI backend
 │   ├── config/                      # Settings and AgentConfig
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket routes (files/llm/optimize_v2/testhub/trace/metrics/evals)
+│   │   ├── api/                    # REST + WebSocket routes (files/llm/testhub/trace/metrics/evals)
 │   │   ├── core/                   # Authentication / security
 │   │   ├── models/                 # Pydantic data models
-│   │   ├── services/               # LLM / optimization engine V2 / layout / trace replay / sessions
+│   │   ├── services/               # sessions, execution, reviews, change sets, trace replay
 │   │   ├── agent_base/             # BaseAgents framework (core/agents/tools)
 │   │   │   └── tools/my_tools/     # File system primitives / todo / sub-agent / review
 │   │   └── main.py
@@ -173,7 +176,7 @@ ArchitectCoder/
 │   ├── trace/                      # Trace providers
 │   ├── evals/                      # Evaluation providers and CLI
 │   └── knowledge_graph/            # Knowledge graph providers
-├── skills/uml-design-guide/         # UML design guides (SkillTool pack + optimization pipeline)
+├── skills/                           # UML design and trace-analysis skill packs
 ├── project/                        # Project code output (src/ + test/)
 ├── temp/                           # Runtime temp files (not committed)
 ├── .claude/                        # Claude Code configuration
@@ -215,12 +218,12 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Configuration definitions are centralized in `backend/config/settings.py` and `backend/config/agent_config.py`; provider entry points are managed through `backend/app/agent_base/core/plugins.py` and implemented under `extensions/`. Set a plugin enabled flag to `false`, or set its provider to `none`, `noop`, or `disabled`, to turn it off. Model routing and `SUB_AGENT_MODEL` are not used. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. On Windows, command execution uses the configured WSL environment when available. After dependencies are installed, Windows users can also run `start.bat` to launch both backend and frontend.
+Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Configuration definitions are centralized in `backend/config/settings.py` and `backend/config/agent_config.py`; provider entry points are managed through `backend/app/agent_base/core/plugins.py` and implemented under `extensions/`. Set a plugin enabled flag to `false`, or set its provider to `none`, `noop`, or `disabled`, to turn it off. `WORKSPACE_ROOTS` controls additional Agent workspace roots, and `AGENT_COMMAND_ENVIRONMENT` is native/auto by default; use `wsl` explicitly when needed. `SUB_AGENT_MODEL` is accepted only as a deprecated compatibility setting and is ignored. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. After dependencies are installed, Windows users can run `start.bat`; set `UVICORN_RELOAD=1` only when the development reloader is needed.
 
 ## API and Development Checks
 
-- Backend REST APIs use the `/api` prefix and cover file operations, LLM access, global optimization, TestHub, Trace, Agent metrics, and DevAgent evaluations.
-- The conversational Agent uses WebSocket: `/api/ws/chat`.
+- Backend REST APIs use the `/api` prefix and cover file operations, LLM access, TestHub, Trace, Agent metrics, and DevAgent evaluations. Global optimization is submitted through the Agent chat path.
+- The conversational Agent uses WebSocket: `/api/agent/ws/chat`.
 - API docs: open `http://localhost:8001/api/docs` after starting the backend.
 - Unit tests: `cd backend && python -m pytest -q`.
 - Run the full 18-case DevAgent catalog, including retained Trace regressions: `python -m extensions.evals.cli`. Run the formal 16-case baseline with the three suite commands above.

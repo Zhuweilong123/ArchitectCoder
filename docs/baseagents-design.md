@@ -13,7 +13,7 @@
 - **职责单一**：Agent 只管推理循环，Tool 只管执行逻辑。
 - **接口统一**：Agent 与 Tool 通过 ABC 抽象基类约束，子类实现标准接口。
 
-公开入口 `__init__.py` 导出 **20 个符号**（core 10 + agents 4 + tools 6）。
+公开入口 `__init__.py` 导出 **18 个符号**（core 10 + agents 2 + tools 6）。
 
 ## 2. 架构
 
@@ -31,10 +31,8 @@ agent_base/
 │   ├── llm.py                           # 统一 LLM 接口（6 种 provider + 同步/异步/流式/FC）
 │   └── agent.py                         # Agent 抽象基类（ABC, run() + 历史管理）
 │
-├── agents/                              # Agent 实现层（4 种范式 + 可中断包装器）
-│   ├── simple_agent.py                  # 基础对话 + 文本格式工具调用
+├── agents/                              # Agent 实现层（2 种范式 + 可中断包装器）
 │   ├── react_agent.py                   # ReAct 循环（原生 FC + 文本解析降级）
-│   ├── reflection_agent.py              # 反思优化（initial→reflect→refine）+ Hook 机制
 │   ├── plan_solve_agent.py              # 先规划后执行（Planner→Executor）
 │   └── interruptible.py                 # 可中断包装器（前端 stop 按钮）
 │
@@ -47,7 +45,8 @@ agent_base/
     │
     └── my_tools/                        # 项目特有工具
         ├── conversation_tools.py        # AsyncTool 基类 + ProgressRelay + create_conversation_tools
-        ├── file_system_tools.py         # 文件系统原语（read_file/write_file/edit_file/glob/bash）
+        ├── foundation_tools.py          # foundation 能力契约
+        ├── foundation_runtime.py        # 读取、搜索与 shell 执行实现
         ├── todo_tools.py                # TodoWriteTool（会话任务列表）
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
@@ -79,25 +78,19 @@ llm = BaseAgentsLLM(provider="deepseek", model="deepseek-v4-pro", api_key="...")
 | ollama | llama3（本地） | — |
 | vllm | （本地） | — |
 
-### 3.2 四种 Agent 范式
+### 3.2 Agent 范式
 
 ```python
-from app.agent_base import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
+from app.agent_base import ReActAgent, PlanAndSolveAgent
 from app.agent_base.tools import ToolRegistry
 
 registry = ToolRegistry()
 # ... 注册工具 ...
 
-agent = SimpleAgent(name="助手", llm=llm, system_prompt="你是有用的助手")
-answer = agent.run("Python 的 with 语句有什么作用？")
-
-agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, max_steps=5, use_native_fc=True)
+agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, use_native_fc=True)
 answer = await agent.arun("搜索 2024 年 Java 最新特性")          # 异步 FC
 async for progress in agent.arun_stream("帮我优化这段代码"):      # 流式进度
     print(f"Step {progress.step}: {progress.actions}")
-
-agent = ReflectionAgent(name="写手", llm=llm, max_iterations=3)
-answer = agent.run("写一篇关于 AI 伦理的短文")
 
 agent = PlanAndSolveAgent(name="规划者", llm=llm)
 answer = agent.run("设计一个用户注册系统的数据库 schema")
@@ -105,12 +98,7 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 
 ## 4. Agent 范式详解
 
-### 4.1 SimpleAgent — 基础对话
-
-封装一次 LLM 调用，支持可选的文本格式工具调用（`[TOOL_CALL:tool_name:parameters]`，
-最多 3 轮工具循环）。适合简单问答、无需复杂推理的场景。
-
-### 4.2 ReActAgent — 推理+行动（主力）
+### 4.1 ReActAgent — 推理+行动（主力）
 
 完整 Reasoning + Acting 循环，**项目对话 Agent 的主力范式**。
 
@@ -120,19 +108,12 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 | 文本解析降级 | 正则匹配 `Thought:/Action:` 格式 | `run()` | 兼容无 FC 模型 |
 
 **FC 核心循环**：构建 messages → `ainvoke_with_tools(tool_specs)` → 遍历 tool_calls
-并行执行 → 追加 assistant/tool 消息 → 循环直至纯文本或 `max_steps`。
+并行执行 → 追加 assistant/tool 消息 → 循环直至最终文本或触发预算/收敛保护。
 
 **流式进度** `ReActProgress`：`step / actions / tool_calls_detail / thought / is_final /
 final_answer`。
 
-### 4.3 ReflectionAgent — 反思优化
-
-三阶段循环（initial → reflect → refine），用于需反复打磨的任务（代码修复）。
-
-**Hook 机制**：`validate(content) → feedback_str`，返回空串表示通过（停止迭代），
-返回问题描述则作为补充消息追加，触发 LLM 修正。原始需求始终在 `messages[0]`。
-
-### 4.4 PlanAndSolveAgent — 先规划后执行
+### 4.2 PlanAndSolveAgent — 先规划后执行
 
 Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后续步骤。
 
@@ -154,7 +135,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **ToolChain / ToolChainManager**：顺序编排 + 变量模板。
 - **AsyncToolExecutor**：并行执行 I/O 密集任务。
 - **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
-  `SubmitUmlReviewTool`（UML diff 审核）与 `BashTool`（敏感命令批准，见 file_system_tools）。
+  `SubmitUmlReviewTool`（UML diff 审核）与 `ShellTool`（敏感命令批准，见 foundation_tools）。
 
 ## 6. 对话 Agent 工具集
 
@@ -167,15 +148,16 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 [`current-architecture.md`](current-architecture.md)。下列旧工具表保留用于说明
 底层兼容实现，不代表生产 Agent 的实际暴露名称。
 
-### 6.1 文件系统原语（`file_system_tools.py`）
+### 6.1 Foundation 能力契约（`foundation_tools.py`）
 
 | 工具 | 功能 |
 |------|------|
 | `read_file` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `write_file` | 写文件（覆盖/新建，自动建父目录） |
-| `edit_file` | 精确文本替换（只替换首次出现） |
-| `glob` | 按 glob 模式查找文件 |
-| `bash` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
+| `list_files` | 按路径和 glob 模式查找文件 |
+| `search_text` | 在工作区内搜索文本 |
+| `apply_changes` | 原子应用文件创建、修改、移动、复制和删除 |
+| `run_program` / `run_task` | 执行直接程序或固定项目任务 |
+| `shell` | 跑受策略约束的单条命令 |
 
 所有文件操作经 `safe_path()` 守卫在 workspace 内（source_dir / test_dir / design_dir 三个 root）。
 
@@ -212,7 +194,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 前端（React 对话面板）
   ↕ WebSocket (/api/agent/ws/chat)
 后端 FastAPI
-  ├── 单 ReActAgent（跨轮复用，懒创建，max_steps=agent_max_steps, use_native_fc=True）
+  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护, use_native_fc=True）
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
   │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
@@ -230,7 +212,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 服务端 → 客户端 (流式):
   {"event": "progress", "step": 1, "actions": [...], "thought": "...", "tool_calls_detail": [...]}
-  {"event": "request_review", "review_id": 0, "review_type": "bash_command", "title": "...", "question": "..."}
+  {"event": "request_review", "review_id": 0, "review_type": "shell_command", "title": "...", "question": "..."}
   {"event": "done", "result": "..."}
   {"event": "stopped", "reason": "User requested stop", "status": "paused", "resume_available": true}
   {"event": "error", "message": "..."}
@@ -241,10 +223,10 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ### 7.3 工具分层架构
 
 ```
-主 Agent: ReActAgent (FC 模式, max_steps=agent_max_steps)
+主 Agent: ReActAgent (FC 模式，开放循环 + 预算/收敛保护)
 │
-├── read_file / write_file / edit_file / glob → 文件系统原语（safe_path 守卫）
-├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
+  ├── list_files / read_file / search_text / apply_changes → foundation 文件能力
+├── run_program / run_task / shell → 统一执行契约与安全策略
 ├── todo_write → 会话任务列表
 ├── skill → L1/L2/L3 知识包加载
 ├── spawn_subagent → 受限子代理（文件系统原语 + skill，复用主代理模型）
@@ -336,29 +318,15 @@ class MyNewTool(AsyncTool):
 
 工具内部运行子 Agent 时，通过 `ProgressRelay` 推送 `sub_agent` 事件到前端。
 
-## 12. UML 全局优化（V2）
+## 12. UML 全局优化
 
-V1 的 `UmlOptimizer`（ReflectionAgent 三阶段反射）已下线，现由 **V2 直连优化引擎**
-（`backend/app/services/uml_optimizer_v2.py` 的 `run_optimize_v2`）取代：
-
-```python
-from app.services.uml_optimizer_v2 import run_optimize_v2
-
-result = await run_optimize_v2(
-    project_file="project.umlproj",
-    instructions="增加支付模块，完善异常处理",
-)
-# result 包含: diagrams / design_constraints / changes_summary / consistency_report
-```
-
-流程：**scope 分析（识别影响范围）→ 单次 LLM 生成 → 程序化跨图一致性验证**，
-替代 V1 的「initial 生成 → 程序化验证 → 反馈注入 messages → LLM 修正」多轮反射。
-
-`code_generator.py` 保留 `optimize_project()` / `optimize_project_stream()` 作为 V1 优化入口的兼容委托。
+全局优化现统一作为普通 AgentChat 请求执行，复用 DevAgent 的上下文、工具和 UML 审核闭环。
+旧的独立 V2 模型调用、Prompt 组装和自动布局链路已移除。
+逐元素绘制仅保留流式事件解析与前端 `design_element` 交互协议。
 
 ## 13. 设计参考
 
-- **架构模式**：Simple / ReAct / Reflection / Plan-and-Solve 四种经典 Agent 范式。
+- **架构模式**：ReAct / Plan-and-Solve 两种 Agent 范式。
 - **工具系统**：万物皆为工具（Tool ABC → Registry → Chain → AsyncExecutor）。
 - **分层代理**：工具封装子 Agent（对话 Agent → `spawn_subagent` → 受限文件系统原语工具集）。
 - **流式进度**：ReActProgress 逐轮推送 → 前端实时渲染。
@@ -375,17 +343,17 @@ result = await run_optimize_v2(
 | `backend/app/agent_base/core/llm.py` | `BaseAgentsLLM`（6 provider + 同步/异步/流式/FC） |
 | `backend/app/agent_base/core/agent.py` | Agent ABC + 历史管理 |
 | `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
-| `backend/app/agent_base/agents/reflection_agent.py` | 反思优化 + Hook 机制 |
+| `backend/app/agent_base/agents/react_runtime/` | ReAct Loop、工具批次、解析器和运行时类型 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
 | `backend/app/agent_base/tools/async_tool.py` | AsyncTool 基类 |
 | `backend/app/agent_base/tools/my_tools/conversation_tools.py` | ProgressRelay + create_conversation_tools |
 | `backend/app/agent_base/tools/my_tools/foundation_tools.py` | 当前生产基础工具和执行边界 |
-| `backend/app/agent_base/tools/my_tools/file_system_tools.py` | 底层文件/命令实现与兼容工具 |
+| `backend/app/agent_base/tools/my_tools/foundation_tools.py` | DevAgent 与子代理共享的 foundation 工具契约 |
+| `backend/app/agent_base/tools/my_tools/foundation_runtime.py` | Foundation 运行时实现 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
 | `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
-| `backend/app/services/uml_optimizer_v2.py` | V2 直连优化引擎 |
 | `backend/app/services/agent_chat_ws.py` | WebSocket 鉴权与协议适配 |
 | `backend/app/services/chat_session.py` | 会话协调与消息生命周期 |
 | `backend/app/services/agent_execution.py` | 单次 Agent 执行、checkpoint、审批和结果 |

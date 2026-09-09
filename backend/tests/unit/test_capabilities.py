@@ -41,5 +41,5 @@ def test_registry_blocks_protected_and_outside_paths(tmp_path):
 def test_shell_policy_blocks_traversal_and_allows_workspace_absolute_path(tmp_path):
     policy = CapabilityPolicy(workspace_roots=[str(tmp_path)])
 
-    assert policy.check("bash", {"command": "git -C .. status"})
-    assert policy.check("bash", {"command": f"git -C {tmp_path} status"}) is None
+    assert policy.check("shell", {"command": "git -C .. status"})
+    assert policy.check("shell", {"command": f"git -C {tmp_path} status"}) is None

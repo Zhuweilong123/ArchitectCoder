@@ -101,7 +101,7 @@ def create_conversation_tools(
         from backend.config import get_settings
         command_executor = build_command_executor(get_settings())
 
-    # 审核管理器提前创建：bash 敏感命令审核（文件系统工具）与
+    # 审核管理器提前创建：shell 敏感命令审核与
     # submit_uml_review 共用同一通道（ReviewManager + ProgressRelay）。
     review_mgr = None
     if include_review:
@@ -145,9 +145,10 @@ def create_conversation_tools(
             source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
             project_file=project_file,
             review_manager=review_mgr, progress=progress,
+            command_executor=command_executor,
+            workspace_root=workspace_root,
             toolkits=("strategy",),
-            max_steps=6,
-            max_total_tokens=get_settings().agent_subagent_max_total_tokens,
+            max_total_tokens=get_settings().agent_subagent_per_run_execution_budget_tokens,
             single_use=True,
         ))
 

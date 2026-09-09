@@ -39,7 +39,7 @@ class CapabilityPolicy:
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return f"Tool '{name}' is not enabled for this run"
 
-        if name in {"bash", "shell"}:
+        if name == "shell":
             command = parameters.get("command", "")
             if not isinstance(command, str) or not command.strip():
                 return "command must be a non-empty string"
@@ -62,7 +62,7 @@ class CapabilityPolicy:
                 return self._check_path(target)
             return None
 
-        if name in {"apply_changes", "apply_patch"}:
+        if name == "apply_changes":
             changes = parameters.get("changes")
             if changes is None:
                 changes = parameters.get("patches", [])
@@ -82,8 +82,10 @@ class CapabilityPolicy:
                         return error
             return None
 
-        if name in {"read_file", "write_file", "edit_file"}:
+        if name in {"list_files", "read_file", "search_text"}:
             path = parameters.get("path", "")
+            if name in {"list_files", "search_text"} and not path:
+                return None
             if not isinstance(path, str) or not path.strip():
                 return "path must be a non-empty string"
             return self._check_path(path)

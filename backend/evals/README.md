@@ -47,7 +47,7 @@ The current catalog is pinned to case schema `1.0`, tool protocol
 `foundation-tools-v1`, checker protocol `deterministic-checkers-v1`, and fixture
 layout `design-src-test-v1`. Every tracked case declares its case/tool versions;
 an unsupported checker, version mismatch, malformed JSON, or legacy mutation
-tool name such as `edit_file` makes the complete catalog fail to load. This
+deprecated tool name makes the complete catalog fail to load. This
 fail-closed behavior prevents a broken case from silently reducing the scoring
 denominator.
 

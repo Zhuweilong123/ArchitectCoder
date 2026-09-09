@@ -6,7 +6,7 @@
 > 当前路径说明：运行时 Trace 端口位于 `backend/app/trace/tracing.py`；具体写入、读取和回放实现位于
 > `extensions/trace/`。文中 `backend/app/trace/chat_trace.py`、`replay.py` 和 `trace_reader.py`
 > 为旧实现路径。
-> 回放器仍需兼容历史 trace 中的 `glob`/`bash`/`write_file` 等工具名；生产 Agent 当前暴露的
+> 回放器按当前 foundation 工具契约工作，不再维护旧工具名兼容层；历史 trace 需先迁移。
 > `list_files`/`apply_changes`/`run_task`/`run_program`/`shell` 契约以
 > [`runtime-command-execution.md`](runtime-command-execution.md) 为准。
 
@@ -39,7 +39,7 @@ ReActAgent 循环
 ```
 
 - LLM 是循环里唯一真正不确定、昂贵、外部的组件；工具结果已记录，mock 掉即可。
-- 在边界替换能**一次覆盖所有 agent**（ReActAgent、reflection_agent、uml_optimizer_v2、pipeline），不用每个循环单独写回放逻辑。
+- 在边界替换能**一次覆盖所有当前 Agent**（ReActAgent、PlanAndSolveAgent、historical standalone optimizer、pipeline），不用每个循环单独写回放逻辑。
 - **最小回放原语**：按 monotonic 顺序遍历 `llm_request`，按 `span_id` 配对 `llm_response`，用游标顺序 pop。
 
 ## 4. trace 记录格式
@@ -94,12 +94,12 @@ ReActAgent 循环
 
 ### 5.5 L3 — live 混合回放（真 LLM + 只读工具真实执行）
 
-- **语义**：真调 LLM，`read_file`/`glob` **真实执行**（读到当前项目真实状态），其余工具（`write_file`/`edit_file`/`bash`/子代理/`submit_uml_review`）按记录 mock。
+- **语义**：真调 LLM，`read_file`/`list_files`/`search_text` **真实执行**（读到当前项目真实状态），其余工具按记录 mock。
 - **后端** `replay.py`：
   - `HybridToolRegistry` — `get_openai_specs()` 返回完整记录 schema（LLM 决策空间与原运行一致），`aexecute_tool_with_params` 按 `real_policy` 决定真实执行或 mock；mock 侧**按工具名分队列** pop，真实工具不消费队列，交错调用不错位。
-  - `_build_live_registry(events, source_dir, test_dir, design_dir, tool_policy)` — 构建只装真实工具（read_file/glob；`full` 加 write/edit/bash）的 `ToolRegistry`；bash 不传 review_manager → 敏感命令 fail-closed、高危直接拒。
+  - `_build_live_registry(events, source_dir, test_dir, design_dir, tool_policy)` — 构建只装真实工具（read_file/list_files/search_text；`full` 加 apply_changes/run_program/run_task/shell）的 `ToolRegistry`；shell 不传 review_manager → 敏感命令 fail-closed、高危直接拒。
   - `_reconstruct_workspace(events)` — 还原 `source_dir/test_dir/design_dir/project_file`（优先 `user_message` 记录，旧 trace 回退从 context 文本解析）。
-- **策略**：`tool_policy=readonly`（默认，安全）/ `full`（write/edit/bash 也真实，写盘风险自负，仅 API 逃生口）。
+- **策略**：`tool_policy=readonly`（默认，安全）/ `full`（foundation 执行工具也真实，写盘风险自负，仅 API 逃生口）。
 - **前端**：Segmented 新增 `Live(真工具)`；`steps` vs `recorded_steps` 左右对比在 live 下最有意义（真实读当前项目 vs 原始读当时项目）。
 
 ## 6. 关键设计点
@@ -155,7 +155,7 @@ rerun 模式真调 LLM，若全局 trace 钩子仍指向某会话，回放自身
 
 ### 6.6 rerun 原始上下文重建
 
-rerun 真调 LLM 需要与原始运行一致的初始上下文，否则轨迹大幅漂移（原始跑 `glob/bash`，rerun 却去 `read_file`×7）。trace 已把上下文记录在步级 `llm_request` 里：
+rerun 真调 LLM 需要与原始运行一致的初始上下文，否则轨迹大幅漂移。trace 已把上下文记录在步级 `llm_request` 里：
 
 - `system_prompt`：`_split_system_prompt` 把 system 消息拆成独立字段记录，`_reconstruct_original_context` 直接取首个步级请求。
 - `context`（workspace/记忆/日期）：原运行把它拼在首个 user 消息开头（`context + "\n\n" + 输入`），还原时从首个 user 内容剥掉原始输入得到。
@@ -179,7 +179,7 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 - **解耦「可见」与「执行」**：`get_openai_specs()` 必须返回**完整**记录 schema，而非只暴露真实执行的只读工具。若只暴露只读工具，LLM 轨迹会因「工具可见性变化」而漂移，混淆「真实执行 vs mock」这一变量，A/B 就测不准。
 - **按工具名分队列 mock**：全局游标在「只读真实 + 破坏性 mock」交错执行下会错位（真实工具不消费游标）。改为每工具一个队列，mock 工具从自己的队列 pop，真实工具不碰队列。
 - **workspace 重建**：真实工具依赖 `source_dir/test_dir/design_dir`（`safe_path` 守卫）。trace 的 `user_message` 事件现携带 `source_dir/test_dir`（向前记录），旧 trace 回退从 context 文本 `## Workspace ...` 行解析。
-- **审核 fail-closed**：离线回放无人类可批准。`submit_uml_review` 不注册；`bash`（full 模式）不传 review_manager → 敏感命令「无审核通道」拒绝、高危命令直接拒。真实只读工具永不触发审核。
+- **审核 fail-closed**：离线回放无人类可批准。`submit_uml_review` 不注册；`shell`（full 模式）不传 review_manager → 敏感命令「无审核通道」拒绝、高危命令直接拒。真实只读工具永不触发审核。
 
 ## 7. 已知边界与后续
 
@@ -188,7 +188,7 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 - **rerun/live 发散时右列含占位观察**：偏离原始轨迹的额外工具调用无法 mock 真实结果，`steps` 会带占位文本（符合 6.7 设计，用于漂移对比）。
 - **左右对比仅非 mock 有意义**：mock 下 `steps` 与 `recorded_steps` 逐字一致，前端保持单列。
 - **live 真实工具需新 trace 目录字段**：`user_message` 现带 `source_dir/test_dir`（向前记录）；旧 trace 回退从 context 文本解析，路径含空格/换行时可能解析失败 → 真实工具退化为「无 workspace root」错误。
-- **full 模式有副作用**：`write_file`/`edit_file`/`bash` 真实执行会写盘/跑命令，属显式风险；默认 `readonly` 不触发。
+- **full 模式有副作用**：`apply_changes`/`run_program`/`run_task`/`shell` 真实执行会写盘/跑命令，属显式风险；默认 `readonly` 不触发。
 - **同步流式路径无 trace**：`think()` / `stream_invoke()`（`llm.py:347`）未打 trace。
 - **optimize_v2 独立 trace 分文件**：无 `user_message` 事件，回放按单轮空消息兜底。
 

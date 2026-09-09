@@ -24,15 +24,15 @@ Usage::
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .exceptions import AgentInterrupted
+from .policy import ExecutionBudget
+from ..convergence import ConvergenceController
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,26 @@ class HookEvent(str, Enum):
     LLM_AFTER = "llm_after"
     TOOL_BEFORE = "tool_before"
     TOOL_AFTER = "tool_after"
+    TOOL_BATCH_AFTER = "tool_batch_after"
+
+
+class HookAction(str, Enum):
+    CONTINUE = "continue"
+    REPLACE = "replace"
+    VETO = "veto"
+    RECOVER = "recover"
+    FINALIZE = "finalize"
+    STOP = "stop"
+
+
+@dataclass(frozen=True)
+class HookDecision:
+    """Generic control result shared by policy and application hooks."""
+
+    action: HookAction | str = HookAction.CONTINUE
+    reason: str = ""
+    message: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -56,10 +76,13 @@ class HookContext:
     tool_input: Optional[dict] = None
     tool_status: Optional[str] = None       # TOOL_AFTER result status
     error_code: Optional[str] = None        # TOOL_AFTER normalized error code
-    max_repeated_tool_calls: int = 3        # TOOL_BEFORE policy supplied by agent
     tool_output: Optional[str] = None      # 仅 TOOL_AFTER
     messages: Optional[list] = None        # 仅 LLM_BEFORE / LLM_AFTER
     llm_response: Optional[dict] = None    # 仅 LLM_AFTER
+    run_id: str = ""
+    phase: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    runtime: Optional["AgentRuntime"] = None
 
 
 @dataclass
@@ -78,11 +101,11 @@ class AgentRuntime:
     requires_todo_plan: bool = False
     requires_acceptance_todos: bool = False
     strategy_subagent_used: bool = False
-    # Per-run convergence state.  Hooks own these counters so the ReAct loop
-    # does not need to encode policy for repeated calls or repeated failures.
-    repeated_tool_calls: dict[str, int] = field(default_factory=dict)
-    repeated_tool_failures: dict[str, int] = field(default_factory=dict)
-    repeated_tool_failure_codes: dict[str, str] = field(default_factory=dict)
+    run_id: str = ""
+    execution_budget: Optional[ExecutionBudget] = None
+    convergence_controller: Optional[ConvergenceController] = None
+    control_decision: Optional[HookDecision] = None
+    policy_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
@@ -126,78 +149,8 @@ def reset_runtime(token) -> None:
     _runtime_var.reset(token)
 
 
-Hook = Callable[[HookContext], Optional[str]]
-
-
-def _tool_call_key(tool_name: Optional[str], tool_input: Optional[dict]) -> str:
-    """Build a stable, bounded-enough fingerprint for one tool invocation."""
-    try:
-        encoded = json.dumps(tool_input or {}, ensure_ascii=False, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        encoded = repr(tool_input)
-    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
-    return f"{tool_name or ''}:{digest}"
-
-
-class RepeatedToolCallHook:
-    """Stop identical calls and repeated identical failures at the hook boundary.
-
-    The first guard preserves the agent's configurable identical-call limit.
-    The second guard is stricter for a failing call: after two failures with
-    the same normalized input, the next attempt receives a capability fact
-    instead of executing the same failing operation again.  A changed input
-    has a different fingerprint and remains eligible for a corrective retry.
-    """
-
-    def __call__(self, ctx: HookContext) -> Optional[str]:
-        runtime = get_runtime()
-        if ctx.event == HookEvent.RUN_START:
-            runtime.repeated_tool_calls.clear()
-            runtime.repeated_tool_failures.clear()
-            runtime.repeated_tool_failure_codes.clear()
-            return None
-
-        if not ctx.tool_name or ctx.event not in (HookEvent.TOOL_BEFORE, HookEvent.TOOL_AFTER):
-            return None
-
-        key = _tool_call_key(ctx.tool_name, ctx.tool_input)
-        if ctx.event == HookEvent.TOOL_BEFORE:
-            failure_code = runtime.repeated_tool_failure_codes.get(key)
-            failure_key = f"{key}:{failure_code or 'TOOL_ERROR'}"
-            failure_count = runtime.repeated_tool_failures.get(failure_key, 0)
-            if failure_count >= 2:
-                failure_code = runtime.repeated_tool_failure_codes.get(key) or "TOOL_ERROR"
-                return (
-                    "Repeated tool failure blocked after 2 identical failures. "
-                    f"Tool '{ctx.tool_name}' returned the same failure for the same input; "
-                    f"error_code={failure_code}. Change the input or choose a different "
-                    "capability instead of retrying it."
-                )
-
-            call_count = runtime.repeated_tool_calls.get(key, 0)
-            max_calls = max(1, int(getattr(ctx, "max_repeated_tool_calls", 3) or 3))
-            if call_count >= max_calls:
-                return (
-                    "Repeated identical tool call blocked by circuit breaker. "
-                    "Use a different input or provide the current result."
-                )
-            runtime.repeated_tool_calls[key] = call_count + 1
-            return None
-
-        if ctx.tool_status == "error":
-            failure_code = ctx.error_code or "TOOL_ERROR"
-            failure_key = f"{key}:{failure_code}"
-            runtime.repeated_tool_failures[failure_key] = (
-                runtime.repeated_tool_failures.get(failure_key, 0) + 1
-            )
-            runtime.repeated_tool_failure_codes[key] = failure_code
-        else:
-            # A successful retry proves that the previous failure was transient
-            # and must not poison later work with the same input.
-            failure_code = runtime.repeated_tool_failure_codes.pop(key, None)
-            if failure_code:
-                runtime.repeated_tool_failures.pop(f"{key}:{failure_code}", None)
-        return None
+HookResult = Optional[str | HookDecision]
+Hook = Callable[[HookContext], HookResult]
 
 
 class HookRegistry:
@@ -232,7 +185,7 @@ class HookRegistry:
         else:
             self._hooks[event].clear()
 
-    def trigger(self, event: HookEvent, ctx: HookContext) -> Optional[str]:
+    def trigger(self, event: HookEvent, ctx: HookContext) -> HookResult:
         """按 priority 降序触发 hook，首个非 None 返回值短路。"""
         for _, fail_closed, hook in self._hooks[event]:
             try:
@@ -253,6 +206,41 @@ class HookRegistry:
             if result is not None:
                 return result
         return None
+
+    def emit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
+        """Run every hook for broadcast-style lifecycle events.
+
+        ``trigger`` remains the short-circuit API for veto/replace decisions;
+        ``emit`` is used when all observers must see the event, such as the
+        end of a tool batch.
+        """
+        results: list[HookResult] = []
+        for _, fail_closed, hook in self._hooks[event]:
+            try:
+                result = hook(ctx)
+            except AgentInterrupted:
+                raise
+            except Exception as exc:
+                if fail_closed:
+                    logger.exception(
+                        "[Hooks] fail-closed hook %r for %s", hook, event.value
+                    )
+                    results.append(
+                        HookDecision(
+                            action=HookAction.VETO,
+                            reason="hook_error",
+                            message=f"Hook error (fail-closed): {type(exc).__name__}: {exc}",
+                        )
+                    )
+                else:
+                    logger.warning(
+                        "[Hooks] hook %r for %s failed (non-fatal)",
+                        hook, event.value, exc_info=True,
+                    )
+                continue
+            if result is not None:
+                results.append(result)
+        return results
 
 
 _registry = HookRegistry()
@@ -280,7 +268,7 @@ class TruncateHook:
     因此截断策略可插拔而不影响 trace / 前端展示的完整口径。
 
     截断后**必须**追加显式标记：否则模型会把腰斩的内容当成完整内容，
-    进而基于不存在的文本构造 ``edit_file`` 的 ``old_string``，匹配必然失败
+    进而基于不存在的文本构造 ``apply_changes`` 的修改内容，匹配必然失败
     且无法归因。标记会超出 ``max_chars`` 若干字符，这是有意的——
     宁可多几十字符，也不能让模型对"内容被删过"这件事无感。
 
@@ -329,14 +317,82 @@ def _todo_reminder_hook(ctx: HookContext) -> Optional[str]:
     return None
 
 
+class RunPolicyHook:
+    """Adapt execution policy components to the generic hook protocol.
+
+    The agent loop only publishes lifecycle events. Resource accounting and
+    convergence decisions live here and are exposed through the per-run
+    ``AgentRuntime`` control signal.
+    """
+
+    def __call__(self, ctx: HookContext) -> HookResult:
+        runtime = ctx.runtime or get_runtime()
+        budget = runtime.execution_budget
+
+        if ctx.event == HookEvent.RUN_START:
+            runtime.control_decision = None
+            if budget is not None:
+                budget.start(int(ctx.payload.get("initial_token_usage", 0) or 0))
+            return None
+
+        if ctx.event == HookEvent.LLM_AFTER and budget is not None:
+            usage = (ctx.llm_response or {}).get("usage") or {}
+            total_tokens = usage.get("total_tokens", 0)
+            budget.record_tokens(int(total_tokens or 0))
+            return None
+
+        if ctx.event == HookEvent.LLM_BEFORE and budget is not None:
+            reason = budget.before_llm()
+            if reason:
+                decision = HookDecision(
+                    action=HookAction.STOP,
+                    reason=reason,
+                    message="Execution budget exhausted; finalize the response.",
+                )
+                runtime.control_decision = decision
+                return decision
+            return None
+
+        if ctx.event == HookEvent.TOOL_BEFORE and budget is not None:
+            reason = budget.before_tool()
+            if reason:
+                decision = HookDecision(
+                    action=HookAction.VETO,
+                    reason=reason,
+                    message="Tool execution budget exhausted.",
+                )
+                runtime.control_decision = decision
+                return decision
+            return None
+
+        if ctx.event == HookEvent.TOOL_BATCH_AFTER:
+            controller = runtime.convergence_controller
+            if controller is None:
+                return None
+            runtime.control_decision = None
+            convergence = controller.observe(ctx.payload.get("details", []))
+            if convergence.action in {"recover", "finalize"}:
+                decision = HookDecision(
+                    action=convergence.action,
+                    reason=convergence.reason,
+                    message=convergence.message,
+                )
+                runtime.control_decision = decision
+                return decision
+            return None
+
+        return None
+
+
 def _register_default_hooks() -> None:
     get_hooks().register(HookEvent.LLM_BEFORE, _interrupt_hook, priority=100)
+    get_hooks().register(HookEvent.LLM_BEFORE, RunPolicyHook(), priority=90)
     get_hooks().register(HookEvent.LLM_BEFORE, _todo_reminder_hook, priority=50)
     get_hooks().register(HookEvent.TOOL_BEFORE, _interrupt_hook, priority=100)
-    repeated_call_hook = RepeatedToolCallHook()
-    get_hooks().register(HookEvent.RUN_START, repeated_call_hook, priority=90)
-    get_hooks().register(HookEvent.TOOL_BEFORE, repeated_call_hook, priority=90)
-    get_hooks().register(HookEvent.TOOL_AFTER, repeated_call_hook, priority=90)
+    get_hooks().register(HookEvent.RUN_START, RunPolicyHook(), priority=90)
+    get_hooks().register(HookEvent.TOOL_BEFORE, RunPolicyHook(), priority=90)
+    get_hooks().register(HookEvent.LLM_AFTER, RunPolicyHook(), priority=90)
+    get_hooks().register(HookEvent.TOOL_BATCH_AFTER, RunPolicyHook(), priority=90)
     get_hooks().register(
         HookEvent.TOOL_AFTER,
         # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀

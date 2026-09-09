@@ -44,7 +44,7 @@ WebSocket / Evaluation / future HTTP or CLI
 | Agent 循环 | `app/agent_base/agents/react_agent.py` | 推理、工具调用、预算和收敛控制 |
 | 单次执行 | `app/services/agent_execution.py` | 生命周期、checkpoint、审批、证据和结果 |
 | 会话/传输 | `app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
-| 文件与变更 | `app/agent_base/tools/my_tools/file_system_tools.py`、`app/services/change_set.py` | 工作区边界、原子变更和 SHA 校验 |
+| 文件与变更 | `app/agent_base/tools/my_tools/foundation_tools.py`、`app/agent_base/tools/my_tools/foundation_runtime.py`、`app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
 | 扩展能力 | `extensions/*` + `app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
 | Trace 端口 | `app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
 

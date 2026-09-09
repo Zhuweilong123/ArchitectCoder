@@ -5,7 +5,7 @@
 调用方继续执行。当前有两个使用方：
 
 - SubmitUmlReviewTool：UML diff 审核（前端 DiffViewer 对比 accept/reject）
-- BashTool：敏感命令审核（高危命令直接拒绝，敏感命令经此机制等人工批准）
+- ShellTool：敏感命令审核（高危命令直接拒绝，敏感命令经此机制等人工批准）
 
 Usage::
 
@@ -136,9 +136,9 @@ class ReviewManager:
         })
         # Evaluation runs have no interactive frontend. Automatically accept
         # the reviewable operations so the real agent loop remains continuous;
-        # high-risk bash commands are still rejected by BashTool before this
+        # high-risk shell commands are still rejected by ShellTool before this
         # manager is consulted.
-        if self.auto_approve_reviews and review_type in {"uml_diff", "bash_command"}:
+        if self.auto_approve_reviews and review_type in {"uml_diff", "shell_command"}:
             response = json.dumps({
                 "decision": "accept",
                 "feedback": "Automatically accepted by evaluation approval stub.",

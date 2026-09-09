@@ -1,14 +1,14 @@
-"""文件系统原语工具 — read_file / write_file / edit_file / glob / bash
+"""Internal runtime implementations for the DevAgent foundation contracts.
 
 借鉴 Claude Code 范式的 A 层工具，为「AI 开发助手」补齐底层动手能力：
 读现有代码、精确修改、跑命令。所有文件操作经 ``safe_path`` 守卫在 workspace 内；
-bash 两级防护：高危命令直接拒绝，敏感命令经 ReviewManager 请求人工批准，
+shell 两级防护：高危命令直接拒绝，敏感命令经 ReviewManager 请求人工批准，
 其余命令带超时直接放行；输出截断由默认 ``TruncateHook``（core/hooks.py）负责。
 
 Usage::
 
-    from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools
-    tools = create_file_system_tools(source_dir="src/", test_dir="tests/")
+    from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
+    tools = create_foundation_tools(source_dir="src/", test_dir="tests/")
 """
 
 from __future__ import annotations
@@ -81,9 +81,9 @@ REVIEW_LIST = [
 _DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
 _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
-BASH_TIMEOUT = 120  # 秒
-BASH_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
-BASH_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
+SHELL_TIMEOUT = 120  # 秒
+SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
+SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
 
 
 def _decode_output(data: bytes) -> str:
@@ -249,153 +249,13 @@ class ReadFileTool(AsyncTool):
         }
 
 
-class WriteFileTool(AsyncTool):
-    """写文件到 workspace（覆盖或新建，自动建父目录）。"""
-
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
-        super().__init__(
-            name="write_file",
-            description=(
-                "Write text content to a file in the workspace. Creates parent "
-                "directories as needed. Overwrites existing files."
-            ),
-        )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
-        self._change_set = change_set
-
-    async def _execute(self, params: dict) -> str:
-        return (await self.run_result(params)).text
-
-    async def _execute_result(self, params: dict):
-        path = params.get("path", "")
-        content = params.get("content", "")
-        try:
-            fp = safe_path(path, self._roots)
-        except ValueError as e:
-            return f"Error: {e}"
-        try:
-            before_exists = fp.exists()
-            current = fp.read_text(encoding="utf-8") if before_exists else ""
-            if before_exists and params.get("expected_sha256"):
-                expected = str(params["expected_sha256"]).lower()
-                actual = _sha256_text(current)
-                if actual != expected:
-                    return (f"Conflict: {path} changed since it was read; "
-                            f"expected sha256 {expected}, actual {actual}")
-            _atomic_write_text(fp, content)
-            if self._change_set is not None:
-                self._change_set.record(str(fp), before_exists, current, content)
-        except Exception as e:
-            return f"Error: {e}"
-        from app.agent_base.tools.result import ToolResult, FileChange
-        result = ToolResult.success(f"Wrote {len(content)} bytes to {path} (sha256={_sha256_text(content)})")
-        if not before_exists or current != content:
-            result.changes.append(FileChange(
-                str(fp), "replace" if before_exists else "create",
-                _sha256_text(current) if before_exists else "", _sha256_text(content),
-            ))
-        return result
-
-    def to_openai_schema(self) -> dict:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path relative to the workspace."},
-                        "content": {"type": "string", "description": "Full text content to write."},
-                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents overwriting a concurrent edit."},
-                    },
-                    "required": ["path", "content"],
-                },
-            },
-        }
-
-
-class EditFileTool(AsyncTool):
-    """精确文本替换（只替换首次出现）。"""
-
-    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None):
-        super().__init__(
-            name="edit_file",
-            description=(
-                "Replace the first occurrence of old_text with new_text in a file. "
-                "Use this for known exact renames and small edits before trying bash. "
-                "It preserves the rest of the file; verify the replacement with read_file "
-                "or a focused test, and do not use Python or sed as an edit workaround."
-            ),
-        )
-        self._roots = _resolve_roots(source_dir, test_dir, design_dir)
-        self._change_set = change_set
-
-    async def _execute(self, params: dict) -> str:
-        return (await self.run_result(params)).text
-
-    async def _execute_result(self, params: dict):
-        path = params.get("path", "")
-        old_text = params.get("old_text", "")
-        new_text = params.get("new_text", "")
-        try:
-            fp = safe_path(path, self._roots, require_exist=True)
-        except ValueError as e:
-            return f"Error: {e}"
-        try:
-            text = fp.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return f"Error: file not found: {path}"
-        except Exception as e:
-            return f"Error: {e}"
-
-        expected = params.get("expected_sha256")
-        actual = _sha256_text(text)
-        if expected and actual.lower() != str(expected).lower():
-            return (f"Conflict: {path} changed since it was read; "
-                    f"expected sha256 {expected}, actual {actual}")
-        if old_text not in text:
-            return f"Error: text not found in {path}"
-        updated = text.replace(old_text, new_text, 1)
-        try:
-            _atomic_write_text(fp, updated)
-        except Exception as e:
-            return f"Error: {e}"
-        if self._change_set is not None:
-            self._change_set.record(str(fp), True, text, updated)
-        from app.agent_base.tools.result import ToolResult, FileChange
-        result = ToolResult.success(f"Edited {path} (sha256={_sha256_text(updated)})")
-        if text != updated:
-            result.changes.append(FileChange(str(fp), "replace", actual, _sha256_text(updated)))
-        return result
-
-    def to_openai_schema(self) -> dict:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path relative to the workspace."},
-                        "old_text": {"type": "string", "description": "Exact text to replace; copy it from the file rather than guessing."},
-                        "new_text": {"type": "string", "description": "Replacement text; keep the surrounding file content unchanged."},
-                        "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; prevents lost updates."},
-                    },
-                    "required": ["path", "old_text", "new_text"],
-                },
-            },
-        }
-
-
-class GlobTool(AsyncTool):
+class ListFilesTool(AsyncTool):
     """按 glob 模式在 workspace 内查找文件。"""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(
-            name="glob",
+            name="list_files",
             description=(
                 "Find files in the workspace matching a glob pattern "
                 "(e.g. '**/*.py', 'src/*.ts'). Returns relative paths."
@@ -443,20 +303,20 @@ class GlobTool(AsyncTool):
         }
 
 
-class BashTool(AsyncTool):
+class ShellTool(AsyncTool):
     """在 workspace 内跑 shell 命令（高危直接拒绝 + 敏感人工审核 + 超时守卫）。"""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  review_manager=None, progress=None,
-                 review_timeout: float = BASH_REVIEW_TIMEOUT,
-                 timeout: float = BASH_TIMEOUT,
-                 output_cap: int = BASH_OUTPUT_CAP,
+                 review_timeout: float = SHELL_REVIEW_TIMEOUT,
+                 timeout: float = SHELL_TIMEOUT,
+                 output_cap: int = SHELL_OUTPUT_CAP,
                  risk_policy: RiskPolicy | None = None,
                  command_executor: CommandExecutor | None = None,
                  workspace_root: str = ""):
         self._command_executor = command_executor or HostShellExecutor()
         super().__init__(
-            name="bash",
+            name="shell",
             description=self._command_executor.profile.tool_description,
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
@@ -489,11 +349,11 @@ class BashTool(AsyncTool):
             return f"Error: {cwd_error}"
 
         lowered = command.lower()
-        risk = self._risk_policy.evaluate("bash", {"command": command})
+        risk = self._risk_policy.evaluate("shell", {"command": command})
         if risk.action == "deny":
             logger.info("High-risk command denied: %s (matches %s)", command[:100], risk.pattern)
             return f"Error: command denied (high-risk, matches deny list: {risk.pattern})"
-        approval_scope = self._risk_policy.approval_scope("bash", {"command": command})
+        approval_scope = self._risk_policy.approval_scope("shell", {"command": command})
         if risk.action == "ask":
             verdict = await self._request_approval(command, risk, approval_scope)
             if verdict is not None:
@@ -591,7 +451,7 @@ class BashTool(AsyncTool):
         )
         matched_pattern = decision.pattern
         scope = approval_scope or self._risk_policy.approval_scope(
-            "bash", {"command": command},
+            "shell", {"command": command},
         )
         if self._review_manager is None or self._progress is None:
             logger.warning("🚫 敏感命令无审核通道，拒绝执行: %s", command[:100])
@@ -602,7 +462,7 @@ class BashTool(AsyncTool):
 
         title = "敏感命令请求审核"
         req = self._review_manager.submit(
-            review_type="bash_command",
+            review_type="shell_command",
             title=title,
             content=command,
             metadata={
@@ -618,7 +478,7 @@ class BashTool(AsyncTool):
         self._progress.emit({
             "event": "review",
             "review_id": req.id,
-            "review_type": "bash_command",
+            "review_type": "shell_command",
             "title": title,
             "content": command,
             "question": req.question,
@@ -632,7 +492,7 @@ class BashTool(AsyncTool):
             self._progress.emit({
                 "event": "review_timeout",
                 "review_id": req.id,
-                "review_type": "bash_command",
+                "review_type": "shell_command",
                 "title": title,
                 "timeout": self._review_timeout,
             })
@@ -650,7 +510,7 @@ class BashTool(AsyncTool):
 
         if decision == "accept":
             if not self._risk_policy.approval_is_valid(
-                "bash", {"command": command}, scope,
+                "shell", {"command": command}, scope,
             ):
                 return "Error: approval scope mismatch. Command NOT executed."
             logger.info("✅ 敏感命令已批准: %s", command[:100])
@@ -728,7 +588,7 @@ class SearchTextTool(GrepFileTool):
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
-        # ``create_file_system_tools`` receives the design directory rather
+        # The foundation factory receives the design directory rather
         # than the project file. Keep the inherited bounded scanner and add
         # the design root explicitly, without widening its path boundary.
         project_file = design_dir if os.path.isfile(design_dir) else ""
@@ -831,26 +691,3 @@ class SearchTextTool(GrepFileTool):
                 if name.lower().endswith(suffixes)
             )
         return sorted(files)
-
-
-def create_file_system_tools(source_dir: str = "", test_dir: str = "", design_dir: str = "",
-                             review_manager=None, progress=None, change_set=None,
-                             bash_timeout: float = BASH_TIMEOUT,
-                             bash_output_cap: int = BASH_OUTPUT_CAP,
-                             command_executor: CommandExecutor | None = None) -> list[Tool]:
-    """创建 A 层文件系统原语工具列表。
-
-    review_manager/progress：敏感命令人工审核通道（ReviewManager + ProgressRelay）。
-    不传则敏感命令 fail closed（拒绝执行），高危命令仍直接拒绝。
-    """
-    return [
-        ReadFileTool(source_dir, test_dir, design_dir, change_set=change_set),
-        WriteFileTool(source_dir, test_dir, design_dir, change_set=change_set),
-        EditFileTool(source_dir, test_dir, design_dir, change_set=change_set),
-        GlobTool(source_dir, test_dir, design_dir),
-        SearchTextTool(source_dir, test_dir, design_dir),
-        BashTool(source_dir, test_dir, design_dir,
-                 review_manager=review_manager, progress=progress,
-                 timeout=bash_timeout, output_cap=bash_output_cap,
-                 command_executor=command_executor),
-    ]

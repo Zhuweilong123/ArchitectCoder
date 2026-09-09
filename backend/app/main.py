@@ -33,7 +33,6 @@ from app.api.files import router as files_router
 from app.api.llm import router as llm_router
 from app.api.testhub import router as testhub_router
 from app.services.agent_chat_ws import router as agent_chat_router
-from app.api.optimize_v2 import router as optimize_v2_router
 from app.api.trace import router as trace_router
 from app.api.metrics import router as metrics_router
 from app.api.evals import router as evals_router
@@ -64,7 +63,6 @@ app.include_router(files_router)
 app.include_router(llm_router, dependencies=[Depends(require_auth)])
 app.include_router(testhub_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
-app.include_router(optimize_v2_router, dependencies=[Depends(require_auth)])  # optimize_uml v2
 app.include_router(trace_router, dependencies=[Depends(require_auth)])         # trace 浏览/读取
 app.include_router(metrics_router, dependencies=[Depends(require_auth)])        # Agent metrics
 app.include_router(evals_router, dependencies=[Depends(require_auth)])          # Evaluation MVP
@@ -106,4 +104,17 @@ if __name__ == "__main__":
     log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
     log_config["formatters"]["access"]["fmt"] = '%(asctime)s | %(client_addr)s - "%(request_line)s" %(status_code)s'
     log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=settings.debug, log_config=log_config)
+    # The Windows reloader can leave the supervisor holding port 8001 after
+    # the worker has failed to start.  That presents as a healthy listener to
+    # Vite while every request hangs or is refused.  Keep the normal launcher
+    # single-process and allow developers to opt into reload explicitly.
+    reload_enabled = os.getenv("UVICORN_RELOAD", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8001,
+        reload=reload_enabled,
+        log_config=log_config,
+    )

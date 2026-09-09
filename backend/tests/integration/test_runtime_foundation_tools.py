@@ -126,7 +126,7 @@ def test_execution_tools_advertise_disjoint_routing_contract(tmp_path):
     assert "run_program" in descriptions["shell"]
 
 
-def test_apply_changes_keeps_apply_patch_as_non_schema_compatibility_alias(tmp_path):
+def test_apply_changes_exposes_only_the_stable_contract(tmp_path):
     target = tmp_path / "main.py"
     target.write_text("value = 1\n", encoding="utf-8")
     tools = create_foundation_tools(str(tmp_path))
@@ -134,11 +134,11 @@ def test_apply_changes_keeps_apply_patch_as_non_schema_compatibility_alias(tmp_p
     for tool in tools:
         registry.register_tool(tool)
 
-    assert registry.get_tool("apply_patch") is registry.get_tool("apply_changes")
-    assert "apply_patch" not in registry.list_tools()
-    result = registry.execute_tool_with_params("apply_patch", {
-        "patches": [{
-            "path": "main.py", "old_text": "value = 1", "new_text": "value = 2",
+    assert registry.get_tool("apply_changes") is not None
+    assert registry.get_tool("apply_patch") is None
+    result = registry.execute_tool_with_params("apply_changes", {
+        "changes": [{
+            "op": "patch", "path": "main.py", "old_text": "value = 1", "new_text": "value = 2",
         }],
     })
     assert result.startswith("Applied changes:")
@@ -182,7 +182,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     assert "model.umlproj" in workspace_result
 
 
-def test_apply_patch_supports_create_and_exact_replace(tmp_path):
+def test_apply_changes_supports_create_and_exact_replace(tmp_path):
     source = tmp_path / "src"
     source.mkdir()
     (source / "main.py").write_text("value = 1\n", encoding="utf-8")
@@ -200,7 +200,7 @@ def test_apply_patch_supports_create_and_exact_replace(tmp_path):
     assert (source / "new.py").read_text(encoding="utf-8") == "print('ok')\n"
 
 
-def test_apply_patch_accumulates_multiple_patches_for_one_file(tmp_path):
+def test_apply_changes_accumulates_multiple_patches_for_one_file(tmp_path):
     source = tmp_path / "src"
     source.mkdir()
     target = source / "main.py"

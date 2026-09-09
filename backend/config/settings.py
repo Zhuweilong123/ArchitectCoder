@@ -38,23 +38,19 @@ class Settings(BaseSettings):
         description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
     )
 
-    # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
-    # consistency checks) need more than the old 12-round cap
-    agent_max_steps: int = 50
     agent_max_tool_calls: int = 100
-    agent_max_repeated_tool_calls: int = 3
     agent_max_run_seconds: int = 600
-    agent_max_total_tokens: int = 200000
+    agent_per_run_execution_budget_tokens: int = 200000
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
-    agent_convergence_tool_steps: int = 25
     agent_convergence_budget_ratio: float = 0.8
-    agent_convergence_keep_recent_steps: int = 3
+    agent_convergence_max_stalled_rounds: int = 3
+    agent_convergence_max_recovery_rounds: int = 2
+    agent_convergence_repeat_action_threshold: int = 3
     # Keep structured evidence for all tool calls in a normal run so context
     # compaction never falls back to raw, high-volume tool observations.
     agent_evidence_max_records: int = 128
-    agent_force_final_summary_on_step_limit: bool = True
     agent_final_summary_max_tokens: int = 3000
     agent_llm_timeout_seconds: int = 120
     # The configured model supports a 1M window.  Keep 128K as the default
@@ -65,7 +61,7 @@ class Settings(BaseSettings):
     agent_context_max_history_tokens: int = 88000
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
-    agent_context_max_react_steps: int = 24
+    agent_context_compaction_trigger_ratio: float = 0.75
 
     # Main-flow orchestration knobs. The planner is deliberately small and the
     # optional strategy worker is bounded so orchestration cannot consume the
@@ -74,10 +70,9 @@ class Settings(BaseSettings):
     # their JSON plan. Keep enough headroom to avoid empty/truncated plans.
     agent_planner_max_tokens: int = 3000
     agent_planner_timeout_seconds: float = 30.0
-    agent_explorer_max_steps: int = 6
     # Independent budget for a main-agent-managed subagent.  This budget is
-    # deliberately separate from the main agent's per-task 200k budget.
-    agent_subagent_max_total_tokens: int = 500000
+    # deliberately separate from the main agent's per-run execution budget.
+    agent_subagent_per_run_execution_budget_tokens: int = 500000
     # Main-agent-managed subagent entry point. The optional orchestration layer
     # remains independently controlled by agent_orchestration_enabled.
     agent_main_subagent_enabled: bool = True
@@ -122,7 +117,7 @@ class Settings(BaseSettings):
     agent_wsl_distribution: str = ""
     agent_wsl_executable: str = "wsl.exe"
     # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
-    # this separate from the much longer per-command timeout used by BashTool.
+    # this separate from the much longer per-command timeout used by ShellTool.
     agent_wsl_preflight_timeout_seconds: float = 20.0
 
     strict_production: bool = False

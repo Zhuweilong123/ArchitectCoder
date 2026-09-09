@@ -185,16 +185,17 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     """
     if case.metadata.get("capability") == "budget_control":
         return {
-            "max_steps": min(case.max_tool_calls, settings.agent_max_steps),
             "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
             "max_run_seconds": min(case.max_seconds, settings.agent_max_run_seconds),
-            "max_total_tokens": min(case.max_total_tokens, settings.agent_max_total_tokens),
+            "max_total_tokens": min(
+                case.max_total_tokens,
+                settings.agent_per_run_execution_budget_tokens,
+            ),
         }
     return {
-        "max_steps": settings.agent_max_steps,
         "max_tool_calls": settings.agent_max_tool_calls,
         "max_run_seconds": settings.agent_max_run_seconds,
-        "max_total_tokens": settings.agent_max_total_tokens,
+        "max_total_tokens": settings.agent_per_run_execution_budget_tokens,
     }
 
 
@@ -225,11 +226,6 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         task_scope=f"eval_{case.id}",
         auto_approve_reviews=True,
         **budget,
-        convergence_tool_steps=(
-            int(case.metadata["convergence_tool_steps"])
-            if case.metadata.get("convergence_tool_steps") is not None
-            else settings.agent_convergence_tool_steps
-        ),
     )
     agent._eval_prompt_builder = prompt_builder
     agent._eval_source_dir = str(source_dir)
@@ -242,8 +238,25 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
 
 
 class EvalRunner:
-    def __init__(self, results_path: str | Path | None = None):
+    def __init__(
+        self,
+        results_path: str | Path | None = None,
+        trace_dir: str | Path | None = None,
+    ):
+        """Create an evaluation runner with an isolated trace destination.
+
+        Official runs use the canonical evaluation results and trace folders.
+        A caller-supplied results path is typically a test or local harness;
+        keep its traces beside that results file so it cannot pollute the
+        repository's durable evaluation history.  ``trace_dir`` remains an
+        explicit override for callers that need a different layout.
+        """
         self.results_path = Path(results_path) if results_path else _default_results_path()
+        self.trace_dir = Path(trace_dir) if trace_dir else (
+            evaluation_traces_dir()
+            if results_path is None
+            else self.results_path.parent / "traces"
+        )
 
     async def run_case(
         self,
@@ -289,10 +302,9 @@ class EvalRunner:
             "turn_deadline_seconds": turn_deadline_seconds,
             "evaluation_deadline_seconds": evaluation_deadline_seconds,
             "production_budget": {
-                "max_steps": settings.agent_max_steps,
                 "max_tool_calls": settings.agent_max_tool_calls,
                 "max_run_seconds": settings.agent_max_run_seconds,
-                "max_total_tokens": settings.agent_max_total_tokens,
+                "max_total_tokens": settings.agent_per_run_execution_budget_tokens,
             },
             "case_tool_call_limit": case.max_tool_calls,
             "budget_control_case": case.metadata.get("capability") == "budget_control",
@@ -389,7 +401,7 @@ class EvalRunner:
                 async with TraceSession(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
-                    trace_dir=str(evaluation_traces_dir()),
+                    trace_dir=str(self.trace_dir),
                     env_snapshot={"eval_case": case.id},
                 ) as tracer:
                     result.trace_id = tracer.trace_id
@@ -597,7 +609,6 @@ class EvalRunner:
                             if production_agent:
                                 agent.max_total_tokens = production_budget["max_total_tokens"]
                                 agent.max_tool_calls = production_budget["max_tool_calls"]
-                                agent.max_steps = production_budget["max_steps"]
                                 agent.max_run_seconds = production_budget["max_run_seconds"]
                             active_turn.update({
                                 "turn": turn_index,

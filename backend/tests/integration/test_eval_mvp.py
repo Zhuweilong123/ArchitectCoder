@@ -102,10 +102,9 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
 
 def test_eval_agent_budget_defaults_to_production_settings():
     settings = SimpleNamespace(
-        agent_max_steps=50,
         agent_max_tool_calls=100,
         agent_max_run_seconds=600,
-        agent_max_total_tokens=200000,
+        agent_per_run_execution_budget_tokens=200000,
     )
     case = EvalCase(
         id="production-budget",
@@ -116,7 +115,6 @@ def test_eval_agent_budget_defaults_to_production_settings():
     )
 
     assert _agent_budget(case, settings) == {
-        "max_steps": 50,
         "max_tool_calls": 100,
         "max_run_seconds": 600,
         "max_total_tokens": 200000,
@@ -127,11 +125,9 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
     tmp_path, monkeypatch
 ):
     settings = SimpleNamespace(
-        agent_max_steps=50,
         agent_max_tool_calls=100,
         agent_max_run_seconds=600,
-        agent_max_total_tokens=200000,
-        agent_convergence_tool_steps=25,
+        agent_per_run_execution_budget_tokens=200000,
     )
     captured = {}
     fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))
@@ -158,10 +154,9 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
     agent = asyncio.run(dev_agent_factory(tmp_path, case))
 
     assert captured["user_message"] == case.prompt
-    assert captured["max_steps"] == settings.agent_max_steps
     assert captured["max_tool_calls"] == settings.agent_max_tool_calls
     assert captured["max_run_seconds"] == settings.agent_max_run_seconds
-    assert captured["max_total_tokens"] == settings.agent_max_total_tokens
+    assert captured["max_total_tokens"] == settings.agent_per_run_execution_budget_tokens
     assert not hasattr(agent, "_eval_context")
 
 

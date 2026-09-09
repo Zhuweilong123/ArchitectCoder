@@ -24,27 +24,27 @@ Usage::
     result = agent.run("你好！")
 """
 
-import asyncio
-import json
-import re
 import logging
-import time
 from typing import Optional, List, AsyncIterator
 
 from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
 from backend.config import AgentConfig
-from ..core.hooks import (
-    get_hooks, HookEvent, HookContext, get_runtime,
-    todo_plan_complete,
-)
+from ..core.hooks import get_runtime, todo_plan_complete
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
-from ..tools.result import ToolResult
-from ..evidence import EvidenceLedger
 from ..outcome import RunOutcome
+from ..core.policy import ExecutionBudget
 from app.services.context_manager import ContextBudgetManager
+from .react_runtime.react_types import ReActProgress
+from .react_runtime.react_parser import (
+    parse_action,
+    parse_action_input,
+    parse_output,
+)
+from .react_runtime.fc_loop import run_fc_loop
+from .react_runtime.text_loop import run_text_loop
 
 logger = logging.getLogger(__name__)
 
@@ -90,69 +90,6 @@ Now begin your reasoning and actions:
 """
 
 
-def _remove_textual_tool_markup(content: str) -> tuple[str, bool]:
-    """Remove provider-specific pseudo tool calls from a tool-free response."""
-    text = str(content or "")
-    patterns = (
-        r"<[^>]*tool_calls[^>]*>.*?</[^>]*tool_calls[^>]*>",
-        r"<[^>]*invoke\b[^>]*>.*?</[^>]*invoke[^>]*>",
-    )
-    removed = False
-    for pattern in patterns:
-        text, count = re.subn(pattern, "", text, flags=re.IGNORECASE | re.DOTALL)
-        removed = removed or bool(count)
-    return text.strip(), removed
-
-# ── 流式 progress 中的 step 数据类 ──────────────────────
-
-class ReActProgress:
-    """单轮 ReAct 进度快照，通过 ``arun_stream()`` yield 给上层。
-
-    Attributes:
-        step: 当前轮次（1-based）
-        actions: 本轮调用的工具名列表
-        tool_calls_detail: ``[{name, arguments, observation}]`` 详情
-        thought: LLM 文本内容（工具调用以外的思考部分）
-        is_final: 是否为本轮后终止
-        final_answer: 若 is_final 为 True，则为最终答案
-    """
-
-    __slots__ = (
-        "step", "actions", "tool_calls_detail", "thought",
-        "is_final", "final_answer",
-        "outcome",
-    )
-
-    def __init__(
-        self,
-        step: int,
-        actions: list[str] | None = None,
-        tool_calls_detail: list[dict] | None = None,
-        thought: str = "",
-        is_final: bool = False,
-        final_answer: str = "",
-        outcome: RunOutcome | None = None,
-    ):
-        self.step = step
-        self.actions = actions or []
-        self.tool_calls_detail = tool_calls_detail or []
-        self.thought = thought
-        self.is_final = is_final
-        self.final_answer = final_answer
-        self.outcome = outcome
-
-    def to_dict(self) -> dict:
-        return {
-            "step": self.step,
-            "actions": self.actions,
-            "tool_calls_detail": self.tool_calls_detail,
-            "thought": self.thought[:500],
-            "is_final": self.is_final,
-            "final_answer": self.final_answer,
-            "outcome": self.outcome.to_dict() if self.outcome else None,
-        }
-
-
 class ReActAgent(Agent):
     """ReAct (Reasoning + Acting) Agent
 
@@ -162,7 +99,7 @@ class ReActAgent(Agent):
     5. 观察结果 → 回到 1 或返回最终答案
 
     Attributes:
-        max_steps: 最大循环步数，防止无限循环
+        max_steps: 兼容旧调用的参数；不再作为执行终止条件
         use_native_fc: 是否使用原生 Function Calling（默认 True）
         custom_prompt: 自定义提示词模板（仅文本模式使用）
     """
@@ -178,38 +115,50 @@ class ReActAgent(Agent):
         use_native_fc: bool = True,
         custom_prompt: Optional[str] = None,
         max_tool_calls: int = 100,
-        max_repeated_tool_calls: int = 3,
         max_run_seconds: float = 600.0,
         max_total_tokens: int = 200000,
         token_finalization_reserve_tokens: int = 12000,
-        convergence_tool_steps: int = 25,
         convergence_budget_ratio: float = 0.8,
-        convergence_keep_recent_steps: int = 3,
+        convergence_max_stalled_rounds: int = 3,
+        convergence_max_recovery_rounds: int = 2,
+        convergence_repeat_action_threshold: int = 3,
         evidence_max_records: int = 128,
+        # Deprecated compatibility argument; open-ended loops do not use it.
         force_final_summary_on_step_limit: bool = True,
         final_summary_max_tokens: int = 3000,
         llm_timeout_seconds: float = 120.0,
         context_budget: ContextBudgetManager | None = None,
+        execution_budget: ExecutionBudget | None = None,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
+        # Kept as a backwards-compatible constructor argument only. Both
+        # execution paths use an open-ended loop and rely on resource budgets
+        # plus the convergence controller for termination.
         self.max_steps = max_steps
         self.use_native_fc = use_native_fc
         self.current_history: List[str] = []
         self.prompt_template = custom_prompt or REACT_PROMPT
+        self.execution_budget = execution_budget
         self.max_tool_calls = max(1, max_tool_calls)
-        self.max_repeated_tool_calls = max(1, max_repeated_tool_calls)
         self.max_run_seconds = max(1.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.token_finalization_reserve_tokens = min(
             max(1, token_finalization_reserve_tokens),
             max(1, self.max_total_tokens - 1),
         )
-        self.convergence_tool_steps = max(1, convergence_tool_steps)
+        if self.execution_budget is not None:
+            self.max_tool_calls = self.execution_budget.max_tool_calls
+            self.max_run_seconds = self.execution_budget.max_run_seconds
+            self.max_total_tokens = self.execution_budget.max_total_tokens
+            self.token_finalization_reserve_tokens = (
+                self.execution_budget.token_finalization_reserve_tokens
+            )
         self.convergence_budget_ratio = min(1.0, max(0.0, float(convergence_budget_ratio)))
-        self.convergence_keep_recent_steps = max(1, convergence_keep_recent_steps)
+        self.convergence_max_stalled_rounds = max(1, convergence_max_stalled_rounds)
+        self.convergence_max_recovery_rounds = max(1, convergence_max_recovery_rounds)
+        self.convergence_repeat_action_threshold = max(2, convergence_repeat_action_threshold)
         self.evidence_max_records = max(self.max_tool_calls, evidence_max_records)
-        self.force_final_summary_on_step_limit = force_final_summary_on_step_limit
         self.final_summary_max_tokens = max(1, final_summary_max_tokens)
         self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
         self.context_budget = context_budget or ContextBudgetManager()
@@ -222,8 +171,8 @@ class ReActAgent(Agent):
         self.last_run_checkpoint: dict = {}
         self.on_context_compacted = None
         logger.info(
-            "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
-            name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
+            "✅ %s 初始化完成，开放循环模式，FC模式: %s",
+            name, "启用" if use_native_fc else "禁用（文本解析）",
         )
 
     def restore_history(self, messages: list[dict]) -> None:
@@ -301,64 +250,8 @@ class ReActAgent(Agent):
             yield ReActProgress(step=1, is_final=True, final_answer=result)
 
     def run(self, input_text: str, **kwargs) -> str:
-        """同步运行 ReAct 循环（文本解析模式，向后兼容）。
-
-        使用 Thought:/Action: 正则解析。保留给不支持 FC 的模型。
-        """
-        self.current_history = []
-        current_step = 0
-
-        logger.info("\n🤖 %s 开始处理问题: %s", self.name, input_text)
-
-        while current_step < self.max_steps:
-            current_step += 1
-            logger.info("\n--- 第 %d 步 ---", current_step)
-
-            # 1. 构建提示词
-            tools_desc = self.tool_registry.get_tools_description()
-            history_str = "\n".join(self.current_history)
-            prompt = self.prompt_template.format(
-                tools=tools_desc,
-                question=input_text,
-                history=history_str,
-            )
-
-            # 2. 调用 LLM
-            messages = [{"role": "user", "content": prompt}]
-            response_text = self.llm.invoke(messages, **kwargs)
-
-            # 3. 解析输出
-            thought, action = self._parse_output(response_text)
-            logger.info("  Thought: %s", thought[:100] if thought else "无")
-            if action:
-                logger.info("  Action: %s", action)
-
-            # 4. 检查是否完成
-            if action and action.startswith("Finish"):
-                final_answer = self._parse_action_input(action)
-                self._record_turn(input_text, final_answer)
-                logger.info("🏁 %s 完成", self.name)
-                return final_answer
-
-            # 5. 执行工具调用
-            if action:
-                tool_name, tool_input = self._parse_action(action)
-                if tool_name:
-                    observation = self.tool_registry.execute_tool(tool_name, tool_input)
-                    self.current_history.append(f"Step {current_step}: Action: {action}")
-                    self.current_history.append(f"Step {current_step}: Observation: {observation}")
-                    logger.info("  Observation: %s", observation[:100])
-                else:
-                    self.current_history.append(f"Step {current_step}: 无效的Action格式")
-            else:
-                self.current_history.append(f"Step {current_step}: 未解析到Action")
-
-        # 达到最大步数
-        final_answer = "抱歉，我无法在限定步数内完成这个任务。"
-        self._record_turn(input_text, final_answer)
-        logger.warning("⚠️ %s 达到最大步数 %d", self.name, self.max_steps)
-        return final_answer
-
+        """同步运行向后兼容的文本 ReAct 循环。"""
+        return run_text_loop(self, input_text, **kwargs)
     # ═══════════════════════════════════════════════════════
     # Function Calling 核心
     # ═══════════════════════════════════════════════════════
@@ -375,7 +268,7 @@ class ReActAgent(Agent):
             if progress.is_final:
                 final_answer = progress.final_answer
         if not final_answer:
-            final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
+            final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
     def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
@@ -396,787 +289,18 @@ class ReActAgent(Agent):
     async def _arun_with_fc_stream(
         self, input_text: str, context: str = "", **kwargs
     ) -> AsyncIterator[ReActProgress]:
-        """原生 Function Calling 驱动的流式主循环。
-
-        每轮 yield :class:`ReActProgress` — 包含步骤号、工具调用详情、
-        思考内容、是否为最终轮。
-
-        流程:
-        1. 构建 messages（system + user）
-        2. 调用 llm.ainvoke_with_tools(tool_specs)
-        3. 遍历 tool_calls → 全部执行（支持多工具并行）
-        4. yield ReActProgress → 追加 assistant + tool 消息
-        5. 重复直到模型返回纯文本或达到 max_steps
-        """
-        from app.trace.tracing import trace_span
-
-        allowed_tools = kwargs.pop("allowed_tools", None)
-        initial_token_usage = max(0, int(kwargs.pop("initial_token_usage", 0) or 0))
-        allowed_set = set(allowed_tools) if allowed_tools is not None else None
-        # Preserve caller-provided tool order for stable schemas/cache keys;
-        # use a set only for membership checks below. This is unrelated to
-        # model selection, which is fixed for the session.
-        full_tool_specs = (
-            self.tool_registry.get_openai_specs_for(allowed_tools)
-            if allowed_tools is not None else self.tool_registry.get_openai_specs()
-        )
-        compact_tool_specs = (
-            self.tool_registry.get_openai_specs_for(allowed_tools, compact=True)
-            if allowed_tools is not None else self.tool_registry.get_openai_specs(compact=True)
-        )
-        compacted = self.context_budget.prepare_history(
-            self._history, self._history_summary,
-        )
-        self._history_summary = compacted.summary
-        built = self.context_budget.build_messages(
-            self._build_fc_system_prompt(),
-            compacted.messages,
-            input_text,
-            context=context,
-            history_summary=self._history_summary,
-            tools=full_tool_specs,
-        )
-        messages = built.messages
-        current_user_index = built.current_user_index
-        self.last_context_report = built.to_dict()
-        self.last_context_report["token_budget_stop_reason"] = "model_answer"
-        self._run_verifications = {}
-        self.last_context_report.update({
-            "compacted_messages": compacted.dropped_messages,
-            "compacted_tokens": compacted.dropped_tokens,
-            "convergence_policy": {
-                "tool_steps": self.convergence_tool_steps,
-                "budget_ratio": self.convergence_budget_ratio,
-                "keep_recent_steps": self.convergence_keep_recent_steps,
-                "evidence_max_records": self.evidence_max_records,
-                "force_final_summary_on_step_limit": self.force_final_summary_on_step_limit,
-                "final_summary_max_tokens": self.final_summary_max_tokens,
-            },
-        })
-        if compacted.dropped_messages and self.on_context_compacted:
-            self.on_context_compacted({
-                "summary": compacted.summary,
-                "dropped_messages": compacted.dropped_messages,
-                "dropped_tokens": compacted.dropped_tokens,
-            })
-
-        self.current_history = []
-        no_tool_call_streak = 0
-        _turn_recorded = False
-        tool_call_count = 0
-        started_at = time.monotonic()
-        # Planning and read-only exploration happen immediately before this
-        # loop. Count their measured usage against the same task budget so a
-        # worker cannot silently extend the run beyond max_total_tokens.
-        total_tokens = initial_token_usage
-        soft_budget_notified = False
-        convergence_compaction_active = False
-        convergence_directive_added = False
-        last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
-        ended_by_model_answer = False
-        evidence_ledger = EvidenceLedger(max_records=self.evidence_max_records)
-        self.last_evidence_summary = []
-
-        get_hooks().trigger(
-            HookEvent.RUN_START,
-            HookContext(event=HookEvent.RUN_START, agent_name=self.name),
-        )
-        try:
-            for step in range(1, self.max_steps + 1):
-                if total_tokens >= self.max_total_tokens:
-                    final_answer = (
-                        f"已达到 token 预算（{self.max_total_tokens}），"
-                        "已停止发起新的模型调用。"
-                    )
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_stop_reason": "hard_limit_before_next_llm",
-                    })
-                    self._record_turn(input_text, final_answer)
-                    yield self._final_progress(total_tokens=total_tokens,
-                        step=step, thought=final_answer,
-                        is_final=True, final_answer=final_answer,
-                    )
-                    return
-
-                remaining_tokens = self.max_total_tokens - total_tokens
-                finalization_mode = remaining_tokens <= self.token_finalization_reserve_tokens
-                active_tool_specs = [] if finalization_mode else (
-                    compact_tool_specs if tool_call_count else full_tool_specs
-                )
-                if finalization_mode:
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "## Budget finalization\n"
-                            "Do not call tools. Provide the final user-facing answer now, using only "
-                            "completed tool evidence. Clearly distinguish completed changes and verification "
-                            "from anything still unverified or incomplete."
-                        ),
-                    })
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_remaining": remaining_tokens,
-                        "token_budget_finalization_mode": True,
-                    })
-                convergence_reasons = []
-                if tool_call_count >= self.convergence_tool_steps:
-                    convergence_reasons.append("tool_call_count")
-                if total_tokens >= self.max_total_tokens * self.convergence_budget_ratio:
-                    convergence_reasons.append("token_budget_ratio")
-                if convergence_reasons:
-                    convergence_compaction_active = True
-                retained_react_steps = (
-                    self.convergence_keep_recent_steps
-                    if convergence_compaction_active
-                    else self.context_budget.budget.max_react_steps
-                )
-                prior_call_ids = [
-                    str(message.get("tool_call_id") or "")
-                    for message in messages
-                    if message.get("role") == "tool" and message.get("tool_call_id")
-                ]
-                messages, current_user_index, compacted_steps, compacted_tokens = self.context_budget.compact_react_steps(
-                    messages,
-                    current_user_index=current_user_index,
-                    max_steps=min(
-                        retained_react_steps,
-                        self.context_budget.budget.max_history_turns,
-                    ),
-                    evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
-                )
-                if compacted_steps:
-                    self.last_context_report["react_compacted_steps"] = (
-                        self.last_context_report.get("react_compacted_steps", 0) + compacted_steps
-                    )
-                    self.last_context_report["react_compacted_tokens"] = (
-                        self.last_context_report.get("react_compacted_tokens", 0) + compacted_tokens
-                    )
-                    if convergence_compaction_active:
-                        self.last_context_report["convergence_evidence_compaction"] = {
-                            "triggered_by": convergence_reasons,
-                            "triggered_at_tool_calls": tool_call_count,
-                            "token_budget_used": total_tokens,
-                            "keep_recent_steps": retained_react_steps,
-                        }
-                    if self.on_context_compacted:
-                        checkpoint = next(
-                            (
-                                str(message.get("content") or "")
-                                for message in messages
-                                if message.get("role") == "system"
-                                and str(message.get("content") or "").startswith("## Tool execution checkpoint")
-                            ),
-                            "Tool execution steps compacted.",
-                        )
-                        self.on_context_compacted({
-                            "summary": checkpoint,
-                            "dropped_messages": compacted_steps,
-                            "dropped_tokens": compacted_tokens,
-                            "reason": (
-                                "convergence" if convergence_compaction_active
-                                else "history_limit"
-                            ),
-                            "triggered_by": convergence_reasons,
-                            "tool_call_count": tool_call_count,
-                            "token_budget_used": total_tokens,
-                            "keep_recent_steps": retained_react_steps,
-                        })
-                if convergence_reasons and not convergence_directive_added:
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "## Convergence checkpoint\n"
-                            "The productive exploration threshold has been reached. Stop broad discovery now. "
-                            "If the requested change is not applied, make the smallest scoped edit next; "
-                            "if it is applied, run the focused existing verification next; for analysis-only "
-                            "requests, provide the evidence-based answer now. Do not reread files or repeat "
-                            "searches already covered by the evidence unless a specific missing range is required. "
-                            "After that minimum action, finish with a concise status and remaining uncertainty."
-                        ),
-                    })
-                    convergence_directive_added = True
-                    self.last_context_report["convergence_directive_added"] = {
-                        "triggered_by": convergence_reasons,
-                        "triggered_at_tool_calls": tool_call_count,
-                        "token_budget_used": total_tokens,
-                    }
-                messages, dropped = self.context_budget.fit_messages(
-                    messages,
-                    tools=active_tool_specs,
-                    current_user_index=current_user_index,
-                )
-                if dropped:
-                    self.last_context_report["loop_dropped_messages"] = (
-                        self.last_context_report.get("loop_dropped_messages", 0) + dropped
-                    )
-                logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
-                if time.monotonic() - started_at >= self.max_run_seconds:
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_stop_reason": "time_limit",
-                    })
-                    final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
-                    self._record_turn(input_text, final_answer)
-                    yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
-                                        is_final=True, final_answer=final_answer)
-                    return
-
-                # 1. 调用 LLM（带工具 schemas）
-                get_hooks().trigger(
-                    HookEvent.LLM_BEFORE,
-                    HookContext(event=HookEvent.LLM_BEFORE, agent_name=self.name,
-                                messages=messages),
-                )
-                with trace_span(f"{self.name}"):
-                    try:
-                        response = await asyncio.wait_for(
-                            self.llm.ainvoke_with_tools(
-                                messages=messages,
-                                tools=active_tool_specs,
-                                tool_choice="none" if finalization_mode else "auto",
-                                temperature=kwargs.get("temperature", 0.3),
-                            ),
-                            timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
-                        )
-                    except asyncio.TimeoutError:
-                        self.last_context_report.update({
-                            "token_budget_used": total_tokens,
-                            "token_budget_stop_reason": "llm_timeout",
-                        })
-                        final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
-                        self._record_turn(input_text, final_answer)
-                        yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
-                                            is_final=True, final_answer=final_answer)
-                        return
-                get_hooks().trigger(
-                    HookEvent.LLM_AFTER,
-                    HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
-                                messages=messages, llm_response=response),
-                )
-
-                tool_calls = response.get("tool_calls")
-                content = response.get("content") or ""
-                usage = response.get("usage") or {}
-                if isinstance(usage, dict):
-                    total_tokens += int(usage.get("total_tokens") or 0)
-                # A finalization request is deliberately tool-free.  Protect
-                # against non-conforming test doubles/providers returning a
-                # tool call despite tool_choice='none'.
-                textual_tool_markup = False
-                if finalization_mode:
-                    tool_calls = None
-                    content, textual_tool_markup = _remove_textual_tool_markup(content)
-                if not soft_budget_notified and total_tokens >= self.max_total_tokens * self.convergence_budget_ratio:
-                    soft_budget_notified = True
-                    self.last_context_report["soft_budget_reached_tokens"] = total_tokens
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "## Token budget warning\n"
-                            f"The run has used at least {self.convergence_budget_ratio:.0%} of its token budget. "
-                            "Stop broad discovery, "
-                            "do not repeat failed exploration, and use only the minimum remaining "
-                            "actions needed to edit, verify, or accurately report partial completion."
-                        ),
-                    })
-
-                # 2. 无 tool_calls → 纯文本回复
-                if not tool_calls:
-                    no_tool_call_streak += 1
-                    self.current_history.append(
-                        f"Step {step}: 模型返回纯文本 ({len(content)} 字符)"
-                    )
-                    logger.info("  → 无工具调用，streak=%d，内容预览: %s",
-                               no_tool_call_streak, content[:120])
-
-                    messages.append({"role": "assistant", "content": content})
-
-                    # 模型本轮直接给出实质回复（未调用工具）→ 这就是最终答案。
-                    # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
-                    # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
-                    if content.strip():
-                        if finalization_mode:
-                            if textual_tool_markup:
-                                content = (
-                                    "预算收尾阶段已停止工具调用；模型尝试发起的文本工具调用未执行。"
-                                    f"当前进展：{content}"
-                                )
-                            self.last_context_report.update({
-                                "token_budget_used": total_tokens,
-                                "token_budget_stop_reason": "reserve_finalization",
-                                "finalization_textual_tool_markup_blocked": textual_tool_markup,
-                            })
-                            if not _turn_recorded:
-                                self._record_turn(input_text, content)
-                                _turn_recorded = True
-                            yield self._final_progress(total_tokens=total_tokens,
-                                step=step, thought=content,
-                                is_final=True, final_answer=content,
-                            )
-                            return
-                        # Planning mode is opt-in and only closes after its
-                        # observable acceptance contract has been satisfied.
-                        if not todo_plan_complete(get_runtime()):
-                            gate_message = (
-                                "<planning-gate>Do not finish yet. Create or update the task "
-                                "todo list and complete every item. If this is an acceptance-driven "
-                                "plan, complete its verification item only after checking its "
-                                "criterion.</planning-gate>"
-                            )
-                            if step == self.max_steps:
-                                # Preserve the productive-step contract: the
-                                # last work response is not itself the final
-                                # delivery when the todo gate is still open.
-                                # Fall through to the single, tool-free
-                                # final-summary request below instead.
-                                if self.force_final_summary_on_step_limit:
-                                    break
-                                self.last_context_report["token_budget_stop_reason"] = "incomplete_plan"
-                                final_answer = (
-                                    "Task is not complete: the required todo plan still has unfinished "
-                                    "work or verification."
-                                )
-                                self._record_turn(input_text, final_answer)
-                                _turn_recorded = True
-                                yield self._final_progress(total_tokens=total_tokens,
-                                    step=step, thought=content,
-                                    is_final=True, final_answer=final_answer,
-                                )
-                                return
-                            messages.append({"role": "user", "content": gate_message})
-                            yield ReActProgress(
-                                step=step, thought=content, actions=[], is_final=False,
-                            )
-                            continue
-                        logger.info("🏁 %s FC 完成（模型直接回复）", self.name)
-                        # 必须在 yield 之前写入历史：流式消费方（_handle_dev）在收到
-                        # is_final=True 后立即 return 并关闭生成器，yield 之后的代码
-                        # 不会再执行，若把 add_message 放在生成器末尾会永远丢历史。
-                        if not _turn_recorded:
-                            self._record_turn(input_text, content)
-                            _turn_recorded = True
-                        ended_by_model_answer = True
-                        yield self._final_progress(total_tokens=total_tokens,
-                            step=step, thought=content,
-                            is_final=True, final_answer=content,
-                        )
-                        break
-
-                    # 空内容：提示模型使用工具
-                    if finalization_mode:
-                        final_answer = (
-                            "Token 预算即将耗尽，且未能生成最终交付说明。"
-                            "已停止发起新的工具调用。"
-                        )
-                        self.last_context_report.update({
-                            "token_budget_used": total_tokens,
-                            "token_budget_stop_reason": "reserve_finalization_empty_response",
-                            "finalization_textual_tool_markup_blocked": textual_tool_markup,
-                        })
-                        self._record_turn(input_text, final_answer)
-                        yield self._final_progress(total_tokens=total_tokens,
-                            step=step, thought=final_answer,
-                            is_final=True, final_answer=final_answer,
-                        )
-                        return
-                    if step == 1:
-                        messages.append({
-                            "role": "user",
-                            "content": "Please call appropriate tools to answer the question. "
-                                       "If you need more information, you may call tools multiple times.",
-                        })
-                        yield ReActProgress(
-                            step=step, thought="(empty)", actions=[],
-                            is_final=False,
-                        )
-                    else:
-                        yield ReActProgress(
-                            step=step, thought=content, actions=[],
-                            is_final=False,
-                        )
-                    continue
-
-                # 3. 有 tool_calls → 全部执行
-                no_tool_call_streak = 0
-                tool_results: list[dict] = []
-                actions: list[str] = []
-                details: list[dict] = []
-
-                parsed_calls: list[tuple[dict, str, dict, str | None]] = []
-                for tc in tool_calls:
-                    fn = tc["function"]
-                    tool_name = fn["name"]
-                    try:
-                        tool_args = json.loads(fn["arguments"])
-                    except json.JSONDecodeError:
-                        err_obs = (
-                            f"Invalid JSON arguments for '{tool_name}'. "
-                            f"Raw: {fn.get('arguments', '')[:200]}. Please re-send with valid JSON."
-                        )
-                        parsed_calls.append((tc, tool_name, fn.get("arguments", ""), err_obs))
-                        continue
-
-                    blocked: str | None = None
-                    if allowed_set is not None and tool_name not in allowed_set:
-                        blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
-                                   f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
-                    elif tool_call_count >= self.max_tool_calls:
-                        self.last_context_report["token_budget_stop_reason"] = "tool_call_limit"
-                        blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
-                                   "Stop calling tools and summarize the result.")
-                    else:
-                        tool_call_count += 1
-                    parsed_calls.append((tc, tool_name, tool_args, blocked))
-
-                async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
-                    if blocked is not None:
-                        return blocked, blocked, ToolResult(status="blocked", data=blocked,
-                                                            error_code="POLICY_BLOCKED"), 0.0
-                    # Check the planning gate immediately before execution.
-                    # A preceding todo_write in the same response can therefore
-                    # establish the plan before business tools run.
-                    if (get_runtime().requires_todo_plan
-                            and not get_runtime().todos
-                            and tool_name != "todo_write"):
-                        blocked = ("Task planning is required before other tools. "
-                                   "Call todo_write first with the task checklist.")
-                        return blocked, blocked, ToolResult(
-                            status="blocked", data=blocked, error_code="POLICY_BLOCKED",
-                        ), 0.0
-                    veto = get_hooks().trigger(
-                        HookEvent.TOOL_BEFORE,
-                        HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args,
-                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
-                    )
-                    if veto is not None:
-                        return veto, veto, ToolResult(status="blocked", data=veto,
-                                                      error_code="HOOK_VETO"), 0.0
-                    with trace_span(f"{self.name}/{tool_name}"):
-                        started_tool = time.monotonic()
-                        result = await self.tool_registry.aexecute_tool_result_with_params(
-                            tool_name, tool_args,
-                        )
-                    duration_ms = (time.monotonic() - started_tool) * 1000
-                    try:
-                        from app.services.agent_metrics import get_agent_metrics
-                        get_agent_metrics().record_tool(
-                            tool_name, result.status,
-                            duration_ms,
-                        )
-                    except Exception:
-                        pass
-                    observation_full = result.text
-                    fed = get_hooks().trigger(
-                        HookEvent.TOOL_AFTER,
-                        HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args,
-                                    tool_output=observation_full,
-                                    tool_status=result.status,
-                                    error_code=result.error_code,
-                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
-                    )
-                    return (
-                        observation_full,
-                        fed if fed is not None else observation_full,
-                        result,
-                        duration_ms,
-                    )
-
-                executable = [item for item in parsed_calls if item[3] is None]
-                parallel = len(executable) > 1 and all(
-                    self.tool_registry.can_parallel(item[1]) for item in executable
-                )
-                if parallel:
-                    executions = await asyncio.gather(*(
-                        _execute_one(item[1], item[2], item[3]) for item in parsed_calls
-                    ))
-                else:
-                    executions = []
-                    for item in parsed_calls:
-                        executions.append(await _execute_one(item[1], item[2], item[3]))
-
-                for item, execution in zip(parsed_calls, executions):
-                    tc, tool_name, tool_args, blocked = item
-                    if blocked is not None and isinstance(tool_args, str):
-                        observation_full = observation_fed = blocked
-                        result = ToolResult(status="blocked", data=blocked,
-                                             error_code="INVALID_ARGUMENTS")
-                        duration_ms = 0.0
-                    else:
-                        observation_full, observation_fed, result, duration_ms = execution
-                    if isinstance(tool_args, str):
-                        observation_full = observation_fed = execution[0]
-                    if result.verification is not None:
-                        check = result.verification
-                        self._run_verifications[(check.kind, check.scope)] = check.passed
-                    evidence = evidence_ledger.record(
-                        call_id=str(tc.get("id") or ""), tool_name=tool_name,
-                        arguments=tool_args if isinstance(tool_args, dict) else {},
-                        observation=observation_full, status=result.status,
-                        error_code=result.error_code, effects=result.effects(),
-                    )
-                    self.last_evidence_summary.append(evidence.to_dict())
-                    # Keep the public diagnostic surface bounded just like
-                    # the in-run ledger. Full evidence remains in ChatTrace.
-                    self.last_evidence_summary = self.last_evidence_summary[-32:]
-                    self.current_history.append(
-                        f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
-                        f" → {observation_fed[:150]}"
-                    )
-                    tool_results.append({"tool_call_id": tc["id"], "content": observation_fed})
-                    actions.append(tool_name)
-                    details.append({
-                        "name": tool_name,
-                        "arguments": tool_args,
-                        "observation": observation_full,
-                        "fed_truncated": observation_full != observation_fed,
-                        "fed_length": len(observation_fed),
-                        "status": result.status,
-                        "error_code": result.error_code,
-                        "retryable": result.retryable,
-                        "duration_ms": round(duration_ms, 1),
-                        "evidence": evidence.to_dict(),
-                        **result.effects(),
-                    })
-                    logger.info("  🔧 %s(%s) → %s", tool_name,
-                                json.dumps(tool_args, ensure_ascii=False)[:80],
-                                observation_fed[:80])
-
-                # 4. 追加 assistant + tool 消息到对话
-                messages.append({
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": tool_calls,
-                })
-                for tr in tool_results:
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tr["tool_call_id"],
-                        "content": tr["content"],
-                    })
-
-                failed_tools = tuple(sorted(
-                    (
-                        str(detail.get("name") or "tool"),
-                        str(detail.get("error_code") or "TOOL_ERROR"),
-                    )
-                    for detail in details
-                    if detail.get("status") != "success"
-                ))
-                if failed_tools and failed_tools != last_failure_directive_signature:
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "## Recovery checkpoint\n"
-                            "The previous tool round reported a failure "
-                            f"({', '.join(name + ':' + code for name, code in failed_tools)}). "
-                            "Treat the failure output as primary evidence. Do not repeat the same "
-                            "call or resume broad discovery. For a repair task, inspect only the "
-                            "reported target, apply the smallest corrective change, and run the "
-                            "focused existing verification immediately. For an analysis-only task, "
-                            "use a different read or report the limitation. After recovery, finish "
-                            "with the verified result and remaining uncertainty."
-                        ),
-                    })
-                    last_failure_directive_signature = failed_tools
-
-                # This response was already paid for and its tools were
-                # selected before the hard limit was observed.  Execute them
-                # under their normal safety policies, then prevent any new
-                # model call instead of silently discarding the evidence.
-                if total_tokens >= self.max_total_tokens:
-                    final_answer = (
-                        f"已达到 token 预算（{self.max_total_tokens}）。"
-                        "已执行本轮已返回的工具调用，但不会再发起新的模型调用。"
-                    )
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_stop_reason": "hard_limit_after_current_tools",
-                    })
-                    self._record_turn(input_text, final_answer)
-                    _turn_recorded = True
-                    yield self._final_progress(total_tokens=total_tokens,
-                        step=step, actions=actions, tool_calls_detail=details,
-                        thought=final_answer, is_final=True, final_answer=final_answer,
-                    )
-                    return
-
-                yield ReActProgress(
-                    step=step,
-                    actions=actions,
-                    tool_calls_detail=details,
-                    thought=content,
-                    is_final=False,
-                )
-
-            # ── 最终处理 — 从 messages 中提取最后一条 assistant 内容 ──
-            if not ended_by_model_answer and self.force_final_summary_on_step_limit:
-                todo_contract_incomplete = not todo_plan_complete(get_runtime())
-                prior_call_ids = [
-                    str(message.get("tool_call_id") or "")
-                    for message in messages
-                    if message.get("role") == "tool" and message.get("tool_call_id")
-                ]
-                messages, current_user_index, compacted_steps, compacted_tokens = self.context_budget.compact_react_steps(
-                    messages,
-                    current_user_index=current_user_index,
-                    max_steps=min(
-                        self.convergence_keep_recent_steps,
-                        self.context_budget.budget.max_history_turns,
-                    ),
-                    evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
-                )
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "## Required final delivery\n"
-                        "The productive tool-step limit has been reached. Do not call tools. "
-                        "Give the user a concise final report using only the evidence above. "
-                        "Clearly separate completed changes, completed verification, remaining work, "
-                        "and any uncertainty; never claim unperformed verification."
-                        + (
-                            " The required todo/acceptance contract remains incomplete: explicitly "
-                            "state that the task is not complete and identify it as remaining work."
-                            if todo_contract_incomplete else ""
-                        )
-                    ),
-                })
-                messages, dropped = self.context_budget.fit_messages(
-                    messages, tools=[], current_user_index=current_user_index,
-                )
-                self.last_context_report.update({
-                    "step_limit_finalization": True,
-                    "step_limit_compacted_steps": compacted_steps,
-                    "step_limit_compacted_tokens": compacted_tokens,
-                    "step_limit_dropped_messages": dropped,
-                })
-                summary_timed_out = False
-                try:
-                    get_hooks().trigger(
-                        HookEvent.LLM_BEFORE,
-                        HookContext(event=HookEvent.LLM_BEFORE, agent_name=self.name, messages=messages),
-                    )
-                    with trace_span(f"{self.name}/final_summary"):
-                        response = await asyncio.wait_for(
-                            self.llm.ainvoke_with_tools(
-                                messages=messages,
-                                tools=[],
-                                tool_choice="none",
-                                temperature=kwargs.get("temperature", 0.3),
-                                max_tokens=self.final_summary_max_tokens,
-                            ),
-                            timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
-                        )
-                    get_hooks().trigger(
-                        HookEvent.LLM_AFTER,
-                        HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
-                                    messages=messages, llm_response=response),
-                    )
-                    usage = response.get("usage") or {}
-                    if isinstance(usage, dict):
-                        total_tokens += int(usage.get("total_tokens") or 0)
-                    final_answer, summary_textual_tool_markup = _remove_textual_tool_markup(
-                        str(response.get("content") or "")
-                    )
-                except asyncio.TimeoutError:
-                    summary_timed_out = True
-                    final_answer = "工作轮数已达上限，最终总结调用超时。"
-                    summary_textual_tool_markup = False
-
-                if not final_answer:
-                    final_answer = (
-                        f"已达到 {self.max_steps} 个工作轮上限，已停止工具调用。"
-                        "请根据当前 checkpoint 查看已完成项、验证结果和待处理项。"
-                    )
-                elif summary_textual_tool_markup:
-                    final_answer = (
-                        "工作轮数已达上限，已停止工具调用；模型尝试发起的文本工具调用未执行。\n\n"
-                        f"当前进展：{final_answer}"
-                    )
-                if todo_contract_incomplete:
-                    final_answer = (
-                        "Task is not complete: the required todo plan or acceptance verification "
-                        "still has unfinished work.\n\n"
-                        f"{final_answer}"
-                    )
-                self.last_context_report.update({
-                    "token_budget_used": total_tokens,
-                    "token_budget_stop_reason": "final_summary_timeout" if summary_timed_out else "productive_step_limit",
-                    "finalization_textual_tool_markup_blocked": summary_textual_tool_markup,
-                })
-                self._record_turn(input_text, final_answer)
-                _turn_recorded = True
-                yield self._final_progress(total_tokens=total_tokens,
-                    step=self.max_steps + 1, thought=final_answer,
-                    is_final=True, final_answer=final_answer,
-                )
-                return
-
-            final_answer = ""
-            for msg in reversed(messages):
-                if msg["role"] == "assistant" and msg.get("content"):
-                    final_answer = msg["content"]
-                    break
-
-            if not final_answer:
-                final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
-
-            # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
-            # _turn_recorded 防止与「模型直接回复」分支重复写入。
-            if not _turn_recorded:
-                self._record_turn(input_text, final_answer)
-            logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
-            self.last_context_report.setdefault("token_budget_used", total_tokens)
-            if not ended_by_model_answer:
-                self.last_context_report["token_budget_stop_reason"] = "productive_step_limit"
-                yield self._final_progress(total_tokens=total_tokens, step=self.max_steps,
-                                           is_final=True, final_answer=final_answer)
-        finally:
-            try:
-                get_hooks().trigger(
-                    HookEvent.RUN_END,
-                    HookContext(event=HookEvent.RUN_END, agent_name=self.name),
-                )
-            except AgentInterrupted:
-                pass  # 结束阶段不再响应中断
-            except Exception:
-                logger.warning("[Hooks] RUN_END trigger failed", exc_info=True)
-
-        # 除了已 yield 的 progress 外，不再额外 yield
-        # — 调用方已经拿到了最终答案
-
-    # ═══════════════════════════════════════════════════════
-    # 文本解析 (降级兼容)
+        async for progress in run_fc_loop(self, input_text, context=context, **kwargs):
+            yield progress
     # ═══════════════════════════════════════════════════════
 
     def _parse_output(self, text: str) -> tuple:
         """解析 LLM 输出，提取 (Thought, Action)"""
-        thought = None
-        action = None
-
-        thought_match = re.search(r"Thought:\s*(.+?)(?=\n\s*(?:Action:|$))", text, re.DOTALL)
-        if thought_match:
-            thought = thought_match.group(1).strip()
-
-        action_match = re.search(r"Action:\s*(.+)", text)
-        if action_match:
-            action = action_match.group(1).strip()
-
-        return thought, action
+        return parse_output(text)
 
     def _parse_action(self, action_text: str) -> tuple:
         """解析 Action 文本，提取 (tool_name, tool_input)"""
-        # Format: tool_name[tool_input]  or  Finish[final_answer]
-        match = re.match(r"(\w+)\[(.*)\]", action_text)
-        if match:
-            return match.group(1), match.group(2)
-        return None, None
+        return parse_action(action_text)
 
     def _parse_action_input(self, action_text: str) -> str:
         """解析 Finish[answer] 中的最终答案"""
-        match = re.match(r"Finish\[(.*)\]", action_text, re.DOTALL)
-        if match:
-            return match.group(1)
-        return action_text
+        return parse_action_input(action_text)

@@ -7,8 +7,9 @@ import pytest
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.hooks import (
     get_hooks, HookEvent, HookContext, AgentRuntime, set_runtime, reset_runtime,
-    TruncateHook,
+    HookAction, HookDecision, TruncateHook,
 )
+from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
@@ -257,87 +258,7 @@ def test_budget_finalization_blocks_textual_tool_markup():
     assert agent.last_context_report["finalization_textual_tool_markup_blocked"] is True
 
 
-def test_convergence_compacts_to_evidence_before_the_next_tool_turn():
-    class CompactionLLM:
-        def __init__(self):
-            self.requests = []
-
-        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
-            self.requests.append(messages)
-            count = len(self.requests)
-            if count <= 2:
-                return {
-                    "content": "working",
-                    "tool_calls": [{
-                        "id": f"work-{count}", "type": "function",
-                        "function": {"name": "echo", "arguments": json.dumps({"text": str(count)})},
-                    }],
-                }
-            return {"content": "done", "tool_calls": None}
-
-    llm = CompactionLLM()
-    agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=4,
-        convergence_tool_steps=2, convergence_keep_recent_steps=1,
-    )
-
-    events = asyncio.run(_collect(agent))
-
-    third_request = llm.requests[2]
-    assert events[-1].final_answer == "done"
-    assert any(
-        message.get("role") == "system"
-        and message.get("content", "").startswith("## Tool execution checkpoint")
-        for message in third_request
-    )
-    assert sum(bool(message.get("tool_calls")) for message in third_request) == 1
-
-
-def test_convergence_threshold_counts_parallel_tool_calls_individually():
-    class ParallelCallsLLM:
-        def __init__(self):
-            self.requests = []
-
-        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
-            self.requests.append(messages)
-            count = len(self.requests)
-            if count == 1:
-                return {
-                    "content": "working",
-                    "tool_calls": [
-                        {"id": "first-a", "type": "function", "function": {"name": "echo", "arguments": json.dumps({"text": "a"})}},
-                        {"id": "first-b", "type": "function", "function": {"name": "echo", "arguments": json.dumps({"text": "b"})}},
-                    ],
-                }
-            if count == 2:
-                return {
-                    "content": "working",
-                    "tool_calls": [{
-                        "id": "second", "type": "function",
-                        "function": {"name": "echo", "arguments": json.dumps({"text": "c"})},
-                    }],
-                }
-            return {"content": "done", "tool_calls": None}
-
-    llm = ParallelCallsLLM()
-    agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=4,
-        convergence_tool_steps=3, convergence_keep_recent_steps=1,
-    )
-
-    asyncio.run(_collect(agent))
-
-    assert any(
-        message.get("role") == "system"
-        and message.get("content", "").startswith("## Tool execution checkpoint")
-        for message in llm.requests[2]
-    )
-    report = agent.last_context_report["convergence_evidence_compaction"]
-    assert "tool_call_count" in report["triggered_by"]
-    assert report["triggered_at_tool_calls"] == 3
-
-
-def test_step_limit_runs_one_tool_free_final_summary():
+def test_legacy_step_argument_does_not_limit_open_fc_loop():
     class StepLimitLLM:
         def __init__(self):
             self.requests = []
@@ -364,9 +285,12 @@ def test_step_limit_runs_one_tool_free_final_summary():
     events = asyncio.run(_collect(agent))
 
     assert len(llm.requests) == 3
-    assert llm.requests[-1] == ([], "none", 321)
+    assert llm.requests[-1][0] != []
+    assert llm.requests[-1][1] == "auto"
+    assert llm.requests[-1][2] is None
     assert events[-1].step == 3
     assert events[-1].final_answer == "completed two work steps"
+    assert agent.last_context_report["convergence_policy"]["open_ended_loop"] is True
 
 
 def test_soft_budget_instructs_the_next_step_to_converge():
@@ -386,11 +310,48 @@ def test_soft_budget_instructs_the_next_step_to_converge():
     )
 
 
-def test_react_step_compaction_is_reported_to_observers():
+def test_open_fc_loop_finalizes_after_repeated_non_progressing_action():
+    class RepeatingLLM:
+        def __init__(self):
+            self.count = 0
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.count += 1
+            return {
+                "content": "stuck",
+                "tool_calls": [{
+                    "id": f"repeat-{self.count}", "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "same"})},
+                }],
+            }
+
+    llm = RepeatingLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=1, max_total_tokens=1000,
+        convergence_max_stalled_rounds=3,
+        convergence_max_recovery_rounds=2,
+        convergence_repeat_action_threshold=3,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].is_final is True
+    assert agent.last_context_report["token_budget_stop_reason"] in {
+        "repeated_action", "convergence_stalled",
+    }
+    assert llm.count < 10
+
+
+def test_context_compaction_is_reported_to_observers():
     llm = MockLLM(rounds=9)
     agent = ReActAgent(
         "Test", llm, _registry(), max_steps=12,
-        context_budget=ContextBudgetManager(ContextBudget(max_react_steps=8)),
+        context_budget=ContextBudgetManager(ContextBudget(
+            max_context_tokens=300,
+            output_reserve_tokens=10,
+            max_history_tokens=20,
+            compaction_trigger_ratio=0.1,
+        )),
     )
     reports = []
     agent.on_context_compacted = reports.append
@@ -425,7 +386,7 @@ def test_acceptance_contract_blocks_premature_final_answer():
     finally:
         reset_runtime(runtime_token)
 
-    assert llm.count == 3
+    assert llm.count == 4
     assert events[0].is_final is False
     assert events[-1].is_final is True
     assert "required todo plan" in events[-1].final_answer
@@ -525,68 +486,55 @@ def test_veto_hook_blocks_tool():
     assert detail["fed_truncated"] is False
 
 
-def test_repeated_call_policy_is_owned_by_hook():
-    runtime_token = set_runtime(AgentRuntime())
+def test_execution_budget_policy_is_owned_by_hook():
+    budget = ExecutionBudget(max_tool_calls=2, max_run_seconds=60, max_total_tokens=1000)
+    runtime = AgentRuntime(execution_budget=budget)
+    runtime_token = set_runtime(runtime)
     try:
         get_hooks().trigger(
             HookEvent.RUN_START,
-            HookContext(event=HookEvent.RUN_START, agent_name="Test"),
+            HookContext(event=HookEvent.RUN_START, agent_name="Test", runtime=runtime),
         )
         ctx = HookContext(
             event=HookEvent.TOOL_BEFORE,
             agent_name="Test",
             tool_name="read_file",
             tool_input={"path": "src/a.py"},
-            max_repeated_tool_calls=3,
+            runtime=runtime,
         )
-        assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
         assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
         assert get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx) is None
         blocked = get_hooks().trigger(HookEvent.TOOL_BEFORE, ctx)
     finally:
         reset_runtime(runtime_token)
 
-    assert blocked is not None
-    assert "Repeated identical tool call blocked" in blocked
+    assert isinstance(blocked, HookDecision)
+    assert blocked.action == HookAction.VETO
+    assert blocked.reason == "tool_call_limit"
+    assert budget.tool_call_count == 2
 
 
-def test_repeated_failure_hook_allows_corrected_input():
-    runtime_token = set_runtime(AgentRuntime())
+def test_hook_registry_emit_broadcasts_without_short_circuiting():
+    calls = []
+
+    def first(ctx: HookContext):
+        calls.append("first")
+        return HookDecision(action=HookAction.RECOVER, reason="recover")
+
+    def second(ctx: HookContext):
+        calls.append("second")
+        return None
+
+    get_hooks().register(HookEvent.RUN_END, first, priority=200)
+    get_hooks().register(HookEvent.RUN_END, second, priority=100)
     try:
-        get_hooks().trigger(
-            HookEvent.RUN_START,
-            HookContext(event=HookEvent.RUN_START, agent_name="Test"),
+        results = get_hooks().emit(
+            HookEvent.RUN_END,
+            HookContext(event=HookEvent.RUN_END, agent_name="Test"),
         )
-        before = HookContext(
-            event=HookEvent.TOOL_BEFORE,
-            agent_name="Test",
-            tool_name="edit_file",
-            tool_input={"path": "src/a.py", "old_text": "wrong"},
-            max_repeated_tool_calls=5,
-        )
-        after = HookContext(
-            event=HookEvent.TOOL_AFTER,
-            agent_name="Test",
-            tool_name="edit_file",
-            tool_input=before.tool_input,
-            tool_status="error",
-            error_code="OLD_TEXT_NOT_FOUND",
-        )
-        for _ in range(2):
-            assert get_hooks().trigger(HookEvent.TOOL_BEFORE, before) is None
-            assert get_hooks().trigger(HookEvent.TOOL_AFTER, after) is None
-        blocked = get_hooks().trigger(HookEvent.TOOL_BEFORE, before)
-        corrected = HookContext(
-            event=HookEvent.TOOL_BEFORE,
-            agent_name="Test",
-            tool_name="edit_file",
-            tool_input={"path": "src/a.py", "old_text": "actual"},
-            max_repeated_tool_calls=5,
-        )
-        corrected_result = get_hooks().trigger(HookEvent.TOOL_BEFORE, corrected)
     finally:
-        reset_runtime(runtime_token)
+        get_hooks().unregister(HookEvent.RUN_END, first)
+        get_hooks().unregister(HookEvent.RUN_END, second)
 
-    assert blocked is not None
-    assert "Repeated tool failure blocked" in blocked
-    assert corrected_result is None
+    assert calls == ["first", "second"]
+    assert len(results) == 1

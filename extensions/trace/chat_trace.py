@@ -285,7 +285,7 @@ class ChatTraceLogger:
         triggered_by: list[str] | None = None,
         tool_call_count: int = 0,
         token_budget_used: int = 0,
-        keep_recent_steps: int = 0,
+        context_target_tokens: int = 0,
     ) -> None:
         """Persist the checkpoint used to restore a compacted session."""
         self.event(
@@ -297,7 +297,7 @@ class ChatTraceLogger:
             triggered_by=triggered_by or [],
             tool_call_count=tool_call_count,
             token_budget_used=token_budget_used,
-            keep_recent_steps=keep_recent_steps,
+            context_target_tokens=context_target_tokens,
         )
 
     def task_summary(

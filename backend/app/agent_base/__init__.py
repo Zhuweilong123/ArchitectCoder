@@ -9,10 +9,10 @@
 
 Usage::
 
-    from app.agent_base import BaseAgentsLLM, AgentConfig, SimpleAgent
+    from app.agent_base import BaseAgentsLLM, AgentConfig, ReActAgent
 
     llm = BaseAgentsLLM()
-    agent = SimpleAgent(name="助手", llm=llm)
+    agent = ReActAgent(name="助手", llm=llm, tool_registry=ToolRegistry())
     response = agent.run("你好！")
 """
 
@@ -37,7 +37,7 @@ from .core.plugins import (
     get_plugin_manager,
 )
 
-from .agents import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
+from .agents import ReActAgent, PlanAndSolveAgent
 
 from .tools import (
     Tool,
@@ -67,9 +67,7 @@ __all__ = [
     "PluginState",
     "get_plugin_manager",
     # agents
-    "SimpleAgent",
     "ReActAgent",
-    "ReflectionAgent",
     "PlanAndSolveAgent",
     # tools
     "Tool", "ToolParameter",

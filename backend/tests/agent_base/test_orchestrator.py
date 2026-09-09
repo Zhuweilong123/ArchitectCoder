@@ -149,9 +149,9 @@ def test_cross_artifact_task_uses_read_only_worker_and_filters_main_tools(tmp_pa
         assert runtime.todos[0]["status"] == "completed"
 
         allowed = TaskOrchestrator(llm).allowed_main_tools([
-            "read_file", "get_project_map", "find_nodes", "edit_file", "bash", "spawn_subagent",
+            "read_file", "get_project_map", "find_nodes", "apply_changes", "shell", "spawn_subagent",
         ])
-        assert allowed == ["read_file", "edit_file", "bash"]
+        assert allowed == ["read_file", "apply_changes", "shell"]
     finally:
         reset_runtime(token)
 

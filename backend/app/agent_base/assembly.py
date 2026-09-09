@@ -14,6 +14,7 @@ from backend.config import get_settings
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.core.memory import (
     MemoryPort,
     MemoryRecallRequest,
@@ -200,11 +201,9 @@ async def create_dev_agent(
     restore_history: list[dict] | None = None,
     task_scope: str = "",
     auto_approve_reviews: bool = False,
-    max_steps: int | None = None,
     max_tool_calls: int | None = None,
     max_run_seconds: float | None = None,
     max_total_tokens: int | None = None,
-    convergence_tool_steps: int | None = None,
 ):
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
@@ -265,21 +264,25 @@ async def create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=prompt_builder.system_prompt,
-        max_steps=max_steps or settings.agent_max_steps,
-        max_tool_calls=max_tool_calls or settings.agent_max_tool_calls,
-        max_repeated_tool_calls=settings.agent_max_repeated_tool_calls,
-        max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
-        max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
-        token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
-        convergence_tool_steps=(
-            convergence_tool_steps
-            if convergence_tool_steps is not None
-            else settings.agent_convergence_tool_steps
+        execution_budget=ExecutionBudget.from_settings(
+            settings,
+            max_tool_calls=(
+                max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
+            ),
+            max_run_seconds=(
+                max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
+            ),
+            max_total_tokens=(
+                max_total_tokens if max_total_tokens is not None
+                else settings.agent_per_run_execution_budget_tokens
+            ),
         ),
+        token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
         convergence_budget_ratio=settings.agent_convergence_budget_ratio,
-        convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
+        convergence_max_stalled_rounds=settings.agent_convergence_max_stalled_rounds,
+        convergence_max_recovery_rounds=settings.agent_convergence_max_recovery_rounds,
+        convergence_repeat_action_threshold=settings.agent_convergence_repeat_action_threshold,
         evidence_max_records=settings.agent_evidence_max_records,
-        force_final_summary_on_step_limit=settings.agent_force_final_summary_on_step_limit,
         final_summary_max_tokens=settings.agent_final_summary_max_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
         use_native_fc=True,
@@ -289,7 +292,7 @@ async def create_dev_agent(
             max_history_tokens=settings.agent_context_max_history_tokens,
             max_history_turns=settings.agent_context_max_history_turns,
             max_summary_tokens=settings.agent_context_max_summary_tokens,
-            max_react_steps=settings.agent_context_max_react_steps,
+            compaction_trigger_ratio=settings.agent_context_compaction_trigger_ratio,
         )),
     )
     agent.change_set = change_set

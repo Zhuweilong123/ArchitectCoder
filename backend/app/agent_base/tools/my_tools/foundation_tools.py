@@ -1,7 +1,7 @@
 """Stable, OS-neutral tools exposed to the main DevAgent.
 
 These tools express capabilities rather than host commands.  The legacy file
-tools remain available to bounded subagents and compatibility callers.
+tools remain available only to compatibility and trace-replay callers.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from app.agent_base.core.hooks import get_runtime
 from app.agent_base.execution import ExecutionEnvironmentError
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import ToolResult, FileChange, VerificationEvidence, command_result
-from app.agent_base.tools.my_tools.file_system_tools import (
-    BashTool,
-    GlobTool,
+from app.agent_base.tools.my_tools.foundation_runtime import (
+    ShellTool,
+    ListFilesTool as FoundationListFilesRuntime,
     ReadFileTool,
     SearchTextTool,
     _atomic_write_text,
@@ -33,7 +33,7 @@ from app.agent_base.tools.my_tools.file_system_tools import (
 from app.runtime import FileSystemOperationError, NativeFileSystem
 
 
-class ListFilesTool(GlobTool):
+class ListFilesTool(FoundationListFilesRuntime):
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(source_dir, test_dir, design_dir, workspace_root=workspace_root)
@@ -118,135 +118,27 @@ class ListFilesTool(GlobTool):
         return schema
 
 
-class ApplyPatchTool(Tool):
-    """Apply exact, revision-checked text patches to one or more files."""
+class ApplyChangesTool(Tool):
+    """Apply a validated batch of semantic workspace changes."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
                  workspace_root: str = ""):
-        super().__init__(
-            name="apply_patch",
-            description=(
-                "Apply one or more exact text patches inside the workspace. "
-                "Each patch replaces old_text with new_text once. Read the file first; "
-                "use expected_sha256 to prevent overwriting concurrent edits."
-            ),
-        )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
         self._change_set = change_set
-
-    def get_parameters(self) -> list:
-        return []
-
-    def to_openai_schema(self) -> dict:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "patches": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "old_text": {"type": "string"},
-                                    "new_text": {"type": "string"},
-                                    "expected_sha256": {"type": "string"},
-                                },
-                                "required": ["path", "old_text", "new_text"],
-                                "additionalProperties": False,
-                            },
-                        },
-                    },
-                    "required": ["patches"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def run(self, parameters: dict) -> str:
-        patches = parameters.get("patches")
-        if not isinstance(patches, list) or not patches:
-            return "Error: patches must be a non-empty list"
-
-        prepared: dict[str, dict[str, Any]] = {}
-        patch_order: list[tuple[str, dict]] = []
-        for index, patch in enumerate(patches):
-            if not isinstance(patch, dict):
-                return f"Error: patches[{index}] must be an object"
-            path = patch.get("path", "")
-            old_text = patch.get("old_text", "")
-            new_text = patch.get("new_text", "")
-            if not all(isinstance(value, str) for value in (path, old_text, new_text)):
-                return f"Error: patches[{index}] path, old_text, and new_text must be strings"
-            try:
-                target = safe_path(path, self._roots, require_exist=False)
-                key = str(target.resolve())
-                state = prepared.get(key)
-                if state is None:
-                    current = target.read_text(encoding="utf-8") if target.exists() else ""
-                    state = {
-                        "target": target,
-                        "original": current,
-                        "working": current,
-                    }
-                    prepared[key] = state
-                current = state["working"]
-            except (OSError, ValueError) as exc:
-                return f"Error: patches[{index}] {exc}"
-            expected = patch.get("expected_sha256")
-            actual = _sha256_text(state["original"])
-            if expected and str(expected).lower() != actual.lower():
-                return f"Conflict: {path} changed since it was read; expected sha256 {expected}, actual {actual}"
-            if old_text not in current:
-                if current or old_text:
-                    return f"Error: text not found in {path}"
-                updated = new_text
-            else:
-                updated = current.replace(old_text, new_text, 1)
-            state["working"] = updated
-            patch_order.append((key, patch))
-
-        try:
-            for state in prepared.values():
-                target = state["target"]
-                current = state["original"]
-                updated = state["working"]
-                before_exists = target.exists()
-                _atomic_write_text(target, updated)
-                if self._change_set is not None:
-                    self._change_set.record(str(target), before_exists, current, updated)
-        except OSError as exc:
-            return f"Error: {exc}"
-        return "Applied patches: " + ", ".join(str(patch["path"]) for _, patch in patch_order)
-
-
-class ApplyChangesTool(ApplyPatchTool):
-    """Apply a validated batch of semantic workspace changes.
-
-    ``apply_patch`` remains available to compatibility callers.  The
-    model-facing tool uses this broader protocol so file creation, replacement,
-    deletion, moves, copies, and directory creation share one policy boundary.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name = "apply_changes"
-        self.description = (
+        super().__init__(name="apply_changes", description=(
             "Apply one or more semantic workspace changes atomically. Supported operations: "
             "create, replace, patch, delete, move, copy, and mkdir. Use this for all "
             "file changes instead of shell commands; paths stay inside the workspace "
             "and expected_sha256 prevents overwriting concurrent edits."
-        )
-        self._workspace_root = kwargs.get("workspace_root", "")
-        self._source_dir = args[0] if len(args) > 0 else kwargs.get("source_dir", "")
-        self._test_dir = args[1] if len(args) > 1 else kwargs.get("test_dir", "")
-        self._design_dir = args[2] if len(args) > 2 else kwargs.get("design_dir", "")
-        self.aliases = ("apply_patch",)
+        ))
+        self._workspace_root = workspace_root
+        self._source_dir = source_dir
+        self._test_dir = test_dir
+        self._design_dir = design_dir
         self._filesystem = NativeFileSystem()
+
+    def get_parameters(self) -> list:
+        return []
 
     def to_openai_schema(self) -> dict:
         return {
@@ -296,29 +188,6 @@ class ApplyChangesTool(ApplyPatchTool):
 
     def _apply_changes(self, parameters: dict):
         changes = parameters.get("changes")
-        if changes is None and isinstance(parameters.get("patches"), list):
-            changes = []
-            for patch in parameters["patches"]:
-                if not isinstance(patch, dict):
-                    changes.append(patch)
-                    continue
-                old_text = patch.get("old_text", "")
-                operation = "patch"
-                if old_text == "":
-                    try:
-                        target = safe_path(patch.get("path", ""), self._roots, require_exist=False)
-                        if not target.exists():
-                            operation = "create"
-                    except (OSError, ValueError):
-                        pass
-                changes.append({
-                    "op": operation,
-                    "path": patch.get("path"),
-                    "old_text": old_text,
-                    "new_text": patch.get("new_text", ""),
-                    "content": patch.get("new_text", "") if operation == "create" else None,
-                    "expected_sha256": patch.get("expected_sha256"),
-                })
         if not isinstance(changes, list) or not changes:
             return "Error: changes must be a non-empty list"
 
@@ -571,12 +440,6 @@ class ApplyChangesTool(ApplyPatchTool):
                 pass
 
 
-class ShellTool(BashTool):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name = "shell"
-
-
 def _quote_program(program: str, args: list[str], executor) -> str:
     values = [program, *args]
     if getattr(getattr(executor, "profile", None), "name", "") == "windows-powershell":
@@ -625,13 +488,13 @@ class RunProgramTool(ShellTool):
             )
 
         display_command = _quote_program(program, args, self._command_executor)
-        risk = self._risk_policy.evaluate("bash", {"command": display_command})
+        risk = self._risk_policy.evaluate("shell", {"command": display_command})
         if risk.action == "deny":
             return f"Error: program denied (high-risk, matches deny list: {risk.pattern})"
         if risk.action == "ask":
             verdict = await self._request_approval(
                 display_command, risk,
-                self._risk_policy.approval_scope("bash", {"command": display_command}),
+                self._risk_policy.approval_scope("shell", {"command": display_command}),
             )
             if verdict is not None:
                 return verdict
@@ -845,6 +708,6 @@ def create_foundation_tools(
 
 
 __all__ = [
-    "ApplyChangesTool", "ApplyPatchTool", "ListFilesTool", "RunProgramTool", "RunTaskTool",
+    "ApplyChangesTool", "ListFilesTool", "RunProgramTool", "RunTaskTool",
     "ShellTool", "create_foundation_tools",
 ]
