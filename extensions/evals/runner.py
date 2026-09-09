@@ -235,8 +235,25 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
 
 
 class EvalRunner:
-    def __init__(self, results_path: str | Path | None = None):
+    def __init__(
+        self,
+        results_path: str | Path | None = None,
+        trace_dir: str | Path | None = None,
+    ):
+        """Create an evaluation runner with an isolated trace destination.
+
+        Official runs use the canonical evaluation results and trace folders.
+        A caller-supplied results path is typically a test or local harness;
+        keep its traces beside that results file so it cannot pollute the
+        repository's durable evaluation history.  ``trace_dir`` remains an
+        explicit override for callers that need a different layout.
+        """
         self.results_path = Path(results_path) if results_path else _default_results_path()
+        self.trace_dir = Path(trace_dir) if trace_dir else (
+            evaluation_traces_dir()
+            if results_path is None
+            else self.results_path.parent / "traces"
+        )
 
     async def run_case(
         self,
@@ -381,7 +398,7 @@ class EvalRunner:
                 async with TraceSession(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
-                    trace_dir=str(evaluation_traces_dir()),
+                    trace_dir=str(self.trace_dir),
                     env_snapshot={"eval_case": case.id},
                 ) as tracer:
                     result.trace_id = tracer.trace_id
