@@ -126,24 +126,6 @@ def test_local_provider_adapts_build_and_diagram_search(tmp_path):
     assert any("User" in reason for reason in matches["Domain"])
 
 
-def test_uml_summary_retrieval_uses_the_provider_boundary(monkeypatch):
-    import app.services.uml_common as uml_common
-
-    class _SearchProvider:
-        def search_diagrams(self, project_id, queries, top_k=6):
-            assert project_id == "demo"
-            assert queries[0] == "User login"
-            assert top_k == 6
-            return {"Domain": {"User(class)"}}
-
-    monkeypatch.setattr(uml_common, "get_knowledge_graph", lambda: _SearchProvider())
-    hits = {}
-
-    uml_common._fetch_kg_hits("demo.umlproj", "User login", hits)
-
-    assert hits == {"Domain": {"User(class)"}}
-
-
 def test_v2_tools_can_be_created_with_a_custom_provider():
     import asyncio
     import json

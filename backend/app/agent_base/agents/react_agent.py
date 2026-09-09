@@ -32,7 +32,6 @@ from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
 from backend.config import AgentConfig
 from ..core.hooks import get_runtime, todo_plan_complete
-from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
 from ..outcome import RunOutcome
 from ..core.policy import ExecutionBudget

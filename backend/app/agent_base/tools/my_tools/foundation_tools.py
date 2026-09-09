@@ -15,7 +15,7 @@ from typing import Any
 from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
-from app.agent_base.execution import ExecutionEnvironmentError
+from app.runtime.command import ExecutionEnvironmentError
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import ToolResult, FileChange, VerificationEvidence, command_result
 from app.agent_base.tools.my_tools.foundation_runtime import (
@@ -23,11 +23,9 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
     ListFilesTool as FoundationListFilesRuntime,
     ReadFileTool,
     SearchTextTool,
-    _atomic_write_text,
     _decode_output,
     _expand_workspace_alias,
     _resolve_roots,
-    _sha256_text,
     safe_path,
 )
 from app.runtime import FileSystemOperationError, NativeFileSystem

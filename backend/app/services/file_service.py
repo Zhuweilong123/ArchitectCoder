@@ -184,21 +184,6 @@ def save_project(
     ).filepath
 
 
-def _legacy_save_project(project: Project, filepath: str | None = None) -> str:
-    """Save a Project to a .umlproj JSON file. Returns the filepath."""
-    ensure_dirs()
-    if not filepath:
-        filepath = os.path.join(
-            settings.uml_dir,
-            f"{project.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.umlproj",
-        )
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(project.model_dump(), f, indent=2, ensure_ascii=False)
-    logger.info(f"[Project] Saved project '{project.name}' ({len(project.diagrams)} diagrams) → {filepath}")
-    _rebuild_kg_async(project, filepath)
-    return filepath
-
-
 def load_project(filepath: str) -> Project:
     """Load a project through the repository boundary."""
     ensure_dirs()
@@ -213,56 +198,11 @@ def load_project(filepath: str) -> Project:
     return project
 
 
-def _legacy_load_project(filepath: str) -> Project:
-    """Load a Project from a .umlproj JSON file.
-
-    Also handles legacy .uml files by wrapping them in a Project container.
-    """
-    ensure_dirs()
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # Check if this is a Project or a legacy single diagram
-    if "diagrams" in data:
-        project = Project(**data)
-        logger.info(f"[Project] Loaded project '{project.name}' ({len(project.diagrams)} diagrams) from {filepath}")
-        return project
-
-    # Legacy .uml file — wrap in a Project
-    diagram = UmlDiagram(**data)
-    project = Project(
-        name=diagram.name,
-        diagrams=[diagram],
-        active_diagram_index=0,
-    )
-    logger.info(f"[Project] Wrapped legacy .uml diagram '{diagram.name}' in project from {filepath}")
-    return project
-
-
 def list_projects() -> list[dict]:
     """List projects through the repository boundary."""
     files = project_repository.list_projects()
     logger.debug("[Project] Listed %d .umlproj projects", len(files))
     return files
-
-
-def _legacy_list_projects() -> list[dict]:
-    """List all saved Projects (.umlproj files)."""
-    ensure_dirs()
-    files = []
-    if os.path.exists(settings.uml_dir):
-        for fname in os.listdir(settings.uml_dir):
-            if fname.endswith(".umlproj"):
-                fpath = os.path.join(settings.uml_dir, fname)
-                stat = os.stat(fpath)
-                files.append({
-                    "name": fname,
-                    "path": fpath,
-                    "size": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                })
-    logger.debug(f"[Project] Listed {len(files)} .umlproj projects")
-    return sorted(files, key=lambda f: f["modified"], reverse=True)
 
 
 # ── Knowledge Graph rebuild hook ──────────────────────────

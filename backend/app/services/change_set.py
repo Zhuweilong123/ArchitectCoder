@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import tempfile
@@ -156,22 +155,6 @@ class ChangeSet:
         if self.project_file and os.path.isfile(self.project_file):
             refresh_paths.append(self.project_file)
         for project_path in dict.fromkeys(refresh_paths):
-            self._refresh_kg(project_path)
-        return manifest
-
-
-    def _legacy_commit(self) -> list[dict]:
-        with self._lock:
-            if self.status != "open":
-                return self.manifest()
-            manifest = self.manifest()
-            self.status = "committed"
-
-        # 只有提交边界触发 KG，避免同一轮多次 edit 产生多次重建。
-        project_paths = [r["path"] for r in manifest if r["path"].lower().endswith((".umlproj", ".uml"))]
-        if self.project_file and os.path.isfile(self.project_file):
-            project_paths.append(self.project_file)
-        for project_path in dict.fromkeys(project_paths):
             self._refresh_kg(project_path)
         return manifest
 

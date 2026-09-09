@@ -39,8 +39,6 @@ agent_base/
 └── tools/                               # 工具系统层
     ├── base.py                          # Tool 基类 + ToolParameter + to_openai_schema()
     ├── registry.py                      # ToolRegistry（注册/发现/执行 + FC schema 生成）
-    ├── chain.py                         # ToolChain + ToolChainManager（顺序流 + 变量模板）
-    ├── async_executor.py                # AsyncToolExecutor（并行执行 I/O 密集任务）
     ├── review.py                        # ReviewManager（人工审核机制）+ SubmitUmlReviewTool
     │
     └── my_tools/                        # 项目特有工具
@@ -50,7 +48,6 @@ agent_base/
         ├── todo_tools.py                # TodoWriteTool（会话任务列表）
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
-        ├── uml_tools.py                 # UmlValidationTool（跨图一致性校验）
         ├── file_search_tools.py         # 有界文本搜索（grep 基类 / search_text）
         └── knowledge_graph_v2_tools.py  # 项目结构与设计-代码关系查询
 ```
@@ -132,8 +129,6 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **AsyncTool**：异步工具基类。`run()` 返回 `self._execute(parameters)` 的 coroutine，
   由 `aexecute_tool_with_params()` await；`get_parameters()` 返回空，子类直接覆写
   `to_openai_schema()`。所有对话工具均继承 `AsyncTool`。
-- **ToolChain / ToolChainManager**：顺序编排 + 变量模板。
-- **AsyncToolExecutor**：并行执行 I/O 密集任务。
 - **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
   `SubmitUmlReviewTool`（UML diff 审核）与 `ShellTool`（敏感命令批准，见 foundation_tools）。
 
@@ -177,8 +172,6 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 ### 6.4 可复用但未自动注册
 
-- **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
-  供 demo / 测试 / 未来按需接入使用。
 - **`file_search_tools.py` / `extensions/knowledge_graph/tools.py`**：
   文件搜索工具接入生产工具工厂；知识图谱实现保留供测试与显式 opt-in，当前默认不注册到
   DevAgent，也不注入子代理工具包。
@@ -353,7 +346,6 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/tools/my_tools/foundation_runtime.py` | Foundation 运行时实现 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
-| `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
 | `backend/app/services/agent_chat_ws.py` | WebSocket 鉴权与协议适配 |
 | `backend/app/services/chat_session.py` | 会话协调与消息生命周期 |
 | `backend/app/services/agent_execution.py` | 单次 Agent 执行、checkpoint、审批和结果 |

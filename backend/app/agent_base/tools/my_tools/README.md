@@ -44,7 +44,6 @@
 | `todo_tools.py` | `TodoWriteTool` | 会话级任务列表（`todo_write`） |
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
-| `uml_tools.py` | `UmlValidationTool` | UML 跨图引用验证（可复用，未自动注册） |
 | `knowledge_graph_v2_tools.py` | 3 个知识图谱工具（漂移分析显式 opt-in） | 默认对 DevAgent 禁用，保留底层显式 opt-in |
 | `file_search_tools.py` | `grep` 基类（由 `search_text` 适配） | 文件内容搜索实现 |
 
@@ -129,12 +128,6 @@ UML 审核嵌套；shell 敏感命令仍走人工审核（与主代理共用同�
 
 持久化任务 DAG（`create_task`/`claim_task`/`complete_task` 等）+ git worktree 隔离，
 支持跨会话任务跟踪。
-
-### UML 验证（`uml_tools.py`）
-
-`UmlValidationTool`（`validate_uml_design`）做 UML 跨图引用验证：生命线 `class_ref`
-→ 类 ID、消息方法名 → 类方法签名、组件接口一致性、组件图覆盖度，支持模糊匹配
-自动修复。**未自动注册**进会话工具集，供 demo / 测试 / 未来按需接入使用。
 
 ## 人工审核机制
 

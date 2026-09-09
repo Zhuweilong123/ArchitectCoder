@@ -25,7 +25,6 @@ import os
 from typing import Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
 from app.runtime import workspace_root_for

@@ -124,11 +124,6 @@ def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
     )
 
 
-def acceptance_todo_contract_complete(runtime: AgentRuntime | None = None) -> bool:
-    """Backward-compatible alias for the general TODO completion check."""
-    return todo_plan_complete(runtime)
-
-
 _runtime_var: ContextVar[AgentRuntime] = ContextVar(
     "agent_runtime", default=AgentRuntime()
 )

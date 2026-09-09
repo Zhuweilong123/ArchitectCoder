@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import MutableMapping
-from typing import Any, Callable
+from typing import Any
 
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import ToolResult

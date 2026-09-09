@@ -340,7 +340,6 @@ async def run_fc_loop(
 
             tool_calls = response.get("tool_calls")
             content = response.get("content") or ""
-            usage = response.get("usage") or {}
             total_tokens = budget.total_tokens
             # A finalization request is deliberately tool-free.  Protect
             # against non-conforming test doubles/providers returning a

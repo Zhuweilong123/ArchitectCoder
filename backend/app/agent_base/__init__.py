@@ -4,8 +4,8 @@
 
 架构:
 - core/     : 核心基础设施 (LLM、Message、AgentConfig、Agent基类、异常)
-- agents/   : 4 种 Agent 范式 (Simple、ReAct、Reflection、PlanAndSolve)
-- tools/    : 工具系统 (Tool基类、ToolRegistry、ToolChain、AsyncToolExecutor)
+- agents/   : ReAct、PlanAndSolve Agent 范式
+- tools/    : 工具基类、注册表、异步工具与执行契约
 
 Usage::
 
@@ -43,10 +43,7 @@ from .tools import (
     Tool,
     ToolParameter,
     ToolRegistry,
-    ToolChain,
-    ToolChainManager,
     AsyncTool,
-    AsyncToolExecutor,
 )
 from .execution import ToolExecutor
 
@@ -72,8 +69,6 @@ __all__ = [
     # tools
     "Tool", "ToolParameter",
     "ToolRegistry",
-    "ToolChain", "ToolChainManager",
     "AsyncTool",
-    "AsyncToolExecutor",
     "ToolExecutor",
 ]
