@@ -39,7 +39,6 @@ class Settings(BaseSettings):
     )
 
     agent_max_tool_calls: int = 100
-    agent_max_repeated_tool_calls: int = 3
     agent_max_run_seconds: int = 600
     agent_max_total_tokens: int = 200000
     # Reserve enough room to turn completed evidence into a final user-facing
@@ -48,6 +47,9 @@ class Settings(BaseSettings):
     agent_convergence_tool_steps: int = 25
     agent_convergence_budget_ratio: float = 0.8
     agent_convergence_keep_recent_steps: int = 3
+    agent_convergence_max_stalled_rounds: int = 3
+    agent_convergence_max_recovery_rounds: int = 2
+    agent_convergence_repeat_action_threshold: int = 3
     # Keep structured evidence for all tool calls in a normal run so context
     # compaction never falls back to raw, high-volume tool observations.
     agent_evidence_max_records: int = 128

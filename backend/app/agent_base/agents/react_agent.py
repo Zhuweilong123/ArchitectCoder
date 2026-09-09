@@ -37,7 +37,7 @@ from ..core.message import Message
 from backend.config import AgentConfig
 from ..core.hooks import (
     get_hooks, HookEvent, HookContext, get_runtime,
-    todo_plan_complete,
+    HookAction, HookDecision, todo_plan_complete,
 )
 from ..core.exceptions import AgentInterrupted
 from ..tools.registry import ToolRegistry
@@ -45,6 +45,7 @@ from ..tools.result import ToolResult
 from ..evidence import EvidenceLedger
 from ..outcome import RunOutcome
 from ..convergence import ConvergenceController
+from ..core.policy import ExecutionBudget
 from app.services.context_manager import ContextBudgetManager
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,6 @@ class ReActAgent(Agent):
         use_native_fc: bool = True,
         custom_prompt: Optional[str] = None,
         max_tool_calls: int = 100,
-        max_repeated_tool_calls: int = 3,
         max_run_seconds: float = 600.0,
         max_total_tokens: int = 200000,
         token_finalization_reserve_tokens: int = 12000,
@@ -195,6 +195,7 @@ class ReActAgent(Agent):
         final_summary_max_tokens: int = 3000,
         llm_timeout_seconds: float = 120.0,
         context_budget: ContextBudgetManager | None = None,
+        execution_budget: ExecutionBudget | None = None,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
@@ -205,14 +206,21 @@ class ReActAgent(Agent):
         self.use_native_fc = use_native_fc
         self.current_history: List[str] = []
         self.prompt_template = custom_prompt or REACT_PROMPT
+        self.execution_budget = execution_budget
         self.max_tool_calls = max(1, max_tool_calls)
-        self.max_repeated_tool_calls = max(1, max_repeated_tool_calls)
         self.max_run_seconds = max(1.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.token_finalization_reserve_tokens = min(
             max(1, token_finalization_reserve_tokens),
             max(1, self.max_total_tokens - 1),
         )
+        if self.execution_budget is not None:
+            self.max_tool_calls = self.execution_budget.max_tool_calls
+            self.max_run_seconds = self.execution_budget.max_run_seconds
+            self.max_total_tokens = self.execution_budget.max_total_tokens
+            self.token_finalization_reserve_tokens = (
+                self.execution_budget.token_finalization_reserve_tokens
+            )
         self.convergence_tool_steps = max(1, convergence_tool_steps)
         self.convergence_budget_ratio = min(1.0, max(0.0, float(convergence_budget_ratio)))
         self.convergence_keep_recent_steps = max(1, convergence_keep_recent_steps)
@@ -497,12 +505,18 @@ class ReActAgent(Agent):
         self.current_history = []
         no_tool_call_streak = 0
         _turn_recorded = False
-        tool_call_count = 0
-        started_at = time.monotonic()
         # Planning and read-only exploration happen immediately before this
         # loop. Count their measured usage against the same task budget so a
         # worker cannot silently extend the run beyond max_total_tokens.
-        total_tokens = initial_token_usage
+        budget = self.execution_budget or ExecutionBudget(
+            max_tool_calls=self.max_tool_calls,
+            max_run_seconds=self.max_run_seconds,
+            max_total_tokens=self.max_total_tokens,
+            token_finalization_reserve_tokens=self.token_finalization_reserve_tokens,
+        )
+        budget.start(initial_token_usage)
+        tool_call_count = budget.tool_call_count
+        total_tokens = budget.total_tokens
         soft_budget_notified = False
         convergence_compaction_active = False
         convergence_directive_added = False
@@ -516,33 +530,27 @@ class ReActAgent(Agent):
         forced_finalization_reason = ""
         self.last_evidence_summary = []
 
+        runtime = get_runtime()
+        runtime.execution_budget = budget
+        runtime.convergence_controller = convergence
+        runtime.control_decision = None
         get_hooks().trigger(
             HookEvent.RUN_START,
-            HookContext(event=HookEvent.RUN_START, agent_name=self.name),
+            HookContext(
+                event=HookEvent.RUN_START,
+                agent_name=self.name,
+                run_id=runtime.run_id,
+                runtime=runtime,
+                payload={"initial_token_usage": initial_token_usage},
+            ),
         )
         try:
             step = 0
             while True:
                 step += 1
-                if total_tokens >= self.max_total_tokens:
-                    final_answer = (
-                        f"已达到 token 预算（{self.max_total_tokens}），"
-                        "已停止发起新的模型调用。"
-                    )
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_stop_reason": "hard_limit_before_next_llm",
-                    })
-                    self._record_turn(input_text, final_answer)
-                    yield self._final_progress(total_tokens=total_tokens,
-                        step=step, thought=final_answer,
-                        is_final=True, final_answer=final_answer,
-                    )
-                    return
-
-                remaining_tokens = self.max_total_tokens - total_tokens
+                remaining_tokens = budget.remaining_tokens
                 finalization_mode = bool(forced_finalization_reason) or (
-                    remaining_tokens <= self.token_finalization_reserve_tokens
+                    budget.finalization_required
                 )
                 active_tool_specs = [] if finalization_mode else (
                     compact_tool_specs if tool_call_count else full_tool_specs
@@ -570,7 +578,7 @@ class ReActAgent(Agent):
                 convergence_reasons = []
                 if tool_call_count >= self.convergence_tool_steps:
                     convergence_reasons.append("tool_call_count")
-                if total_tokens >= self.max_total_tokens * self.convergence_budget_ratio:
+                if total_tokens >= budget.max_total_tokens * self.convergence_budget_ratio:
                     convergence_reasons.append("token_budget_ratio")
                 if convergence_reasons:
                     convergence_compaction_active = True
@@ -659,23 +667,39 @@ class ReActAgent(Agent):
                         self.last_context_report.get("loop_dropped_messages", 0) + dropped
                     )
                 logger.info("\n--- FC loop round %d ---", step)
-                if time.monotonic() - started_at >= self.max_run_seconds:
-                    self.last_context_report.update({
-                        "token_budget_used": total_tokens,
-                        "token_budget_stop_reason": "time_limit",
-                    })
-                    final_answer = f"执行超过时间预算（{self.max_run_seconds:.0f}s），已停止继续调用工具。"
-                    self._record_turn(input_text, final_answer)
-                    yield self._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
-                                        is_final=True, final_answer=final_answer)
-                    return
-
                 # 1. 调用 LLM（带工具 schemas）
-                get_hooks().trigger(
+                llm_before_decision = get_hooks().trigger(
                     HookEvent.LLM_BEFORE,
-                    HookContext(event=HookEvent.LLM_BEFORE, agent_name=self.name,
-                                messages=messages),
+                    HookContext(
+                        event=HookEvent.LLM_BEFORE,
+                        agent_name=self.name,
+                        run_id=runtime.run_id,
+                        runtime=runtime,
+                        messages=messages,
+                    ),
                 )
+                if (
+                    isinstance(llm_before_decision, HookDecision)
+                    and llm_before_decision.action == HookAction.STOP
+                ):
+                    reason = llm_before_decision.reason
+                    self.last_context_report.update({
+                        "token_budget_used": budget.total_tokens,
+                        "token_budget_stop_reason": reason,
+                    })
+                    final_answer = (
+                        "Execution budget reached before the next model call; "
+                        "the task was finalized with the available evidence."
+                    )
+                    self._record_turn(input_text, final_answer)
+                    yield self._final_progress(
+                        total_tokens=budget.total_tokens,
+                        step=step,
+                        thought=final_answer,
+                        is_final=True,
+                        final_answer=final_answer,
+                    )
+                    return
                 with trace_span(f"{self.name}"):
                     try:
                         response = await asyncio.wait_for(
@@ -699,15 +723,20 @@ class ReActAgent(Agent):
                         return
                 get_hooks().trigger(
                     HookEvent.LLM_AFTER,
-                    HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
-                                messages=messages, llm_response=response),
+                    HookContext(
+                        event=HookEvent.LLM_AFTER,
+                        agent_name=self.name,
+                        run_id=runtime.run_id,
+                        runtime=runtime,
+                        messages=messages,
+                        llm_response=response,
+                    ),
                 )
 
                 tool_calls = response.get("tool_calls")
                 content = response.get("content") or ""
                 usage = response.get("usage") or {}
-                if isinstance(usage, dict):
-                    total_tokens += int(usage.get("total_tokens") or 0)
+                total_tokens = budget.total_tokens
                 # A finalization request is deliberately tool-free.  Protect
                 # against non-conforming test doubles/providers returning a
                 # tool call despite tool_choice='none'.
@@ -715,7 +744,7 @@ class ReActAgent(Agent):
                 if finalization_mode:
                     tool_calls = None
                     content, textual_tool_markup = _remove_textual_tool_markup(content)
-                if not soft_budget_notified and total_tokens >= self.max_total_tokens * self.convergence_budget_ratio:
+                if not soft_budget_notified and total_tokens >= budget.max_total_tokens * self.convergence_budget_ratio:
                     soft_budget_notified = True
                     self.last_context_report["soft_budget_reached_tokens"] = total_tokens
                     messages.append({
@@ -741,8 +770,25 @@ class ReActAgent(Agent):
                     messages.append({"role": "assistant", "content": content})
 
                     if not content.strip() or not todo_plan_complete(get_runtime()):
-                        empty_progress_decision = convergence.observe([])
-                        if empty_progress_decision.action in {"recover", "finalize"}:
+                        runtime.control_decision = None
+                        get_hooks().emit(
+                            HookEvent.TOOL_BATCH_AFTER,
+                            HookContext(
+                                event=HookEvent.TOOL_BATCH_AFTER,
+                                agent_name=self.name,
+                                run_id=runtime.run_id,
+                                runtime=runtime,
+                                phase="empty_progress",
+                                payload={"details": [], "actions": [], "step": step},
+                            ),
+                        )
+                        empty_progress_decision = runtime.control_decision
+                        if (
+                            isinstance(empty_progress_decision, HookDecision)
+                            and empty_progress_decision.action in {
+                                HookAction.RECOVER, HookAction.FINALIZE, "recover", "finalize",
+                            }
+                        ):
                             self.last_context_report.setdefault("convergence_events", []).append({
                                 "action": empty_progress_decision.action,
                                 "reason": empty_progress_decision.reason,
@@ -756,7 +802,7 @@ class ReActAgent(Agent):
                                     f"{empty_progress_decision.message}"
                                 ),
                             })
-                            if empty_progress_decision.action == "finalize":
+                            if empty_progress_decision.action in {HookAction.FINALIZE, "finalize"}:
                                 forced_finalization_reason = empty_progress_decision.reason
                                 self.last_context_report["convergence_finalization"] = {
                                     "reason": empty_progress_decision.reason,
@@ -882,12 +928,10 @@ class ReActAgent(Agent):
                     if allowed_set is not None and tool_name not in allowed_set:
                         blocked = (f"Tool '{tool_name}' is not enabled for this turn. "
                                    f"Use one of: {', '.join(sorted(allowed_set)) or '(none)'}")
-                    elif tool_call_count >= self.max_tool_calls:
+                    elif budget.tool_call_count >= budget.max_tool_calls:
                         self.last_context_report["token_budget_stop_reason"] = "tool_call_limit"
-                        blocked = (f"Tool-call budget exceeded ({self.max_tool_calls}). "
+                        blocked = (f"Tool-call budget exceeded ({budget.max_tool_calls}). "
                                    "Stop calling tools and summarize the result.")
-                    else:
-                        tool_call_count += 1
                     parsed_calls.append((tc, tool_name, tool_args, blocked))
 
                 async def _execute_one(tool_name: str, tool_args: dict, blocked: str | None):
@@ -907,13 +951,27 @@ class ReActAgent(Agent):
                         ), 0.0
                     veto = get_hooks().trigger(
                         HookEvent.TOOL_BEFORE,
-                        HookContext(event=HookEvent.TOOL_BEFORE, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args,
-                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
+                        HookContext(
+                            event=HookEvent.TOOL_BEFORE,
+                            agent_name=self.name,
+                            run_id=runtime.run_id,
+                            runtime=runtime,
+                            tool_name=tool_name,
+                            tool_input=tool_args,
+                        ),
                     )
                     if veto is not None:
-                        return veto, veto, ToolResult(status="blocked", data=veto,
-                                                      error_code="HOOK_VETO"), 0.0
+                        if isinstance(veto, HookDecision):
+                            if veto.action not in {HookAction.VETO, HookAction.STOP, "veto", "stop"}:
+                                veto = None
+                            else:
+                                veto = veto.message or veto.reason
+                        if veto is not None:
+                            veto_message = str(veto)
+                            return veto_message, veto_message, ToolResult(
+                                status="blocked", data=veto_message,
+                                error_code="HOOK_VETO",
+                            ), 0.0
                     with trace_span(f"{self.name}/{tool_name}"):
                         started_tool = time.monotonic()
                         result = await self.tool_registry.aexecute_tool_result_with_params(
@@ -931,13 +989,24 @@ class ReActAgent(Agent):
                     observation_full = result.text
                     fed = get_hooks().trigger(
                         HookEvent.TOOL_AFTER,
-                        HookContext(event=HookEvent.TOOL_AFTER, agent_name=self.name,
-                                    tool_name=tool_name, tool_input=tool_args,
-                                    tool_output=observation_full,
-                                    tool_status=result.status,
-                                    error_code=result.error_code,
-                                    max_repeated_tool_calls=self.max_repeated_tool_calls),
+                        HookContext(
+                            event=HookEvent.TOOL_AFTER,
+                            agent_name=self.name,
+                            run_id=runtime.run_id,
+                            runtime=runtime,
+                            tool_name=tool_name,
+                            tool_input=tool_args,
+                            tool_output=observation_full,
+                            tool_status=result.status,
+                            error_code=result.error_code,
+                        ),
                     )
+                    if isinstance(fed, HookDecision):
+                        fed = (
+                            fed.message
+                            if fed.action in {HookAction.REPLACE, "replace"}
+                            else None
+                        )
                     return (
                         observation_full,
                         fed if fed is not None else observation_full,
@@ -1005,6 +1074,9 @@ class ReActAgent(Agent):
                                 json.dumps(tool_args, ensure_ascii=False)[:80],
                                 observation_fed[:80])
 
+                tool_call_count = budget.tool_call_count
+                total_tokens = budget.total_tokens
+
                 # 4. 追加 assistant + tool 消息到对话
                 messages.append({
                     "role": "assistant",
@@ -1043,8 +1115,28 @@ class ReActAgent(Agent):
                     })
                     last_failure_directive_signature = failed_tools
 
-                convergence_decision = convergence.observe(details)
-                if convergence_decision.action in {"recover", "finalize"}:
+                get_hooks().emit(
+                    HookEvent.TOOL_BATCH_AFTER,
+                    HookContext(
+                        event=HookEvent.TOOL_BATCH_AFTER,
+                        agent_name=self.name,
+                        run_id=runtime.run_id,
+                        runtime=runtime,
+                        phase="tool_batch_complete",
+                        payload={
+                            "details": details,
+                            "actions": actions,
+                            "step": step,
+                        },
+                    ),
+                )
+                convergence_decision = runtime.control_decision
+                if (
+                    isinstance(convergence_decision, HookDecision)
+                    and convergence_decision.action in {
+                        HookAction.RECOVER, HookAction.FINALIZE, "recover", "finalize",
+                    }
+                ):
                     self.last_context_report.setdefault("convergence_events", []).append({
                         "action": convergence_decision.action,
                         "reason": convergence_decision.reason,
@@ -1059,7 +1151,7 @@ class ReActAgent(Agent):
                             f"{convergence_decision.message}"
                         ),
                     })
-                    if convergence_decision.action == "finalize":
+                    if convergence_decision.action in {HookAction.FINALIZE, "finalize"}:
                         forced_finalization_reason = convergence_decision.reason
                         self.last_context_report["convergence_finalization"] = {
                             "reason": convergence_decision.reason,
@@ -1071,9 +1163,9 @@ class ReActAgent(Agent):
                 # selected before the hard limit was observed.  Execute them
                 # under their normal safety policies, then prevent any new
                 # model call instead of silently discarding the evidence.
-                if total_tokens >= self.max_total_tokens:
+                if total_tokens >= budget.max_total_tokens:
                     final_answer = (
-                        f"已达到 token 预算（{self.max_total_tokens}）。"
+                        f"已达到 token 预算（{budget.max_total_tokens}）。"
                         "已执行本轮已返回的工具调用，但不会再发起新的模型调用。"
                     )
                     self.last_context_report.update({

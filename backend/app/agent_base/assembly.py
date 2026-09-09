@@ -14,6 +14,7 @@ from backend.config import get_settings
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.core.memory import (
     MemoryPort,
     MemoryRecallRequest,
@@ -264,10 +265,18 @@ async def create_dev_agent(
         llm=llm,
         tool_registry=registry,
         system_prompt=prompt_builder.system_prompt,
-        max_tool_calls=max_tool_calls or settings.agent_max_tool_calls,
-        max_repeated_tool_calls=settings.agent_max_repeated_tool_calls,
-        max_run_seconds=max_run_seconds or settings.agent_max_run_seconds,
-        max_total_tokens=max_total_tokens or settings.agent_max_total_tokens,
+        execution_budget=ExecutionBudget.from_settings(
+            settings,
+            max_tool_calls=(
+                max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
+            ),
+            max_run_seconds=(
+                max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
+            ),
+            max_total_tokens=(
+                max_total_tokens if max_total_tokens is not None else settings.agent_max_total_tokens
+            ),
+        ),
         token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
         convergence_tool_steps=(
             convergence_tool_steps
@@ -276,6 +285,9 @@ async def create_dev_agent(
         ),
         convergence_budget_ratio=settings.agent_convergence_budget_ratio,
         convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
+        convergence_max_stalled_rounds=settings.agent_convergence_max_stalled_rounds,
+        convergence_max_recovery_rounds=settings.agent_convergence_max_recovery_rounds,
+        convergence_repeat_action_threshold=settings.agent_convergence_repeat_action_threshold,
         evidence_max_records=settings.agent_evidence_max_records,
         final_summary_max_tokens=settings.agent_final_summary_max_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,

@@ -23,6 +23,6 @@ def pytest_configure(config: pytest.Config) -> None:
     """
 
     if config.getoption("basetemp", default=None) is None:
-        base = Path(tempfile.gettempdir()) / "uml-designer-pytest"
+        base = Path(tempfile.gettempdir()) / "architectcoder-pytest"
         base.mkdir(parents=True, exist_ok=True)
         config.option.basetemp = str(base)

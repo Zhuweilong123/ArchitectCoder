@@ -15,8 +15,8 @@ from backend.config import Settings
 
 
 def test_windows_workspace_path_maps_to_wsl_mount():
-    assert windows_path_to_wsl(r"D:\AI_tools\uml_designer\backend") == "/mnt/d/AI_tools/uml_designer/backend"
-    assert windows_path_to_wsl("/mnt/d/AI_tools/uml_designer") == "/mnt/d/AI_tools/uml_designer"
+    assert windows_path_to_wsl(r"D:\AI_tools\ArchitectCoder\backend") == "/mnt/d/AI_tools/ArchitectCoder/backend"
+    assert windows_path_to_wsl("/mnt/d/AI_tools/ArchitectCoder") == "/mnt/d/AI_tools/ArchitectCoder"
 
 
 def test_wsl_path_mapping_rejects_ambiguous_host_path():
