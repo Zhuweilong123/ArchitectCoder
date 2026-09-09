@@ -14,7 +14,7 @@ import {
 import {
   ReloadOutlined, CaretRightOutlined, PauseOutlined, StepBackwardOutlined,
   RobotOutlined, ToolOutlined, CheckCircleOutlined, WarningOutlined, UserOutlined,
-  CloseCircleOutlined, SyncOutlined,
+  CloseCircleOutlined, FileAddOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import {
@@ -611,7 +611,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
 // ── 主组件 ────────────────────────────────────────────
 
 const TraceViewer: React.FC = () => {
-  const { traceVisible, traceSessionId, setTraceVisible, setTraceSessionId } = useUiStore();
+  const { requestTraceCaseFactory, traceVisible, traceSessionId, setEvaluationVisible, setTraceVisible, setTraceSessionId } = useUiStore();
 
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
@@ -815,6 +815,8 @@ const TraceViewer: React.FC = () => {
         <div style={{ display: 'flex', gap: 8 }}>
           <Button icon={<ReloadOutlined />} onClick={refreshList} loading={loadingList}>
             刷新
+          </Button>          <Button icon={<FileAddOutlined />} onClick={() => { if (selected) { requestTraceCaseFactory(selected); setTraceSessionId(selected); setTraceVisible(false); setEvaluationVisible(true); } }} disabled={!selected}>
+            从 Trace 创建用例
           </Button>
           <Segmented
             size="small"

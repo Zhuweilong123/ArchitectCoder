@@ -4,7 +4,7 @@ import {
   Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, message,
 } from 'antd';
 import {
-  DeleteOutlined, EyeOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
+  DeleteOutlined, EyeOutlined, FileAddOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useUiStore } from '../../stores/uiStore';
 import {
@@ -12,8 +12,9 @@ import {
   getEvalBaseline, listEvalTrends, mergeEvalBatches, startEvalBatch,
   getEvalRepository,
   archiveEvalPerformanceResult, getEvalPerformanceResult, listEvalPerformanceResults,
+  captureTraceCaseFixture, createTraceCaseDraft, deleteTraceCaseDraft, listTraceCaseDrafts, listTraceCaseProjects, previewTraceCaseFixture, publishTraceCaseDraft, reviewTraceCaseDraft, validateTraceCaseDraft, listTraces,
   type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalPerformanceRun,
-  type EvalRepositoryInfo, type EvalResult, type EvalTrend,
+  type EvalRepositoryInfo, type EvalResult, type EvalTrend, type TraceCaseDraft, type TraceCaseFixturePreview, type TraceCaseProject, type TraceMeta,
 } from '../../services/api';
 import './EvaluationCenter.css';
 
@@ -77,9 +78,104 @@ function traceSessionFromResult(result: EvalResult): string | null {
 
 type EvaluationTab = 'overview' | 'performance' | 'comparison' | 'runs' | 'archives';
 
+type CheckerFieldKind = 'text' | 'list' | 'number' | 'json';
+type CheckerFieldSpec = { key: string; label: string; kind?: CheckerFieldKind; required?: boolean; placeholder?: string };
+type CheckerDefinition = { type: string; label: string; fields: CheckerFieldSpec[] };
+
+const TRACE_CHECKER_DEFINITIONS: CheckerDefinition[] = [
+  { type: 'file_exists', label: '文件存在', fields: [{ key: 'path', label: '路径', required: true }] },
+  { type: 'file_absent', label: '文件不存在', fields: [{ key: 'path', label: '路径', required: true }] },
+  { type: 'file_contains', label: '文件包含文本', fields: [{ key: 'path', label: '路径', required: true }, { key: 'text', label: '文本', required: true }] },
+  { type: 'file_not_contains', label: '文件不包含文本', fields: [{ key: 'path', label: '路径', required: true }, { key: 'text', label: '文本', required: true }] },
+  { type: 'json_field', label: 'JSON 字段', fields: [{ key: 'path', label: '路径', required: true }, { key: 'field', label: '字段路径', required: true }, { key: 'expected', label: '期望值', kind: 'json', required: true }] },
+  { type: 'pytest', label: 'pytest', fields: [{ key: 'path', label: '测试路径', placeholder: '.' }, { key: 'args', label: '参数', kind: 'list' }, { key: 'timeout', label: '超时（秒）', kind: 'number' }] },
+  { type: 'hidden_pytest', label: '隐藏 pytest', fields: [{ key: 'path', label: '测试路径', placeholder: '.' }, { key: 'args', label: '参数', kind: 'list' }, { key: 'timeout', label: '超时（秒）', kind: 'number' }] },
+  { type: 'answer_contains_all', label: '回答包含全部内容', fields: [{ key: 'texts', label: '必含内容', kind: 'list', required: true }] },
+  { type: 'answer_ordered_contains', label: '回答按顺序包含', fields: [{ key: 'texts', label: '有序内容', kind: 'list', required: true }] },
+  { type: 'trace_policy', label: 'Trace 工具策略', fields: [{ key: 'max_tool_calls', label: '最大工具调用', kind: 'number' }, { key: 'required_tools', label: '必须使用工具', kind: 'list' }, { key: 'forbidden_tools', label: '禁止使用工具', kind: 'list' }] },
+  { type: 'paths_unchanged', label: '路径保持不变', fields: [{ key: 'paths', label: '路径', kind: 'list', required: true }] },
+  { type: 'uml_valid', label: 'UML 有效', fields: [{ key: 'path', label: '路径', required: true }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_contains', label: 'UML 包含元素', fields: [{ key: 'path', label: '路径', required: true }, { key: 'kind', label: '元素类型', required: true }, { key: 'name', label: '元素名称', required: true }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_absent', label: 'UML 不包含元素', fields: [{ key: 'path', label: '路径', required: true }, { key: 'kind', label: '元素类型', required: true }, { key: 'name', label: '元素名称', required: true }, { key: 'diagram', label: '图表名称' }, { key: 'class_name', label: '类名' }, { key: 'method', label: '方法名' }] },
+  { type: 'uml_component_names', label: 'UML 组件名称', fields: [{ key: 'path', label: '路径', required: true }, { key: 'names', label: '组件名称', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_relation', label: 'UML 关系', fields: [{ key: 'path', label: '路径', required: true }, { key: 'source', label: '源元素', required: true }, { key: 'target', label: '目标元素', required: true }, { key: 'relation_type', label: '关系类型' }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_method', label: 'UML 方法', fields: [{ key: 'path', label: '路径', required: true }, { key: 'class_name', label: '类名', required: true }, { key: 'method', label: '方法名', required: true }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_method_signature', label: 'UML 方法签名', fields: [{ key: 'path', label: '路径', required: true }, { key: 'class_name', label: '类名', required: true }, { key: 'method', label: '方法名', required: true }, { key: 'params', label: '参数', kind: 'list', required: true }, { key: 'return_type', label: '返回类型' }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_sequence', label: 'UML 时序包含', fields: [{ key: 'path', label: '路径', required: true }, { key: 'labels', label: '顺序标签', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_sequence_exact', label: 'UML 时序精确匹配', fields: [{ key: 'path', label: '路径', required: true }, { key: 'labels', label: '精确标签', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
+];
+
+const checkerDefinitions = Object.fromEntries(TRACE_CHECKER_DEFINITIONS.map((definition) => [definition.type, definition]));
+
+function validateCheckerConfigs(configs: Array<Record<string, any>>, scope: string): void {
+  configs.forEach((config, index) => {
+    const definition = checkerDefinitions[String(config.type || '')];
+    if (!definition) throw new Error(`${scope}[${index}] 的 Checker 类型无效`);
+    const missing = definition.fields.filter((field) => field.required && (config[field.key] === undefined || config[field.key] === '' || (Array.isArray(config[field.key]) && config[field.key].length === 0)));
+    if (missing.length) throw new Error(`${scope}[${index}] 缺少：${missing.map((field) => field.label).join('、')}`);
+  });
+}
+
+interface CheckerEditorProps {
+  title: string;
+  value: Array<Record<string, any>>;
+  onChange: (value: Array<Record<string, any>>) => void;
+}
+
+const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange }) => {
+  const updateChecker = (index: number, patch: Record<string, any>) => {
+    onChange(value.map((checker, current) => current === index ? { ...checker, ...patch } : checker));
+  };
+  const updateField = (index: number, field: CheckerFieldSpec, rawValue: string) => {
+    let parsed: any = rawValue;
+    if (field.kind === 'list') parsed = rawValue.split(',').map((item) => item.trim()).filter(Boolean);
+    if (field.kind === 'number') parsed = rawValue === '' ? undefined : Number(rawValue);
+    if (field.kind === 'json' && rawValue.trim()) {
+      try { parsed = JSON.parse(rawValue); } catch { parsed = rawValue; }
+    }
+    const next = { ...value[index] };
+    if (parsed === undefined || parsed === '') delete next[field.key];
+    else next[field.key] = parsed;
+    updateChecker(index, next);
+  };
+  return (
+    <Card size="small" title={`${title}（${value.length}）`} extra={<Button size="small" onClick={() => onChange([...value, { type: 'file_exists' }])}>添加 Checker</Button>}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        {value.length === 0 ? <Text type="secondary">暂无配置，点击右上角添加 Checker</Text> : value.map((checker, index) => {
+          const definition = checkerDefinitions[String(checker.type || '')] || TRACE_CHECKER_DEFINITIONS[0];
+          return (
+            <Card key={`${index}-${checker.type || 'checker'}`} size="small" type="inner" title={`Checker ${index + 1}`} extra={<Button danger size="small" onClick={() => onChange(value.filter((_, current) => current !== index))}>删除</Button>}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  value={checker.type || undefined}
+                  style={{ width: '100%' }}
+                  placeholder="选择 Checker 类型"
+                  options={TRACE_CHECKER_DEFINITIONS.map((item) => ({ value: item.type, label: `${item.label}（${item.type}）` }))}
+                  onChange={(type) => onChange(value.map((item, current) => current === index ? { type } : item))}
+                />
+                <Space wrap style={{ width: '100%' }}>
+                  {definition.fields.map((field) => {
+                    const currentValue = checker[field.key];
+                    const displayValue = field.kind === 'list' ? (Array.isArray(currentValue) ? currentValue.join(', ') : '') : field.kind === 'json' ? (currentValue === undefined ? '' : JSON.stringify(currentValue, null, 2)) : currentValue === undefined ? '' : String(currentValue);
+                    const control = field.kind === 'json' ? (
+                      <Input.TextArea value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} autoSize={{ minRows: 1, maxRows: 4 }} placeholder={field.placeholder || 'JSON 值'} />
+                    ) : <Input value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} type={field.kind === 'number' ? 'number' : 'text'} placeholder={field.placeholder || (field.kind === 'list' ? '多个值用逗号分隔' : '')} />;
+                    return <div key={field.key} style={{ minWidth: 220, flex: '1 1 220px' }}><Text type={field.required ? undefined : 'secondary'}>{field.label}{field.required ? ' *' : '（可选）'}</Text>{control}</div>;
+                  })}
+                </Space>
+              </Space>
+            </Card>
+          );
+        })}
+      </Space>
+    </Card>
+  );
+};
 const EvaluationCenter: React.FC = () => {
   const {
-    evaluationVisible, setEvaluationVisible, setTraceSessionId, setTraceVisible,
+    clearTraceCaseFactoryRequest, evaluationVisible, traceCaseFactoryRequestedSessionId, setEvaluationVisible, setTraceSessionId, setTraceVisible,
   } = useUiStore();
   const [cases, setCases] = useState<EvalCaseInfo[]>([]);
   const [baseline, setBaseline] = useState<EvalBaseline | null>(null);
@@ -109,6 +205,21 @@ const EvaluationCenter: React.FC = () => {
   const [batch, setBatch] = useState<EvalBatch | null>(null);
   const [loading, setLoading] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [traceCaseVisible, setTraceCaseVisible] = useState(false);
+  const [traceCaseLoading, setTraceCaseLoading] = useState(false);
+  const [traceCaseActionLoading, setTraceCaseActionLoading] = useState(false);
+  const [traceCaseTraces, setTraceCaseTraces] = useState<TraceMeta[]>([]);
+  const [traceCaseDrafts, setTraceCaseDrafts] = useState<TraceCaseDraft[]>([]);
+  const [traceCaseProjects, setTraceCaseProjects] = useState<TraceCaseProject[]>([]);
+  const [traceCaseSessionId, setTraceCaseSessionId] = useState('');
+  const [traceCaseProjectId, setTraceCaseProjectId] = useState('');
+  const [traceCaseName, setTraceCaseName] = useState('');
+  const [traceCaseReviewName, setTraceCaseReviewName] = useState('');
+  const [traceCaseReviewProjectId, setTraceCaseReviewProjectId] = useState('');
+  const [traceCaseCheckers, setTraceCaseCheckers] = useState<Array<Record<string, any>>>([]);
+  const [traceCaseHardCheckers, setTraceCaseHardCheckers] = useState<Array<Record<string, any>>>([]);
+  const [traceCaseDraft, setTraceCaseDraft] = useState<TraceCaseDraft | null>(null);
+  const [traceCaseFixturePreview, setTraceCaseFixturePreview] = useState<TraceCaseFixturePreview | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const suites = useMemo(() => Array.from(new Set(cases.map((item) => (
@@ -363,6 +474,173 @@ const EvaluationCenter: React.FC = () => {
     }
   };
 
+  const restoreTraceCaseDraft = (draft: TraceCaseDraft) => {
+    setTraceCaseDraft(draft);
+    setTraceCaseFixturePreview(null);
+    setTraceCaseReviewName(draft.case.name);
+    setTraceCaseReviewProjectId(draft.case.project_id);
+    setTraceCaseCheckers(draft.case.checkers || []);
+    setTraceCaseHardCheckers(draft.case.hard_checkers || []);
+  };
+
+  const removeTraceCaseDraft = async (draft: TraceCaseDraft) => {
+    try {
+      await deleteTraceCaseDraft(draft.draft_id);
+      setTraceCaseDrafts((current) => current.filter((item) => item.draft_id !== draft.draft_id));
+      if (traceCaseDraft?.draft_id === draft.draft_id) { setTraceCaseDraft(null); setTraceCaseFixturePreview(null); }
+      message.success('评测用例草稿已删除');
+    } catch (error: any) {
+      message.error(`删除草稿失败：${error?.response?.data?.detail || error.message || error}`);
+    }
+  };
+  const openTraceCaseFactory = async (requestedSessionId = "") => {
+    setTraceCaseVisible(true);
+    setTraceCaseDraft(null);
+    setTraceCaseFixturePreview(null);
+    setTraceCaseLoading(true);
+    try {
+      const [traces, projects, drafts] = await Promise.all([listTraces(), listTraceCaseProjects(), listTraceCaseDrafts()]);
+      setTraceCaseTraces(traces);
+      setTraceCaseDrafts(drafts);
+      setTraceCaseProjects(projects);
+      const preferredSessionId = requestedSessionId && traces.some((trace) => trace.session_id === requestedSessionId)
+        ? requestedSessionId
+        : traceCaseSessionId && traces.some((trace) => trace.session_id === traceCaseSessionId)
+          ? traceCaseSessionId
+          : traces[0]?.session_id || '';
+      setTraceCaseSessionId(preferredSessionId);
+      setTraceCaseProjectId((current) => current || projects[0]?.id || '');
+    } catch (error: any) {
+      message.error(`Trace 用例能力加载失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!evaluationVisible || !traceCaseFactoryRequestedSessionId) return;
+    const requestedSessionId = traceCaseFactoryRequestedSessionId;
+    clearTraceCaseFactoryRequest();
+    void openTraceCaseFactory(requestedSessionId);
+    // The request is a one-shot cross-panel navigation signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evaluationVisible, traceCaseFactoryRequestedSessionId]);
+  const createTraceCase = async () => {
+    if (!traceCaseSessionId) {
+      message.warning('请先选择一个 Trace 会话');
+      return;
+    }
+    setTraceCaseActionLoading(true);
+    try {
+      const draft = await createTraceCaseDraft({
+        session_id: traceCaseSessionId,
+        name: traceCaseName.trim(),
+        project_id: traceCaseProjectId,
+        suite: 'trace-derived',
+        include_trace_policy: true,
+      });
+      restoreTraceCaseDraft(draft);
+      setTraceCaseDrafts((current) => [draft, ...current.filter((item) => item.draft_id !== draft.draft_id)]);
+      message.success('Trace 已转换为评测用例草稿');
+    } catch (error: any) {
+      message.error(`Trace 转换失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
+
+  const previewTraceCase = async () => {
+    if (!traceCaseDraft) return;
+    setTraceCaseActionLoading(true);
+    try {
+      const preview = await previewTraceCaseFixture(traceCaseDraft.draft_id);
+      setTraceCaseFixturePreview(preview);
+    } catch (error: any) {
+      message.error(`fixture 预览失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
+
+  const captureTraceCase = async () => {
+    if (!traceCaseDraft || !traceCaseFixturePreview) return;
+    setTraceCaseActionLoading(true);
+    try {
+      const draft = await captureTraceCaseFixture(traceCaseDraft.draft_id);
+      restoreTraceCaseDraft(draft);
+      setTraceCaseDrafts((current) => current.map((item) => item.draft_id === draft.draft_id ? draft : item));
+      message.success(`工作区已捕获为 fixture（${draft.capture?.file_count || 0} 个文件）`);
+    } catch (error: any) {
+      message.error(`fixture 捕获失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
+  const addTraceCaseCandidate = (candidate: Record<string, any>, target: 'diagnostic' | 'hard') => {
+    const setter = target === 'hard' ? setTraceCaseHardCheckers : setTraceCaseCheckers;
+    setter((current) => {
+      const exists = current.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
+      if (exists) return current;
+      return [...current, { ...candidate }];
+    });
+    message.success(target === 'hard' ? '候选约束已加入 Hard Checkers' : '候选约束已加入 Diagnostic Checkers');
+  };
+  const saveTraceCaseReview = async () => {
+    if (!traceCaseDraft) return;
+    try {
+      validateCheckerConfigs(traceCaseCheckers, 'checkers');
+      validateCheckerConfigs(traceCaseHardCheckers, 'hard_checkers');
+    } catch (error: any) {
+      message.error(`Checker 配置无效：${error.message || error}`);
+      return;
+    }
+    setTraceCaseActionLoading(true);
+    try {
+      const draft = await reviewTraceCaseDraft(traceCaseDraft.draft_id, {
+        name: traceCaseReviewName.trim(),
+        project_id: traceCaseReviewProjectId,
+        checkers: traceCaseCheckers,
+        hard_checkers: traceCaseHardCheckers,
+      });
+      setTraceCaseDraft(draft);
+      setTraceCaseFixturePreview(null);
+      message.success('草稿审核内容已保存，请重新执行隔离试运行');
+    } catch (error: any) {
+      message.error(`保存审核内容失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
+  const validateTraceCase = async () => {
+    if (!traceCaseDraft) return;
+    setTraceCaseActionLoading(true);
+    try {
+      const draft = await validateTraceCaseDraft(traceCaseDraft.draft_id);
+      setTraceCaseDraft(draft);
+      message[draft.status === 'validated' ? 'success' : 'error'](
+        draft.status === 'validated' ? '隔离试运行通过，可以发布' : '隔离试运行未通过，请检查结果',
+      );
+    } catch (error: any) {
+      message.error(`隔离试运行失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
+
+  const publishTraceCase = async () => {
+    if (!traceCaseDraft) return;
+    setTraceCaseActionLoading(true);
+    try {
+      await publishTraceCaseDraft(traceCaseDraft.draft_id);
+      await refresh();
+      setTraceCaseDraft({ ...traceCaseDraft, status: 'published' });
+      message.success('评测用例已发布到本地目录');
+    } catch (error: any) {
+      message.error(`发布评测用例失败：${error?.response?.data?.detail || error.message || error}`);
+    } finally {
+      setTraceCaseActionLoading(false);
+    }
+  };
   useEffect(() => {
     if (evaluationVisible) refresh();
     return () => {
@@ -872,6 +1150,7 @@ const EvaluationCenter: React.FC = () => {
           <Tag color={repository?.dirty ? 'warning' : 'green'} title={repository?.commit || undefined}>{repository ? `${repository.branch}@${repository.commit.slice(0, 12)}${repository.dirty ? ' · dirty' : ''}` : '读取仓库版本中…'}</Tag>
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={runBatch} loading={loading} disabled={!selectedCaseIds.length || !repository?.version || repository.version === 'unknown' || !!batch && ['running', 'queued'].includes(batch.status)}>一键运行</Button>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+          <Button icon={<FileAddOutlined />} onClick={() => openTraceCaseFactory()}>Trace 转用例</Button>
           <Button icon={<EyeOutlined />} onClick={openPerformance}>性能结果</Button>
           <Popconfirm title="确认归档当前完整评测？" description="只有全部评测集执行完成后才允许归档，原始结果不会被覆盖。" okText="确认归档" cancelText="取消" onConfirm={archiveBatch}><Button icon={<FileDoneOutlined />} loading={archiving} disabled={!archiveReady}>一键归档</Button></Popconfirm>
         </Space>
@@ -884,6 +1163,173 @@ const EvaluationCenter: React.FC = () => {
         { key: 'comparison', label: `多版本对比${comparisonRuns.length ? ` (${comparisonRuns.length})` : ''}`, children: renderComparison() },
         { key: 'archives', label: `已归档 (${archives.length})`, children: renderArchives() },
       ]} />
+      <Modal
+        title="Trace 一键转评测用例"
+        open={traceCaseVisible}
+        onCancel={() => setTraceCaseVisible(false)}
+        footer={null}
+        width={760}
+      >
+        {traceCaseLoading ? <div style={{ padding: 24, textAlign: 'center' }}>加载 Trace 与评测项目中…</div> : traceCaseDraft ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space wrap>
+              <Tag color={traceCaseDraft.status === 'validated' ? 'green' : traceCaseDraft.status === 'published' ? 'blue' : 'orange'}>
+                {traceCaseDraft.status}
+              </Tag>
+              <Text type="secondary">会话：{traceCaseDraft.session_id}</Text>
+              <Text type="secondary">事件：{traceCaseDraft.trace_summary.events || 0}</Text>
+              <Text type="secondary">工具调用：{traceCaseDraft.trace_summary.tool_calls || 0}</Text>
+            </Space>
+            {traceCaseDraft.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message={warning} />)}
+            <Card size="small" title={traceCaseDraft.case.name}>
+              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>{traceCaseDraft.case.prompt || traceCaseDraft.case.turns?.map((turn) => turn.prompt).join('\n\n')}</Typography.Paragraph>
+              <Text type="secondary">项目：{traceCaseDraft.case.project_id || '未绑定'}；候选约束：{traceCaseDraft.candidate_checkers.length} 个</Text>
+            </Card>
+            {traceCaseDraft.candidate_checkers.length ? (
+              <Card size="small" title={`Trace 证据候选约束（${traceCaseDraft.candidate_checkers.length}）`}>
+                <List
+                  size="small"
+                  dataSource={traceCaseDraft.candidate_checkers}
+                  renderItem={(candidate) => {
+                    const inDiagnostic = traceCaseCheckers.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
+                    const inHard = traceCaseHardCheckers.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
+                    const evidence = candidate._evidence || {};
+                    return (
+                      <List.Item
+                        actions={[
+                          <Button key="diagnostic" size="small" onClick={() => addTraceCaseCandidate(candidate, 'diagnostic')} disabled={inDiagnostic}>加入 Diagnostic</Button>,
+                          <Button key="hard" size="small" type="primary" ghost onClick={() => addTraceCaseCandidate(candidate, 'hard')} disabled={inHard}>提升为 Hard</Button>,
+                        ]}
+                      >
+                        <List.Item.Meta
+                          title={<Space><Tag color="blue">{candidate.type}</Tag>{inHard ? <Tag color="green">Hard</Tag> : inDiagnostic ? <Tag>Diagnostic</Tag> : null}</Space>}
+                          description={<Space direction="vertical" size={0}><Text type="secondary">{candidate._reason || '由 Trace 证据生成，需人工确认'}</Text><Text type="secondary">证据：工具 {Array.isArray(evidence.observed_tools) ? evidence.observed_tools.join('、') : '未知'}；调用 {evidence.tool_calls || 0} 次；错误 {evidence.tool_errors || 0} 次</Text></Space>}
+                        />
+                      </List.Item>
+                    );
+                  }}
+                />
+              </Card>
+            ) : null}
+            <Card size="small" title="审核用例与 Checker">
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Input value={traceCaseReviewName} onChange={(event) => setTraceCaseReviewName(event.target.value)} addonBefore="名称" />
+                <Select
+                  allowClear
+                  value={traceCaseReviewProjectId || undefined}
+                  onChange={(value) => setTraceCaseReviewProjectId(value || '')}
+                  style={{ width: '100%' }}
+                  placeholder="绑定评测项目后才能验证和发布"
+                  options={traceCaseProjects.map((project) => ({ value: project.id, label: `${project.id} · ${project.version}` }))}
+                />
+                <CheckerEditor title="Diagnostic Checkers" value={traceCaseCheckers} onChange={setTraceCaseCheckers} />
+                <CheckerEditor title="Hard Checkers（明确通过条件）" value={traceCaseHardCheckers} onChange={setTraceCaseHardCheckers} />
+                                {traceCaseDraft.capture ? (
+                  <Alert type="success" showIcon message={`已捕获 fixture：${traceCaseDraft.capture.project_id}，哈希 ${traceCaseDraft.capture.sha256.slice(0, 12)}…`} />
+                ) : traceCaseFixturePreview ? (
+                  <Card size="small" title="fixture 捕获预览">
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Tag color={traceCaseFixturePreview.project_exists ? 'error' : 'blue'}>
+                          项目：{traceCaseFixturePreview.project_id}
+                        </Tag>
+                        <Text type="secondary">文件：{traceCaseFixturePreview.file_count}</Text>
+                        <Text type="secondary">大小：{(traceCaseFixturePreview.total_bytes / 1024).toFixed(1)} KB</Text>
+                      </Space>
+                      {traceCaseFixturePreview.project_exists ? <Alert type="error" showIcon message="同名评测项目已存在，无法确认捕获" /> : null}
+                      {traceCaseFixturePreview.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message={warning} />)}
+                      <Table
+                        size="small"
+                        rowKey="path"
+                        pagination={{ pageSize: 8, showSizeChanger: false }}
+                        scroll={{ y: 220 }}
+                        dataSource={traceCaseFixturePreview.files}
+                        columns={[
+                          { title: '文件', dataIndex: 'path', ellipsis: true },
+                          { title: '大小', dataIndex: 'size', width: 100, render: (value: number) => `${(value / 1024).toFixed(1)} KB` },
+                        ]}
+                      />
+                      <Space>
+                        <Button type="primary" onClick={captureTraceCase} loading={traceCaseActionLoading} disabled={traceCaseFixturePreview.project_exists}>确认并捕获 fixture</Button>
+                        <Button onClick={previewTraceCase} loading={traceCaseActionLoading}>重新扫描</Button>
+                      </Space>
+                    </Space>
+                  </Card>
+                ) : (
+                  <Button onClick={previewTraceCase} loading={traceCaseActionLoading}>预览 fixture 文件</Button>
+                )}
+                <Button onClick={saveTraceCaseReview} loading={traceCaseActionLoading}>保存审核内容</Button>
+              </Space>
+            </Card>            {traceCaseDraft.validation ? (
+              <Alert
+                type={traceCaseDraft.validation.passed ? 'success' : 'error'}
+                showIcon
+                message={`隔离试运行：${traceCaseDraft.validation.passed ? '通过' : '未通过'}（得分 ${(traceCaseDraft.validation.score * 100).toFixed(1)}%）`}
+                description={traceCaseDraft.validation.error || undefined}
+              />
+            ) : null}
+            <Space>
+              <Button onClick={() => { setTraceCaseDraft(null); setTraceCaseFixturePreview(null); }}>重新选择 Trace</Button>
+              <Button type="primary" onClick={validateTraceCase} loading={traceCaseActionLoading} disabled={!traceCaseDraft.case.project_id || traceCaseDraft.status === 'published'}>隔离试运行</Button>
+              <Button type="primary" ghost onClick={publishTraceCase} loading={traceCaseActionLoading} disabled={traceCaseDraft.status !== 'validated'}>发布用例</Button>
+            </Space>
+          </Space>
+        ) : (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert type="info" showIcon message="Trace 只作为只读证据，先生成草稿，再绑定项目并隔离试运行，最后显式发布。" />            {traceCaseDrafts.length ? (
+              <Card size="small" title={`未完成草稿 (${traceCaseDrafts.length})`}>
+                <List
+                  size="small"
+                  dataSource={traceCaseDrafts}
+                  renderItem={(draft) => (
+                    <List.Item
+                      actions={[
+                        <Button key="restore" size="small" onClick={() => restoreTraceCaseDraft(draft)}>恢复</Button>,
+                        <Popconfirm key="delete" title="删除这个草稿？" onConfirm={() => removeTraceCaseDraft(draft)} disabled={draft.status === 'published'}>
+                          <Button size="small" danger disabled={draft.status === 'published'}>删除</Button>
+                        </Popconfirm>,
+                      ]}
+                    >
+                      <List.Item.Meta
+                        title={draft.case.name || draft.case.id}
+                        description={`${draft.status} · ${draft.session_id}`}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            ) : null}
+            <div>
+              <Text strong>Trace 会话</Text>
+              <Select
+                showSearch
+                value={traceCaseSessionId || undefined}
+                onChange={setTraceCaseSessionId}
+                style={{ width: '100%', marginTop: 8 }}
+                placeholder="选择要转换的 Trace 会话"
+                optionFilterProp="label"
+                options={traceCaseTraces.map((trace) => ({ value: trace.session_id, label: `${trace.title || trace.session_id} · ${trace.events} 个事件` }))}
+              />
+            </div>
+            <div>
+              <Text strong>评测项目（用于隔离验证）</Text>
+              <Select
+                allowClear
+                value={traceCaseProjectId || undefined}
+                onChange={(value) => setTraceCaseProjectId(value || '')}
+                style={{ width: '100%', marginTop: 8 }}
+                placeholder="选择项目；未绑定时只能生成草稿"
+                options={traceCaseProjects.map((project) => ({ value: project.id, label: `${project.id} · ${project.version}` }))}
+              />
+            </div>
+            <div>
+              <Text strong>用例名称（可选）</Text>
+              <Input value={traceCaseName} onChange={(event) => setTraceCaseName(event.target.value)} placeholder="默认使用首条用户请求" style={{ marginTop: 8 }} />
+            </div>
+            <Button type="primary" onClick={createTraceCase} loading={traceCaseActionLoading} disabled={!traceCaseSessionId}>生成用例草稿</Button>
+          </Space>
+        )}
+      </Modal>
     </Modal>
   );
 };

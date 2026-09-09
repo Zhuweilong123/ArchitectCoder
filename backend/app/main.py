@@ -36,10 +36,12 @@ from app.services.agent_chat_ws import router as agent_chat_router
 from app.api.trace import router as trace_router
 from app.api.metrics import router as metrics_router
 from app.api.evals import router as evals_router
+from app.agent_base.core.plugins import get_plugin_manager
 from app.api.runs import router as runs_router
 from app.api.audit import router as audit_router
 
 settings = get_settings()
+evals_extension_router = get_plugin_manager().load_router("evals", settings=settings)
 
 app = FastAPI(
     title=settings.app_name,
@@ -66,6 +68,8 @@ app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
 app.include_router(trace_router, dependencies=[Depends(require_auth)])         # trace 浏览/读取
 app.include_router(metrics_router, dependencies=[Depends(require_auth)])        # Agent metrics
 app.include_router(evals_router, dependencies=[Depends(require_auth)])          # Evaluation MVP
+if evals_extension_router is not None:
+    app.include_router(evals_extension_router, dependencies=[Depends(require_auth)])
 app.include_router(runs_router, dependencies=[Depends(require_auth)])            # Durable harness runs
 app.include_router(audit_router, dependencies=[Depends(require_auth)])           # Harness audit events
 

@@ -163,7 +163,7 @@ async def archive_performance_result(request: EvalPerformanceArchiveRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("/runs")
+@router.post('/runs')
 async def start_eval_batch(request: EvalBatchRequest):
     try:
         batch = await load_evals().start_batch(request)

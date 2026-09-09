@@ -47,6 +47,7 @@ class EvalPerformanceArchiveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+
 class EvalProvider(Protocol):
     """Provider contract for case execution and result management."""
 
@@ -85,6 +86,7 @@ class EvalProvider(Protocol):
     def delete_performance_result(self, result_id: str) -> dict[str, Any]: ...
 
     def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
+
 
 
 class NoOpEvalProvider:
