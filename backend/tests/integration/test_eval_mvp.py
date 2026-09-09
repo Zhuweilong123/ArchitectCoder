@@ -128,7 +128,6 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
         agent_max_tool_calls=100,
         agent_max_run_seconds=600,
         agent_max_total_tokens=200000,
-        agent_convergence_tool_steps=25,
     )
     captured = {}
     fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))

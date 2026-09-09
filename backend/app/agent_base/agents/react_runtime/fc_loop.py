@@ -81,7 +81,6 @@ async def run_fc_loop(
         "compacted_messages": compacted.dropped_messages,
         "compacted_tokens": compacted.dropped_tokens,
         "convergence_policy": {
-            "tool_steps": agent.convergence_tool_steps,
             "budget_ratio": agent.convergence_budget_ratio,
             "keep_recent_steps": agent.convergence_keep_recent_steps,
             "evidence_max_records": agent.evidence_max_records,
@@ -89,7 +88,6 @@ async def run_fc_loop(
             "max_stalled_rounds": agent.convergence_max_stalled_rounds,
             "max_recovery_rounds": agent.convergence_max_recovery_rounds,
             "repeat_action_threshold": agent.convergence_repeat_action_threshold,
-            "legacy_step_limit_parameter_ignored": True,
             "final_summary_max_tokens": agent.final_summary_max_tokens,
         },
     })
@@ -183,8 +181,6 @@ async def run_fc_loop(
                     "token_budget_finalization_mode": True,
                 })
             convergence_reasons = []
-            if tool_call_count >= agent.convergence_tool_steps:
-                convergence_reasons.append("tool_call_count")
             if total_tokens >= budget.max_total_tokens * agent.convergence_budget_ratio:
                 convergence_reasons.append("token_budget_ratio")
             if convergence_reasons:

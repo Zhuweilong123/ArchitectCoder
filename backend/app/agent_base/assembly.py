@@ -204,7 +204,6 @@ async def create_dev_agent(
     max_tool_calls: int | None = None,
     max_run_seconds: float | None = None,
     max_total_tokens: int | None = None,
-    convergence_tool_steps: int | None = None,
 ):
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
@@ -278,11 +277,6 @@ async def create_dev_agent(
             ),
         ),
         token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
-        convergence_tool_steps=(
-            convergence_tool_steps
-            if convergence_tool_steps is not None
-            else settings.agent_convergence_tool_steps
-        ),
         convergence_budget_ratio=settings.agent_convergence_budget_ratio,
         convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
         convergence_max_stalled_rounds=settings.agent_convergence_max_stalled_rounds,

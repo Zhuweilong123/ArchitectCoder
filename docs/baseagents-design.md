@@ -13,7 +13,7 @@
 - **职责单一**：Agent 只管推理循环，Tool 只管执行逻辑。
 - **接口统一**：Agent 与 Tool 通过 ABC 抽象基类约束，子类实现标准接口。
 
-公开入口 `__init__.py` 导出 **20 个符号**（core 10 + agents 4 + tools 6）。
+公开入口 `__init__.py` 导出 **18 个符号**（core 10 + agents 2 + tools 6）。
 
 ## 2. 架构
 
@@ -31,10 +31,8 @@ agent_base/
 │   ├── llm.py                           # 统一 LLM 接口（6 种 provider + 同步/异步/流式/FC）
 │   └── agent.py                         # Agent 抽象基类（ABC, run() + 历史管理）
 │
-├── agents/                              # Agent 实现层（4 种范式 + 可中断包装器）
-│   ├── simple_agent.py                  # 基础对话 + 文本格式工具调用
+├── agents/                              # Agent 实现层（2 种范式 + 可中断包装器）
 │   ├── react_agent.py                   # ReAct 循环（原生 FC + 文本解析降级）
-│   ├── reflection_agent.py              # 反思优化（initial→reflect→refine）+ Hook 机制
 │   ├── plan_solve_agent.py              # 先规划后执行（Planner→Executor）
 │   └── interruptible.py                 # 可中断包装器（前端 stop 按钮）
 │
@@ -79,25 +77,19 @@ llm = BaseAgentsLLM(provider="deepseek", model="deepseek-v4-pro", api_key="...")
 | ollama | llama3（本地） | — |
 | vllm | （本地） | — |
 
-### 3.2 四种 Agent 范式
+### 3.2 Agent 范式
 
 ```python
-from app.agent_base import SimpleAgent, ReActAgent, ReflectionAgent, PlanAndSolveAgent
+from app.agent_base import ReActAgent, PlanAndSolveAgent
 from app.agent_base.tools import ToolRegistry
 
 registry = ToolRegistry()
 # ... 注册工具 ...
 
-agent = SimpleAgent(name="助手", llm=llm, system_prompt="你是有用的助手")
-answer = agent.run("Python 的 with 语句有什么作用？")
-
 agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, use_native_fc=True)
 answer = await agent.arun("搜索 2024 年 Java 最新特性")          # 异步 FC
 async for progress in agent.arun_stream("帮我优化这段代码"):      # 流式进度
     print(f"Step {progress.step}: {progress.actions}")
-
-agent = ReflectionAgent(name="写手", llm=llm, max_iterations=3)
-answer = agent.run("写一篇关于 AI 伦理的短文")
 
 agent = PlanAndSolveAgent(name="规划者", llm=llm)
 answer = agent.run("设计一个用户注册系统的数据库 schema")
@@ -105,12 +97,7 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 
 ## 4. Agent 范式详解
 
-### 4.1 SimpleAgent — 基础对话
-
-封装一次 LLM 调用，支持可选的文本格式工具调用（`[TOOL_CALL:tool_name:parameters]`，
-最多 3 轮工具循环）。适合简单问答、无需复杂推理的场景。
-
-### 4.2 ReActAgent — 推理+行动（主力）
+### 4.1 ReActAgent — 推理+行动（主力）
 
 完整 Reasoning + Acting 循环，**项目对话 Agent 的主力范式**。
 
@@ -125,14 +112,7 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 **流式进度** `ReActProgress`：`step / actions / tool_calls_detail / thought / is_final /
 final_answer`。
 
-### 4.3 ReflectionAgent — 反思优化
-
-三阶段循环（initial → reflect → refine），用于需反复打磨的任务（代码修复）。
-
-**Hook 机制**：`validate(content) → feedback_str`，返回空串表示通过（停止迭代），
-返回问题描述则作为补充消息追加，触发 LLM 修正。原始需求始终在 `messages[0]`。
-
-### 4.4 PlanAndSolveAgent — 先规划后执行
+### 4.2 PlanAndSolveAgent — 先规划后执行
 
 Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后续步骤。
 
@@ -344,7 +324,7 @@ class MyNewTool(AsyncTool):
 
 ## 13. 设计参考
 
-- **架构模式**：Simple / ReAct / Reflection / Plan-and-Solve 四种经典 Agent 范式。
+- **架构模式**：ReAct / Plan-and-Solve 两种 Agent 范式。
 - **工具系统**：万物皆为工具（Tool ABC → Registry → Chain → AsyncExecutor）。
 - **分层代理**：工具封装子 Agent（对话 Agent → `spawn_subagent` → 受限文件系统原语工具集）。
 - **流式进度**：ReActProgress 逐轮推送 → 前端实时渲染。
@@ -361,7 +341,7 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/core/llm.py` | `BaseAgentsLLM`（6 provider + 同步/异步/流式/FC） |
 | `backend/app/agent_base/core/agent.py` | Agent ABC + 历史管理 |
 | `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
-| `backend/app/agent_base/agents/reflection_agent.py` | 反思优化 + Hook 机制 |
+| `backend/app/agent_base/agents/react_runtime/` | ReAct Loop、工具批次、解析器和运行时类型 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
 | `backend/app/agent_base/tools/async_tool.py` | AsyncTool 基类 |

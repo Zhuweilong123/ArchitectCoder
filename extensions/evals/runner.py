@@ -223,11 +223,6 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         task_scope=f"eval_{case.id}",
         auto_approve_reviews=True,
         **budget,
-        convergence_tool_steps=(
-            int(case.metadata["convergence_tool_steps"])
-            if case.metadata.get("convergence_tool_steps") is not None
-            else settings.agent_convergence_tool_steps
-        ),
     )
     agent._eval_prompt_builder = prompt_builder
     agent._eval_source_dir = str(source_dir)

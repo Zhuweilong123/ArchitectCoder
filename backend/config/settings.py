@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
-    agent_convergence_tool_steps: int = 25
     agent_convergence_budget_ratio: float = 0.8
     agent_convergence_keep_recent_steps: int = 3
     agent_convergence_max_stalled_rounds: int = 3

@@ -130,7 +130,6 @@ create_dev_agent
 | `agent_max_run_seconds` | `600` | 单次运行最大时长 |
 | `agent_max_total_tokens` | `200000` | 单次运行最大 Token 数 |
 | `agent_token_finalization_reserve_tokens` | `12000` | 为最终总结保留的 Token 空间 |
-| `agent_convergence_tool_steps` | `25` | 触发上下文收敛压缩的工具调用阈值 |
 | `agent_convergence_budget_ratio` | `0.8` | 触发预算预警和收敛提示的比例 |
 | `agent_convergence_keep_recent_steps` | `3` | 收敛压缩时保留的最近步骤数 |
 | `agent_convergence_max_stalled_rounds` | `3` | 无进展批次的最大容忍次数 |
