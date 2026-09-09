@@ -38,9 +38,6 @@ class Settings(BaseSettings):
         description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
     )
 
-    # Max tool-call rounds for the dev agent — complex tasks (e.g. source/UML
-    # consistency checks) need more than the old 12-round cap
-    agent_max_steps: int = 50
     agent_max_tool_calls: int = 100
     agent_max_repeated_tool_calls: int = 3
     agent_max_run_seconds: int = 600
@@ -54,7 +51,6 @@ class Settings(BaseSettings):
     # Keep structured evidence for all tool calls in a normal run so context
     # compaction never falls back to raw, high-volume tool observations.
     agent_evidence_max_records: int = 128
-    agent_force_final_summary_on_step_limit: bool = True
     agent_final_summary_max_tokens: int = 3000
     agent_llm_timeout_seconds: int = 120
     # The configured model supports a 1M window.  Keep 128K as the default

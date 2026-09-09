@@ -8,13 +8,13 @@
 
 </div>
 
-ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：支持类图、时序图、组件图，并将设计、代码生成、测试、修复和回放串成可追踪的闭环。内置 **DevAgent 开发助手**、**能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
+ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：将架构设计、代码修改、测试、审核和回放串成可追踪的闭环。当前 `dev-4.0` 版本线内置 **DevAgent 开发助手**、**全局 UML 优化**、**能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
 
 ## 为什么选择 ArchitectCoder？
 
-- **设计即源码**：架构图是驱动代码生成、验证、测试的唯一真相源。
-- **AI 自动验证**：跨图一致性检查 + 模糊匹配自动修复，引用关系不再靠人眼核对。
-- **自然语言到可运行代码**：描述需求 → 自动生成全套 UML → 人工 Diff 审核 → Agent 开发代码并真跑 pytest → 失败自动回修。
+- **设计即真相源**：类图、时序图和组件图始终位于开发流程中心。
+- **受控 AI 开发**：Agent 只读取必要上下文，进行范围明确的修改，主动验证，并在需要时暂停等待人工审核。
+- **全程可追踪**：工具调用、审核、checkpoint、测试和最终结果均可查看与回放。
 
 ## 核心能力
 
@@ -28,7 +28,10 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 - 撤销/重做（50 步）、缩放（工具栏 + Ctrl+滚轮）、网格吸附
 - Ctrl+C/V 复制粘贴、Ctrl+S 保存
-- 属性面板右侧编辑、空格+拖拽平移
+- 右侧属性面板、可配置网格、空格+拖拽平移
+- 支持直接拖动正交连线线段调整折点；`Alt`+点击可轮换选择重叠连线
+- 支持浅色、深色、蓝图和护眼画布主题
+- 支持将当前图导出为 PNG/SVG，将完整工程导出为 `.umlproj`，或将设计图导出为 Markdown
 
 ### 项目管理
 
@@ -36,22 +39,23 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - **组件-图层级**：`项目 → 组件 → 类图/时序图` 三层组织，右键组件新建/切换关联图
 - 工具栏按类型分组下拉切换（颜色编码：橙/蓝/绿）
 - 打开旧 `.uml` 文件自动包装为工程
+- 可分别设置项目、源码和测试目录，作为 Agent 工作范围
+- 工作区与安全路径策略确保 Agent 只访问配置的根目录
 
 ### AI 开发助手
 
-右下角机器人按钮打开浮动对话面板，生产 **DevAgent**（底层使用 ReActAgent runtime）承接全部消息，支持从 UML 设计到代码实现的协同开发，并可根据任务分析、生成、修改和验证代码。v3.2 默认使用直接 ReAct 主流程，并通过可插拔 provider 提供可选的任务编排和只读策略子代理：
+右下角机器人按钮打开浮动对话面板。生产 **DevAgent** 是通过统一运行时装配的 native function calling `ReActAgent`，交互式对话和评测复用同一条生产链路，既能处理闲聊，也能完成端到端工程任务：
 
-- **文件系统原语**：`read_file` / `write_file` / `edit_file` / `glob` / `bash` —— 读写代码、跑 pytest、修复失败，全由 Agent 自主编排
-- **任务规划**：`todo_write` 维护会话任务清单，多步骤任务创建 3–5 个精简 TODO，必须包含验证项，并在执行过程中更新状态
-- **设计优先工作流**：影响设计的需求遵循“检查 → 修改 UML → 校验 → 人工审核 → 开发 → 验证”；相关设计审核通过前不修改业务代码。纯实现型任务可以直接开发。
-- **可选任务编排**：规划器可生成有界任务计划，委托只读的跨设计/源码/测试探索，并将结构化证据交回主 Agent；禁用 provider 后自动回到直接 ReAct 流程
-- **受控子代理** `spawn_subagent`：仅在显式启用策略探索时使用独立上下文和只读工具，文件修改与验证仍由主 Agent 负责
-- **人工审核**：UML 设计修改在进入开发阶段前经 `submit_uml_review` 推送 diff 对比审批；`bash` 敏感命令（强制删除、进程终止、`git reset --hard` 等）执行前弹出批准/拒绝审核卡，高危命令（格式化、分区、写引导等）直接拒绝 —— 把 AI 开发关进护栏
-- **UML 2.5.1 skill 知识包**：按需加载类图、时序图、组件图和跨图一致性指南，并提供可直接加载的小型 `.umlproj` 跨图案例；高级项目案例不放入 skill
-- **流式进度**：每步工具调用、参数与返回实时推送，开发过程全程可见
-- **中断控制**：随时停止 Agent 执行
-- **多会话持久化**：新建 / 切换会话，对话历史刷新不丢失；会话日志落盘（Markdown + JSONL trace）
-- **可插拔记忆系统**：任务结束自动归档、新任务按相关性召回注入；默认 SQLite/BM25 provider 可关闭或替换，不改变 Agent 主流程
+- **基础工具**：`list_files`、`read_file`、`search_text`、`apply_changes`、`run_task`、`run_program`、`shell`。所有文件创建、修改、删除、移动和复制都通过 `apply_changes`，测试、构建、Lint、类型检查等标准任务优先使用 `run_task`。
+- **设计优先工作流**：影响设计的需求遵循“检查 → 修改 UML → 校验并提交审核 → 开发 → 验证”；纯实现型任务可以直接开发。涉及架构变化时，业务代码要等 UML 审核通过后再修改。
+- **人工审核与安全**：`submit_uml_review` 展示 UML Diff 并等待批准；敏感 Shell 命令需要人工批准，高危操作按策略直接拒绝。
+- **任务规划与委派**：`todo_write` 跟踪多阶段任务并明确验证项。可选编排器可以生成有界计划并委托只读策略探索；修改和验证仍由主 Agent 负责，`spawn_subagent` 受独立开关和单次任务约束。
+- **流式进度与中断**：工具调用、参数、观察结果、思考和 TODO 进度实时推送到界面。停止任务后会保存已完成、待完成、已修改和已验证项目，并支持显式继续执行。
+- **上下文与证据**：上下文预算、历史压缩、结构化工具证据、收敛保护和最终摘要让长任务可恢复、可审计。
+- **会话与记忆**：支持新建/切换会话，刷新后恢复历史；任务完成后归档记忆，新任务按相关性召回项目历史。SQLite/BM25 记忆可通过 Provider 关闭或替换。
+- **UML skill 知识包**：按需加载 UML 2.5.1 类图、时序图、组件图和跨图一致性指南，并提供可直接加载的小型 `.umlproj` 案例。
+
+生产 Agent 不再依赖独立的代码生成、代码修复或 UML 优化工具链，而是通过统一工作区工具和标准审核/验证生命周期完成任务。
 
 ### DevAgent 能力基准体系
 
@@ -62,7 +66,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - **执行链路**：`case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`。
 - **确定性检查**：支持 pytest、UML 有效性/结构/方法/时序、文件存在/内容、受保护路径未变更等检查器。
 - **运行边界**：普通用例与生产 DevAgent 对齐，单轮任务预算为 50 步、100 次工具调用、600 秒和 200,000 Tokens。多轮用例每个用户轮次使用新的单次任务预算，累计用量只用于结果汇总。
-- **当前基线快照**：版本为 `dev-3.0@48357febaae5371171eb85ed592d67ce40782610`，16 个用例通过 6 个、失败 9 个、超时 0 个、错误 1 个，平均得分 0.7756，累计 2,904,977 Tokens、420 次工具调用。指标登记在 `backend/evals/baseline.json`。
+- **当前基线快照**：`backend/evals/baseline.json` 登记版本 `4.0@4076efc`：16 个用例通过 8 个、失败 5 个、超时 0 个、错误 3 个，平均得分 `0.7221`，累计 2,918,570 Tokens、418 次工具调用。
 - **版本标识**：评测中心自动读取当前 Git 分支和 HEAD commit，使用 `branch@commit` 作为版本；工作区有未提交修改时标记为 `dirty`。
 - **运行、合并与归档**：评测中心按“运行批次 → 性能结果 → 多版本对比 → 已归档”递进使用。相同版本的多个完成批次可合并为一条性能 JSONL 结果；完全重复的结果会复用已有文件。运行批次和性能结果支持确认后删除，但不会修改基线文件和已归档快照。
 - **CLI**：正式基线应分别运行三个 suite，`trace-3.1` 用于专项回归：
@@ -76,14 +80,11 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
   CLI 在存在失败或超时时返回非零退出码；这表示评测结果未全通过，不代表评测框架启动失败。
 
-### 全局优化
+### 全局 UML 优化
 
-点击工具栏"全局优化"按钮，输入需求描述即可：
+工具栏的“全局优化”现在会把自然语言需求提交给同一个 DevAgent 对话运行时。若当前工程尚未保存，工具栏会先保存；随后打开 AI 助手，并将项目、源码和测试目录作为上下文传入。Agent 通过标准工具检查和修改相关 `.umlproj` 设计文件，再按正常审核、Trace 记录和验证流程完成任务。
 
-- **从零生成**：无需预设空白图，LLM 自动生成全部所需图及标签页
-- **V2 直连引擎**：scope 分析（轻量模型）→ 单次 LLM 生成（pro 模型）→ 程序化跨图验证 + 自动修复 + 自动布局
-- **流式绘图**：边生成边显示到画布，支持中途取消
-- **多图 Diff**：结果按图切换对比，可逐图接受或继续优化
+当前分支已移除独立的 `/api/optimize_v2` 管线。全局优化与其他 Agent 任务共用安全策略、checkpoint、记忆和审计能力。
 
 ### TestHub 测试中心
 
@@ -98,7 +99,8 @@ Excel 用例驱动的测试代码生成：
 - **全程记录**：Agent 会话自动落盘 JSONL trace（LLM 请求/响应 + 工具调用逐步事件）
 - **TraceViewer**：前端抽屉式浏览历史会话，步骤级展开每次工具调用的参数与返回
 - **长 Prompt 查看**：超长 LLM Prompt 和工具 schema 默认保持紧凑，用户可以展开，在可滚动面板中查看完整内容
-- **确定性回放**：`mock` 模式零网络按记录重放（含游标一致性校验）；`rerun` 模式真实 LLM 重跑、工具仍按记录 mock —— 用于调试 prompt 与回归对比
+- **三种回放模式**：`mock` 按记录重放且零网络；`rerun` 真实调用 LLM、工具仍 mock；`live` 真实调用 LLM，并按策略执行真实工具（默认 `readonly`，`full` 为显式有副作用模式）
+- 支持整段会话回放、按轮次累积单步执行、匹配状态展示，以及原始步骤与回放步骤对比
 
 ### 知识图谱
 
@@ -107,6 +109,7 @@ SQLite 图数据库 + FTS5 全文索引，知识图谱插件开启后在工程�
 
 - **三层知识**：项目层 → 实体层 → 关系层（继承/组合/依赖 + 设计-代码映射 + 测试覆盖）
 - **双源构建**：设计层（UML JSON 自动同步）+ 代码层（AST 解析源码目录）
+- **Agent 查询**：项目地图、节点搜索和邻居展开，与文件级读取和搜索互补
 
 ### 自动布局引擎
 
@@ -153,10 +156,10 @@ ArchitectCoder/
 ├── backend/                        # FastAPI 后端
 │   ├── config/                     # 应用配置与 AgentConfig
 │   ├── app/
-│   │   ├── api/                    # REST + WebSocket 路由 (files/llm/optimize_v2/testhub/trace/metrics/evals)
+│   │   ├── api/                    # REST + WebSocket 路由 (files/llm/testhub/trace/metrics/evals)
 │   │   ├── core/                   # 鉴权与安全
 │   │   ├── models/                 # Pydantic 数据模型
-│   │   ├── services/               # LLM / 优化引擎 V2 / 布局 / trace 回放 / 会话管理
+│   │   ├── services/               # 会话、执行、审核、变更集、Trace 回放
 │   │   ├── agent_base/             # BaseAgents 框架 (core/agents/tools)
 │   │   │   └── tools/my_tools/     # 文件系统原语 / todo / 子代理 / 审核
 │   │   └── main.py
@@ -171,7 +174,7 @@ ArchitectCoder/
 │   ├── trace/                      # Trace 插件
 │   ├── evals/                      # 评测插件与 CLI
 │   └── knowledge_graph/            # 知识图谱插件
-├── skills/uml-design-guide/        # UML 设计指南 (SkillTool 知识包 + 优化流水线共用)
+├── skills/                         # UML 设计与 Trace 分析 skill 包
 ├── project/                        # 项目代码输出 (src/ + test/)
 ├── temp/                           # 运行时临时文件（不上库）
 ├── .claude/                        # Claude Code 配置
@@ -194,7 +197,7 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-可选配置包括 `DEEPSEEK_MODEL`、五类插件的 `AGENT_*_ENABLED` 开关和 `AGENT_*_PROVIDER` 入口。配置定义集中在 `backend/config/settings.py` 与 `backend/config/agent_config.py`，插件实现统一位于 `extensions/`，由 `backend/app/agent_base/core/plugins.py` 加载。将开关设为 `false`，或将 Provider 设为 `none`、`noop`、`disabled`，即可关闭插件；当前不使用模型路由或 `SUB_AGENT_MODEL`。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。Windows 下命令执行优先使用配置的 WSL 环境；依赖安装完成后，也可直接运行 `start.bat` 一键启动前后端。
+可选配置包括 `DEEPSEEK_MODEL`、五类插件的 `AGENT_*_ENABLED` 开关和 `AGENT_*_PROVIDER` 入口。配置定义集中在 `backend/config/settings.py` 与 `backend/config/agent_config.py`，插件实现统一位于 `extensions/`，由 `backend/app/agent_base/core/plugins.py` 加载。将开关设为 `false`，或将 Provider 设为 `none`、`noop`、`disabled`，即可关闭插件。`WORKSPACE_ROOTS` 用于配置额外的 Agent 工作区根目录，命令环境默认使用原生环境；需要 WSL 时显式设置 `AGENT_COMMAND_ENVIRONMENT=wsl`。`SUB_AGENT_MODEL` 仅作为已弃用兼容配置读取且不会生效。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。依赖安装完成后，可运行 `start.bat` 一键启动前后端；只有需要开发热重载时才设置 `UVICORN_RELOAD=1`。
 
 ## 插件架构
 
@@ -224,8 +227,8 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 ## API 与开发验证
 
-- 后端 REST API 默认前缀为 `/api`，包含文件操作、LLM、全局优化、TestHub、Trace、Agent 指标和 DevAgent 评测接口。
-- 对话 Agent 使用 WebSocket：`/api/ws/chat`。
+- 后端 REST API 默认前缀为 `/api`，包含文件操作、LLM、TestHub、Trace、Agent 指标和 DevAgent 评测接口；全局优化通过 Agent 对话链路提交。
+- 对话 Agent 使用 WebSocket：`/api/agent/ws/chat`。
 - API 文档：启动后访问 `http://localhost:8001/api/docs`。
 - 单元测试：`cd backend && python -m pytest -q`。
 - 评测全部 18 个 DevAgent 用例（包含保留的 Trace 专项回归）：在仓库根目录运行 `python -m extensions.evals.cli`；正式 16 用例基线使用上面的三个 suite 命令分别运行。

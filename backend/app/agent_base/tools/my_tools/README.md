@@ -18,7 +18,7 @@
 │             对话 Agent (ReActAgent, native FC)           │
 │  system_prompt: DevPromptBuilder（行为准则 + 项目上下文）   │
 │  tools: create_conversation_tools() 装配的工具集           │
-│  max_steps: agent_max_steps                               │
+│  loop: open-ended + budget/convergence guards              │
 │                                                          │
 │  read_file / write_file / edit_file / glob / bash         │  ← 文件系统原语
 │  （知识图谱工具默认禁用；实现保留供显式 opt-in）                  │
@@ -159,7 +159,6 @@ agent = ReActAgent(
     name="DevAgent",
     llm=llm,
     tool_registry=registry,
-    max_steps=12,
     use_native_fc=True,
 )
 

@@ -104,4 +104,17 @@ if __name__ == "__main__":
     log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
     log_config["formatters"]["access"]["fmt"] = '%(asctime)s | %(client_addr)s - "%(request_line)s" %(status_code)s'
     log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=settings.debug, log_config=log_config)
+    # The Windows reloader can leave the supervisor holding port 8001 after
+    # the worker has failed to start.  That presents as a healthy listener to
+    # Vite while every request hangs or is refused.  Keep the normal launcher
+    # single-process and allow developers to opt into reload explicitly.
+    reload_enabled = os.getenv("UVICORN_RELOAD", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8001,
+        reload=reload_enabled,
+        log_config=log_config,
+    )

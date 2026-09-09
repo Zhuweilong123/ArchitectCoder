@@ -44,6 +44,7 @@ from ..tools.registry import ToolRegistry
 from ..tools.result import ToolResult
 from ..evidence import EvidenceLedger
 from ..outcome import RunOutcome
+from ..convergence import ConvergenceController
 from app.services.context_manager import ContextBudgetManager
 
 logger = logging.getLogger(__name__)
@@ -162,7 +163,7 @@ class ReActAgent(Agent):
     5. 观察结果 → 回到 1 或返回最终答案
 
     Attributes:
-        max_steps: 最大循环步数，防止无限循环
+        max_steps: 兼容旧调用的参数；不再作为执行终止条件
         use_native_fc: 是否使用原生 Function Calling（默认 True）
         custom_prompt: 自定义提示词模板（仅文本模式使用）
     """
@@ -185,7 +186,11 @@ class ReActAgent(Agent):
         convergence_tool_steps: int = 25,
         convergence_budget_ratio: float = 0.8,
         convergence_keep_recent_steps: int = 3,
+        convergence_max_stalled_rounds: int = 3,
+        convergence_max_recovery_rounds: int = 2,
+        convergence_repeat_action_threshold: int = 3,
         evidence_max_records: int = 128,
+        # Deprecated compatibility argument; open-ended loops do not use it.
         force_final_summary_on_step_limit: bool = True,
         final_summary_max_tokens: int = 3000,
         llm_timeout_seconds: float = 120.0,
@@ -193,6 +198,9 @@ class ReActAgent(Agent):
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
+        # Kept as a backwards-compatible constructor argument only. Both
+        # execution paths use an open-ended loop and rely on resource budgets
+        # plus the convergence controller for termination.
         self.max_steps = max_steps
         self.use_native_fc = use_native_fc
         self.current_history: List[str] = []
@@ -208,8 +216,10 @@ class ReActAgent(Agent):
         self.convergence_tool_steps = max(1, convergence_tool_steps)
         self.convergence_budget_ratio = min(1.0, max(0.0, float(convergence_budget_ratio)))
         self.convergence_keep_recent_steps = max(1, convergence_keep_recent_steps)
+        self.convergence_max_stalled_rounds = max(1, convergence_max_stalled_rounds)
+        self.convergence_max_recovery_rounds = max(1, convergence_max_recovery_rounds)
+        self.convergence_repeat_action_threshold = max(2, convergence_repeat_action_threshold)
         self.evidence_max_records = max(self.max_tool_calls, evidence_max_records)
-        self.force_final_summary_on_step_limit = force_final_summary_on_step_limit
         self.final_summary_max_tokens = max(1, final_summary_max_tokens)
         self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
         self.context_budget = context_budget or ContextBudgetManager()
@@ -222,8 +232,8 @@ class ReActAgent(Agent):
         self.last_run_checkpoint: dict = {}
         self.on_context_compacted = None
         logger.info(
-            "✅ %s 初始化完成，最大步数: %d，FC模式: %s",
-            name, max_steps, "启用" if use_native_fc else "禁用（文本解析）",
+            "✅ %s 初始化完成，开放循环模式，FC模式: %s",
+            name, "启用" if use_native_fc else "禁用（文本解析）",
         )
 
     def restore_history(self, messages: list[dict]) -> None:
@@ -307,11 +317,18 @@ class ReActAgent(Agent):
         """
         self.current_history = []
         current_step = 0
+        tool_call_count = 0
+        started_at = time.monotonic()
+        convergence = ConvergenceController()
 
         logger.info("\n🤖 %s 开始处理问题: %s", self.name, input_text)
 
-        while current_step < self.max_steps:
+        while True:
             current_step += 1
+            if time.monotonic() - started_at >= self.max_run_seconds:
+                final_answer = "Execution time budget reached before the task converged."
+                self._record_turn(input_text, final_answer)
+                return final_answer
             logger.info("\n--- 第 %d 步 ---", current_step)
 
             # 1. 构建提示词
@@ -344,20 +361,33 @@ class ReActAgent(Agent):
             if action:
                 tool_name, tool_input = self._parse_action(action)
                 if tool_name:
+                    tool_call_count += 1
+                    if tool_call_count > self.max_tool_calls:
+                        final_answer = "Tool-call budget reached before the task converged."
+                        self._record_turn(input_text, final_answer)
+                        return final_answer
                     observation = self.tool_registry.execute_tool(tool_name, tool_input)
                     self.current_history.append(f"Step {current_step}: Action: {action}")
                     self.current_history.append(f"Step {current_step}: Observation: {observation}")
                     logger.info("  Observation: %s", observation[:100])
+                    decision = convergence.observe([{
+                        "name": tool_name,
+                        "arguments": tool_input,
+                        "status": "success",
+                        "observation": observation,
+                    }])
+                    if decision.action == "finalize":
+                        final_answer = (
+                            "The legacy text loop stopped after repeated non-progressing actions.\n\n"
+                            f"Last observation: {observation}"
+                        )
+                        self._record_turn(input_text, final_answer)
+                        return final_answer
                 else:
                     self.current_history.append(f"Step {current_step}: 无效的Action格式")
             else:
                 self.current_history.append(f"Step {current_step}: 未解析到Action")
 
-        # 达到最大步数
-        final_answer = "抱歉，我无法在限定步数内完成这个任务。"
-        self._record_turn(input_text, final_answer)
-        logger.warning("⚠️ %s 达到最大步数 %d", self.name, self.max_steps)
-        return final_answer
 
     # ═══════════════════════════════════════════════════════
     # Function Calling 核心
@@ -375,7 +405,7 @@ class ReActAgent(Agent):
             if progress.is_final:
                 final_answer = progress.final_answer
         if not final_answer:
-            final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
+            final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
     def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
@@ -406,7 +436,7 @@ class ReActAgent(Agent):
         2. 调用 llm.ainvoke_with_tools(tool_specs)
         3. 遍历 tool_calls → 全部执行（支持多工具并行）
         4. yield ReActProgress → 追加 assistant + tool 消息
-        5. 重复直到模型返回纯文本或达到 max_steps
+        5. 重复直到模型返回最终文本，或触发资源预算/收敛保护
         """
         from app.trace.tracing import trace_span
 
@@ -449,7 +479,11 @@ class ReActAgent(Agent):
                 "budget_ratio": self.convergence_budget_ratio,
                 "keep_recent_steps": self.convergence_keep_recent_steps,
                 "evidence_max_records": self.evidence_max_records,
-                "force_final_summary_on_step_limit": self.force_final_summary_on_step_limit,
+                "open_ended_loop": True,
+                "max_stalled_rounds": self.convergence_max_stalled_rounds,
+                "max_recovery_rounds": self.convergence_max_recovery_rounds,
+                "repeat_action_threshold": self.convergence_repeat_action_threshold,
+                "legacy_step_limit_parameter_ignored": True,
                 "final_summary_max_tokens": self.final_summary_max_tokens,
             },
         })
@@ -473,8 +507,13 @@ class ReActAgent(Agent):
         convergence_compaction_active = False
         convergence_directive_added = False
         last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
-        ended_by_model_answer = False
         evidence_ledger = EvidenceLedger(max_records=self.evidence_max_records)
+        convergence = ConvergenceController(
+            max_stalled_rounds=self.convergence_max_stalled_rounds,
+            max_recovery_rounds=self.convergence_max_recovery_rounds,
+            repeat_action_threshold=self.convergence_repeat_action_threshold,
+        )
+        forced_finalization_reason = ""
         self.last_evidence_summary = []
 
         get_hooks().trigger(
@@ -482,7 +521,9 @@ class ReActAgent(Agent):
             HookContext(event=HookEvent.RUN_START, agent_name=self.name),
         )
         try:
-            for step in range(1, self.max_steps + 1):
+            step = 0
+            while True:
+                step += 1
                 if total_tokens >= self.max_total_tokens:
                     final_answer = (
                         f"已达到 token 预算（{self.max_total_tokens}），"
@@ -500,7 +541,9 @@ class ReActAgent(Agent):
                     return
 
                 remaining_tokens = self.max_total_tokens - total_tokens
-                finalization_mode = remaining_tokens <= self.token_finalization_reserve_tokens
+                finalization_mode = bool(forced_finalization_reason) or (
+                    remaining_tokens <= self.token_finalization_reserve_tokens
+                )
                 active_tool_specs = [] if finalization_mode else (
                     compact_tool_specs if tool_call_count else full_tool_specs
                 )
@@ -508,10 +551,15 @@ class ReActAgent(Agent):
                     messages.append({
                         "role": "system",
                         "content": (
-                            "## Budget finalization\n"
+                            "## Finalization checkpoint\n"
                             "Do not call tools. Provide the final user-facing answer now, using only "
                             "completed tool evidence. Clearly distinguish completed changes and verification "
                             "from anything still unverified or incomplete."
+                            + (
+                                f" The convergence controller stopped further exploration because: "
+                                f"{forced_finalization_reason}."
+                                if forced_finalization_reason else ""
+                            )
                         ),
                     })
                     self.last_context_report.update({
@@ -610,7 +658,7 @@ class ReActAgent(Agent):
                     self.last_context_report["loop_dropped_messages"] = (
                         self.last_context_report.get("loop_dropped_messages", 0) + dropped
                     )
-                logger.info("\n--- FC 第 %d/%d 步 ---", step, self.max_steps)
+                logger.info("\n--- FC loop round %d ---", step)
                 if time.monotonic() - started_at >= self.max_run_seconds:
                     self.last_context_report.update({
                         "token_budget_used": total_tokens,
@@ -692,6 +740,30 @@ class ReActAgent(Agent):
 
                     messages.append({"role": "assistant", "content": content})
 
+                    if not content.strip() or not todo_plan_complete(get_runtime()):
+                        empty_progress_decision = convergence.observe([])
+                        if empty_progress_decision.action in {"recover", "finalize"}:
+                            self.last_context_report.setdefault("convergence_events", []).append({
+                                "action": empty_progress_decision.action,
+                                "reason": empty_progress_decision.reason,
+                                "stalled_rounds": convergence.stalled_rounds,
+                                "recovery_rounds": convergence.recovery_rounds,
+                            })
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "## Convergence controller\n"
+                                    f"{empty_progress_decision.message}"
+                                ),
+                            })
+                            if empty_progress_decision.action == "finalize":
+                                forced_finalization_reason = empty_progress_decision.reason
+                                self.last_context_report["convergence_finalization"] = {
+                                    "reason": empty_progress_decision.reason,
+                                    "stalled_rounds": convergence.stalled_rounds,
+                                    "recovery_rounds": convergence.recovery_rounds,
+                                }
+
                     # 模型本轮直接给出实质回复（未调用工具）→ 这就是最终答案。
                     # 不要求 streak>=2 或 tool_executed，避免"你好"这类问候被循环
                     # 逼着再走一步（继续问模型"下一步做什么"）而触发无意义的工具调用。
@@ -702,9 +774,17 @@ class ReActAgent(Agent):
                                     "预算收尾阶段已停止工具调用；模型尝试发起的文本工具调用未执行。"
                                     f"当前进展：{content}"
                                 )
+                            if not todo_plan_complete(get_runtime()):
+                                content = (
+                                    "Task is not complete: the required todo plan or acceptance "
+                                    "verification still has unfinished work.\n\n"
+                                    f"{content}"
+                                )
                             self.last_context_report.update({
                                 "token_budget_used": total_tokens,
-                                "token_budget_stop_reason": "reserve_finalization",
+                                "token_budget_stop_reason": (
+                                    forced_finalization_reason or "reserve_finalization"
+                                ),
                                 "finalization_textual_tool_markup_blocked": textual_tool_markup,
                             })
                             if not _turn_recorded:
@@ -724,26 +804,6 @@ class ReActAgent(Agent):
                                 "plan, complete its verification item only after checking its "
                                 "criterion.</planning-gate>"
                             )
-                            if step == self.max_steps:
-                                # Preserve the productive-step contract: the
-                                # last work response is not itself the final
-                                # delivery when the todo gate is still open.
-                                # Fall through to the single, tool-free
-                                # final-summary request below instead.
-                                if self.force_final_summary_on_step_limit:
-                                    break
-                                self.last_context_report["token_budget_stop_reason"] = "incomplete_plan"
-                                final_answer = (
-                                    "Task is not complete: the required todo plan still has unfinished "
-                                    "work or verification."
-                                )
-                                self._record_turn(input_text, final_answer)
-                                _turn_recorded = True
-                                yield self._final_progress(total_tokens=total_tokens,
-                                    step=step, thought=content,
-                                    is_final=True, final_answer=final_answer,
-                                )
-                                return
                             messages.append({"role": "user", "content": gate_message})
                             yield ReActProgress(
                                 step=step, thought=content, actions=[], is_final=False,
@@ -756,12 +816,11 @@ class ReActAgent(Agent):
                         if not _turn_recorded:
                             self._record_turn(input_text, content)
                             _turn_recorded = True
-                        ended_by_model_answer = True
                         yield self._final_progress(total_tokens=total_tokens,
                             step=step, thought=content,
                             is_final=True, final_answer=content,
                         )
-                        break
+                        return
 
                     # 空内容：提示模型使用工具
                     if finalization_mode:
@@ -771,7 +830,9 @@ class ReActAgent(Agent):
                         )
                         self.last_context_report.update({
                             "token_budget_used": total_tokens,
-                            "token_budget_stop_reason": "reserve_finalization_empty_response",
+                            "token_budget_stop_reason": (
+                                forced_finalization_reason or "reserve_finalization_empty_response"
+                            ),
                             "finalization_textual_tool_markup_blocked": textual_tool_markup,
                         })
                         self._record_turn(input_text, final_answer)
@@ -982,6 +1043,30 @@ class ReActAgent(Agent):
                     })
                     last_failure_directive_signature = failed_tools
 
+                convergence_decision = convergence.observe(details)
+                if convergence_decision.action in {"recover", "finalize"}:
+                    self.last_context_report.setdefault("convergence_events", []).append({
+                        "action": convergence_decision.action,
+                        "reason": convergence_decision.reason,
+                        "stalled_rounds": convergence.stalled_rounds,
+                        "recovery_rounds": convergence.recovery_rounds,
+                        "tool_call_count": tool_call_count,
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Convergence controller\n"
+                            f"{convergence_decision.message}"
+                        ),
+                    })
+                    if convergence_decision.action == "finalize":
+                        forced_finalization_reason = convergence_decision.reason
+                        self.last_context_report["convergence_finalization"] = {
+                            "reason": convergence_decision.reason,
+                            "stalled_rounds": convergence.stalled_rounds,
+                            "recovery_rounds": convergence.recovery_rounds,
+                        }
+
                 # This response was already paid for and its tools were
                 # selected before the hard limit was observed.  Execute them
                 # under their normal safety policies, then prevent any new
@@ -1011,128 +1096,6 @@ class ReActAgent(Agent):
                     is_final=False,
                 )
 
-            # ── 最终处理 — 从 messages 中提取最后一条 assistant 内容 ──
-            if not ended_by_model_answer and self.force_final_summary_on_step_limit:
-                todo_contract_incomplete = not todo_plan_complete(get_runtime())
-                prior_call_ids = [
-                    str(message.get("tool_call_id") or "")
-                    for message in messages
-                    if message.get("role") == "tool" and message.get("tool_call_id")
-                ]
-                messages, current_user_index, compacted_steps, compacted_tokens = self.context_budget.compact_react_steps(
-                    messages,
-                    current_user_index=current_user_index,
-                    max_steps=min(
-                        self.convergence_keep_recent_steps,
-                        self.context_budget.budget.max_history_turns,
-                    ),
-                    evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
-                )
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "## Required final delivery\n"
-                        "The productive tool-step limit has been reached. Do not call tools. "
-                        "Give the user a concise final report using only the evidence above. "
-                        "Clearly separate completed changes, completed verification, remaining work, "
-                        "and any uncertainty; never claim unperformed verification."
-                        + (
-                            " The required todo/acceptance contract remains incomplete: explicitly "
-                            "state that the task is not complete and identify it as remaining work."
-                            if todo_contract_incomplete else ""
-                        )
-                    ),
-                })
-                messages, dropped = self.context_budget.fit_messages(
-                    messages, tools=[], current_user_index=current_user_index,
-                )
-                self.last_context_report.update({
-                    "step_limit_finalization": True,
-                    "step_limit_compacted_steps": compacted_steps,
-                    "step_limit_compacted_tokens": compacted_tokens,
-                    "step_limit_dropped_messages": dropped,
-                })
-                summary_timed_out = False
-                try:
-                    get_hooks().trigger(
-                        HookEvent.LLM_BEFORE,
-                        HookContext(event=HookEvent.LLM_BEFORE, agent_name=self.name, messages=messages),
-                    )
-                    with trace_span(f"{self.name}/final_summary"):
-                        response = await asyncio.wait_for(
-                            self.llm.ainvoke_with_tools(
-                                messages=messages,
-                                tools=[],
-                                tool_choice="none",
-                                temperature=kwargs.get("temperature", 0.3),
-                                max_tokens=self.final_summary_max_tokens,
-                            ),
-                            timeout=kwargs.get("llm_timeout_seconds", self.llm_timeout_seconds),
-                        )
-                    get_hooks().trigger(
-                        HookEvent.LLM_AFTER,
-                        HookContext(event=HookEvent.LLM_AFTER, agent_name=self.name,
-                                    messages=messages, llm_response=response),
-                    )
-                    usage = response.get("usage") or {}
-                    if isinstance(usage, dict):
-                        total_tokens += int(usage.get("total_tokens") or 0)
-                    final_answer, summary_textual_tool_markup = _remove_textual_tool_markup(
-                        str(response.get("content") or "")
-                    )
-                except asyncio.TimeoutError:
-                    summary_timed_out = True
-                    final_answer = "工作轮数已达上限，最终总结调用超时。"
-                    summary_textual_tool_markup = False
-
-                if not final_answer:
-                    final_answer = (
-                        f"已达到 {self.max_steps} 个工作轮上限，已停止工具调用。"
-                        "请根据当前 checkpoint 查看已完成项、验证结果和待处理项。"
-                    )
-                elif summary_textual_tool_markup:
-                    final_answer = (
-                        "工作轮数已达上限，已停止工具调用；模型尝试发起的文本工具调用未执行。\n\n"
-                        f"当前进展：{final_answer}"
-                    )
-                if todo_contract_incomplete:
-                    final_answer = (
-                        "Task is not complete: the required todo plan or acceptance verification "
-                        "still has unfinished work.\n\n"
-                        f"{final_answer}"
-                    )
-                self.last_context_report.update({
-                    "token_budget_used": total_tokens,
-                    "token_budget_stop_reason": "final_summary_timeout" if summary_timed_out else "productive_step_limit",
-                    "finalization_textual_tool_markup_blocked": summary_textual_tool_markup,
-                })
-                self._record_turn(input_text, final_answer)
-                _turn_recorded = True
-                yield self._final_progress(total_tokens=total_tokens,
-                    step=self.max_steps + 1, thought=final_answer,
-                    is_final=True, final_answer=final_answer,
-                )
-                return
-
-            final_answer = ""
-            for msg in reversed(messages):
-                if msg["role"] == "assistant" and msg.get("content"):
-                    final_answer = msg["content"]
-                    break
-
-            if not final_answer:
-                final_answer = f"抱歉，在 {self.max_steps} 步内未能完成任务。"
-
-            # 兜底写入（工具循环路径/达到 max_steps 时，非流式消费方靠这里落历史）。
-            # _turn_recorded 防止与「模型直接回复」分支重复写入。
-            if not _turn_recorded:
-                self._record_turn(input_text, final_answer)
-            logger.info("🏁 %s FC 完成 (%d 字符)", self.name, len(final_answer))
-            self.last_context_report.setdefault("token_budget_used", total_tokens)
-            if not ended_by_model_answer:
-                self.last_context_report["token_budget_stop_reason"] = "productive_step_limit"
-                yield self._final_progress(total_tokens=total_tokens, step=self.max_steps,
-                                           is_final=True, final_answer=final_answer)
         finally:
             try:
                 get_hooks().trigger(

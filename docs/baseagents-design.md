@@ -91,7 +91,7 @@ registry = ToolRegistry()
 agent = SimpleAgent(name="助手", llm=llm, system_prompt="你是有用的助手")
 answer = agent.run("Python 的 with 语句有什么作用？")
 
-agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, max_steps=5, use_native_fc=True)
+agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, use_native_fc=True)
 answer = await agent.arun("搜索 2024 年 Java 最新特性")          # 异步 FC
 async for progress in agent.arun_stream("帮我优化这段代码"):      # 流式进度
     print(f"Step {progress.step}: {progress.actions}")
@@ -120,7 +120,7 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 | 文本解析降级 | 正则匹配 `Thought:/Action:` 格式 | `run()` | 兼容无 FC 模型 |
 
 **FC 核心循环**：构建 messages → `ainvoke_with_tools(tool_specs)` → 遍历 tool_calls
-并行执行 → 追加 assistant/tool 消息 → 循环直至纯文本或 `max_steps`。
+并行执行 → 追加 assistant/tool 消息 → 循环直至最终文本或触发预算/收敛保护。
 
 **流式进度** `ReActProgress`：`step / actions / tool_calls_detail / thought / is_final /
 final_answer`。
@@ -212,7 +212,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 前端（React 对话面板）
   ↕ WebSocket (/api/agent/ws/chat)
 后端 FastAPI
-  ├── 单 ReActAgent（跨轮复用，懒创建，max_steps=agent_max_steps, use_native_fc=True）
+  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护, use_native_fc=True）
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
   │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
@@ -241,7 +241,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ### 7.3 工具分层架构
 
 ```
-主 Agent: ReActAgent (FC 模式, max_steps=agent_max_steps)
+主 Agent: ReActAgent (FC 模式，开放循环 + 预算/收敛保护)
 │
 ├── read_file / write_file / edit_file / glob → 文件系统原语（safe_path 守卫）
 ├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准

@@ -337,7 +337,7 @@ def test_convergence_threshold_counts_parallel_tool_calls_individually():
     assert report["triggered_at_tool_calls"] == 3
 
 
-def test_step_limit_runs_one_tool_free_final_summary():
+def test_legacy_step_argument_does_not_limit_open_fc_loop():
     class StepLimitLLM:
         def __init__(self):
             self.requests = []
@@ -364,9 +364,12 @@ def test_step_limit_runs_one_tool_free_final_summary():
     events = asyncio.run(_collect(agent))
 
     assert len(llm.requests) == 3
-    assert llm.requests[-1] == ([], "none", 321)
+    assert llm.requests[-1][0] != []
+    assert llm.requests[-1][1] == "auto"
+    assert llm.requests[-1][2] is None
     assert events[-1].step == 3
     assert events[-1].final_answer == "completed two work steps"
+    assert agent.last_context_report["convergence_policy"]["open_ended_loop"] is True
 
 
 def test_soft_budget_instructs_the_next_step_to_converge():
@@ -384,6 +387,38 @@ def test_soft_budget_instructs_the_next_step_to_converge():
         message.get("role") == "system" and "Token budget warning" in message.get("content", "")
         for message in llm.requests[2]
     )
+
+
+def test_open_fc_loop_finalizes_after_repeated_non_progressing_action():
+    class RepeatingLLM:
+        def __init__(self):
+            self.count = 0
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.count += 1
+            return {
+                "content": "stuck",
+                "tool_calls": [{
+                    "id": f"repeat-{self.count}", "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "same"})},
+                }],
+            }
+
+    llm = RepeatingLLM()
+    agent = ReActAgent(
+        "Test", llm, _registry(), max_steps=1, max_total_tokens=1000,
+        convergence_max_stalled_rounds=3,
+        convergence_max_recovery_rounds=2,
+        convergence_repeat_action_threshold=3,
+    )
+
+    events = asyncio.run(_collect(agent))
+
+    assert events[-1].is_final is True
+    assert agent.last_context_report["token_budget_stop_reason"] in {
+        "repeated_action", "convergence_stalled",
+    }
+    assert llm.count < 10
 
 
 def test_react_step_compaction_is_reported_to_observers():
@@ -425,7 +460,7 @@ def test_acceptance_contract_blocks_premature_final_answer():
     finally:
         reset_runtime(runtime_token)
 
-    assert llm.count == 3
+    assert llm.count == 4
     assert events[0].is_final is False
     assert events[-1].is_final is True
     assert "required todo plan" in events[-1].final_answer

@@ -185,13 +185,11 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     """
     if case.metadata.get("capability") == "budget_control":
         return {
-            "max_steps": min(case.max_tool_calls, settings.agent_max_steps),
             "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
             "max_run_seconds": min(case.max_seconds, settings.agent_max_run_seconds),
             "max_total_tokens": min(case.max_total_tokens, settings.agent_max_total_tokens),
         }
     return {
-        "max_steps": settings.agent_max_steps,
         "max_tool_calls": settings.agent_max_tool_calls,
         "max_run_seconds": settings.agent_max_run_seconds,
         "max_total_tokens": settings.agent_max_total_tokens,
@@ -289,7 +287,6 @@ class EvalRunner:
             "turn_deadline_seconds": turn_deadline_seconds,
             "evaluation_deadline_seconds": evaluation_deadline_seconds,
             "production_budget": {
-                "max_steps": settings.agent_max_steps,
                 "max_tool_calls": settings.agent_max_tool_calls,
                 "max_run_seconds": settings.agent_max_run_seconds,
                 "max_total_tokens": settings.agent_max_total_tokens,
@@ -597,7 +594,6 @@ class EvalRunner:
                             if production_agent:
                                 agent.max_total_tokens = production_budget["max_total_tokens"]
                                 agent.max_tool_calls = production_budget["max_tool_calls"]
-                                agent.max_steps = production_budget["max_steps"]
                                 agent.max_run_seconds = production_budget["max_run_seconds"]
                             active_turn.update({
                                 "turn": turn_index,
