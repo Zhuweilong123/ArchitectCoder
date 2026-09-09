@@ -8,14 +8,33 @@ from app.services.context_manager import (
 )
 
 
-def test_default_working_context_is_128k_with_bounded_history_and_react_steps():
+def test_default_working_context_is_128k_with_token_based_compaction():
     budget = ContextBudget()
 
     assert budget.max_context_tokens == 131072
     assert budget.output_reserve_tokens == 8192
     assert budget.max_history_tokens == 88000
     assert budget.max_history_turns == 48
-    assert budget.max_react_steps == 24
+    assert budget.compaction_trigger_ratio == 0.75
+
+
+def test_context_compaction_trigger_includes_tool_schema_tokens():
+    manager = ContextBudgetManager(ContextBudget(
+        max_context_tokens=120,
+        output_reserve_tokens=10,
+        compaction_trigger_ratio=0.75,
+    ))
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "current task"},
+    ]
+    tools = [{
+        "type": "function",
+        "function": {"name": "read_file", "description": "x" * 400},
+    }]
+
+    assert not manager.should_compact(messages)
+    assert manager.should_compact(messages, tools=tools)
 
 
 def test_context_budget_preserves_current_input_and_caps_history():
@@ -157,14 +176,14 @@ def test_react_step_compaction_keeps_recent_pairs_and_checkpoint():
             {"role": "tool", "tool_call_id": f"call-{index}", "content": f"observation {index}"},
         ])
 
-    compacted, current_index, dropped, _tokens = manager.compact_react_steps(
-        messages, current_user_index=1, max_steps=2,
+    compacted, current_index, dropped, _tokens = manager.compact_tool_history(
+        messages, current_user_index=1, target_tokens=1,
     )
 
     assert current_index == 1
-    assert dropped == 6
+    assert dropped == 8
     assert compacted[2]["role"] == "system"
-    assert sum(1 for message in compacted if message.get("role") == "assistant") == 2
+    assert sum(1 for message in compacted if message.get("role") == "assistant") == 1
     assert all(
         message.get("role") != "tool" or any(
             call.get("id") == message.get("tool_call_id")
@@ -191,10 +210,10 @@ def test_react_step_compaction_prefers_structured_evidence_over_raw_prefix():
             {"role": "tool", "tool_call_id": f"call-{index}", "content": "RAW PREFIX MUST NOT BE USED"},
         ])
 
-    compacted, _, _, _ = manager.compact_react_steps(
+    compacted, _, _, _ = manager.compact_tool_history(
         messages,
         current_user_index=1,
-        max_steps=2,
+        target_tokens=1,
         evidence_by_call={"call-0": "[E1] read_file (ok); file=src/a.py; lines 21-40; observation_sha=abc"},
     )
 
@@ -215,8 +234,8 @@ def test_react_step_compaction_never_falls_back_to_raw_when_evidence_is_missing(
             {"role": "tool", "tool_call_id": f"call-{index}", "content": "RAW SECRETLY LARGE OBSERVATION"},
         ])
 
-    compacted, _, _, _ = manager.compact_react_steps(
-        messages, current_user_index=1, max_steps=2, evidence_by_call={},
+    compacted, _, _, _ = manager.compact_tool_history(
+        messages, current_user_index=1, target_tokens=1, evidence_by_call={},
     )
 
     checkpoint = next(message["content"] for message in compacted if message.get("role") == "system" and "Tool execution checkpoint" in message.get("content", ""))
@@ -237,7 +256,7 @@ def test_react_step_compaction_replaces_prior_checkpoint_instead_of_accumulating
             {"role": "tool", "tool_call_id": f"call-{index}", "content": f"result {index}"},
         ])
 
-    compacted, _, _, _ = manager.compact_react_steps(messages, current_user_index=1, max_steps=2)
+    compacted, _, _, _ = manager.compact_tool_history(messages, current_user_index=1, target_tokens=1)
 
     assert sum(
         message.get("role") == "system" and message.get("content", "").startswith("## Tool execution checkpoint")

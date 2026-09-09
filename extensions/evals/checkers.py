@@ -284,15 +284,11 @@ class TracePolicyChecker(Checker):
             if scoped_tools is None:
                 scoped_tools = tools
             scoped_tools = [str(tool) for tool in scoped_tools]
-            # Production DevAgent uses the foundation batch mutation tool for
-            # file edits. Keep legacy case terminology compatible without
-            # hiding the actual observed tool names in the result details.
-            aliases = {"edit_file": "apply_changes", "write_file": "apply_changes"}
-            canonical_tools = {aliases.get(tool, tool) for tool in scoped_tools}
-            canonical_required = [aliases.get(tool, tool) for tool in self.required_tools]
-            canonical_forbidden = [aliases.get(tool, tool) for tool in self.forbidden_tools]
-            missing = [tool for tool in self.required_tools if aliases.get(tool, tool) not in canonical_tools]
-            forbidden = [tool for tool in self.forbidden_tools if aliases.get(tool, tool) in canonical_tools]
+            canonical_tools = set(scoped_tools)
+            canonical_required = list(self.required_tools)
+            canonical_forbidden = list(self.forbidden_tools)
+            missing = [tool for tool in canonical_required if tool not in canonical_tools]
+            forbidden = [tool for tool in canonical_forbidden if tool in canonical_tools]
             verification_equivalent = False
             if (
                 "run_task" in canonical_required

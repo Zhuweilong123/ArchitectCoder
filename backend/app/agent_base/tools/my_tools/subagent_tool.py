@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import asyncio
 
+from app.agent_base.convergence import ConvergenceController
+from app.agent_base.core.hooks import (
+    AgentRuntime, HookAction, HookContext, HookDecision, HookEvent,
+    get_hooks, get_runtime, reset_runtime, set_runtime,
+)
 from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.core.policy import ExecutionBudget
+from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
+from app.agent_base.evidence import EvidenceLedger
+from app.services.context_manager import ContextBudgetManager
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.async_tool import AsyncTool
-from app.agent_base.tools.my_tools.file_system_tools import create_file_system_tools, ReadFileTool
+from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
+from app.runtime import build_command_executor, workspace_root_for
 
 logger = logging.getLogger(__name__)
 
@@ -37,27 +47,27 @@ def _build_toolkit_tools(
     kind: str,
     source_dir: str, test_dir: str, design_dir: str,
     db_path: str, project_file: str,
-    review_manager, progress,
+    review_manager, progress, command_executor, workspace_root,
 ) -> list:
     """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
+    foundation = create_foundation_tools(
+        source_dir, test_dir, design_dir,
+        review_manager=review_manager, progress=progress,
+        command_executor=command_executor,
+        workspace_root=workspace_root,
+    )
+    by_name = {tool.name: tool for tool in foundation}
     if kind == "standard":
-        tools = list(create_file_system_tools(
-            source_dir, test_dir, design_dir,
-            review_manager=review_manager, progress=progress,
-        ))
-        tools.append(SkillTool())
-        return tools
+        return [*foundation, SkillTool()]
 
-    # 只读类工具包共用 ReadFileTool（无 write/edit/bash）；知识图谱工具默认禁用
+    # Read-only toolkits intentionally expose only the foundation read contract.
     # Read-only toolkits intentionally use only file inspection and skills.
     # KG toolkit names remain for compatibility, but graph tools are disabled
     # for DevAgent to avoid broad exploration and repeated reads.
-    read_tool = ReadFileTool(source_dir, test_dir, design_dir)
+    read_tool = by_name["read_file"]
     if kind == "read_only":
         return [read_tool]
-    if kind == "kg_analysis":
-        return [read_tool, SkillTool()]
-    if kind == "strategy":
+    if kind in {"kg_analysis", "strategy"}:
         return [read_tool, SkillTool()]
     raise ValueError(f"unknown toolkit: {kind}")
 
@@ -78,28 +88,58 @@ class SpawnSubagentTool(AsyncTool):
         test_dir: str = "",
         design_dir: str = "",
         project_file: str = "",
-        max_steps: int = 20,
         max_total_tokens: int = 500000,
+        context_budget: ContextBudgetManager | None = None,
+        max_tool_calls: int | None = None,
+        max_run_seconds: float | None = None,
+        token_finalization_reserve_tokens: int | None = None,
+        llm_timeout_seconds: float | None = None,
         review_manager=None,
         progress=None,
+        command_executor=None,
+        workspace_root: str = "",
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
     ):
         super().__init__(
             name="spawn_subagent",
             description=(
-                "Delegate one bounded, self-contained exploration to a read-only "
-                "subagent and receive only a concise summary. Use for cross-file or "
+                "Delegate one bounded, self-contained exploration to a subagent and "
+                "receive only a concise summary. The selected toolkit uses the same "
+                "capability contracts as DevAgent. Use for cross-file or "
                 "UML/source impact analysis when many small reads would clutter the "
                 "main context; do not use for greetings, simple single-file tasks, "
-                "editing, review, or final verification. The subagent cannot spawn "
-                "agents, write files, run bash, or submit UML review."
+                "editing, review, or final verification. Strategy/read_only toolkits "
+                "are read-only; subagents cannot spawn agents or submit UML review."
             ),
         )
         self.llm = llm
-        self.max_steps = max_steps
         self.max_total_tokens = max(1, int(max_total_tokens))
+        from backend.config import get_settings
+        settings = get_settings()
+        if command_executor is None:
+            command_executor = build_command_executor(settings)
+        if not workspace_root:
+            workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
+        self.max_tool_calls = max(1, int(
+            max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
+        ))
+        self.max_run_seconds = max(1.0, float(
+            max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
+        ))
+        self.token_finalization_reserve_tokens = (
+            token_finalization_reserve_tokens
+            if token_finalization_reserve_tokens is not None
+            else settings.agent_token_finalization_reserve_tokens
+        )
+        self.llm_timeout_seconds = max(1.0, float(
+            llm_timeout_seconds if llm_timeout_seconds is not None
+            else settings.agent_llm_timeout_seconds
+        ))
+        self.context_budget = context_budget or ContextBudgetManager.from_settings(settings)
         self.last_token_usage = 0
+        self.last_context_report: dict = {}
+        self.last_evidence_summary: list[dict] = []
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
         self._single_use_used = False
@@ -107,8 +147,8 @@ class SpawnSubagentTool(AsyncTool):
         if not self.toolkits or unknown_toolkits:
             raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
 
-        # 每个 toolkit 一个受限子 registry。审核通道透传给子代理的 bash ——
-        # 敏感命令委托子代理也不能绕过人工审核（只有 standard 包含 bash）。
+        # Each toolkit has its own restricted registry.  Review and execution
+        # policy are inherited through the shared foundation tool constructors.
         # db_path/project_file are retained in _build_toolkit_tools' signature
         # for compatibility with callers that construct custom toolkits.
         db_path = ""
@@ -120,6 +160,7 @@ class SpawnSubagentTool(AsyncTool):
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
                 db_path, project_file, review_manager, progress,
+                command_executor, workspace_root,
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
@@ -143,65 +184,251 @@ class SpawnSubagentTool(AsyncTool):
             self._single_use_used = True
         registry = self.sub_registries[toolkit]
         sub_tools = registry.get_openai_specs()
-
-        messages: list[dict] = [
-            {"role": "system", "content": self.system_prompts[toolkit]},
-            {"role": "user", "content": description},
-        ]
+        parent_runtime = get_runtime()
+        child_runtime = AgentRuntime(
+            stop_check=parent_runtime.stop_check,
+            run_id=f"{parent_runtime.run_id}/subagent" if parent_runtime.run_id else "subagent",
+        )
+        budget = ExecutionBudget(
+            max_tool_calls=self.max_tool_calls,
+            max_run_seconds=self.max_run_seconds,
+            max_total_tokens=self.max_total_tokens,
+            token_finalization_reserve_tokens=self.token_finalization_reserve_tokens,
+        )
+        child_runtime.execution_budget = budget
+        child_runtime.convergence_controller = ConvergenceController()
+        runtime_token = set_runtime(child_runtime)
+        evidence_ledger = EvidenceLedger(max_records=max(self.max_tool_calls, 128))
+        evidence_summary: list[dict] = []
+        current_history: list[str] = []
+        executor = ToolRoundExecutor(
+            registry,
+            agent_name="spawn_subagent",
+            allowed_tools=set(registry.list_tools()),
+            evidence_ledger=evidence_ledger,
+            evidence_summary=evidence_summary,
+            current_history=current_history,
+        )
+        built = self.context_budget.build_messages(
+            self.system_prompts[toolkit], [], description, tools=sub_tools,
+        )
+        messages = built.messages
+        current_user_index = built.current_user_index
         self.last_token_usage = 0
+        self.last_evidence_summary = evidence_summary
+        self.last_context_report = built.to_dict()
+        self.last_context_report["context_policy"] = {
+            "max_context_tokens": self.context_budget.budget.max_context_tokens,
+            "output_reserve_tokens": self.context_budget.budget.output_reserve_tokens,
+            "compaction_trigger_ratio": self.context_budget.budget.compaction_trigger_ratio,
+            "compaction_target_tokens": self.context_budget.budget.max_history_tokens,
+        }
+        forced_finalization_reason = ""
+        finalization_added = False
+        step = 0
 
-        for _ in range(self.max_steps):
-            if self.last_token_usage >= self.max_total_tokens:
-                return (
-                    "Subagent budget exceeded: reached the configured limit of "
-                    f"{self.max_total_tokens} tokens before completing the sub-task."
-                )
-            response = await self.llm.ainvoke_with_tools(
-                messages=messages,
-                tools=sub_tools,
-                tool_choice="auto",
-                temperature=0.3,
+        def budget_message(reason: str) -> str:
+            return (
+                "Subagent execution budget exceeded: "
+                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                "Return the verified evidence gathered so far."
             )
-            usage = response.get("usage") or {}
-            if isinstance(usage, dict):
-                self.last_token_usage += int(usage.get("total_tokens") or 0)
-            content = response.get("content") or ""
-            tool_calls = response.get("tool_calls")
 
-            if not tool_calls:
-                return content.strip() or "(subagent finished without a summary)"
+        def stopped_message(reason: str) -> str:
+            return (
+                "Subagent stopped: "
+                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                "Return the verified evidence gathered so far."
+            )
 
-            if self.last_token_usage >= self.max_total_tokens:
-                return (
-                    "Subagent budget exceeded: reached the configured limit of "
-                    f"{self.max_total_tokens} tokens before producing a final summary."
+        try:
+            get_hooks().trigger(
+                HookEvent.RUN_START,
+                HookContext(
+                    event=HookEvent.RUN_START,
+                    agent_name="spawn_subagent",
+                    run_id=child_runtime.run_id,
+                    runtime=child_runtime,
+                ),
+            )
+            while True:
+                step += 1
+                finalization_mode = bool(forced_finalization_reason) or budget.finalization_required
+                active_tools = [] if finalization_mode else sub_tools
+                if finalization_mode and not finalization_added:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Subagent finalization checkpoint\n"
+                            "Do not call tools. Return a concise summary of verified findings, "
+                            "including uncertainty and any missing evidence."
+                            + (
+                                f" Convergence stopped further exploration because: {forced_finalization_reason}."
+                                if forced_finalization_reason else ""
+                            )
+                        ),
+                    })
+                    finalization_added = True
+
+                if self.context_budget.should_compact(messages, tools=active_tools):
+                    prior_call_ids = [
+                        str(message.get("tool_call_id") or "")
+                        for message in messages
+                        if message.get("role") == "tool" and message.get("tool_call_id")
+                    ]
+                    messages, current_user_index, dropped, dropped_tokens = (
+                        self.context_budget.compact_tool_history(
+                            messages,
+                            current_user_index=current_user_index,
+                            target_tokens=self.context_budget.budget.max_history_tokens,
+                            evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
+                        )
+                    )
+                    if dropped:
+                        self.last_context_report["compacted_messages"] = (
+                            self.last_context_report.get("compacted_messages", 0) + dropped
+                        )
+                        self.last_context_report["compacted_tokens"] = (
+                            self.last_context_report.get("compacted_tokens", 0) + dropped_tokens
+                        )
+
+                messages, _ = self.context_budget.fit_messages(
+                    messages,
+                    tools=active_tools,
+                    current_user_index=current_user_index,
                 )
+                before = get_hooks().trigger(
+                    HookEvent.LLM_BEFORE,
+                    HookContext(
+                        event=HookEvent.LLM_BEFORE,
+                        agent_name="spawn_subagent",
+                        run_id=child_runtime.run_id,
+                        runtime=child_runtime,
+                        messages=messages,
+                    ),
+                )
+                if isinstance(before, HookDecision) and before.action in {HookAction.STOP, "stop"}:
+                    self.last_token_usage = budget.total_tokens
+                    return budget_message("before the next model call")
 
-            messages.append({
-                "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls,
-            })
-            for tc in tool_calls:
-                fn = tc["function"]
+                from app.trace.tracing import trace_span
                 try:
-                    args = json.loads(fn["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
-                result = await registry.aexecute_tool_with_params(
-                    fn["name"], args,
-                )
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result,
-                })
+                    with trace_span("spawn_subagent"):
+                        response = await asyncio.wait_for(
+                            self.llm.ainvoke_with_tools(
+                                messages=messages,
+                                tools=active_tools,
+                                tool_choice="none" if finalization_mode else "auto",
+                                temperature=0.3,
+                            ),
+                            timeout=self.llm_timeout_seconds,
+                        )
+                except asyncio.TimeoutError:
+                    self.last_token_usage = budget.total_tokens
+                    return "Subagent LLM call timed out; return the verified evidence gathered so far."
 
-        # 达 max_steps：返回最后一条 assistant content
-        for msg in reversed(messages):
-            if msg["role"] == "assistant" and msg.get("content"):
-                return msg["content"]
-        return "(subagent finished without a summary)"
+                get_hooks().trigger(
+                    HookEvent.LLM_AFTER,
+                    HookContext(
+                        event=HookEvent.LLM_AFTER,
+                        agent_name="spawn_subagent",
+                        run_id=child_runtime.run_id,
+                        runtime=child_runtime,
+                        messages=messages,
+                        llm_response=response,
+                    ),
+                )
+                self.last_token_usage = budget.total_tokens
+                self.last_context_report.update({
+                    "token_budget_used": budget.total_tokens,
+                    "token_budget_remaining": budget.remaining_tokens,
+                })
+                content = str(response.get("content") or "")
+                tool_calls = response.get("tool_calls")
+                if finalization_mode:
+                    tool_calls = None
+
+                if not tool_calls:
+                    if content.strip():
+                        return content.strip()
+                    child_runtime.control_decision = None
+                    get_hooks().emit(
+                        HookEvent.TOOL_BATCH_AFTER,
+                        HookContext(
+                            event=HookEvent.TOOL_BATCH_AFTER,
+                            agent_name="spawn_subagent",
+                            run_id=child_runtime.run_id,
+                            runtime=child_runtime,
+                            phase="empty_progress",
+                            payload={"details": [], "actions": [], "step": step},
+                        ),
+                    )
+                    decision = child_runtime.control_decision
+                    if isinstance(decision, HookDecision):
+                        if decision.action in {HookAction.FINALIZE, "finalize"}:
+                            return stopped_message("convergence stalled")
+                        if decision.action in {HookAction.RECOVER, "recover"}:
+                            messages.append({
+                                "role": "system",
+                                "content": f"## Subagent convergence controller\n{decision.message}",
+                            })
+                            continue
+                    messages.append({
+                        "role": "system",
+                        "content": "Return a concise evidence-based summary or call the minimum required tool.",
+                    })
+                    continue
+
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                })
+                round_result = await executor.execute(tool_calls, step=step)
+                messages.extend(round_result.tool_results)
+                child_runtime.control_decision = None
+                get_hooks().emit(
+                    HookEvent.TOOL_BATCH_AFTER,
+                    HookContext(
+                        event=HookEvent.TOOL_BATCH_AFTER,
+                        agent_name="spawn_subagent",
+                        run_id=child_runtime.run_id,
+                        runtime=child_runtime,
+                        phase="tool_batch_complete",
+                        payload={
+                            "details": round_result.details,
+                            "actions": round_result.actions,
+                            "step": step,
+                        },
+                    ),
+                )
+                decision = child_runtime.control_decision
+                if isinstance(decision, HookDecision) and decision.action in {
+                    HookAction.RECOVER, HookAction.FINALIZE, "recover", "finalize",
+                }:
+                    messages.append({
+                        "role": "system",
+                        "content": f"## Subagent convergence controller\n{decision.message}",
+                    })
+                    if decision.action in {HookAction.FINALIZE, "finalize"}:
+                        forced_finalization_reason = decision.reason or "convergence_stalled"
+
+                if budget.total_tokens >= budget.max_total_tokens:
+                    self.last_token_usage = budget.total_tokens
+                    return budget_message("after the current tool round")
+        finally:
+            try:
+                get_hooks().trigger(
+                    HookEvent.RUN_END,
+                    HookContext(
+                        event=HookEvent.RUN_END,
+                        agent_name="spawn_subagent",
+                        run_id=child_runtime.run_id,
+                        runtime=child_runtime,
+                    ),
+                )
+            finally:
+                reset_runtime(runtime_token)
 
     def to_openai_schema(self) -> dict:
         return {

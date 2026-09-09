@@ -129,16 +129,18 @@ class ContextBudget:
     max_current_task_tokens: int = 5000
     max_tool_tokens: int = 6000
     max_history_turns: int = 48
-    max_react_steps: int = 24
+    compaction_trigger_ratio: float = 0.75
 
     def __post_init__(self) -> None:
         for name in (
             "max_context_tokens", "output_reserve_tokens", "max_system_tokens",
             "max_history_tokens", "max_summary_tokens", "max_current_task_tokens",
-            "max_tool_tokens", "max_history_turns", "max_react_steps",
+            "max_tool_tokens", "max_history_turns",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if not 0 < self.compaction_trigger_ratio <= 1:
+            raise ValueError("compaction_trigger_ratio must be in (0, 1]")
 
 
 @dataclass
@@ -253,6 +255,21 @@ class ContextBudgetManager:
         self.token_counter = token_counter
         self.compactor = compactor or HistoryCompactor(token_counter)
 
+    @classmethod
+    def from_settings(cls, settings: Any | None = None) -> "ContextBudgetManager":
+        """Build an isolated manager from the central Agent context settings."""
+        if settings is None:
+            from backend.config import get_settings
+            settings = get_settings()
+        return cls(budget=ContextBudget(
+            max_context_tokens=settings.agent_context_max_tokens,
+            output_reserve_tokens=settings.agent_context_output_reserve_tokens,
+            max_history_tokens=settings.agent_context_max_history_tokens,
+            max_history_turns=settings.agent_context_max_history_turns,
+            max_summary_tokens=settings.agent_context_max_summary_tokens,
+            compaction_trigger_ratio=settings.agent_context_compaction_trigger_ratio,
+        ))
+
     def prepare_history(
         self,
         history: Iterable[Any],
@@ -331,6 +348,30 @@ class ContextBudgetManager:
             },
         )
 
+    def estimate_request_tokens(
+        self,
+        messages: Iterable[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Estimate the full request footprint, including tool schemas."""
+        return self._messages_tokens(messages) + self._tool_tokens(tools)
+
+    def should_compact(
+        self,
+        messages: Iterable[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Return whether the request is using too much of its context budget."""
+        usable_tokens = max(
+            1,
+            self.budget.max_context_tokens - self.budget.output_reserve_tokens,
+        )
+        return self.estimate_request_tokens(messages, tools=tools) >= (
+            usable_tokens * self.budget.compaction_trigger_ratio
+        )
+
     def fit_messages(
         self,
         messages: list[dict[str, Any]],
@@ -365,29 +406,31 @@ class ContextBudgetManager:
                 )
         return result, dropped
 
-    def compact_react_steps(
+    def compact_tool_history(
         self,
         messages: list[dict[str, Any]],
         *,
         current_user_index: int | None = None,
-        max_steps: int = 8,
+        target_tokens: int | None = None,
         evidence_by_call: dict[str, str] | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int, int]:
-        """Fold old FC tool steps into a small extractive checkpoint.
+        """Fold old FC tool history into a token-bounded checkpoint.
 
-        A step is one assistant message containing ``tool_calls`` plus all
-        immediately following tool results.  The newest steps stay verbatim;
-        older steps become a system reference containing tool names and short
-        observations.  When the caller supplies ``evidence_by_call``, typed
-        evidence takes precedence over blind observation prefixes.  This keeps
-        function-call/result pairs valid while bounding repetitive exploration
-        in long runs.
+        A step is one assistant message containing tool calls plus all
+        immediately following tool results. The newest steps stay verbatim
+        until the requested message-token target is reached; older steps become
+        a system reference containing tool names and short observations. When
+        structured evidence is supplied, it takes precedence over raw
+        observation prefixes. This keeps function-call/result pairs valid
+        without using a fixed step count.
 
         Returns ``(messages, current_user_index, dropped_message_count,
         dropped_token_count)``.
         """
-        if max_steps < 1:
-            max_steps = 1
+        target_tokens = max(
+            1,
+            int(target_tokens if target_tokens is not None else self.budget.max_history_tokens),
+        )
         groups: list[list[int]] = []
         index = 0
         while index < len(messages):
@@ -400,11 +443,6 @@ class ContextBudgetManager:
                 index = end
                 continue
             index += 1
-        if len(groups) <= max_steps:
-            return messages, current_user_index, 0, 0
-
-        old_groups = groups[:-max_steps]
-        old_indices = {item for group in old_groups for item in group}
         # Keep one evolving checkpoint.  Do not embed the previous checkpoint
         # verbatim: that creates nested headers and repeats already-compacted
         # prose on every later pass.
@@ -413,6 +451,23 @@ class ContextBudgetManager:
             if message.get("role") == "system"
             and str(message.get("content") or "").startswith("## Tool execution checkpoint")
         }
+        all_group_indices = {item for group in groups for item in group}
+        base_indices = set(range(len(messages))) - all_group_indices - checkpoint_indices
+        retained_groups: list[list[int]] = []
+        retained_tokens = sum(
+            self._message_tokens_for(messages[pos]) for pos in base_indices
+        )
+        for group in reversed(groups):
+            group_tokens = sum(self._message_tokens_for(messages[pos]) for pos in group)
+            if retained_groups and retained_tokens + group_tokens > target_tokens:
+                break
+            retained_groups.append(group)
+            retained_tokens += group_tokens
+        retained_groups.reverse()
+        old_groups = groups[: len(groups) - len(retained_groups)]
+        if not old_groups:
+            return messages, current_user_index, 0, 0
+        old_indices = {item for group in old_groups for item in group}
         previous_evidence_lines: list[str] = []
         for pos in sorted(checkpoint_indices):
             previous_evidence_lines.extend(_checkpoint_evidence_lines(

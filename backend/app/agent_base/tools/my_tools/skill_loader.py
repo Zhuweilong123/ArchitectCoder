@@ -6,7 +6,7 @@
 - L2 ``skill(name)``：SKILL.md 正文 + 同目录引用文件清单。
 - L3 ``skill(name, file=...)``：单个引用文件正文。
 
-L3 必须由本工具投递而非让 agent 走 read_file —— ``file_system_tools.safe_path()``
+L3 必须由本工具投递而非让 agent 走 read_file —— ``foundation_runtime.safe_path()``
 把路径限制在 source_dir / test_dir / design_dir 三个 workspace root 内，而
 skills/ 在仓库根目录、不在用户被分析项目里，read_file 必然抛
 ``Path escapes workspace``。

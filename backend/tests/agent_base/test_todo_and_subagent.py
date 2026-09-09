@@ -8,6 +8,7 @@ from app.agent_base.core.hooks import (
 )
 from app.agent_base.tools.my_tools.todo_tools import TodoWriteTool
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
+from app.services.context_manager import ContextBudget, ContextBudgetManager
 
 
 def test_todo_write_updates_runtime():
@@ -123,7 +124,7 @@ class _MockLLM:
                 "content": "",
                 "tool_calls": [{
                     "id": "c1", "type": "function",
-                    "function": {"name": "glob", "arguments": json.dumps({"pattern": "*.py"})},
+                    "function": {"name": "list_files", "arguments": json.dumps({"path": ".", "pattern": "*.py"})},
                 }],
             }
         return {"content": "summary text", "tool_calls": None}
@@ -168,7 +169,11 @@ def test_spawn_subagent_builds_all_supported_toolkits(tmp_path):
 def test_standard_toolkit_full_editing(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["standard"].list_tools()
-    assert {"read_file", "write_file", "edit_file", "glob", "bash", "skill"} <= set(names)
+    assert {
+        "list_files", "read_file", "search_text", "apply_changes",
+        "run_program", "run_task", "shell", "skill",
+    } <= set(names)
+    assert not ({"write_file", "edit_file", "glob", "bash"} & set(names))
     # 安全不变量：子代理永不递归、永不经由委派绕过审核
     assert "spawn_subagent" not in names
     assert "submit_uml_review" not in names
@@ -179,7 +184,7 @@ def test_read_only_toolkit_no_writes(tmp_path):
     names = tool.sub_registries["read_only"].list_tools()
     assert names == ["read_file"]
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
-    assert not ({"write_file", "edit_file", "bash"} & set(names))
+    assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
 
 def test_kg_analysis_toolkit_no_writes(tmp_path):
@@ -187,7 +192,7 @@ def test_kg_analysis_toolkit_no_writes(tmp_path):
     names = tool.sub_registries["kg_analysis"].list_tools()
     assert set(names) == {"read_file", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
-    assert not ({"write_file", "edit_file", "bash"} & set(names))
+    assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
 
 def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
@@ -195,12 +200,12 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
     src.mkdir()
     tool = SpawnSubagentTool(
         llm=_MockLLM(), source_dir=str(src),
-        toolkits=("strategy",), max_steps=6, single_use=True,
+        toolkits=("strategy",), single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
     assert set(names) == {"read_file", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
-    assert not ({"write_file", "edit_file", "bash", "glob"} & set(names))
+    assert not ({"apply_changes", "run_program", "run_task", "shell", "list_files"} & set(names))
     schema = tool.to_openai_schema()
     assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]
 
@@ -218,7 +223,7 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     src.mkdir()
     llm = _MockLLM()
     tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
-    # _MockLLM 第一轮调 glob → 只有 standard 有 glob；kg_analysis 没有，会直接收尾
+    # _MockLLM 第一轮调用 list_files；standard 暴露完整 foundation 契约。
     result = asyncio.run(tool._execute({"description": "summarize files", "toolkit": "standard"}))
     assert "summary text" in result
     assert llm.last_model is None
@@ -233,14 +238,14 @@ def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
                 "tool_calls": [{
                     "id": f"c{self.count}",
                     "type": "function",
-                    "function": {"name": "glob", "arguments": json.dumps({"pattern": "*.py"})},
+                    "function": {"name": "list_files", "arguments": json.dumps({"path": ".", "pattern": "*.py"})},
                 }],
                 "usage": {"total_tokens": 60},
             }
 
     llm = _BudgetLLM()
     tool = SpawnSubagentTool(
-        llm=llm, source_dir=str(tmp_path), max_steps=10, max_total_tokens=100,
+        llm=llm, source_dir=str(tmp_path), max_total_tokens=100,
     )
 
     result = asyncio.run(tool._execute({"description": "find files"}))
@@ -248,3 +253,57 @@ def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
     assert "budget exceeded" in result
     assert tool.last_token_usage == 120
     assert llm.count == 2
+
+
+def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    target = src / "large.txt"
+    target.write_text("important evidence\n" * 1200, encoding="utf-8")
+
+    class _ContextLLM:
+        def __init__(self):
+            self.count = 0
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.count += 1
+            if self.count <= 5:
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": f"read-{self.count}",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({
+                                "path": "large.txt", "offset": self.count * 10,
+                            }),
+                        },
+                    }],
+                    "usage": {"total_tokens": 10},
+                }
+            return {"content": "context summary", "tool_calls": None, "usage": {"total_tokens": 10}}
+
+    llm = _ContextLLM()
+    tool = SpawnSubagentTool(
+        llm=llm,
+        source_dir=str(src),
+        max_total_tokens=10000,
+        token_finalization_reserve_tokens=1,
+        context_budget=ContextBudgetManager(ContextBudget(
+            max_context_tokens=4000,
+            output_reserve_tokens=100,
+            max_history_tokens=500,
+            max_summary_tokens=100,
+            compaction_trigger_ratio=0.5,
+        )),
+    )
+
+    result = asyncio.run(tool._execute({
+        "description": "collect evidence",
+        "toolkit": "read_only",
+    }))
+
+    assert result == "context summary"
+    assert llm.count == 6
+    assert tool.last_context_report["compacted_messages"] > 0

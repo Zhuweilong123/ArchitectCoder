@@ -82,13 +82,18 @@ async def run_fc_loop(
         "compacted_tokens": compacted.dropped_tokens,
         "convergence_policy": {
             "budget_ratio": agent.convergence_budget_ratio,
-            "keep_recent_steps": agent.convergence_keep_recent_steps,
             "evidence_max_records": agent.evidence_max_records,
             "open_ended_loop": True,
             "max_stalled_rounds": agent.convergence_max_stalled_rounds,
             "max_recovery_rounds": agent.convergence_max_recovery_rounds,
             "repeat_action_threshold": agent.convergence_repeat_action_threshold,
             "final_summary_max_tokens": agent.final_summary_max_tokens,
+        },
+        "context_policy": {
+            "max_context_tokens": agent.context_budget.budget.max_context_tokens,
+            "output_reserve_tokens": agent.context_budget.budget.output_reserve_tokens,
+            "compaction_trigger_ratio": agent.context_budget.budget.compaction_trigger_ratio,
+            "compaction_target_tokens": agent.context_budget.budget.max_history_tokens,
         },
     })
     if compacted.dropped_messages and agent.on_context_compacted:
@@ -114,7 +119,6 @@ async def run_fc_loop(
     tool_call_count = budget.tool_call_count
     total_tokens = budget.total_tokens
     soft_budget_notified = False
-    convergence_compaction_active = False
     convergence_directive_added = False
     last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
     evidence_ledger = EvidenceLedger(max_records=agent.evidence_max_records)
@@ -180,30 +184,31 @@ async def run_fc_loop(
                     "token_budget_remaining": remaining_tokens,
                     "token_budget_finalization_mode": True,
                 })
-            convergence_reasons = []
-            if total_tokens >= budget.max_total_tokens * agent.convergence_budget_ratio:
-                convergence_reasons.append("token_budget_ratio")
-            if convergence_reasons:
-                convergence_compaction_active = True
-            retained_react_steps = (
-                agent.convergence_keep_recent_steps
-                if convergence_compaction_active
-                else agent.context_budget.budget.max_react_steps
+            context_tokens_before = agent.context_budget.estimate_request_tokens(
+                messages, tools=active_tool_specs,
+            )
+            context_compaction_triggered = agent.context_budget.should_compact(
+                messages, tools=active_tool_specs,
             )
             prior_call_ids = [
                 str(message.get("tool_call_id") or "")
                 for message in messages
                 if message.get("role") == "tool" and message.get("tool_call_id")
             ]
-            messages, current_user_index, compacted_steps, compacted_tokens = agent.context_budget.compact_react_steps(
-                messages,
-                current_user_index=current_user_index,
-                max_steps=min(
-                    retained_react_steps,
-                    agent.context_budget.budget.max_history_turns,
-                ),
-                evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
-            )
+            compacted_steps = 0
+            compacted_tokens = 0
+            if context_compaction_triggered:
+                messages, current_user_index, compacted_steps, compacted_tokens = (
+                    agent.context_budget.compact_tool_history(
+                        messages,
+                        current_user_index=current_user_index,
+                        target_tokens=agent.context_budget.budget.max_history_tokens,
+                        evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
+                    )
+                )
+            convergence_reasons = []
+            if total_tokens >= budget.max_total_tokens * agent.convergence_budget_ratio:
+                convergence_reasons.append("token_budget_ratio")
             if compacted_steps:
                 agent.last_context_report["react_compacted_steps"] = (
                     agent.last_context_report.get("react_compacted_steps", 0) + compacted_steps
@@ -211,12 +216,12 @@ async def run_fc_loop(
                 agent.last_context_report["react_compacted_tokens"] = (
                     agent.last_context_report.get("react_compacted_tokens", 0) + compacted_tokens
                 )
-                if convergence_compaction_active:
-                    agent.last_context_report["convergence_evidence_compaction"] = {
-                        "triggered_by": convergence_reasons,
+                if context_compaction_triggered:
+                    agent.last_context_report["context_budget_compaction"] = {
+                        "triggered_by": ["context_usage_ratio"],
                         "triggered_at_tool_calls": tool_call_count,
-                        "token_budget_used": total_tokens,
-                        "keep_recent_steps": retained_react_steps,
+                        "context_tokens_before": context_tokens_before,
+                        "target_tokens": agent.context_budget.budget.max_history_tokens,
                     }
                 if agent.on_context_compacted:
                     checkpoint = next(
@@ -232,14 +237,11 @@ async def run_fc_loop(
                         "summary": checkpoint,
                         "dropped_messages": compacted_steps,
                         "dropped_tokens": compacted_tokens,
-                        "reason": (
-                            "convergence" if convergence_compaction_active
-                            else "history_limit"
-                        ),
-                        "triggered_by": convergence_reasons,
+                        "reason": "context_budget" if context_compaction_triggered else "history_limit",
+                        "triggered_by": ["context_usage_ratio"] if context_compaction_triggered else [],
                         "tool_call_count": tool_call_count,
                         "token_budget_used": total_tokens,
-                        "keep_recent_steps": retained_react_steps,
+                        "context_target_tokens": agent.context_budget.budget.max_history_tokens,
                     })
             if convergence_reasons and not convergence_directive_added:
                 messages.append({

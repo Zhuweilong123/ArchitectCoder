@@ -10,7 +10,7 @@ from app.agent_base.execution.linux import (
     resolve_linux_command_environment,
     windows_path_to_wsl,
 )
-from app.agent_base.tools.my_tools.file_system_tools import BashTool
+from app.agent_base.tools.my_tools.foundation_tools import ShellTool
 from backend.config import Settings
 
 
@@ -108,7 +108,7 @@ def test_auto_environment_uses_native_bash_on_linux():
 
 
 def test_bash_schema_advertises_linux_contract_and_rejects_windows_command(tmp_path):
-    bash = BashTool(str(tmp_path), command_executor=WslBashExecutor())
+    bash = ShellTool(str(tmp_path), command_executor=WslBashExecutor())
 
     assert "Linux/POSIX bash" in bash.to_openai_schema()["function"]["description"]
     result = __import__("asyncio").run(bash._execute({"command": "dir"}))
@@ -117,4 +117,4 @@ def test_bash_schema_advertises_linux_contract_and_rejects_windows_command(tmp_p
 
 def test_bash_allows_linux_environment_diagnostics():
     for command in ("printf agent_wsl_ready", "uname -s", "pwd"):
-        assert BashTool._validate_shell_command(command) is None
+        assert ShellTool._validate_shell_command(command) is None

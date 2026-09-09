@@ -88,8 +88,8 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
     tracer.user_message("old question")
     tracer.context_compacted(
         summary="keep the SQLite decision", dropped_messages=2,
-        reason="convergence", triggered_by=["tool_call_count"],
-        tool_call_count=25, token_budget_used=96000, keep_recent_steps=3,
+        reason="context_budget", triggered_by=["context_usage_ratio"],
+        tool_call_count=25, token_budget_used=96000, context_target_tokens=88000,
     )
     tracer.done(answer="old answer")
     tracer.close()
@@ -102,8 +102,8 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
     assert history[-1] == {"role": "assistant", "content": "old answer"}
     events = [json.loads(line) for line in (tmp_path / "trace_checkpoint-test.jsonl").read_text(encoding="utf-8").splitlines()]
     checkpoint = next(event for event in events if event["event_type"] == "context_compacted")
-    assert checkpoint["reason"] == "convergence"
-    assert checkpoint["triggered_by"] == ["tool_call_count"]
+    assert checkpoint["reason"] == "context_budget"
+    assert checkpoint["triggered_by"] == ["context_usage_ratio"]
 
 
 def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):

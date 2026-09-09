@@ -342,11 +342,16 @@ def test_open_fc_loop_finalizes_after_repeated_non_progressing_action():
     assert llm.count < 10
 
 
-def test_react_step_compaction_is_reported_to_observers():
+def test_context_compaction_is_reported_to_observers():
     llm = MockLLM(rounds=9)
     agent = ReActAgent(
         "Test", llm, _registry(), max_steps=12,
-        context_budget=ContextBudgetManager(ContextBudget(max_react_steps=8)),
+        context_budget=ContextBudgetManager(ContextBudget(
+            max_context_tokens=300,
+            output_reserve_tokens=10,
+            max_history_tokens=20,
+            compaction_trigger_ratio=0.1,
+        )),
     )
     reports = []
     agent.on_context_compacted = reports.append

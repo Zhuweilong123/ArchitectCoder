@@ -515,7 +515,7 @@ async def handle_agent_execution(
                 triggered_by=report.get("triggered_by", []),
                 tool_call_count=report.get("tool_call_count", 0),
                 token_budget_used=report.get("token_budget_used", 0),
-                keep_recent_steps=report.get("keep_recent_steps", 0),
+                context_target_tokens=report.get("context_target_tokens", 0),
             )
         stream = agent.arun_stream(
             user_message,
@@ -778,8 +778,8 @@ async def handle_agent_execution(
                         "token_budget_used": report.get("token_budget_used", 0),
                         "token_budget_stop_reason": report.get("token_budget_stop_reason", "model_answer"),
                         "convergence_policy": report.get("convergence_policy", {}),
-                        "convergence_evidence_compaction": report.get(
-                            "convergence_evidence_compaction", {}
+                        "context_budget_compaction": report.get(
+                            "context_budget_compaction", {}
                         ),
                         "finalization_textual_tool_markup_blocked": report.get(
                             "finalization_textual_tool_markup_blocked", False

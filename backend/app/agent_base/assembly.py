@@ -273,12 +273,12 @@ async def create_dev_agent(
                 max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
             ),
             max_total_tokens=(
-                max_total_tokens if max_total_tokens is not None else settings.agent_max_total_tokens
+                max_total_tokens if max_total_tokens is not None
+                else settings.agent_per_run_execution_budget_tokens
             ),
         ),
         token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
         convergence_budget_ratio=settings.agent_convergence_budget_ratio,
-        convergence_keep_recent_steps=settings.agent_convergence_keep_recent_steps,
         convergence_max_stalled_rounds=settings.agent_convergence_max_stalled_rounds,
         convergence_max_recovery_rounds=settings.agent_convergence_max_recovery_rounds,
         convergence_repeat_action_threshold=settings.agent_convergence_repeat_action_threshold,
@@ -292,7 +292,7 @@ async def create_dev_agent(
             max_history_tokens=settings.agent_context_max_history_tokens,
             max_history_turns=settings.agent_context_max_history_turns,
             max_summary_tokens=settings.agent_context_max_summary_tokens,
-            max_react_steps=settings.agent_context_max_react_steps,
+            compaction_trigger_ratio=settings.agent_context_compaction_trigger_ratio,
         )),
     )
     agent.change_set = change_set

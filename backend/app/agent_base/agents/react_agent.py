@@ -119,7 +119,6 @@ class ReActAgent(Agent):
         max_total_tokens: int = 200000,
         token_finalization_reserve_tokens: int = 12000,
         convergence_budget_ratio: float = 0.8,
-        convergence_keep_recent_steps: int = 3,
         convergence_max_stalled_rounds: int = 3,
         convergence_max_recovery_rounds: int = 2,
         convergence_repeat_action_threshold: int = 3,
@@ -156,7 +155,6 @@ class ReActAgent(Agent):
                 self.execution_budget.token_finalization_reserve_tokens
             )
         self.convergence_budget_ratio = min(1.0, max(0.0, float(convergence_budget_ratio)))
-        self.convergence_keep_recent_steps = max(1, convergence_keep_recent_steps)
         self.convergence_max_stalled_rounds = max(1, convergence_max_stalled_rounds)
         self.convergence_max_recovery_rounds = max(1, convergence_max_recovery_rounds)
         self.convergence_repeat_action_threshold = max(2, convergence_repeat_action_threshold)

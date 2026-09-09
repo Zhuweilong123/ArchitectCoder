@@ -157,7 +157,7 @@ class EvidenceLedger:
             # edit operation.
             record.facts.extend((_line_range(arguments), f"observation_sha={_sha256(observation)}"))
             record.detail = f"excerpt={_short(observation, 220)!r}"
-        elif tool_name in {"search_text", "grep"}:
+        elif tool_name == "search_text":
             pattern = str(arguments.get("pattern") or arguments.get("query") or "")
             if pattern:
                 record.facts.append(f"query={_short(pattern, 100)!r}")
@@ -167,25 +167,40 @@ class EvidenceLedger:
             if match:
                 record.facts.append(f"matches={match.group(1)}")
             record.detail = f"sample={_short(observation, 220)!r}"
-        elif tool_name in {"edit_file", "write_file"}:
+        elif tool_name == "list_files":
+            pattern = str(arguments.get("pattern") or "**/*")
+            record.facts.append(f"pattern={_short(pattern, 100)!r}")
             if path:
-                record.facts.append(f"file={path}")
-            if tool_name == "edit_file":
-                target = str(arguments.get("old_text") or "")
-                replacement = str(arguments.get("new_text") or "")
-                record.facts.extend((
-                    f"target_sha={_sha256(target)}",
-                    f"replacement_sha={_sha256(replacement)}",
-                ))
-                record.detail = f"target={_short(target, 180)!r} → {_short(replacement, 180)!r}"
-            else:
-                content = str(arguments.get("content") or "")
-                record.facts.append(f"bytes={len(content.encode('utf-8'))}")
-            after = re.search(r"sha256=([0-9a-fA-F]{12,64})", observation)
-            if after:
-                record.facts.append(f"after_sha={after.group(1)[:12]}")
+                record.facts.append(f"path={path}")
+            record.detail = f"result={_short(observation, 220)!r}"
+        elif tool_name == "apply_changes":
+            changes = arguments.get("changes")
+            if isinstance(changes, list):
+                record.facts.append(f"changes={len(changes)}")
+                for change in changes[:8]:
+                    if not isinstance(change, dict):
+                        continue
+                    target = str(change.get("path") or change.get("to") or "")
+                    if target:
+                        record.facts.append(f"file={target}")
+                        self._link_edit_to_reads(target, record)
+                    if change.get("op") == "patch":
+                        old_text = str(change.get("old_text") or "")
+                        new_text = str(change.get("new_text") or "")
+                        record.facts.extend((
+                            f"target_sha={_sha256(old_text)}",
+                            f"replacement_sha={_sha256(new_text)}",
+                        ))
             record.pending_edit = status == "success"
-            self._link_edit_to_reads(path, record)
+            record.detail = f"result={_short(observation, 220)!r}"
+        elif tool_name in {"run_program", "run_task"}:
+            program = str(arguments.get("program") or arguments.get("task") or "")
+            if program:
+                record.facts.append(f"execution={_short(program, 180)!r}")
+            cwd = str(arguments.get("cwd") or "")
+            if cwd:
+                record.facts.append(f"cwd={cwd}")
+            record.detail = f"result={_short(observation, 180)!r}"
         elif tool_name == "get_project_map":
             payload = _json_mapping(observation)
             stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
@@ -248,7 +263,7 @@ class EvidenceLedger:
                 )
             if not record.facts:
                 record.detail = f"result_sha={_sha256(observation)}"
-        elif tool_name == "bash":
+        elif tool_name == "shell":
             command = str(arguments.get("command") or "")
             if command:
                 record.facts.append(f"command={_short(command, 180)!r}")

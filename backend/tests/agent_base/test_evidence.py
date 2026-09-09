@@ -9,15 +9,17 @@ def test_evidence_ledger_links_read_edit_and_verification():
         observation="old_name = 'Element'\n" * 100,
     )
     edit = ledger.record(
-        call_id="edit-1", tool_name="edit_file",
+        call_id="edit-1", tool_name="apply_changes",
         arguments={
-            "path": "src/example.py", "old_text": "old_name = 'Element'",
-            "new_text": "old_name = ''",
+            "changes": [{
+                "op": "patch", "path": "src/example.py",
+                "old_text": "old_name = 'Element'", "new_text": "old_name = ''",
+            }],
         },
         observation="Edited src/example.py (sha256=abc123def4567890)",
     )
     ledger.record(
-        call_id="test-1", tool_name="bash",
+        call_id="test-1", tool_name="shell",
         arguments={"command": "pytest tests/test_example.py", "cwd": "source"},
         observation="1 passed",
     )
@@ -32,16 +34,16 @@ def test_evidence_ledger_links_read_edit_and_verification():
     assert read.id == "E1"
 
 
-def test_evidence_ledger_normalizes_bash_failure():
+def test_evidence_ledger_normalizes_shell_failure():
     ledger = EvidenceLedger()
     record = ledger.record(
-        call_id="bash-1", tool_name="bash",
+        call_id="shell-1", tool_name="shell",
         arguments={"command": "pytest tests/test_broken.py"},
         observation="Error: command exited with code 1: FAILED test_broken.py::test_case",
         status="error", error_code="TOOL_REPORTED_ERROR",
     )
 
-    rendered = ledger.summary_for(["bash-1"])["bash-1"]
+    rendered = ledger.summary_for(["shell-1"])["shell-1"]
     assert "exit_code=1" in rendered
     assert "error_code=TOOL_REPORTED_ERROR" in rendered
     assert "FAILED test_broken.py" in rendered

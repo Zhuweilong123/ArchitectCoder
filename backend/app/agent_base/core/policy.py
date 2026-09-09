@@ -39,7 +39,7 @@ class ExecutionBudget:
         values = {
             "max_tool_calls": settings.agent_max_tool_calls,
             "max_run_seconds": settings.agent_max_run_seconds,
-            "max_total_tokens": settings.agent_max_total_tokens,
+            "max_total_tokens": settings.agent_per_run_execution_budget_tokens,
             "token_finalization_reserve_tokens": (
                 settings.agent_token_finalization_reserve_tokens
             ),

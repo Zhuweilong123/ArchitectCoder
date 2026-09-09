@@ -45,7 +45,8 @@ agent_base/
     │
     └── my_tools/                        # 项目特有工具
         ├── conversation_tools.py        # AsyncTool 基类 + ProgressRelay + create_conversation_tools
-        ├── file_system_tools.py         # 文件系统原语（read_file/write_file/edit_file/glob/bash）
+        ├── foundation_tools.py          # foundation 能力契约
+        ├── foundation_runtime.py        # 读取、搜索与 shell 执行实现
         ├── todo_tools.py                # TodoWriteTool（会话任务列表）
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
@@ -134,7 +135,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **ToolChain / ToolChainManager**：顺序编排 + 变量模板。
 - **AsyncToolExecutor**：并行执行 I/O 密集任务。
 - **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
-  `SubmitUmlReviewTool`（UML diff 审核）与 `BashTool`（敏感命令批准，见 file_system_tools）。
+  `SubmitUmlReviewTool`（UML diff 审核）与 `ShellTool`（敏感命令批准，见 foundation_tools）。
 
 ## 6. 对话 Agent 工具集
 
@@ -147,15 +148,16 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 [`current-architecture.md`](current-architecture.md)。下列旧工具表保留用于说明
 底层兼容实现，不代表生产 Agent 的实际暴露名称。
 
-### 6.1 文件系统原语（`file_system_tools.py`）
+### 6.1 Foundation 能力契约（`foundation_tools.py`）
 
 | 工具 | 功能 |
 |------|------|
 | `read_file` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `write_file` | 写文件（覆盖/新建，自动建父目录） |
-| `edit_file` | 精确文本替换（只替换首次出现） |
-| `glob` | 按 glob 模式查找文件 |
-| `bash` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
+| `list_files` | 按路径和 glob 模式查找文件 |
+| `search_text` | 在工作区内搜索文本 |
+| `apply_changes` | 原子应用文件创建、修改、移动、复制和删除 |
+| `run_program` / `run_task` | 执行直接程序或固定项目任务 |
+| `shell` | 跑受策略约束的单条命令 |
 
 所有文件操作经 `safe_path()` 守卫在 workspace 内（source_dir / test_dir / design_dir 三个 root）。
 
@@ -210,7 +212,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 服务端 → 客户端 (流式):
   {"event": "progress", "step": 1, "actions": [...], "thought": "...", "tool_calls_detail": [...]}
-  {"event": "request_review", "review_id": 0, "review_type": "bash_command", "title": "...", "question": "..."}
+  {"event": "request_review", "review_id": 0, "review_type": "shell_command", "title": "...", "question": "..."}
   {"event": "done", "result": "..."}
   {"event": "stopped", "reason": "User requested stop", "status": "paused", "resume_available": true}
   {"event": "error", "message": "..."}
@@ -223,8 +225,8 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ```
 主 Agent: ReActAgent (FC 模式，开放循环 + 预算/收敛保护)
 │
-├── read_file / write_file / edit_file / glob → 文件系统原语（safe_path 守卫）
-├── bash → 两级防护：高危命令直接拒绝；敏感命令暂停等待人工批准
+  ├── list_files / read_file / search_text / apply_changes → foundation 文件能力
+├── run_program / run_task / shell → 统一执行契约与安全策略
 ├── todo_write → 会话任务列表
 ├── skill → L1/L2/L3 知识包加载
 ├── spawn_subagent → 受限子代理（文件系统原语 + skill，复用主代理模型）
@@ -347,7 +349,8 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/tools/async_tool.py` | AsyncTool 基类 |
 | `backend/app/agent_base/tools/my_tools/conversation_tools.py` | ProgressRelay + create_conversation_tools |
 | `backend/app/agent_base/tools/my_tools/foundation_tools.py` | 当前生产基础工具和执行边界 |
-| `backend/app/agent_base/tools/my_tools/file_system_tools.py` | 底层文件/命令实现与兼容工具 |
+| `backend/app/agent_base/tools/my_tools/foundation_tools.py` | DevAgent 与子代理共享的 foundation 工具契约 |
+| `backend/app/agent_base/tools/my_tools/foundation_runtime.py` | Foundation 运行时实现 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
 | `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |

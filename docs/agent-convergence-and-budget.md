@@ -81,6 +81,20 @@ HookDecision(
 
 `HookRegistry.trigger()` 用于需要短路的控制点，例如工具拒绝或 LLM 停止；`HookRegistry.emit()` 用于工具批次结束等广播事件，确保所有观察者都能收到事件。
 
+### 2.4 ContextBudgetManager
+
+代码位置：`backend/app/services/context_manager.py`
+
+`ContextBudgetManager` 负责控制单次模型请求的上下文规模：
+
+- 根据消息和工具定义估算当前请求的 Token 占用；
+- 达到 `compaction_trigger_ratio` 后，将旧工具历史折叠为结构化 checkpoint；
+- 以 `max_history_tokens` 作为压缩目标，以 `max_context_tokens` 作为请求硬上限；
+- 保持 Function Calling 的 assistant/tool 消息配对，避免生成非法历史；
+- 完整过程仍由 Trace 和 Evidence Ledger 保存，不依赖压缩后的上下文恢复审计。
+
+该组件不限制 Agent 的执行轮数，压缩触发只由上下文 Token 使用情况决定。
+
 ## 3. 运行流程
 
 ```text
@@ -128,13 +142,14 @@ create_dev_agent
 |---|---:|---|
 | `agent_max_tool_calls` | `100` | 单次运行最大工具调用数 |
 | `agent_max_run_seconds` | `600` | 单次运行最大时长 |
-| `agent_max_total_tokens` | `200000` | 单次运行最大 Token 数 |
+| `agent_per_run_execution_budget_tokens` | `200000` | 单次 Run 的执行预算上限 |
+| `agent_subagent_per_run_execution_budget_tokens` | `500000` | 子代理单次 Run 的独立执行预算上限 |
 | `agent_token_finalization_reserve_tokens` | `12000` | 为最终总结保留的 Token 空间 |
 | `agent_convergence_budget_ratio` | `0.8` | 触发预算预警和收敛提示的比例 |
-| `agent_convergence_keep_recent_steps` | `3` | 收敛压缩时保留的最近步骤数 |
 | `agent_convergence_max_stalled_rounds` | `3` | 无进展批次的最大容忍次数 |
 | `agent_convergence_max_recovery_rounds` | `2` | 恢复动作的最大次数 |
 | `agent_convergence_repeat_action_threshold` | `3` | 相同语义动作无新结果的触发次数 |
+| `agent_context_compaction_trigger_ratio` | `0.75` | 当前请求上下文占用率达到该比例时触发压缩 |
 
 `create_dev_agent()` 在组装阶段创建 `ExecutionBudget`，因此生产入口不会在主循环中散落资源默认值。评测或测试可以通过显式覆盖值构造隔离预算，但默认仍以 Settings 为准。
 
@@ -142,8 +157,9 @@ create_dev_agent
 
 - `ReActAgent.max_steps` 仅作为旧调用兼容参数保留，不再参与执行终止；
 - `force_final_summary_on_step_limit` 仅作为旧调用兼容参数保留，不再触发步数总结；
-- `ContextBudgetManager` 中的 `max_react_steps` 是上下文压缩保留窗口，不是 Agent 执行次数限制；
-- `agent_explorer_max_steps` 只约束独立的探索子代理，不约束主 DevAgent 的开放循环。
+- `ContextBudgetManager` 根据当前请求的估算 Token 占用率触发上下文压缩；
+- `max_history_tokens` 作为压缩目标，`max_context_tokens` 作为请求上下文硬上限；
+- 子代理和 Explorer 均使用独立的 Token 上下文管理、执行预算和收敛控制，不再使用步数终止条件。
 
 ## 6. 可观测性
 

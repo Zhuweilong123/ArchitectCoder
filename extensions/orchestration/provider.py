@@ -78,7 +78,6 @@ def create(
         test_dir=test_dir,
         planner_max_tokens=settings.agent_planner_max_tokens,
         planner_timeout_seconds=settings.agent_planner_timeout_seconds,
-        worker_max_steps=settings.agent_explorer_max_steps,
-        worker_max_total_tokens=settings.agent_subagent_max_total_tokens,
+        worker_max_total_tokens=settings.agent_subagent_per_run_execution_budget_tokens,
         explorer_factory=explorer_factory,
     ))

@@ -50,7 +50,7 @@ class ToolExecutor:
 
     def execute_tool(self, name: str, input_data: str) -> str:
         """Execute the legacy string-input API."""
-        policy_input = {"command": input_data} if name == "bash" else {"input": input_data}
+        policy_input = {"command": input_data} if name == "shell" else {"input": input_data}
         policy_error = self._policy_error(name, policy_input)
         if policy_error is not None:
             return policy_error.text

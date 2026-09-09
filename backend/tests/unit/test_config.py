@@ -14,13 +14,13 @@ def test_settings_accepts_deprecated_sub_agent_model_without_routing(monkeypatch
 def test_settings_default_task_budget_is_200k():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
-    assert settings.agent_max_total_tokens == 200000
+    assert settings.agent_per_run_execution_budget_tokens == 200000
 
 
 def test_settings_default_subagent_budget_is_500k():
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
-    assert settings.agent_subagent_max_total_tokens == 500000
+    assert settings.agent_subagent_per_run_execution_budget_tokens == 500000
 
 
 def test_settings_enables_main_agent_subagent_by_default():
@@ -30,11 +30,11 @@ def test_settings_enables_main_agent_subagent_by_default():
 
 
 def test_settings_allows_overriding_subagent_budget(monkeypatch):
-    monkeypatch.setenv("AGENT_SUBAGENT_MAX_TOTAL_TOKENS", "120000")
+    monkeypatch.setenv("AGENT_SUBAGENT_PER_RUN_EXECUTION_BUDGET_TOKENS", "120000")
 
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
-    assert settings.agent_subagent_max_total_tokens == 120000
+    assert settings.agent_subagent_per_run_execution_budget_tokens == 120000
 
 
 def test_settings_exposes_pluggable_memory_defaults():

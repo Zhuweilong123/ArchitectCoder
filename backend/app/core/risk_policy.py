@@ -28,7 +28,7 @@ class RiskPolicy:
         self._approval = tuple(str(item).lower() for item in approval_patterns if item)
 
     def evaluate(self, tool_name: str, parameters: dict[str, Any]) -> RiskDecision:
-        if tool_name != "bash":
+        if tool_name != "shell":
             return RiskDecision("allow", "low")
         command = str(parameters.get("command", ""))
         lowered = command.lower()

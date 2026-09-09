@@ -6,7 +6,10 @@
 > **历史说明**：V1 的「代码生成闭环」工具（`generate_code` / `validate_code` /
 > `generate_tests` / `fix_code` / `run_tests` / `write_files` 及 `uml_optimizer.py` /
 > `code_validator.py` / `code_fixer.py` / `dev_system.py`）已下线移除（2026-08）。
-> 当前助手不再内置专用代码生成工具，改为通过**文件系统原语**自主读写代码。
+> 当前助手不再内置专用代码生成工具，改为通过 foundation 能力契约自主完成代码读取、修改与验证。
+
+> 生产工具接口以 `foundation_tools.py` 为准，底层实现位于 `foundation_runtime.py`。
+> 子代理与主 Agent 复用同一套 foundation 工具定义，不再保留旧工具兼容层。
 
 ## 架构概览
 
@@ -20,14 +23,14 @@
 │  tools: create_conversation_tools() 装配的工具集           │
 │  loop: open-ended + budget/convergence guards              │
 │                                                          │
-│  read_file / write_file / edit_file / glob / bash         │  ← 文件系统原语
+│  list_files / read_file / search_text / apply_changes     │  ← foundation 能力契约
 │  （知识图谱工具默认禁用；实现保留供显式 opt-in）                  │
 │  todo_write                        ← 会话任务列表         │
 │  skill                             ← 领域知识包（L1/L2/L3）│
 │  spawn_subagent                    ← 通用子代理（toolkit） │
 │  create_task / update_task / ...   ← 持久化任务 DAG       │
 │  submit_uml_review                 ← UML diff 人工审核    │
-│  bash 敏感命令                      ← 人工批准后才执行      │
+│  shell 敏感命令                      ← 人工批准后才执行      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -36,7 +39,8 @@
 | 文件 | 组件 | 职责 |
 |---|---|---|
 | `conversation_tools.py` | `AsyncTool` 基类 + `ProgressRelay` + `create_conversation_tools()` | 工具基类、子 Agent 进度转发、会话工具工厂 |
-| `file_system_tools.py` | `ReadFileTool` / `WriteFileTool` / `EditFileTool` / `GlobTool` / `BashTool` | A 层文件系统原语（读/写/改/查/跑命令），bash 两级防护 |
+| `foundation_tools.py` | `list_files` / `read_file` / `search_text` / `apply_changes` / `run_program` / `run_task` / `shell` | DevAgent 与子代理共享的能力契约；统一路径、执行与审核策略 |
+| `foundation_runtime.py` | `ReadFileTool` / `ListFilesTool` / `SearchTextTool` / `ShellTool` | foundation 工具的路径、搜索和执行实现 |
 | `todo_tools.py` | `TodoWriteTool` | 会话级任务列表（`todo_write`） |
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
@@ -49,39 +53,42 @@
 | 工具 | 内部实现 | 功能 |
 |---|---|---|
 | `read_file` | `ReadFileTool` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `write_file` | `WriteFileTool` | 写文件（覆盖/新建，自动建父目录） |
-| `edit_file` | `EditFileTool` | 精确文本替换（只替换首次出现） |
-| `glob` | `GlobTool` | 按 glob 模式查找文件 |
-| `bash` | `BashTool` | 跑 shell 命令（超时守卫 + 高危拒绝 + 敏感人工审核） |
+| `list_files` | `ListFilesTool` | 按路径和 glob 模式列出工作区文件 |
+| `search_text` | `SearchTextTool` | 在工作区内搜索文本 |
+| `apply_changes` | `ApplyChangesTool` | 应用结构化文件修改并返回变更证据 |
+| `run_program` | `RunProgramTool` | 运行受约束的程序并返回结果 |
+| `run_task` | `RunTaskTool` | 执行配置的项目任务 |
+| `shell` | `ShellTool` | 执行单条受策略约束的命令 |
 | `todo_write` | `TodoWriteTool` | 维护会话任务列表，跟踪长任务子步骤 |
 | `skill` | `SkillTool` | 加载 `## Skills` 目录中的知识包正文或引用文件 |
 | `spawn_subagent` | `SpawnSubagentTool` | 委托子任务，返回 summary；`toolkit` 决定受限子工具集，防递归 |
 | `create_task` / `update_task` / `list_tasks` / `get_task` / `claim_task` / `complete_task` / `create_worktree` | `task_system.py` | 持久化任务 DAG + 认领/完成 + git worktree |
 | `submit_uml_review` | `SubmitUmlReviewTool` | UML diff 人工审核（暂停等待 accept/reject） |
 
-删除操作不再单独暴露 `delete_path`；需要删除明确目标时使用受安全策略约束的 `bash`。
+删除操作不再单独暴露 `delete_path`；需要删除明确目标时使用受安全策略约束的 `apply_changes` 或 `shell`。
 
 > `create_conversation_tools()` 返回 `(tools, review_manager)`。`review_manager`
-> 供 bash 敏感命令与 `submit_uml_review` 共用同一审核通道。
+> 供 shell 敏感命令与 `submit_uml_review` 共用同一审核通道。
 
 ## 工具详解
 
-### 文件系统原语（`file_system_tools.py`）
+### Foundation 能力契约（`foundation_tools.py`）
 
-借鉴 Claude Code 范式的 A 层工具，为助手补齐底层动手能力。所有文件操作经
-`safe_path()` 守卫在 workspace 内（source_dir / test_dir / design_dir 三个 root）。
+DevAgent 与子代理共享同一组面向能力的工具契约。所有文件操作经 `safe_path()`
+守卫在 workspace 内（source_dir / test_dir / design_dir 三个 root），命令执行统一
+通过 `CommandExecutor` 和审核策略。
 
-**bash 两级防护**：
+**shell 两级防护**：
 - **高危命令**（磁盘格式化、分区、引导破坏等）→ 直接拒绝，无申诉（`DENY_LIST`）。
 - **敏感命令**（强制删除、提权、注册表、进程强杀、`git reset --hard` 等）→ 经
   `ReviewManager` 请求人工批准，批准才执行；拒绝/超时/无审核通道均不执行
-  （fail closed）。超时上限 `BASH_REVIEW_TIMEOUT`。
+  （fail closed）。超时上限 `SHELL_REVIEW_TIMEOUT`。
 - 其余命令带 120s 超时直接放行；输出经 `TruncateHook` 截断。
 
 ### 知识图谱理解（`knowledge_graph_v2_tools.py`，当前默认禁用）
 
 KG 提供**文件原语给不了**的结构化答案：类型化关系、设计-代码一致性、大项目的
-有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`bash` 回答
+有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`shell` 回答
 具体内容与符号——KG 是索引/地图，文件原语是内容。`compare_design_code`
 保留为显式 opt-in 能力，默认不进入主 Agent 工具列表。
 
@@ -111,12 +118,12 @@ L3 必须由本工具投递而非走 `read_file` —— `safe_path()` 把路径�
 `spawn_subagent` 按 `toolkit` 参数选择受限子工具集，复用主代理模型独立跑
 简化 FC 循环，避免主上下文膨胀。三个工具包：
 
-- `standard`：文件系统原语 + skill（可读写，默认）
+- `standard`：完整 foundation 能力契约 + skill（可读写和执行）
 - `read_only`：`read_file`（只读，无写入）
 - `kg_analysis`：`read_file` / `skill`（保留 toolkit 名称兼容性，当前不含图谱工具）
 
 任何工具包**不含** `submit_uml_review` / `spawn_subagent`，防止递归子代理与
-UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理共用同一通道），防止委托绕过。
+UML 审核嵌套；shell 敏感命令仍走人工审核（与主代理共用同一通道），防止委托绕过。
 
 ### 任务系统（`task_system.py`）
 
@@ -136,7 +143,7 @@ UML 审核嵌套；bash 敏感命令仍走人工审核（与主代理共用同�
 
 1. **`submit_uml_review`**：Agent 修改 UML 后调用 → 编排层推送 DiffViewer 审核
    → 前端 accept/reject → 结论回灌 → Agent 被拒则修订后重新提交。
-2. **`BashTool` 敏感命令**：敏感命令请求人工批准，批准才执行。
+2. **`ShellTool` 敏感命令**：敏感命令请求人工批准，批准才执行。
 
 ## 用法示例
 
