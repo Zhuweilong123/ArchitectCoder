@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from backend.config import get_settings
 from app.llm import LLMRequest, OpenAICompatibleGateway
@@ -24,11 +23,6 @@ def get_gateway() -> OpenAICompatibleGateway:
             timeout=120.0,
         )
     return _gateway
-
-
-def get_client() -> Any:
-    """Compatibility accessor for callers that still need the SDK client."""
-    return get_gateway().client
 
 
 def _resolve_model(model: str | None) -> str:
@@ -81,71 +75,7 @@ async def chat(
     return response.content
 
 
-async def chat_stream(
-    prompt: str,
-    system_prompt: str | None = None,
-    temperature: float = 0.7,
-    max_tokens: int = 4096,
-    model: str | None = None,
-):
-    """Stream content chunks from the shared gateway."""
-    request = LLMRequest(
-        messages=_messages(prompt, system_prompt),
-        model=_resolve_model(model),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=120.0,
-    )
-    async for chunk in get_gateway().stream(request):
-        if chunk.text:
-            yield chunk.text
-
-
-async def chat_with_history(
-    messages: list[dict],
-    temperature: float = 0.7,
-    max_tokens: int = 4096,
-    model: str | None = None,
-) -> str:
-    response = await get_gateway().complete(LLMRequest(
-        messages=messages,
-        model=_resolve_model(model),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=120.0,
-    ))
-    return response.content
-
-
-async def chat_with_tools(
-    messages: list[dict],
-    tools: list[dict],
-    tool_choice: str = "auto",
-    temperature: float = 0.3,
-    max_tokens: int = 4096,
-    model: str | None = None,
-) -> dict:
-    """Complete a conversation with native function-calling support."""
-    response = await get_gateway().complete(LLMRequest(
-        messages=messages,
-        model=_resolve_model(model),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tools=tools,
-        tool_choice=tool_choice,
-        timeout=120.0,
-    ))
-    return {
-        "content": response.content or None,
-        "tool_calls": response.tool_calls,
-    }
-
-
 __all__ = [
     "chat",
-    "chat_stream",
-    "chat_with_history",
-    "chat_with_tools",
-    "get_client",
     "get_gateway",
 ]
