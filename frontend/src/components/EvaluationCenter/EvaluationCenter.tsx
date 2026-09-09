@@ -22,6 +22,7 @@ const EVAL_AGENT_LABEL = 'DevAgent';
 const UNCLASSIFIED_SUITE = '__unclassified__';
 const TRACE_SUITE = 'trace-3.1';
 const ACTIVE_BATCH_STORAGE_KEY = 'evaluationActiveBatchId';
+const COMPARISON_VERSION_COLORS = ['#1677ff', '#52c41a', '#faad14', '#722ed1', '#eb2f96', '#13c2c2'];
 
 function fmtDuration(ms: number): string {
   if (!ms) return '-';
@@ -200,7 +201,15 @@ const EvaluationCenter: React.FC = () => {
   const baselineIsCurrent = baselineSnapshotMatchesCatalog;
 
   const comparisonRuns = useMemo(
-    () => performanceRuns.filter((run) => comparisonIds.includes(run.result_id)),
+    () => performanceRuns
+      .filter((run) => comparisonIds.includes(run.result_id))
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.started_at);
+        const rightTime = Date.parse(right.started_at);
+        const safeLeftTime = Number.isNaN(leftTime) ? 0 : leftTime;
+        const safeRightTime = Number.isNaN(rightTime) ? 0 : rightTime;
+        return safeLeftTime - safeRightTime || left.result_id.localeCompare(right.result_id);
+      }),
     [comparisonIds, performanceRuns],
   );
 
@@ -602,20 +611,88 @@ const EvaluationCenter: React.FC = () => {
     <>
       <Alert type="info" showIcon message="多版本对比" description="在性能结果页勾选两份或多份结果后，这里会对比执行时间、通过率、得分、Token 和工具调用。" style={{ marginBottom: 12 }} />
       {comparisonRuns.length < 2 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先在‘性能结果’页勾选至少两个版本" /> : (
-        <Table size="small" rowKey="result_id" pagination={false} dataSource={comparisonRuns} columns={[
-          { title: '版本', dataIndex: 'version', key: 'version', render: (v: string, row: EvalPerformanceRun) => v || row.file_name },
-          { title: '执行时间', dataIndex: 'started_at', key: 'started_at', render: fmtTime },
-          { title: '用例数', dataIndex: 'result_count', key: 'result_count' },
-          { title: '通过率', key: 'pass_rate', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.pass_rate * 100).toFixed(1)}%` },
-          { title: '平均得分', key: 'score', render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.average_score * 100).toFixed(1)}%` },
-          { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
-          { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
-          { title: '工具调用', key: 'tools', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tool_calls },
-        ]} />
+        <>
+          <Table size="small" rowKey="result_id" pagination={false} dataSource={comparisonRuns} columns={[
+            { title: '版本', dataIndex: 'version', key: 'version', render: (v: string, row: EvalPerformanceRun) => v || row.file_name },
+            { title: '执行时间', dataIndex: 'started_at', key: 'started_at', render: fmtTime },
+            { title: '用例数', dataIndex: 'result_count', key: 'result_count' },
+            { title: '通过率', key: 'pass_rate', render: (_: unknown, row: EvalPerformanceRun) => (row.summary.pass_rate * 100).toFixed(1) + '%' },
+            { title: '平均得分', key: 'score', render: (_: unknown, row: EvalPerformanceRun) => (row.summary.average_score * 100).toFixed(1) + '%' },
+            { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
+            { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
+            { title: '工具调用', key: 'tools', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tool_calls },
+          ]} />
+          <div className="evaluation-comparison-chart">
+            <div className="evaluation-comparison-chart-header">
+              <Text strong>选中版本性能对比</Text>
+              <Text type="secondary">按构建时间从左到右排列，相邻版本标注数值变化</Text>
+            </div>
+            <div className="evaluation-comparison-chart-legend" aria-label="版本颜色图例">
+              {comparisonRuns.map((run, index) => {
+                const version = run.version || run.file_name;
+                const versionIndex = comparisonRuns.findIndex((candidate) => (candidate.version || candidate.file_name) === version);
+                const color = COMPARISON_VERSION_COLORS[versionIndex % COMPARISON_VERSION_COLORS.length];
+                return (
+                  <span className="evaluation-comparison-chart-legend-item" key={run.result_id}>
+                    <span className="evaluation-comparison-chart-legend-dot" style={{ backgroundColor: color }} />
+                    <Text ellipsis={{ tooltip: version }}>{version}</Text>
+                  </span>
+                );
+              })}
+            </div>
+            <div className="evaluation-comparison-chart-grid">
+              {[
+                { key: 'pass-rate', label: '通过率', value: (run: EvalPerformanceRun) => run.summary.pass_rate * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
+                { key: 'score', label: '平均得分', value: (run: EvalPerformanceRun) => run.summary.average_score * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
+                { key: 'duration', label: '平均耗时', value: (run: EvalPerformanceRun) => run.summary.average_duration_ms, format: (value: number) => fmtDuration(value), higherIsBetter: false },
+                { key: 'tokens', label: 'Token', value: (run: EvalPerformanceRun) => run.summary.total_tokens, format: (value: number) => value.toLocaleString(), higherIsBetter: false },
+                { key: 'tools', label: '工具调用', value: (run: EvalPerformanceRun) => run.summary.total_tool_calls, format: (value: number) => value.toLocaleString(), higherIsBetter: false },
+              ].map((metric) => {
+                const maxValue = metric.max || Math.max(...comparisonRuns.map(metric.value), 1);
+                return (
+                  <div className="evaluation-chart-metric" key={metric.key}>
+                    <div className="evaluation-chart-metric-title">{metric.label}</div>
+                    <div className="evaluation-chart-bars" role="img" aria-label={metric.label + '版本对比'}>
+                      {comparisonRuns.map((run, index) => {
+                        const value = metric.value(run);
+                        const previousValue = index > 0 ? metric.value(comparisonRuns[index - 1]) : null;
+                        const change = previousValue === null || previousValue === 0
+                          ? null
+                          : ((value - previousValue) / Math.abs(previousValue)) * 100;
+                        const slope = change === null || change === 0 ? 'flat' : change > 0 ? 'up' : 'down';
+                        const sentiment = change === null || change === 0 ? 'flat' : metric.higherIsBetter === (change > 0) ? 'positive' : 'negative';
+                        const height = value > 0 ? Math.max((value / maxValue) * 100, 4) : 0;
+                        const version = run.version || run.file_name;
+                        const versionIndex = comparisonRuns.findIndex((candidate) => (candidate.version || candidate.file_name) === version);
+                        const color = COMPARISON_VERSION_COLORS[versionIndex % COMPARISON_VERSION_COLORS.length];
+                        return (
+                          <React.Fragment key={run.result_id}>
+                            {index > 0 ? (
+                              <div className={'evaluation-chart-change evaluation-chart-change-slope-' + slope + ' evaluation-chart-change-' + sentiment} aria-label={'较上一版本变化 ' + (change === null ? '不可计算' : (change > 0 ? '+' : '') + change.toFixed(1) + '%')}>
+                                <span className="evaluation-chart-change-line" />
+                                <span className="evaluation-chart-change-label">{change === null ? '—' : (change > 0 ? '+' : '') + change.toFixed(1) + '%'}</span>
+                              </div>
+                            ) : null}
+                            <div className="evaluation-chart-bar-item" title={version + ': ' + metric.format(value)}>
+                              <div className="evaluation-chart-bar-value">{metric.format(value)}</div>
+                              <div className="evaluation-chart-bar-track">
+                                <div className="evaluation-chart-bar" style={{ height: String(Math.min(height, 100)) + '%', backgroundColor: color }} />
+                              </div>
+                              <Text ellipsis={{ tooltip: version }} className="evaluation-chart-bar-label">{version}</Text>
+                            </div>
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
       )}
     </>
   );
-
   const renderRuns = () => trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (
     <List size="small" dataSource={trends} renderItem={(item) => (
       <List.Item><List.Item.Meta title={<Space>{item.version}{statusTag(item.status)}<Text type="secondary">{item.suite}</Text></Space>} description={fmtTime(item.started_at)} /><Space className="evaluation-trend-values"><Text>通过率 {(item.summary.pass_rate * 100).toFixed(1)}%</Text><Text>得分 {(item.summary.average_score * 100).toFixed(1)}%</Text><Text>完成 {item.summary.completed}/{item.summary.total}</Text><Text>失败 {item.summary.failed}</Text><Text>超时 {item.summary.timeout}</Text><Text>耗时 {fmtDuration(item.summary.average_duration_ms)}</Text><Text>Token {item.summary.total_tokens}</Text><Text>工具 {item.summary.total_tool_calls}</Text></Space></List.Item>
