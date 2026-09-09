@@ -230,7 +230,7 @@ def test_task_dirs_are_scoped():
 def test_agent_allowed_tools_and_budget():
     registry = ToolRegistry()
     registry.register_tool(_Echo())
-    agent = ReActAgent("budget", _LoopLLM(), registry, max_steps=1,
+    agent = ReActAgent("budget", _LoopLLM(), registry,
                        max_tool_calls=0)
 
     async def run():

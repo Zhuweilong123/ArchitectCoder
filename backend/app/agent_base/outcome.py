@@ -24,7 +24,6 @@ class RunOutcome:
             "hard_limit_after_current_tools": "budget_exceeded",
             "reserve_finalization": "budget_exceeded",
             "reserve_finalization_empty_response": "budget_exceeded",
-            "productive_step_limit": "partial",
             "tool_call_limit": "partial",
             "incomplete_plan": "partial",
         }.get(reason, "completed" if reason == "model_answer" else "partial")

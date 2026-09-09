@@ -159,7 +159,6 @@ agent = ReActAgent(
     name="DevAgent",
     llm=llm,
     tool_registry=registry,
-    use_native_fc=True,
 )
 
 async for progress in agent.arun_stream("帮我实现登录模块"):

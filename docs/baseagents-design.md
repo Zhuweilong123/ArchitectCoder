@@ -32,7 +32,7 @@ agent_base/
 │   └── agent.py                         # Agent 抽象基类（ABC, run() + 历史管理）
 │
 ├── agents/                              # Agent 实现层（2 种范式 + 可中断包装器）
-│   ├── react_agent.py                   # ReAct 循环（原生 FC + 文本解析降级）
+│   ├── react_agent.py                   # ReAct 循环（原生 Function Calling）
 │   ├── plan_solve_agent.py              # 先规划后执行（Planner→Executor）
 │   └── interruptible.py                 # 可中断包装器（前端 stop 按钮）
 │
@@ -84,7 +84,7 @@ from app.agent_base.tools import ToolRegistry
 registry = ToolRegistry()
 # ... 注册工具 ...
 
-agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, use_native_fc=True)
+agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry)
 answer = await agent.arun("搜索 2024 年 Java 最新特性")          # 异步 FC
 async for progress in agent.arun_stream("帮我优化这段代码"):      # 流式进度
     print(f"Step {progress.step}: {progress.actions}")
@@ -102,7 +102,6 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 | 模式 | 机制 | 入口 | 适用 |
 |------|------|------|------|
 | 原生 Function Calling | LLM 内置工具调用，结构化 JSON 参数，支持多工具并行 | `arun()` / `arun_stream()` | 推荐 |
-| 文本解析降级 | 正则匹配 `Thought:/Action:` 格式 | `run()` | 兼容无 FC 模型 |
 
 **FC 核心循环**：构建 messages → `ainvoke_with_tools(tool_specs)` → 遍历 tool_calls
 并行执行 → 追加 assistant/tool 消息 → 循环直至最终文本或触发预算/收敛保护。
@@ -187,7 +186,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 前端（React 对话面板）
   ↕ WebSocket (/api/agent/ws/chat)
 后端 FastAPI
-  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护, use_native_fc=True）
+  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护）
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
   │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
@@ -335,7 +334,7 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/__init__.py` | Agent 框架公开导出 |
 | `backend/app/agent_base/core/llm.py` | `BaseAgentsLLM`（6 provider + 同步/异步/流式/FC） |
 | `backend/app/agent_base/core/agent.py` | Agent ABC + 历史管理 |
-| `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
+| `backend/app/agent_base/agents/react_agent.py` | ReAct Function Calling 循环 + ReActProgress |
 | `backend/app/agent_base/agents/react_runtime/` | ReAct Loop、工具批次、解析器和运行时类型 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |

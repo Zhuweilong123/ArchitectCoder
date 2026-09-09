@@ -79,7 +79,7 @@ def test_validate_tool_returns_structured_verdict(tmp_path):
 
 @pytest.mark.parametrize("reason,status", [
     ("reserve_finalization", "budget_exceeded"), ("llm_timeout", "timed_out"),
-    ("productive_step_limit", "partial"), ("model_answer", "completed"),
+    ("model_answer", "completed"),
 ])
 def test_outcome_is_independent_of_answer_language(reason, status):
     for answer in ("完成", "All done", "解释 token 预算和时间预算"):

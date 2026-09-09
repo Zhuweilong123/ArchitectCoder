@@ -155,8 +155,6 @@ create_dev_agent
 
 ## 5. 与其他 step 参数的边界
 
-- `ReActAgent.max_steps` 仅作为旧调用兼容参数保留，不再参与执行终止；
-- `force_final_summary_on_step_limit` 仅作为旧调用兼容参数保留，不再触发步数总结；
 - `ContextBudgetManager` 根据当前请求的估算 Token 占用率触发上下文压缩；
 - `max_history_tokens` 作为压缩目标，`max_context_tokens` 作为请求上下文硬上限；
 - 子代理和 Explorer 均使用独立的 Token 上下文管理、执行预算和收敛控制，不再使用步数终止条件。

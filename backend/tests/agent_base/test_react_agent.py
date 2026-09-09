@@ -130,7 +130,7 @@ def _first_tool_detail(events):
 
 def test_react_agent_fc_loop_executes_tools():
     llm = MockLLM(rounds=2)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+    agent = ReActAgent("Test", llm, _registry())
 
     events = asyncio.run(_collect(agent))
 
@@ -140,7 +140,7 @@ def test_react_agent_fc_loop_executes_tools():
 
 
 def test_react_progress_exposes_structured_tool_evidence():
-    agent = ReActAgent("Test", MockLLM(rounds=1), _registry(), max_steps=3)
+    agent = ReActAgent("Test", MockLLM(rounds=1), _registry())
 
     events = asyncio.run(_collect(agent))
 
@@ -153,7 +153,7 @@ def test_react_progress_exposes_structured_tool_evidence():
 
 def test_usage_budget_keeps_a_text_final_answer_from_the_current_response():
     llm = BudgetLLM()
-    agent = ReActAgent("Test", llm, _registry(), max_steps=10, max_total_tokens=10)
+    agent = ReActAgent("Test", llm, _registry(), max_total_tokens=10)
 
     events = asyncio.run(_collect(agent))
 
@@ -176,7 +176,7 @@ def test_usage_budget_executes_current_tool_calls_before_stopping():
                 "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
             }
 
-    agent = ReActAgent("Test", ToolAtLimitLLM(), _registry(), max_steps=10, max_total_tokens=10)
+    agent = ReActAgent("Test", ToolAtLimitLLM(), _registry(), max_total_tokens=10)
 
     events = asyncio.run(_collect(agent))
 
@@ -209,7 +209,7 @@ def test_budget_reserve_requests_a_tool_free_final_answer():
 
     llm = ReserveLLM()
     agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=10, max_total_tokens=100,
+        "Test", llm, _registry(), max_total_tokens=100,
         token_finalization_reserve_tokens=20,
     )
 
@@ -246,7 +246,7 @@ def test_budget_finalization_blocks_textual_tool_markup():
             }
 
     agent = ReActAgent(
-        "Test", MarkupLLM(), _registry(), max_steps=5, max_total_tokens=100,
+        "Test", MarkupLLM(), _registry(), max_total_tokens=100,
         token_finalization_reserve_tokens=20,
     )
 
@@ -278,8 +278,7 @@ def test_legacy_step_argument_does_not_limit_open_fc_loop():
 
     llm = StepLimitLLM()
     agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=2,
-        force_final_summary_on_step_limit=True, final_summary_max_tokens=321,
+        "Test", llm, _registry(), final_summary_max_tokens=321,
     )
 
     events = asyncio.run(_collect(agent))
@@ -296,7 +295,7 @@ def test_legacy_step_argument_does_not_limit_open_fc_loop():
 def test_soft_budget_instructs_the_next_step_to_converge():
     llm = SoftBudgetLLM()
     agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=10, max_total_tokens=100,
+        "Test", llm, _registry(), max_total_tokens=100,
         token_finalization_reserve_tokens=1,
     )
 
@@ -327,7 +326,7 @@ def test_open_fc_loop_finalizes_after_repeated_non_progressing_action():
 
     llm = RepeatingLLM()
     agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=1, max_total_tokens=1000,
+        "Test", llm, _registry(), max_total_tokens=1000,
         convergence_max_stalled_rounds=3,
         convergence_max_recovery_rounds=2,
         convergence_repeat_action_threshold=3,
@@ -345,7 +344,7 @@ def test_open_fc_loop_finalizes_after_repeated_non_progressing_action():
 def test_context_compaction_is_reported_to_observers():
     llm = MockLLM(rounds=9)
     agent = ReActAgent(
-        "Test", llm, _registry(), max_steps=12,
+        "Test", llm, _registry(),
         context_budget=ContextBudgetManager(ContextBudget(
             max_context_tokens=300,
             output_reserve_tokens=10,
@@ -366,7 +365,7 @@ def test_todo_then_business_tool_in_same_batch_is_not_false_blocked():
     llm = BatchTodoLLM()
     registry = _registry()
     registry.register_tool(TodoWriteTool())
-    agent = ReActAgent("Test", llm, registry, max_steps=5)
+    agent = ReActAgent("Test", llm, registry)
     runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
     try:
         events = asyncio.run(_collect(agent))
@@ -379,7 +378,7 @@ def test_todo_then_business_tool_in_same_batch_is_not_false_blocked():
 
 def test_acceptance_contract_blocks_premature_final_answer():
     llm = MockLLM(rounds=0)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    agent = ReActAgent("Test", llm, _registry())
     runtime_token = set_runtime(AgentRuntime(requires_acceptance_todos=True))
     try:
         events = asyncio.run(_collect(agent))
@@ -394,7 +393,7 @@ def test_acceptance_contract_blocks_premature_final_answer():
 
 def test_task_plan_blocks_other_tools_until_todo_exists():
     llm = MockLLM(rounds=1)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=2)
+    agent = ReActAgent("Test", llm, _registry())
     runtime_token = set_runtime(AgentRuntime(requires_todo_plan=True))
     try:
         events = asyncio.run(_collect(agent))
@@ -408,7 +407,7 @@ def test_task_plan_blocks_other_tools_until_todo_exists():
 
 def test_interrupt_hook_stops():
     llm = MockLLM(rounds=10)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+    agent = ReActAgent("Test", llm, _registry())
 
     async def _run():
         token = set_runtime(AgentRuntime(stop_check=lambda: llm.count >= 2))
@@ -425,7 +424,7 @@ def test_interrupt_hook_stops():
 
 def test_truncate_hook_replaces_fed_observation():
     llm = MockLLM(rounds=1)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+    agent = ReActAgent("Test", llm, _registry())
 
     truncator = TruncateHook(10)
     get_hooks().register(HookEvent.TOOL_AFTER, truncator, priority=200)
@@ -469,7 +468,7 @@ def test_truncate_hook_passes_through_short_output():
 
 def test_veto_hook_blocks_tool():
     llm = MockLLM(rounds=1)
-    agent = ReActAgent("Test", llm, _registry(), max_steps=10)
+    agent = ReActAgent("Test", llm, _registry())
 
     def veto(ctx: HookContext):
         return "blocked by policy"

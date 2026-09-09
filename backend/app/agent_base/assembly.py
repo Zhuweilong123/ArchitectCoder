@@ -285,7 +285,6 @@ async def create_dev_agent(
         evidence_max_records=settings.agent_evidence_max_records,
         final_summary_max_tokens=settings.agent_final_summary_max_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
-        use_native_fc=True,
         context_budget=ContextBudgetManager(budget=ContextBudget(
             max_context_tokens=settings.agent_context_max_tokens,
             output_reserve_tokens=settings.agent_context_output_reserve_tokens,
