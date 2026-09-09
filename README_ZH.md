@@ -8,7 +8,7 @@
 
 </div>
 
-ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：将架构设计、代码修改、测试、审核和回放串成可追踪的闭环。当前 `dev-4.0` 版本线内置 **DevAgent 开发助手**、**全局 UML 优化**、**能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
+ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：将架构设计、代码修改、测试、审核和回放串成可追踪的闭环。当前 `dev-4.0` 版本线内置 **DevAgent 开发助手**、**全局 UML 优化**、**一键式 DevAgent 能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
 
 ## 为什么选择 ArchitectCoder？
 
@@ -55,36 +55,57 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - **会话与记忆**：支持新建/切换会话，刷新后恢复历史；任务完成后归档记忆，新任务按相关性召回项目历史。SQLite/BM25 记忆可通过 Provider 关闭或替换。
 - **UML skill 知识包**：按需加载 UML 2.5.1 类图、时序图、组件图和跨图一致性指南，并提供可直接加载的小型 `.umlproj` 案例。
 
-生产 Agent 不再依赖独立的代码生成、代码修复或 UML 优化工具链，而是通过统一工作区工具和标准审核/验证生命周期完成任务。
+所有工程能力统一使用工作区工具、审核门禁、Trace 记录和验证生命周期，确保对话、设计变更、代码实现与评测过程保持一致。
 
-### DevAgent 能力基准体系
+### DevAgent 能力基准中心
 
-评测体系只保留生产链路 **DevAgent**，不再维护 Legacy / ReAct 独立评测方案，避免不同 Agent 路径干扰结果。每个评测用例由受控 JSON 描述，绑定固定项目 fixture 和项目 manifest，在隔离工作区中执行：
+能力基准中心是生产 **DevAgent** 的质量闸门：把真实工程任务转化为可重复、可版本化、可提供证据的能力评估，而不是停留在主观演示层面。
 
-- **用例目录**：`backend/evals/cases/`，当前共 18 个用例：`understanding` 4 个、`single` 8 个、`multiturn` 4 个，以及保留的 `trace-3.1` 专项回归用例 2 个。正式基线只包含前 16 个用例。
-- **基线范围**：16 个正式用例覆盖项目理解、单轮读取/创建/更新/删除，以及首轮问候不调用工具的多轮会话；两个 `trace-3.1` 用例仅保留用于专项回归，不纳入基线评分。
-- **执行链路**：`case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`。
-- **确定性检查**：支持 pytest、UML 有效性/结构/方法/时序、文件存在/内容、受保护路径未变更等检查器。
-- **运行边界**：普通用例与生产 DevAgent 对齐，单轮任务预算为 50 步、100 次工具调用、600 秒和 200,000 Tokens。多轮用例每个用户轮次使用新的单次任务预算，累计用量只用于结果汇总。
-- **当前基线快照**：`backend/evals/baseline.json` 登记版本 `4.0@4076efc`：16 个用例通过 8 个、失败 5 个、超时 0 个、错误 3 个，平均得分 `0.7221`，累计 2,918,570 Tokens、418 次工具调用。
-- **版本标识**：评测中心自动读取当前 Git 分支和 HEAD commit，使用 `branch@commit` 作为版本；工作区有未提交修改时标记为 `dirty`。
-- **运行、合并与归档**：评测中心按“运行批次 → 性能结果 → 多版本对比 → 已归档”递进使用。相同版本的多个完成批次可合并为一条性能 JSONL 结果；完全重复的结果会复用已有文件。运行批次和性能结果支持确认后删除，但不会修改基线文件和已归档快照。
-- **CLI**：正式基线应分别运行三个 suite，`trace-3.1` 用于专项回归：
+#### 核心价值
 
-  ```bash
-  python -m extensions.evals.cli --suite understanding
-  python -m extensions.evals.cli --suite single
-  python -m extensions.evals.cli --suite multiturn
-  python -m extensions.evals.cli --suite trace-3.1
-  ```
+- **生产链路一致**：评测使用与产品对话相同的 DevAgent 运行时、工作区工具、安全策略、上下文管理和验证流程。
+- **面向任务覆盖**：通过版本化用例覆盖项目理解、单轮工程任务、多轮上下文连续性，以及设计、代码和测试协同任务。
+- **确定性结果校验**：每个用例绑定受控项目 fixture 和 manifest，通过硬门禁与诊断检查器校验文件、UML、测试、受保护路径和其他交付物。
+- **安全且可复现**：每次评测都在隔离工作区执行，并明确限制时间、步数、工具调用次数和 Token；当前 Git 分支与 commit 自动记录为评测版本，未提交修改会显式标记。
+- **结果可解释**：结果包含通过/失败状态、得分、检查器明细、工具调用、Token、耗时，以及完整 Agent Trace 的关联入口。
+- **支持回归与发布对比**：评测中心支持一键运行、历史批次、基线快照、性能 JSONL、结果归档和选中版本对比。
 
-  CLI 在存在失败或超时时返回非零退出码；这表示评测结果未全通过，不代表评测框架启动失败。
+#### 评测链路
 
+~~~text
+版本化用例
+    → 项目 fixture + manifest
+    → 生产 DevAgent
+    → 硬门禁 + 诊断检查器
+    → Trace + 结构化 JSONL 结果
+    → 批次汇总
+    → 多版本对比与归档
+~~~
+
+#### 评测中心
+
+前端将完整流程收敛为一条可操作的闭环：
+
+1. 选择一个或多个评测集或用例，一键启动评测。
+2. 查看用例级结果、检查器证据、失败、超时、工具调用和 Trace 会话。
+3. 对比通过率、得分、平均耗时、Token 使用量和工具调用量。
+4. 按构建时间从左到右比较选中版本，并用带正负号的变化率和方向折线展示相邻版本变化。
+5. 将完整结果归档为可审计快照，用于发布验收和回归跟踪。
+
+同时提供 CLI，便于自动化和 CI 风格检查：
+
+~~~bash
+python -m extensions.evals.cli --suite understanding
+python -m extensions.evals.cli --suite single
+python -m extensions.evals.cli --suite multiturn
+~~~
+
+详见[评测体系设计文档](docs/evaluation-system.md)，其中包含用例模型、检查器契约、隔离规则、结果生命周期和 API 说明。
 ### 全局 UML 优化
 
 工具栏的“全局优化”现在会把自然语言需求提交给同一个 DevAgent 对话运行时。若当前工程尚未保存，工具栏会先保存；随后打开 AI 助手，并将项目、源码和测试目录作为上下文传入。Agent 通过标准工具检查和修改相关 `.umlproj` 设计文件，再按正常审核、Trace 记录和验证流程完成任务。
 
-当前分支已移除独立的 `/api/optimize_v2` 管线。全局优化与其他 Agent 任务共用安全策略、checkpoint、记忆和审计能力。
+全局优化与其他 Agent 任务共用安全策略、checkpoint、记忆、Trace 和审计能力。
 
 ### TestHub 测试中心
 

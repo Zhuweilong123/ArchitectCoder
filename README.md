@@ -8,7 +8,7 @@
 
 </div>
 
-ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It connects architecture design, code changes, testing, review, and replay into one traceable workflow. The current `dev-4.0` line includes the **DevAgent development assistant**, **Global UML Optimization**, **Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
+ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It connects architecture design, code changes, testing, review, and replay into one traceable workflow. The current `dev-4.0` line includes the **DevAgent development assistant**, **Global UML Optimization**, **One-click DevAgent Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
 ![ArchitectCoder workspace](workSpace_en.PNG)
 
@@ -57,36 +57,57 @@ The bottom-right robot button opens the floating chat panel. The production **De
 - **Sessions and memory**: create or switch sessions, restore history after refresh, archive completed work to memory, and recall relevant project history in later tasks. SQLite/BM25 memory can be disabled or replaced through the provider boundary.
 - **UML skill pack**: the Agent can load the UML 2.5.1 class, sequence, component, and cross-diagram guides on demand, including a small loadable `.umlproj` reference case.
 
-The production Agent no longer depends on separate code-generation, code-fixer, or standalone UML-optimizer tool chains. It uses the shared workspace tools and the normal review/verification lifecycle.
+All engineering capabilities use the same workspace tools, review gates, trace recording, and verification lifecycle, so chat, design changes, implementation, and evaluation remain consistent.
 
-### DevAgent Capability Benchmark
+### DevAgent Capability Benchmark Center
 
-The evaluation system now covers only the production **DevAgent** path. Legacy / standalone ReAct evaluation routes are no longer maintained, preventing different Agent paths from contaminating DevAgent measurements. Each case is defined by controlled JSON, bound to a fixed project fixture and manifest, and executed in an isolated workspace:
+The Capability Benchmark Center is the quality gate for the production **DevAgent**. It turns engineering tasks into repeatable, versioned, evidence-backed evaluations instead of subjective demos.
 
-- **Case catalog**: `backend/evals/cases/`, currently 18 cases: 4 `understanding`, 8 `single`, 4 `multiturn`, plus 2 retained `trace-3.1` regression cases. The formal baseline contains only the first 16 cases.
-- **Baseline scope**: the 16-case baseline covers project understanding, single-turn read/create/update/delete tasks, and multi-turn conversations whose greeting turn must not call tools. The two `trace-3.1` cases remain available for regression history but are excluded from baseline scoring.
-- **Execution flow**: `case → fixture/project manifest → DevAgent → hard checkers/checkers → Trace + JSONL result`.
-- **Deterministic checks**: pytest, UML validity/structure/method/sequence checks, file existence/content checks, and protected-path integrity checks.
-- **Runtime limits**: normal cases use the production DevAgent limits: 50 steps, 100 tool calls, 600 seconds, and 200,000 total tokens per single task. Multi-turn cases receive a fresh task budget per user turn; cumulative usage is report-only.
-- **Tracked baseline snapshot**: `backend/evals/baseline.json` records `4.0@4076efc`: 8 of 16 cases passed, 5 failed, 0 timed out, and 3 errored; average score `0.7221`, with 2,918,570 total tokens and 418 tool calls.
-- **Version identity**: the Evaluation Center automatically reads the current Git branch and HEAD commit and uses `branch@commit` as the version. An uncommitted working tree is marked `dirty`.
-- **Run, merge, and archive**: the Evaluation Center guides users through `运行批次 → 性能结果 → 多版本对比 → 已归档`. Completed same-version batches can be merged into one performance JSONL result; exact duplicate results reuse an existing file. Batch and performance-result entries can be deleted after confirmation; baseline files and archived snapshots are not modified.
-- **CLI**: run the three formal baseline suites separately, or run the retained Trace suite for regression:
+#### What makes it a core capability
 
-  ```bash
-  python -m extensions.evals.cli --suite understanding
-  python -m extensions.evals.cli --suite single
-  python -m extensions.evals.cli --suite multiturn
-  python -m extensions.evals.cli --suite trace-3.1
-  ```
+- **Production-path fidelity**: the benchmark exercises the same DevAgent runtime, workspace tools, safety policies, context handling, and verification flow used by the product.
+- **Task-oriented coverage**: versioned cases cover project understanding, single-turn engineering work, multi-turn continuity, and design/code/test workflows.
+- **Deterministic ground truth**: each case is bound to a controlled project fixture and manifest, then checked with hard gates and diagnostic checkers for files, UML, tests, protected paths, and other deliverables.
+- **Safe and reproducible execution**: every run uses an isolated workspace with explicit time, step, tool-call, and token budgets. The current Git branch and commit are recorded as the evaluation version, and dirty workspaces are visible.
+- **Explainable evidence**: every result includes pass/fail state, score, checker details, tool usage, token usage, duration, and a link to the complete Agent Trace.
+- **Regression and release comparison**: the Evaluation Center supports one-click runs, historical batches, baseline snapshots, performance JSONL results, archives, and selected-version comparison.
 
-  The CLI returns a non-zero exit code when any case fails or times out. This means the evaluation result is not all green; it does not mean that the evaluation framework failed to start.
+#### Evaluation flow
 
+~~~text
+Versioned case
+    → project fixture + manifest
+    → production DevAgent
+    → hard gates + diagnostic checkers
+    → Trace + structured JSONL result
+    → batch summary
+    → multi-version comparison and archive
+~~~
+
+#### Evaluation Center
+
+The UI turns the full workflow into an operational loop:
+
+1. Select one or more suites or cases and start a run with one click.
+2. Inspect case-level results, checker evidence, failures, timeouts, tool calls, and Trace sessions.
+3. Review pass rate, score, average duration, token usage, and tool-call usage.
+4. Compare selected builds from left to right by build time, including directional change indicators and signed percentages.
+5. Archive a complete, auditable snapshot for release or regression tracking.
+
+The CLI is also available for automation and CI-style checks:
+
+~~~bash
+python -m extensions.evals.cli --suite understanding
+python -m extensions.evals.cli --suite single
+python -m extensions.evals.cli --suite multiturn
+~~~
+
+See the [evaluation system design](docs/evaluation-system.md) for the case model, checker contract, isolation rules, result lifecycle, and API surface.
 ### Global UML Optimization
 
 The toolbar's **Optimize / 全局优化** action now submits a natural-language request to the same DevAgent chat runtime. It saves the current project first when necessary, opens the assistant, and passes the project/source/test paths as context. The Agent then inspects and updates the relevant `.umlproj` artifacts through its normal tools, review gates, trace recording, and verification flow.
 
-There is no separate `/api/optimize_v2` pipeline in the current branch. Global optimization follows the same safety, checkpoint, memory, and audit behavior as every other Agent task.
+Global optimization follows the same safety, checkpoint, memory, trace, and audit behavior as every other Agent task.
 
 ### TestHub Test Center
 
