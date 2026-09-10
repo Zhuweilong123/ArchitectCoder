@@ -2,8 +2,8 @@
  * Main application shell: toolbar, canvas, and the contextual side panel.
  */
 
-import React, { lazy, Suspense, useCallback } from 'react';
-import { Layout, Tabs, Button, Tooltip } from 'antd';
+import React, { lazy, Suspense, useCallback, useEffect } from 'react';
+import { Layout, Tabs, Button, Tooltip, message } from 'antd';
 import {
   SettingOutlined,
   DiffOutlined, CloseOutlined, FileTextOutlined,
@@ -11,6 +11,7 @@ import {
 import Toolbar from './components/Toolbar/Toolbar';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { selectActiveDiagram, useDiagramStore } from './stores/diagramStore';
+import { validateWorkspacePath } from './services/api';
 import { t, type TranslationKey } from './i18n';
 import './App.css';
 
@@ -36,11 +37,68 @@ const App: React.FC = () => {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
     showTestCaseInCanvas, agentChatVisible, interfaceLanguage,
+    projectRoot, sourceDir, testDir, setProjectRoot, setSourceDir, setTestDir,
   } = useUiStore();
+  const currentFilepath = useDiagramStore((s) => s.currentFilepath);
+  const setCurrentFilepath = useDiagramStore((s) => s.setCurrentFilepath);
+  const setCurrentWorkspacePath = useDiagramStore((s) => s.setCurrentWorkspacePath);
   const diagramType = useDiagramStore((s) => selectActiveDiagram(s).diagram_type || 'class');
   const activeIdx = useDiagramStore((s) => s.project.active_diagram_index);
   const hasDiagrams = useDiagramStore((s) => s.project.diagrams.length > 0);
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
+
+  useEffect(() => {
+    let active = true;
+
+    const checkPath = async (path: string, kind: 'directory' | 'file') => {
+      if (!path.trim()) return true;
+      try {
+        const result = await validateWorkspacePath(path, kind);
+        return result.valid;
+      } catch {
+        // Keep persisted state when the backend is temporarily unavailable.
+        return true;
+      }
+    };
+
+    const clearStaleWorkspacePaths = async () => {
+      const checks = await Promise.all([
+        checkPath(projectRoot, 'directory'),
+        checkPath(sourceDir, 'directory'),
+        checkPath(testDir, 'directory'),
+        checkPath(currentFilepath || '', 'file'),
+      ]);
+      if (!active) return;
+
+      const [projectValid, sourceValid, testValid, fileValid] = checks;
+      let cleared = false;
+      if (!projectValid) {
+        setProjectRoot('project');
+        cleared = true;
+      }
+      if (!sourceValid) {
+        setSourceDir('');
+        cleared = true;
+      }
+      if (!testValid) {
+        setTestDir('');
+        cleared = true;
+      }
+      if (!fileValid) {
+        setCurrentFilepath(null);
+        setCurrentWorkspacePath(null);
+        cleared = true;
+      }
+      if (cleared) {
+        message.info('已清理失效的工作区路径，请重新加载项目目录');
+      }
+    };
+
+    void clearStaleWorkspacePaths();
+    return () => {
+      active = false;
+    };
+  }, []); // Validate only the persisted startup state.
 
   const handleResize = useCallback((_e: React.MouseEvent, direction: string) => {
     if (direction === 'left') {

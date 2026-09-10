@@ -77,6 +77,83 @@ def _trace_total_tokens(trace_path: str) -> int:
     return total
 
 
+def _trace_prompt_cache_usage(trace_path: str) -> tuple[int, int, int]:
+    """Return prompt tokens, cached prompt tokens, and observable requests."""
+    if not trace_path:
+        return 0, 0, 0
+    prompt_tokens = 0
+    cached_prompt_tokens = 0
+    observable_requests = 0
+    try:
+        for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            if event.get("event_type") != "llm_response":
+                continue
+            usage = event.get("usage") or {}
+            cached = usage.get("cached_tokens")
+            if cached is None:
+                cached = usage.get("prompt_cache_hit_tokens")
+            if cached is None:
+                continue
+            prompt = usage.get("prompt_tokens")
+            if prompt is None:
+                prompt = usage.get("input_tokens")
+            cache_miss = usage.get("prompt_cache_miss_tokens")
+            if prompt is None and cache_miss is not None:
+                prompt = int(cached or 0) + int(cache_miss or 0)
+            if prompt is None or int(prompt or 0) <= 0:
+                continue
+            prompt_value = max(0, int(prompt))
+            cached_value = min(prompt_value, max(0, int(cached or 0)))
+            prompt_tokens += prompt_value
+            cached_prompt_tokens += cached_value
+            observable_requests += 1
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return 0, 0, 0
+    return prompt_tokens, cached_prompt_tokens, observable_requests
+
+
+def _trace_prompt_prefix_reuse(trace_path: str) -> tuple[int, int, int]:
+    """Estimate model-independent prompt prefix reuse from LLM request traces."""
+    if not trace_path:
+        return 0, 0, 0
+    total_chars = 0
+    reused_chars = 0
+    request_count = 0
+    previous_by_scope: dict[str, str] = {}
+    try:
+        for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            if event.get("event_type") != "llm_request":
+                continue
+            canonical = json.dumps(
+                {
+                    "system_prompt": event.get("system_prompt") or "",
+                    "tools": event.get("tools") or [],
+                    "messages": event.get("messages") or [],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            scope = str(event.get("span_path") or "main")
+            previous = previous_by_scope.get(scope)
+            if previous is not None:
+                common = 0
+                for left, right in zip(previous, canonical):
+                    if left != right:
+                        break
+                    common += 1
+                reused_chars += common
+            previous_by_scope[scope] = canonical
+            total_chars += len(canonical)
+            request_count += 1
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return 0, 0, 0
+    return total_chars, reused_chars, request_count
+
+
 def _trace_event_count(trace_path: str, event_type: str) -> int:
     if not trace_path:
         return 0
@@ -1209,6 +1286,16 @@ class EvalRunner:
                 result.workspace = ""
                 result.metadata["workspace_snapshot_error"] = str(exc)
         result.total_tokens = max(result.total_tokens, _trace_total_tokens(result.trace_path))
+        (
+            result.prompt_tokens,
+            result.cached_prompt_tokens,
+            result.prompt_cache_requests,
+        ) = _trace_prompt_cache_usage(result.trace_path)
+        (
+            result.prompt_prefix_chars,
+            result.reused_prompt_prefix_chars,
+            result.prompt_prefix_requests,
+        ) = _trace_prompt_prefix_reuse(result.trace_path)
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         self._append_result(result)
         get_agent_metrics().record_run(f"eval_{result.status}")

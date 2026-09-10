@@ -41,6 +41,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - 打开旧 `.uml` 文件自动包装为工程
 - 可分别设置项目、源码和测试目录，作为 Agent 工作范围
 - 工作区与安全路径策略确保 Agent 只访问配置的根目录
+- **快启案例**：打开 [`examples/quickstart`](examples/quickstart/)，即可体验完整的雷达信号处理 UML、Python 源码、pytest 测试和脱敏性能参考。
 
 ### AI 开发助手
 
@@ -146,7 +147,7 @@ LLM 返回的设计元素坐标自动计算，仅影响新生成元素，手动�
 | 前端 | React 18 + TypeScript + AntV X6 + Zustand + Ant Design 5 |
 | 后端 | FastAPI (Python) + WebSocket |
 | Agent | BaseAgents（ReActAgent，native function calling） |
-| LLM | DeepSeek API（每个会话使用一个固定模型，由 `DEEPSEEK_MODEL` 配置） |
+| LLM | 兼容 OpenAI 接口的模型服务（每个会话使用一个固定模型，由 `LLM_BASE_URL` 和 `LLM_MODEL_ID` 配置） |
 | 知识图谱 | SQLite + FTS5 |
 | 记忆系统 | SQLite + FTS5 + jieba |
 | 测试 | pytest（真实子进程执行）+ openpyxl（Excel 用例） |
@@ -206,10 +207,14 @@ ArchitectCoder/
 ## 快速开始
 
 ```bash
+# 在仓库根目录执行
+python -m pip install -r backend/requirements.txt
+# 从通用配置模板创建 backend/.env，并至少设置：
+# LLM_API_KEY、LLM_BASE_URL、LLM_MODEL_ID
+copy backend\.env.example backend\.env       # Windows；Unix 使用 cp
+
 # 后端
 cd backend
-python -m pip install -r requirements.txt
-# 创建 backend/.env，并至少设置：DEEPSEEK_API_KEY=你的密钥
 python -X utf8 -m app.main          # http://localhost:8001
 
 # 前端
@@ -218,7 +223,22 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-可选配置包括 `DEEPSEEK_MODEL`、五类插件的 `AGENT_*_ENABLED` 开关和 `AGENT_*_PROVIDER` 入口。配置定义集中在 `backend/config/settings.py` 与 `backend/config/agent_config.py`，插件实现统一位于 `extensions/`，由 `backend/app/agent_base/core/plugins.py` 加载。将开关设为 `false`，或将 Provider 设为 `none`、`noop`、`disabled`，即可关闭插件。`WORKSPACE_ROOTS` 用于配置额外的 Agent 工作区根目录，命令环境默认使用原生环境；需要 WSL 时显式设置 `AGENT_COMMAND_ENVIRONMENT=wsl`。`SUB_AGENT_MODEL` 仅作为已弃用兼容配置读取且不会生效。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。依赖安装完成后，可运行 `start.bat` 一键启动前后端；只有需要开发热重载时才设置 `UVICORN_RELOAD=1`。
+### 体验内置快启案例
+
+1. 在 ArchitectCoder 中打开 `examples/quickstart` 项目目录。请选择案例根目录，不要只选择 `design` 子目录；系统会自动识别 `design/radar_design.umlproj`、`src/` 和 `test/`，并将它们作为 Agent 工作区。
+2. 打开右下角的 **AI 助手**，让 DevAgent 分析或修改雷达信号处理案例。案例包含 UML、Python 源码、pytest 测试，以及 UML 与源码一致性检查，适合验证完整开发链路。
+3. 在案例根目录运行测试：
+
+   ```bash
+   cd examples/quickstart
+   python -m pytest test -q
+   ```
+
+4. `reference/performance-baseline.json` 是脱敏后的性能参考摘要，不会自动登记为评测中心的实时性能结果。若要在性能中心看到运行结果，需要先执行一轮评测，再将完成的评测批次转换为性能结果。
+
+如果将快启案例复制到仓库外部，需要在 `backend/.env` 的 `WORKSPACE_ROOTS` 中加入案例父目录，然后重启后端。仓库内的案例路径会自动受到信任。前端启动时会检查已保存的项目、源码、测试和设计路径，只清理失效路径，不会清空全部浏览器站点数据。
+
+可选配置包括五类插件的 `AGENT_*_ENABLED` 开关和 `AGENT_*_PROVIDER` 入口。模型通过与厂商无关的 `LLM_API_KEY`、`LLM_BASE_URL` 和 `LLM_MODEL_ID` 配置。配置定义集中在 `backend/config/settings.py` 与 `backend/config/agent_config.py`，插件实现统一位于 `extensions/`，由 `backend/app/agent_base/core/plugins.py` 加载。将开关设为 `false`，或将 Provider 设为 `none`、`noop`、`disabled`，即可关闭插件。`WORKSPACE_ROOTS` 用于配置额外的 Agent 工作区根目录，命令环境默认使用原生环境；需要 WSL 时显式设置 `AGENT_COMMAND_ENVIRONMENT=wsl`。`SUB_AGENT_MODEL` 仅作为已弃用兼容配置读取且不会生效。设置 `INTERNAL_API_TOKEN` 后，需在 `frontend/.env.local` 设置相同的 `VITE_API_TOKEN`。依赖安装完成后，可运行 `start.bat` 一键启动前后端；只有需要开发热重载时才设置 `UVICORN_RELOAD=1`。
 
 ## 插件架构
 

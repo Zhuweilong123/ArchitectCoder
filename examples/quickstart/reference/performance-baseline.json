@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "kind": "evaluation-performance-reference",
+  "source": "performance-merged-20260910T121123Z-8e2c7fd9.jsonl",
+  "version": "dev-4.0@d3e28ad07551263321e848d22aa2c6605149bd2b",
+  "model": "deepseek-v4-flash",
+  "case_count": 16,
+  "summary": {
+    "passed": 9,
+    "failed": 7,
+    "timeout": 0,
+    "errors": 0,
+    "pass_rate": 0.5625,
+    "average_score": 0.9128,
+    "average_duration_ms": 51296.4,
+    "total_tokens": 3327351,
+    "total_tool_calls": 372,
+    "prompt_tokens": 3200157,
+    "cached_prompt_tokens": 2765056,
+    "prompt_cache_requests": 242,
+    "prompt_cache_hit_rate": 0.864,
+    "prompt_prefix_chars": 11427005,
+    "reused_prompt_prefix_chars": 7222249,
+    "prompt_prefix_requests": 248,
+    "prompt_prefix_reuse_rate": 0.632,
+    "failure_categories": {
+      "agent_failure": 7
+    }
+  },
+  "metric_notes": {
+    "prompt_cache_hit_rate": "Provider-reported cached prompt tokens divided by observed prompt tokens.",
+    "prompt_prefix_reuse_rate": "Model-independent estimate based on reusable canonical prompt prefix characters within each trace scope."
+  }
+}
