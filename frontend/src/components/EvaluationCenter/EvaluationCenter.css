@@ -33,14 +33,14 @@
 .evaluation-comparison-chart-legend-item { display: inline-flex; min-width: 0; max-width: 220px; align-items: center; gap: 5px; color: #595959; font-size: 12px; }
 .evaluation-comparison-chart-legend-item .ant-typography { overflow: hidden; }
 .evaluation-comparison-chart-legend-dot { display: inline-block; flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; }
-.evaluation-comparison-chart-grid { display: grid; grid-template-columns: repeat(5, minmax(135px, 1fr)); gap: 12px; overflow-x: auto; }
-.evaluation-chart-metric { min-width: 135px; padding: 12px 10px 10px; border: 1px solid #f0f0f0; border-radius: 6px; background: #fff; }
+.evaluation-comparison-chart-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.evaluation-chart-metric { min-width: 0; padding: 16px 12px 12px; border: 1px solid #f0f0f0; border-radius: 6px; background: #fff; }
 .evaluation-chart-metric-title { color: #595959; font-size: 13px; font-weight: 600; text-align: center; }
-.evaluation-chart-bars { display: flex; align-items: flex-end; justify-content: flex-start; gap: 0; height: 190px; padding: 22px 4px 0; overflow-x: auto; border-bottom: 1px solid #d9d9d9; }
-.evaluation-chart-bar-item { display: flex; flex: 0 0 46px; min-width: 46px; height: 100%; flex-direction: column; align-items: center; justify-content: flex-end; }
+.evaluation-chart-bars { display: flex; align-items: flex-end; justify-content: flex-start; gap: 0; height: 240px; padding: 24px 6px 0; overflow-x: auto; border-bottom: 1px solid #d9d9d9; }
+.evaluation-chart-bar-item { display: flex; flex: 0 0 58px; min-width: 58px; height: 100%; flex-direction: column; align-items: center; justify-content: flex-end; }
 .evaluation-chart-bar-value { min-height: 18px; color: #595959; font-size: 11px; line-height: 18px; white-space: nowrap; }
-.evaluation-chart-bar-track { display: flex; width: 100%; height: 130px; align-items: flex-end; justify-content: center; }
-.evaluation-chart-bar { width: min(36px, 80%); min-height: 0; border-radius: 4px 4px 0 0; transition: height 0.2s ease; }
+.evaluation-chart-bar-track { display: flex; width: 100%; height: 174px; align-items: flex-end; justify-content: center; }
+.evaluation-chart-bar { width: min(46px, 80%); min-height: 0; border-radius: 4px 4px 0 0; transition: height 0.2s ease; }
 .evaluation-chart-bar-label { display: block; width: 100%; margin-top: 6px; color: #8c8c8c; font-size: 11px; line-height: 16px; text-align: center; }
 .evaluation-chart-change { display: flex; flex: 0 0 38px; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding-top: 18px; }
 .evaluation-chart-change-line { position: relative; display: block; width: 26px; height: 2px; background: currentColor; }

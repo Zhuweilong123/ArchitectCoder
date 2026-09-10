@@ -30,6 +30,18 @@ function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+function fmtPromptCacheRate(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${(value * 100).toFixed(1)}%`
+    : '暂无数据';
+}
+
+function fmtPromptPrefixReuseRate(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${(value * 100).toFixed(1)}%`
+    : '暂无数据';
+}
+
 function fmtTime(value: string): string {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -330,8 +342,17 @@ const EvaluationCenter: React.FC = () => {
   );
   const selectedRunVersionsMatch = selectedRuns.length > 0
     && selectedRuns.every((item) => item.version === selectedRuns[0].version);
+  const selectedPerformanceCaseIds = useMemo(
+    () => new Set(
+      selectedRuns
+        .flatMap((item) => item.case_ids || [])
+        .filter((caseId) => baselineCaseIds.includes(caseId)),
+    ),
+    [baselineCaseIds, selectedRuns],
+  );
   const selectedRunCaseIdsMatch = selectedRuns.length > 0
-    && baselineBatchIdsMatch(Array.from(new Set(selectedRuns.flatMap((item) => item.case_ids || []))));
+    && baselineCaseIds.length > 0
+    && baselineCaseIds.every((caseId) => selectedPerformanceCaseIds.has(caseId));
 
   useEffect(() => {
     setSelectedSuites((current) => current.length > 0
@@ -804,6 +825,8 @@ const EvaluationCenter: React.FC = () => {
         <Col xs={12} sm={8} md={4}><Statistic title="平均耗时" value={fmtDuration(activeSummary?.average_duration_ms || 0)} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="总 Token" value={activeSummary?.total_tokens || 0} /></Col>
         <Col xs={12} sm={8} md={4}><Statistic title="工具调用" value={activeSummary?.total_tool_calls || 0} /></Col>
+        <Col xs={12} sm={8} md={4}><Statistic title="Prompt 缓存命中率" value={fmtPromptCacheRate(activeSummary?.prompt_cache_hit_rate)} /></Col>
+        <Col xs={12} sm={8} md={4}><Statistic title="Prompt 前缀复用率" value={fmtPromptPrefixReuseRate(activeSummary?.prompt_prefix_reuse_rate)} /></Col>
       </Row>
       <Table size="small" rowKey="case_id" pagination={{ pageSize: 8 }} columns={resultColumns} dataSource={batch.results} onRow={(row) => ({ onClick: () => setSelectedCaseId(row.case_id) })} />
     </Card>
@@ -821,6 +844,8 @@ const EvaluationCenter: React.FC = () => {
     { title: '平均得分', key: 'score', width: 100, render: (_: unknown, row: EvalPerformanceRun) => `${(row.summary.average_score * 100).toFixed(1)}%` },
     { title: '平均耗时', key: 'duration', width: 100, render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
     { title: 'Token', key: 'tokens', width: 110, render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
+    { title: 'Prompt 缓存命中率', key: 'prompt_cache_hit_rate', width: 130, render: (_: unknown, row: EvalPerformanceRun) => fmtPromptCacheRate(row.summary.prompt_cache_hit_rate) },
+    { title: 'Prompt 前缀复用率', key: 'prompt_prefix_reuse_rate', width: 130, render: (_: unknown, row: EvalPerformanceRun) => fmtPromptPrefixReuseRate(row.summary.prompt_prefix_reuse_rate) },
     { title: '归档', key: 'archived', width: 90, render: (_: unknown, row: EvalPerformanceRun) => row.archived ? <Tag color="success">已归档</Tag> : <Tag>未归档</Tag> },
       { title: '操作', key: 'action', width: 170, render: (_: unknown, row: EvalPerformanceRun) => (
         <Space>
@@ -877,6 +902,8 @@ const EvaluationCenter: React.FC = () => {
             <Col xs={12} sm={8} md={4}><Statistic title="平均耗时" value={fmtDuration(selectedPerformance.summary.average_duration_ms)} /></Col>
             <Col xs={12} sm={8} md={4}><Statistic title="总 Token" value={selectedPerformance.summary.total_tokens} /></Col>
             <Col xs={12} sm={8} md={4}><Statistic title="工具调用" value={selectedPerformance.summary.total_tool_calls} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="Prompt 缓存命中率" value={fmtPromptCacheRate(selectedPerformance.summary.prompt_cache_hit_rate)} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="Prompt 前缀复用率" value={fmtPromptPrefixReuseRate(selectedPerformance.summary.prompt_prefix_reuse_rate)} /></Col>
           </Row>
           {!selectedPerformance.archived ? <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}><Text type="secondary">归档版本（可修改）</Text><Input value={performanceVersion} onChange={(event) => setPerformanceVersion(event.target.value)} placeholder="例如 3.3.1" /></Space> : null}
           <Space wrap className="evaluation-filter-row"><Input.Search allowClear value={resultQuery} onChange={(event) => setResultQuery(event.target.value)} placeholder="搜索用例、模型、错误信息" style={{ width: 280 }} /><Select value={resultStatus} onChange={setResultStatus} style={{ width: 120 }} options={[{ value: 'all', label: '全部用例' }, { value: 'failed', label: '失败' }, { value: 'timeout', label: '超时' }, { value: 'passed', label: '通过' }]} /><Text type="secondary">显示 {filteredSelectedResults.length} / {selectedPerformance.results?.length || 0}</Text></Space>
@@ -901,6 +928,8 @@ const EvaluationCenter: React.FC = () => {
             { title: '平均耗时', key: 'duration', render: (_: unknown, row: EvalPerformanceRun) => fmtDuration(row.summary.average_duration_ms) },
             { title: 'Token', key: 'tokens', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tokens },
             { title: '工具调用', key: 'tools', render: (_: unknown, row: EvalPerformanceRun) => row.summary.total_tool_calls },
+            { title: 'Prompt 缓存命中率', key: 'prompt_cache_hit_rate', render: (_: unknown, row: EvalPerformanceRun) => fmtPromptCacheRate(row.summary.prompt_cache_hit_rate) },
+            { title: 'Prompt 前缀复用率', key: 'prompt_prefix_reuse_rate', render: (_: unknown, row: EvalPerformanceRun) => fmtPromptPrefixReuseRate(row.summary.prompt_prefix_reuse_rate) },
           ]} />
           <div className="evaluation-comparison-chart">
             <div className="evaluation-comparison-chart-header">
@@ -925,10 +954,15 @@ const EvaluationCenter: React.FC = () => {
                 { key: 'pass-rate', label: '通过率', value: (run: EvalPerformanceRun) => run.summary.pass_rate * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
                 { key: 'score', label: '平均得分', value: (run: EvalPerformanceRun) => run.summary.average_score * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
                 { key: 'duration', label: '平均耗时', value: (run: EvalPerformanceRun) => run.summary.average_duration_ms, format: (value: number) => fmtDuration(value), higherIsBetter: false },
-                { key: 'tokens', label: 'Token', value: (run: EvalPerformanceRun) => run.summary.total_tokens, format: (value: number) => value.toLocaleString(), higherIsBetter: false },
                 { key: 'tools', label: '工具调用', value: (run: EvalPerformanceRun) => run.summary.total_tool_calls, format: (value: number) => value.toLocaleString(), higherIsBetter: false },
+                { key: 'tokens', label: 'Token', value: (run: EvalPerformanceRun) => run.summary.total_tokens, format: (value: number) => value.toLocaleString(), higherIsBetter: false },
+                { key: 'prompt-cache', label: 'Prompt 缓存命中率', value: (run: EvalPerformanceRun) => run.summary.prompt_cache_hit_rate === null || run.summary.prompt_cache_hit_rate === undefined ? null : run.summary.prompt_cache_hit_rate * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
+                { key: 'prompt-prefix', label: 'Prompt 前缀复用率', value: (run: EvalPerformanceRun) => run.summary.prompt_prefix_reuse_rate === null || run.summary.prompt_prefix_reuse_rate === undefined ? null : run.summary.prompt_prefix_reuse_rate * 100, format: (value: number) => value.toFixed(1) + '%', max: 100, higherIsBetter: true },
               ].map((metric) => {
-                const maxValue = metric.max || Math.max(...comparisonRuns.map(metric.value), 1);
+                const metricValues = comparisonRuns
+                  .map(metric.value)
+                  .filter((value): value is number => value !== null);
+                const maxValue = metric.max || Math.max(...metricValues, 1);
                 return (
                   <div className="evaluation-chart-metric" key={metric.key}>
                     <div className="evaluation-chart-metric-title">{metric.label}</div>
@@ -936,12 +970,12 @@ const EvaluationCenter: React.FC = () => {
                       {comparisonRuns.map((run, index) => {
                         const value = metric.value(run);
                         const previousValue = index > 0 ? metric.value(comparisonRuns[index - 1]) : null;
-                        const change = previousValue === null || previousValue === 0
+                        const change = value === null || previousValue === null || previousValue === 0
                           ? null
                           : ((value - previousValue) / Math.abs(previousValue)) * 100;
                         const slope = change === null || change === 0 ? 'flat' : change > 0 ? 'up' : 'down';
                         const sentiment = change === null || change === 0 ? 'flat' : metric.higherIsBetter === (change > 0) ? 'positive' : 'negative';
-                        const height = value > 0 ? Math.max((value / maxValue) * 100, 4) : 0;
+                        const height = value !== null && value > 0 ? Math.max((value / maxValue) * 100, 4) : 0;
                         const version = run.version || run.file_name;
                         const versionIndex = comparisonRuns.findIndex((candidate) => (candidate.version || candidate.file_name) === version);
                         const color = COMPARISON_VERSION_COLORS[versionIndex % COMPARISON_VERSION_COLORS.length];
@@ -953,8 +987,8 @@ const EvaluationCenter: React.FC = () => {
                                 <span className="evaluation-chart-change-label">{change === null ? '—' : (change > 0 ? '+' : '') + change.toFixed(1) + '%'}</span>
                               </div>
                             ) : null}
-                            <div className="evaluation-chart-bar-item" title={version + ': ' + metric.format(value)}>
-                              <div className="evaluation-chart-bar-value">{metric.format(value)}</div>
+                            <div className="evaluation-chart-bar-item" title={version + ': ' + (value === null ? '暂无数据' : metric.format(value))}>
+                              <div className="evaluation-chart-bar-value">{value === null ? '暂无数据' : metric.format(value)}</div>
                               <div className="evaluation-chart-bar-track">
                                 <div className="evaluation-chart-bar" style={{ height: String(Math.min(height, 100)) + '%', backgroundColor: color }} />
                               </div>
@@ -1030,11 +1064,16 @@ const EvaluationCenter: React.FC = () => {
         type="info"
         showIcon
         message="性能结果转换规则"
-        description="单个批次必须覆盖完整基线用例集；多个批次合并后也必须覆盖完整基线用例集，且批次版本一致。不同执行时间的批次也可以合并。"
+        description="所选批次合计覆盖完整性能基线用例集即可；其中额外的 Trace 或诊断用例会自动忽略。多个批次的版本必须一致，不同执行时间的批次可以合并。"
         style={{ marginBottom: 12 }}
       />
       <Space wrap className="evaluation-filter-row">
         <Text type="secondary">已选 {selectedRuns.length} 个运行批次</Text>
+        <Text type="secondary">
+          {selectedRuns.length > 0
+            ? `将提取 ${selectedPerformanceCaseIds.size} 个性能基线用例`
+            : '选择已完成的运行批次'}
+        </Text>
         <Button
           type="primary"
           disabled={selectedRuns.length < 1 || !selectedRunCaseIdsMatch || !selectedRunVersionsMatch || selectedRuns.some((item) => item.status !== 'completed')}

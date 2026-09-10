@@ -26,6 +26,8 @@ from extensions.evals.registry import EvalCatalogError, load_cases
 from extensions.evals.runner import (
     EvalRunner,
     _agent_budget,
+    _trace_prompt_cache_usage,
+    _trace_prompt_prefix_reuse,
     dev_agent_factory,
     _validate_project_layout,
 )
@@ -911,6 +913,116 @@ def test_eval_batch_merge_accepts_a_single_completed_batch(tmp_path, monkeypatch
     assert merged.source_batch_ids == [batch.batch_id]
     assert merged.performance_result_id
     assert Path(merged.performance_result_id).is_file()
+
+
+def test_eval_batch_merge_extracts_baseline_from_mixed_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "extensions.evals.batches.load_cases",
+        lambda: {
+            "baseline-case": SimpleNamespace(metadata={}),
+            "trace-case": SimpleNamespace(metadata={"suite": "trace-3.1"}),
+        },
+    )
+    baseline_result = EvalResult(
+        run_id="run-mixed",
+        case_id="baseline-case",
+        status="passed",
+        passed=True,
+        score=1.0,
+        started_at="2026-09-08T00:00:00+00:00",
+    )
+    trace_result = baseline_result.model_copy(update={
+        "case_id": "trace-case",
+        "trace_id": "trace-case",
+    })
+    batch = EvalBatch(
+        batch_id="batch-mixed",
+        version="dev-test",
+        case_ids=["baseline-case", "trace-case"],
+        status="completed",
+        started_at="2026-09-08T00:00:00+00:00",
+        finished_at="2026-09-08T00:01:00+00:00",
+        results=[baseline_result, trace_result],
+    )
+    manager = EvalBatchManager()
+    manager._batches[batch.batch_id] = batch
+
+    merged = manager.merge(EvalBatchMergeRequest(
+        batch_ids=[batch.batch_id],
+        version="dev-test",
+    ))
+
+    assert merged.case_ids == ["baseline-case"]
+    assert [result.case_id for result in merged.results] == ["baseline-case"]
+
+
+def test_prompt_cache_usage_is_aggregated_from_trace(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        "\n".join([
+            json.dumps({"event_type": "llm_response", "usage": {"prompt_tokens": 100, "cached_tokens": 75}}),
+            json.dumps({"event_type": "llm_response", "usage": {"input_tokens": 50, "prompt_cache_hit_tokens": 0}}),
+            json.dumps({"event_type": "llm_response", "usage": {"prompt_tokens": 30}}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    assert _trace_prompt_cache_usage(str(trace_path)) == (150, 75, 2)
+
+
+def test_prompt_prefix_reuse_is_estimated_per_trace_scope(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        "\n".join([
+            json.dumps({
+                "event_type": "llm_request",
+                "span_path": "main",
+                "system_prompt": "system",
+                "tools": [{"name": "read_file"}],
+                "messages": [{"role": "user", "content": "first"}],
+            }),
+            json.dumps({
+                "event_type": "llm_request",
+                "span_path": "main",
+                "system_prompt": "system",
+                "tools": [{"name": "read_file"}],
+                "messages": [{"role": "user", "content": "second"}],
+            }),
+            json.dumps({
+                "event_type": "llm_request",
+                "span_path": "subagent",
+                "system_prompt": "subagent",
+                "tools": [],
+                "messages": [{"role": "user", "content": "isolated"}],
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    total_chars, reused_chars, request_count = _trace_prompt_prefix_reuse(str(trace_path))
+
+    assert request_count == 3
+    assert total_chars > 0
+    assert reused_chars > 0
+    assert reused_chars < total_chars
+
+
+def test_summary_reports_weighted_prompt_cache_hit_rate():
+    result = EvalResult(
+        run_id="run-cache",
+        case_id="case-cache",
+        status="passed",
+        passed=True,
+        score=1.0,
+        prompt_tokens=200,
+        cached_prompt_tokens=50,
+        prompt_cache_requests=2,
+    )
+
+    summary = summarize([result])
+
+    assert summary.prompt_cache_hit_rate == 0.25
 
 
 def test_cli_performance_registration_writes_catalog_result(tmp_path, monkeypatch):

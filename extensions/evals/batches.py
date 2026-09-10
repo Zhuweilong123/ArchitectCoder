@@ -65,6 +65,14 @@ class EvalSummary(BaseModel):
     average_duration_ms: float = 0.0
     total_tokens: int = 0
     total_tool_calls: int = 0
+    prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    prompt_cache_requests: int = 0
+    prompt_cache_hit_rate: float | None = None
+    prompt_prefix_chars: int = 0
+    reused_prompt_prefix_chars: int = 0
+    prompt_prefix_requests: int = 0
+    prompt_prefix_reuse_rate: float | None = None
     failure_categories: dict[str, int] = Field(default_factory=dict)
 
 
@@ -106,6 +114,12 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
         for item in results
         if str(getattr(item, "failure_category", "none") or "none") != "none"
     )
+    prompt_tokens = sum(max(0, int(getattr(item, "prompt_tokens", 0) or 0)) for item in results)
+    cached_prompt_tokens = sum(max(0, int(getattr(item, "cached_prompt_tokens", 0) or 0)) for item in results)
+    prompt_cache_requests = sum(max(0, int(getattr(item, "prompt_cache_requests", 0) or 0)) for item in results)
+    prompt_prefix_chars = sum(max(0, int(getattr(item, "prompt_prefix_chars", 0) or 0)) for item in results)
+    reused_prompt_prefix_chars = sum(max(0, int(getattr(item, "reused_prompt_prefix_chars", 0) or 0)) for item in results)
+    prompt_prefix_requests = sum(max(0, int(getattr(item, "prompt_prefix_requests", 0) or 0)) for item in results)
     return EvalSummary(
         total=total if total is not None else completed,
         completed=completed,
@@ -120,6 +134,20 @@ def summarize(results: list[EvalResult], total: int | None = None) -> EvalSummar
         average_duration_ms=round(sum(item.duration_ms for item in results) / completed, 1) if completed else 0.0,
         total_tokens=sum(item.total_tokens for item in results),
         total_tool_calls=sum(item.tool_calls for item in results),
+        prompt_tokens=prompt_tokens,
+        cached_prompt_tokens=cached_prompt_tokens,
+        prompt_cache_requests=prompt_cache_requests,
+        prompt_cache_hit_rate=(
+            round(cached_prompt_tokens / prompt_tokens, 4)
+            if prompt_cache_requests > 0 and prompt_tokens > 0 else None
+        ),
+        prompt_prefix_chars=prompt_prefix_chars,
+        reused_prompt_prefix_chars=reused_prompt_prefix_chars,
+        prompt_prefix_requests=prompt_prefix_requests,
+        prompt_prefix_reuse_rate=(
+            round(reused_prompt_prefix_chars / prompt_prefix_chars, 4)
+            if prompt_prefix_requests > 0 and prompt_prefix_chars > 0 else None
+        ),
         failure_categories=dict(sorted(failure_categories.items())),
     )
 
@@ -203,7 +231,12 @@ class EvalBatchManager:
         return batch
 
     def merge(self, request: EvalBatchMergeRequest) -> EvalBatch:
-        """Convert complete baseline coverage into a performance result."""
+        """Convert complete baseline coverage into a performance result.
+
+        A run may contain diagnostic or trace cases in addition to the formal
+        performance baseline. Those cases are intentionally excluded from the
+        performance result; only the complete baseline case set is extracted.
+        """
         batches: list[EvalBatch] = []
         seen_batch_ids: set[str] = set()
         for batch_id in request.batch_ids:
@@ -226,9 +259,12 @@ class EvalBatchManager:
         elif merged_version != next(iter(versions)):
             raise ValueError("performance result version must match the selected batches")
 
+        baseline_case_ids = _baseline_case_ids()
         result_by_case: dict[str, EvalResult] = {}
         for batch in batches:
             for result in batch.results:
+                if result.case_id not in baseline_case_ids:
+                    continue
                 if result.case_id in result_by_case:
                     if result_by_case[result.case_id].model_dump(mode="json") == result.model_dump(mode="json"):
                         continue
@@ -238,7 +274,7 @@ class EvalBatchManager:
         if not result_by_case:
             raise ValueError("selected batches contain no evaluation results")
         case_ids = sorted(result_by_case)
-        if set(case_ids) != _baseline_case_ids():
+        if set(case_ids) != baseline_case_ids:
             raise ValueError("selected batches must contain the complete baseline case set")
 
         merged = EvalBatch(

@@ -378,6 +378,14 @@ export interface EvalSummary {
   average_duration_ms: number;
   total_tokens: number;
   total_tool_calls: number;
+  prompt_tokens: number;
+  cached_prompt_tokens: number;
+  prompt_cache_requests: number;
+  prompt_cache_hit_rate: number | null;
+  prompt_prefix_chars: number;
+  reused_prompt_prefix_chars: number;
+  prompt_prefix_requests: number;
+  prompt_prefix_reuse_rate: number | null;
   failure_categories?: Record<string, number>;
 }
 
@@ -430,6 +438,12 @@ export interface EvalResult {
   model: string;
   tool_calls: number;
   total_tokens: number;
+  prompt_tokens?: number;
+  cached_prompt_tokens?: number;
+  prompt_cache_requests?: number;
+  prompt_prefix_chars?: number;
+  reused_prompt_prefix_chars?: number;
+  prompt_prefix_requests?: number;
   trace_id?: string;
   trace_path?: string;
   checker_results: Array<Record<string, any>>;

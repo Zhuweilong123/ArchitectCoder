@@ -248,6 +248,12 @@ class EvalResult(BaseModel):
     model: str = ""
     tool_calls: int = 0
     total_tokens: int = 0
+    prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    prompt_cache_requests: int = 0
+    prompt_prefix_chars: int = 0
+    reused_prompt_prefix_chars: int = 0
+    prompt_prefix_requests: int = 0
     checker_results: list[CheckerResult] = Field(default_factory=list)
     error: str = ""
     failure_category: EvalFailureCategory = "none"
