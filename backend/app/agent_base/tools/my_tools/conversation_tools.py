@@ -146,7 +146,7 @@ def create_conversation_tools(
             review_manager=review_mgr, progress=progress,
             command_executor=command_executor,
             workspace_root=workspace_root,
-            toolkits=("strategy",),
+            toolkits=("strategy", "verification"),
             max_total_tokens=get_settings().agent_subagent_per_run_execution_budget_tokens,
             single_use=True,
         ))

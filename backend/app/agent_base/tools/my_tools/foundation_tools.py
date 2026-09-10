@@ -764,7 +764,7 @@ class RunTaskTool(RunProgramTool):
         if task not in self.TASKS:
             return (
                 f"Error: unsupported task '{task}'. "
-                "Choose one of: test, build, lint, format, typecheck, validate."
+                f"Choose one of: {', '.join(self.TASKS)}."
             )
         if task == "validate" and params.get("target"):
             target = str(params["target"]).strip()

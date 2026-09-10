@@ -19,7 +19,10 @@ from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.async_tool import AsyncTool
-from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
+from app.agent_base.tools.my_tools.foundation_tools import (
+    RunTaskTool,
+    create_foundation_tools,
+)
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 from app.runtime import build_command_executor, workspace_root_for
 
@@ -37,13 +40,39 @@ STRATEGY_SUBAGENT_SYSTEM = (
     "target scope, ordered steps, acceptance criteria, and risks. Do not spawn more agents."
 )
 
+VERIFICATION_SUBAGENT_SYSTEM = (
+    "You are a source-safe verification subagent. Inspect the relevant files, then "
+    "run only the minimum fixed project verification task needed: test, build, "
+    "lint, typecheck, or validate. Do not modify source files, run arbitrary programs, "
+    "use shell commands, or spawn more agents. Return concise evidence and any "
+    "failure diagnosis."
+)
+
 # ── 子代理工具包（toolkit）──────────────────────────────────────
 # 主 agent 按任务类型选工具包，框架展开成受限工具集。安全不变量由本表强制，
 # 不依赖主 agent 自觉：
 #   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
-TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy")
+TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
 SUBAGENT_RELAY_MAX_CHARS = 6000
+
+
+class VerificationRunTaskTool(RunTaskTool):
+    """Run only fixed, non-formatting project checks inside a subagent."""
+
+    TASKS = {
+        name: RunTaskTool.TASKS[name]
+        for name in ("test", "build", "lint", "typecheck", "validate")
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.description = (
+            "Run one fixed project verification task without source editing: test, "
+            "build, lint, typecheck, or validate. Formatting, arbitrary programs, "
+            "and shell commands are not available in this toolkit. Build/test "
+            "caches or generated artifacts may be produced."
+        )
 
 
 def _build_toolkit_tools(
@@ -77,6 +106,20 @@ def _build_toolkit_tools(
         return inspection_tools
     if kind in {"kg_analysis", "strategy"}:
         return [*inspection_tools, SkillTool()]
+    if kind == "verification":
+        return [
+            *inspection_tools,
+            SkillTool(),
+            VerificationRunTaskTool(
+                source_dir=source_dir,
+                test_dir=test_dir,
+                design_dir=design_dir,
+                review_manager=review_manager,
+                progress=progress,
+                command_executor=command_executor,
+                workspace_root=workspace_root,
+            ),
+        ]
     raise ValueError(f"unknown toolkit: {kind}")
 
 
@@ -177,7 +220,12 @@ class SpawnSubagentTool(AsyncTool):
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
-            prompt = STRATEGY_SUBAGENT_SYSTEM if kind == "strategy" else SUBAGENT_SYSTEM
+            if kind == "strategy":
+                prompt = STRATEGY_SUBAGENT_SYSTEM
+            elif kind == "verification":
+                prompt = VERIFICATION_SUBAGENT_SYSTEM
+            else:
+                prompt = SUBAGENT_SYSTEM
             if kind == "standard" and skills:
                 prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
             self.system_prompts[kind] = prompt
@@ -321,7 +369,7 @@ class SpawnSubagentTool(AsyncTool):
             return "Error: description is required"
 
         if self.single_use and self._single_use_used:
-            return "Error: the strategy subagent may be used only once per task"
+            return "Error: the subagent may be used only once per task"
 
         toolkit = str(params.get("toolkit") or self.toolkits[0]).strip().lower()
         if toolkit not in self.sub_registries:

@@ -229,7 +229,7 @@ def _build_spawn(tmp_path):
 
 def test_spawn_subagent_builds_all_supported_toolkits(tmp_path):
     tool = _build_spawn(tmp_path)
-    expected = {"standard", "read_only", "kg_analysis", "strategy"}
+    expected = {"standard", "read_only", "kg_analysis", "strategy", "verification"}
     assert set(tool.sub_registries.keys()) == expected
     assert set(tool.system_prompts.keys()) == expected
 
@@ -283,6 +283,22 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         assert "only once" in asyncio.run(tool._execute({"description": "plan again"}))
     finally:
         reset_runtime(runtime_token)
+
+
+def test_verification_toolkit_runs_only_fixed_checks(tmp_path):
+    tool = _build_spawn(tmp_path)
+    names = tool.sub_registries["verification"].list_tools()
+    assert set(names) == {
+        "list_files", "read_file", "search_text", "skill", "run_task",
+    }
+    assert not ({"apply_changes", "run_program", "shell"} & set(names))
+    schema = next(
+        item for item in tool.sub_registries["verification"].get_openai_specs()
+        if item["function"]["name"] == "run_task"
+    )
+    tasks = schema["function"]["parameters"]["properties"]["task"]["enum"]
+    assert set(tasks) == {"test", "build", "lint", "typecheck", "validate"}
+    assert "format" not in tasks
 
 
 def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
