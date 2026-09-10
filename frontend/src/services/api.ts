@@ -461,6 +461,7 @@ export interface EvalTrend {
   status: string;
   started_at: string;
   finished_at: string;
+  case_ids: string[];
   summary: EvalSummary;
 }
 

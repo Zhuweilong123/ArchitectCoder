@@ -835,6 +835,7 @@ def test_eval_batch_summary_aggregates_runtime_metrics():
 
 def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monkeypatch):
     monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"case-a": object()})
     result = EvalResult(
         run_id="run-1",
         case_id="case-a",
@@ -876,6 +877,40 @@ def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monke
     assert performance_path.is_file()
     assert len(performance_path.read_text(encoding="utf-8").splitlines()) == 1
     assert not (tmp_path / "batches.jsonl").exists()
+
+
+def test_eval_batch_merge_accepts_a_single_completed_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"baseline-case": object()})
+    result = EvalResult(
+        run_id="run-single",
+        case_id="baseline-case",
+        status="passed",
+        passed=True,
+        score=1.0,
+        started_at="2026-09-08T00:00:00+00:00",
+    )
+    batch = EvalBatch(
+        batch_id="batch-single",
+        version="dev-test",
+        case_ids=[result.case_id],
+        status="completed",
+        started_at="2026-09-08T00:00:00+00:00",
+        finished_at="2026-09-08T00:01:00+00:00",
+        results=[result],
+    )
+    manager = EvalBatchManager()
+    manager._batches[batch.batch_id] = batch
+
+    merged = manager.merge(EvalBatchMergeRequest(
+        batch_ids=[batch.batch_id],
+        version="dev-test",
+    ))
+
+    assert merged.case_ids == [result.case_id]
+    assert merged.source_batch_ids == [batch.batch_id]
+    assert merged.performance_result_id
+    assert Path(merged.performance_result_id).is_file()
 
 
 def test_cli_performance_registration_writes_catalog_result(tmp_path, monkeypatch):

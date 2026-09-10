@@ -330,6 +330,8 @@ const EvaluationCenter: React.FC = () => {
   );
   const selectedRunVersionsMatch = selectedRuns.length > 0
     && selectedRuns.every((item) => item.version === selectedRuns[0].version);
+  const selectedRunCaseIdsMatch = selectedRuns.length > 0
+    && baselineBatchIdsMatch(Array.from(new Set(selectedRuns.flatMap((item) => item.case_ids || []))));
 
   useEffect(() => {
     setSelectedSuites((current) => current.length > 0
@@ -1002,7 +1004,7 @@ const EvaluationCenter: React.FC = () => {
   };
 
   const mergeSelectedRuns = async () => {
-    if (selectedRuns.length < 2) return;
+    if (selectedRuns.length < 1) return;
     setMergingRuns(true);
     try {
       const version = selectedRuns[0].version || repository?.version || 'working-tree';
@@ -1012,7 +1014,7 @@ const EvaluationCenter: React.FC = () => {
         label: `${version} merged performance`,
       });
       setSelectedRunIds([]);
-      message.success(`已合并 ${merged.results.length} 个用例，并登记为性能结果`);
+      message.success(`${selectedRuns.length > 1 ? '已合并' : '已转换'} ${merged.results.length} 个用例，并登记为性能结果`);
       await refresh();
       setActiveTab('performance');
     } catch (error: any) {
@@ -1024,15 +1026,22 @@ const EvaluationCenter: React.FC = () => {
 
   const renderRunsWithDetails = () => trends.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无批次记录" /> : (
     <>
+      <Alert
+        type="info"
+        showIcon
+        message="性能结果转换规则"
+        description="单个批次必须覆盖完整基线用例集；多个批次合并后也必须覆盖完整基线用例集，且批次版本一致。不同执行时间的批次也可以合并。"
+        style={{ marginBottom: 12 }}
+      />
       <Space wrap className="evaluation-filter-row">
         <Text type="secondary">已选 {selectedRuns.length} 个运行批次</Text>
         <Button
           type="primary"
-          disabled={selectedRuns.length < 2 || !selectedRunVersionsMatch || selectedRuns.some((item) => item.status !== 'completed')}
+          disabled={selectedRuns.length < 1 || !selectedRunCaseIdsMatch || !selectedRunVersionsMatch || selectedRuns.some((item) => item.status !== 'completed')}
           loading={mergingRuns}
           onClick={mergeSelectedRuns}
         >
-          合并为性能结果
+          {selectedRuns.length > 1 ? '合并为性能结果' : '转换为性能结果'}
         </Button>
       </Space>
       <List size="small" dataSource={trends} renderItem={(item) => (
