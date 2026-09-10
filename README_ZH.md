@@ -41,6 +41,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - 打开旧 `.uml` 文件自动包装为工程
 - 可分别设置项目、源码和测试目录，作为 Agent 工作范围
 - 工作区与安全路径策略确保 Agent 只访问配置的根目录
+- **快启案例**：打开 [`examples/quickstart`](examples/quickstart/)，即可体验完整的雷达信号处理 UML、Python 源码、pytest 测试和脱敏性能参考。
 
 ### AI 开发助手
 

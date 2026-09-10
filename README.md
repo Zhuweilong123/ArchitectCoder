@@ -43,6 +43,7 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 - Legacy `.uml` files auto-wrapped into projects
 - Project, source, and test directories can be selected separately for Agent work
 - Workspace and safe-path policies keep Agent file access within configured roots
+- **Quickstart case**: open [`examples/quickstart`](examples/quickstart/) for a complete Radar Signal Processing UML + Python + pytest project and a sanitized performance reference.
 
 ### AI Development Assistant
 
