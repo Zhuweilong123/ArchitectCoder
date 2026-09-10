@@ -17,16 +17,22 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    # DeepSeek LLM — API key MUST come from .env, never hardcoded
-    deepseek_api_key: str = Field(
+    # OpenAI-compatible LLM endpoint — credentials MUST come from .env.
+    llm_api_key: str = Field(
         ...,
-        description="DeepSeek API key (required, set in .env file)",
+        description="LLM API key (required, set in .env file)",
     )
-    deepseek_base_url: str = "https://api.deepseek.com"
+    llm_base_url: str = Field(
+        ...,
+        description="OpenAI-compatible LLM endpoint URL",
+    )
 
     # Fixed coding model for every agent in a session. Override via
-    # DEEPSEEK_MODEL in .env; application code must not route per message.
-    deepseek_model: str = "deepseek-v4-pro"
+    # LLM_MODEL_ID in .env; application code must not route per message.
+    llm_model_id: str = Field(
+        ...,
+        description="Model identifier accepted by the configured LLM endpoint",
+    )
 
     # Compatibility only: releases before the fixed-model policy accepted
     # SUB_AGENT_MODEL. Consume a stale deployment setting without using it so
@@ -35,7 +41,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="SUB_AGENT_MODEL",
         repr=False,
-        description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
+        description="Deprecated and ignored; all agents use LLM_MODEL_ID.",
     )
 
     agent_max_tool_calls: int = 100
@@ -122,7 +128,7 @@ class Settings(BaseSettings):
 
     strict_production: bool = False
 
-    @field_validator("deepseek_api_key")
+    @field_validator("llm_api_key")
     @classmethod
     def check_key_not_default(cls, v: str) -> str:
         """Reject known placeholder/default keys to catch misconfiguration."""
@@ -131,7 +137,7 @@ class Settings(BaseSettings):
         for prefix in prohibited_prefixes:
             if v_lower.startswith(prefix):
                 logger.warning(
-                    "deepseek_api_key appears to be a placeholder or leaked default value. "
+                    "llm_api_key appears to be a placeholder or leaked default value. "
                     "Please set a valid key in backend/.env"
                 )
                 break
@@ -178,7 +184,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "populate_by_name": True,
+    }
 
 
 @lru_cache()

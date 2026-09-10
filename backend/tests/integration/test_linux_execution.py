@@ -91,7 +91,12 @@ def test_wsl_executor_retries_preflight_after_transient_failure(monkeypatch):
 
 
 def test_explicit_wsl_settings_build_wsl_executor():
-    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+    settings = Settings(
+        _env_file=None,
+        llm_api_key="test-key",
+        llm_base_url="http://test-llm/v1",
+        llm_model_id="test-model",
+    )
     settings.agent_command_environment = "wsl"
 
     executor = build_linux_command_executor(settings)

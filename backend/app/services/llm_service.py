@@ -17,16 +17,16 @@ def get_gateway() -> OpenAICompatibleGateway:
     global _gateway
     if _gateway is None:
         _gateway = OpenAICompatibleGateway(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model_id,
             timeout=120.0,
         )
     return _gateway
 
 
 def _resolve_model(model: str | None) -> str:
-    return model or settings.deepseek_model
+    return model or settings.llm_model_id
 
 
 def _messages(prompt: str, system_prompt: str | None = None) -> list[dict[str, str]]:

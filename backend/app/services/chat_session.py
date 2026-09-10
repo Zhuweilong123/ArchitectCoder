@@ -373,7 +373,7 @@ class ChatSessionCoordinator:
                     message, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                 )
-                trace_log.event("agent_model", model=get_settings().deepseek_model,
+                trace_log.event("agent_model", model=get_settings().llm_model_id,
                                 policy="fixed_session_model")
                 _record_audit("run_started", run_id=run.run_id, session_id=session_id,
                               kind="agent_chat", project_file=project_file,

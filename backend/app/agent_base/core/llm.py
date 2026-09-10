@@ -147,52 +147,15 @@ class BaseAgentsLLM:
     """BaseAgents 统一 LLM 客户端
 
     封装 OpenAI 兼容的 LLM 调用，支持：
-    - 多 provider: openai / deepseek / modelscope / zhipu / ollama / vllm
+    - 任意 OpenAI-compatible provider
     - 同步 + 异步调用
     - 流式输出
-    - 自动 provider 检测
+    - provider 仅作可观测性标识，不参与路由
     """
 
-    # ── Provider 默认配置 ──────────────────────────────────
-    PROVIDER_CONFIGS: dict[str, dict] = {
-        "openai": {
-            "env_key": "OPENAI_API_KEY",
-            "default_base_url": "https://api.openai.com/v1",
-            "default_model": "gpt-3.5-turbo",
-        },
-        "deepseek": {
-            "env_key": "DEEPSEEK_API_KEY",
-            "env_base_url": "DEEPSEEK_BASE_URL",
-            "env_model": "DEEPSEEK_MODEL",
-            "default_base_url": "https://api.deepseek.com",
-            "default_model": "deepseek-chat",
-        },
-        "modelscope": {
-            "env_key": "MODELSCOPE_API_KEY",
-            "default_base_url": "https://api-inference.modelscope.cn/v1/",
-            "default_model": "Qwen/Qwen2.5-72B-Instruct",
-        },
-        "zhipu": {
-            "env_key": "ZHIPU_API_KEY",
-            "default_base_url": "https://open.bigmodel.cn/api/paas/v4/",
-            "default_model": "glm-4",
-        },
-        "ollama": {
-            "env_key": None,
-            "default_base_url": "http://localhost:11434/v1",
-            "default_model": "llama3",
-        },
-        "vllm": {
-            "env_key": None,
-            "default_base_url": "http://localhost:8000/v1",
-            "default_model": "",
-        },
-    }
-
-    # 本地自部署端点通常不校验 api_key，但 OpenAI SDK 要求非空。
-    # 这些 provider 在缺 key 时用占位符兜底，否则 client 不会被构造，
-    # 调用直接 RuntimeError —— 本地部署路径实际是断的。
-    KEYLESS_PROVIDERS: frozenset[str] = frozenset({"ollama", "vllm", "local"})
+    # Provider is an informational label only. Routing and credentials always
+    # come from the generic LLM_* settings.
+    DEFAULT_PROVIDER = "openai-compatible"
     NO_AUTH_PLACEHOLDER = "not-needed"
 
     def __init__(
@@ -207,11 +170,7 @@ class BaseAgentsLLM:
         **kwargs,
     ):
         # 1. 确定 provider
-        self.provider = (
-            self._auto_detect_provider(api_key, base_url)
-            if provider == "auto"
-            else provider
-        )
+        self.provider = provider if provider and provider != "auto" else self.DEFAULT_PROVIDER
 
         # 2. 解析凭证
         resolved_key, resolved_url = self._resolve_credentials(api_key, base_url)
@@ -223,23 +182,14 @@ class BaseAgentsLLM:
         self.max_tokens = max_tokens
         self.timeout = timeout
 
-        # 4. 确定模型 — 优先级：显式传参 > provider专用env > LLM_MODEL_ID > 默认值
-        if model:
-            self.model = model
-        else:
-            cfg = self.PROVIDER_CONFIGS.get(self.provider, {})
-            env_model = cfg.get("env_model", "")
-            self.model = (
-                (env_model and os.getenv(env_model))
-                or os.getenv("LLM_MODEL_ID")
-                or cfg.get("default_model", "gpt-3.5-turbo")
-            )
+        # 4. Resolve the model only from the explicit argument or generic env.
+        self.model = model or os.getenv("LLM_MODEL_ID") or ""
 
         # 5. 构建客户端
         self._client: OpenAI | None = None
         self._async_client: AsyncOpenAI | None = None
         self.gateway: OpenAICompatibleGateway | None = None
-        if self.api_key is not None:
+        if self.api_key is not None and self.base_url and self.model:
             self._client = OpenAI(
                 api_key=self.api_key or "not-needed",
                 base_url=self.base_url,
@@ -269,7 +219,7 @@ class BaseAgentsLLM:
     def from_settings(cls, settings=None, model: Optional[str] = None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
         """从项目的 ``Settings`` 对象创建实例（零配置对接现有体系）。
 
-        自动读取 settings 中的 deepseek_api_key / deepseek_base_url / deepseek_model，
+        自动读取 settings 中的 llm_api_key / llm_base_url / llm_model_id，
         无需手动传参或设置环境变量。
 
         Usage::
@@ -285,73 +235,21 @@ class BaseAgentsLLM:
             settings = get_settings()
 
         return cls(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            model=model or settings.deepseek_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=model or settings.llm_model_id,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             **kwargs,
         )
 
-    # ── Provider 自动检测 ───────────────────────────────────
-
-    def _auto_detect_provider(self, api_key: Optional[str], base_url: Optional[str]) -> str:
-        """按优先级自动检测 LLM provider"""
-        # 优先级 1: 检查特定 provider 的环境变量
-        for name, cfg in self.PROVIDER_CONFIGS.items():
-            if cfg.get("env_key") and os.getenv(cfg["env_key"]):
-                return name
-
-        # 优先级 2: 根据 base_url 判断
-        actual_base_url = base_url or os.getenv("LLM_BASE_URL")
-        if actual_base_url:
-            lower = actual_base_url.lower()
-            if "api-inference.modelscope.cn" in lower:
-                return "modelscope"
-            if "open.bigmodel.cn" in lower:
-                return "zhipu"
-            if "api.deepseek.com" in lower:
-                return "deepseek"
-            if "api.openai.com" in lower:
-                return "openai"
-            if "localhost" in lower or "127.0.0.1" in lower:
-                if ":11434" in lower:
-                    return "ollama"
-                if ":8000" in lower:
-                    return "vllm"
-                return "local"
-
-        # 优先级 3: 辅助判断 — 密钥格式
-        actual_api_key = api_key or os.getenv("LLM_API_KEY")
-        if actual_api_key:
-            if actual_api_key.startswith("ms-"):
-                return "modelscope"
-
-        # 默认
-        return "auto"
-
     def _resolve_credentials(self, api_key: Optional[str], base_url: Optional[str]) -> tuple:
-        """根据 provider 解析 api_key 和 base_url"""
-        cfg = self.PROVIDER_CONFIGS.get(self.provider, {})
-
-        # 解析 api_key
-        resolved_key = api_key
-        if not resolved_key and cfg.get("env_key"):
-            resolved_key = os.getenv(cfg["env_key"])
-        if not resolved_key:
-            resolved_key = os.getenv("LLM_API_KEY")
-        # 本地 provider 无需真实 key：给占位符，避免下游把「无 key」误判成
-        # 「未配置」而跳过 client 构造。
-        if not resolved_key and self.provider in self.KEYLESS_PROVIDERS:
+        """Resolve credentials exclusively from explicit values or LLM_* env."""
+        resolved_url = base_url or os.getenv("LLM_BASE_URL") or ""
+        resolved_key = api_key or os.getenv("LLM_API_KEY")
+        if not resolved_key and resolved_url:
             resolved_key = self.NO_AUTH_PLACEHOLDER
-
-        # 解析 base_url — 优先级：显式传参 > provider专用env > LLM_BASE_URL > 默认值
-        resolved_url = base_url
-        if not resolved_url:
-            env_base = cfg.get("env_base_url", "")
-            resolved_url = (env_base and os.getenv(env_base)) or os.getenv("LLM_BASE_URL") or cfg.get("default_base_url", "")
-
         return resolved_key, resolved_url
 
     # ── 同步调用 ───────────────────────────────────────────
