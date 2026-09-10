@@ -704,9 +704,9 @@ class JsonlTraceQuery:
         from extensions.trace.trace_reader import list_traces
         return list_traces()
 
-    def read_trace(self, session_id: str):
+    def read_trace(self, session_id: str, trace_type: str | None = None):
         from extensions.trace.trace_reader import read_trace
-        return read_trace(session_id)
+        return read_trace(session_id, trace_type=trace_type)
 
     def summarize_trace(self, session_id: str):
         from extensions.trace.trace_reader import summarize_trace

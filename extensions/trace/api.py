@@ -15,8 +15,8 @@ async def list_trace_endpoint():
 
 
 @router.get("/{session_id}")
-async def read_trace_endpoint(session_id: str):
-    result = load_trace().query().read_trace(session_id)
+async def read_trace_endpoint(session_id: str, trace_type: str = ""):
+    result = load_trace().query().read_trace(session_id, trace_type=trace_type or None)
     if result is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return result

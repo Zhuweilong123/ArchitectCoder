@@ -203,6 +203,7 @@ export interface TraceMeta {
   first_ts_ms: number | null;
   last_ts_ms: number | null;
   title?: string;
+  trace_type?: 'chat' | 'evaluation';
 }
 
 export interface TraceDetail {
@@ -332,8 +333,10 @@ export async function listTraces(): Promise<TraceMeta[]> {
   return data.traces;
 }
 
-export async function getTrace(sessionId: string): Promise<TraceDetail> {
-  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`);
+export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type']): Promise<TraceDetail> {
+  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`, {
+    params: traceType ? { trace_type: traceType } : undefined,
+  });
   return data;
 }
 

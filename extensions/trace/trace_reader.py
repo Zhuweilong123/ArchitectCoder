@@ -27,15 +27,28 @@ def _trace_dir() -> str:
     return _chat_log_dir()
 
 
-def _trace_dirs() -> list[str]:
-    """Read ordinary chat traces and evaluation traces through one reader."""
-    candidates = [_trace_dir(), str(evaluation_traces_dir())]
+def _trace_sources() -> list[tuple[str, str]]:
+    """Return trace directories with a stable source label."""
+    candidates = [
+        ("chat", _trace_dir()),
+        ("evaluation", str(evaluation_traces_dir())),
+    ]
     result: list[str] = []
-    for path in candidates:
+    sources: list[tuple[str, str]] = []
+    for trace_type, path in candidates:
         normalized = os.path.normpath(path)
         if normalized not in result:
             result.append(normalized)
-    return result
+            sources.append((trace_type, normalized))
+    return sources
+
+
+def _trace_dirs(trace_type: str | None = None) -> list[str]:
+    """Read ordinary chat and evaluation traces through one reader."""
+    return [
+        path for source, path in _trace_sources()
+        if not trace_type or source == trace_type
+    ]
 
 
 def _sanitize_session_id(session_id: str) -> str:
@@ -85,7 +98,7 @@ def list_traces() -> list[dict]:
     """列出所有 trace 文件，按修改时间倒序。"""
     traces = []
     seen: set[str] = set()
-    for log_dir in _trace_dirs():
+    for trace_type, log_dir in _trace_sources():
         if not os.path.isdir(log_dir):
             continue
         for name in os.listdir(log_dir):
@@ -106,6 +119,7 @@ def list_traces() -> list[dict]:
                 "filename": name,
                 "size": st.st_size,
                 "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                "trace_type": trace_type,
                 **_peek(path),
             })
 
@@ -113,13 +127,13 @@ def list_traces() -> list[dict]:
     return traces
 
 
-def read_trace(session_id: str) -> dict | None:
+def read_trace(session_id: str, trace_type: str | None = None) -> dict | None:
     """读取单个 session 的完整事件流（保持文件顺序）。"""
     safe_id = _sanitize_session_id(session_id)
     path = next(
         (
             os.path.join(directory, f"trace_{safe_id}.jsonl")
-            for directory in _trace_dirs()
+            for directory in _trace_dirs(trace_type)
             if os.path.isfile(os.path.join(directory, f"trace_{safe_id}.jsonl"))
         ),
         None,

@@ -42,6 +42,7 @@ interface SubagentItem {
 type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | SubagentItem;
 
 interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
+type TraceScope = 'chat' | 'evaluation';
 
 // ── 工具函数 ──────────────────────────────────────────
 
@@ -742,6 +743,7 @@ const TraceViewer: React.FC = () => {
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [traceQuery, setTraceQuery] = useState('');
+  const [traceScope, setTraceScope] = useState<TraceScope>('chat');
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -776,13 +778,27 @@ const TraceViewer: React.FC = () => {
     try {
       const list = await listTraces();
       setTraces(list);
-      const preferred = traceSessionId && list.some((item) => item.session_id === traceSessionId)
-        ? traceSessionId
-        : selected && list.some((item) => item.session_id === selected)
-          ? selected
-          : list[0]?.session_id;
-      if (preferred && preferred !== selected) {
-        selectSession(preferred);
+      const requested = traceSessionId
+        ? list.find((item) => item.session_id === traceSessionId)
+        : undefined;
+      const nextScope: TraceScope = requested?.trace_type === 'evaluation'
+        ? 'evaluation'
+        : requested?.trace_type === 'chat'
+          ? 'chat'
+          : traceScope;
+      setTraceScope(nextScope);
+      const scoped = list.filter((item) => (item.trace_type || 'chat') === nextScope);
+      const preferred = requested?.session_id
+        || (selected && scoped.some((item) => item.session_id === selected) ? selected : undefined)
+        || scoped[0]?.session_id;
+      if (preferred) {
+        const preferredMeta = list.find((item) => item.session_id === preferred);
+        if (preferred !== selected || requested) {
+          selectSession(preferred, (preferredMeta?.trace_type || nextScope) as TraceScope);
+        }
+      } else {
+        setSelected(null);
+        setDetail(null);
       }
     } catch {
       // 后端未启动等：静默保留旧列表
@@ -791,14 +807,17 @@ const TraceViewer: React.FC = () => {
     }
   };
 
-  const selectSession = async (sessionId: string) => {
+  const selectSession = async (sessionId: string, traceType?: TraceScope) => {
+    const meta = traces.find((item) => item.session_id === sessionId);
+    const nextScope = traceType || (meta?.trace_type as TraceScope | undefined);
+    if (nextScope) setTraceScope(nextScope);
     setSelected(sessionId);
     setLoadingDetail(true);
     setPlaying(false);
     setPlayIndex(-1);
     clearReplay();
     try {
-      setDetail(await getTrace(sessionId));
+      setDetail(await getTrace(sessionId, nextScope));
     } catch {
       setDetail(null);
     } finally {
@@ -812,11 +831,36 @@ const TraceViewer: React.FC = () => {
   }, [traceVisible, traceSessionId]);
 
   const turns = useMemo(() => (detail ? buildTurns(detail.events) : []), [detail]);
+  const scopedTraces = useMemo(
+    () => traces.filter((item) => (item.trace_type || 'chat') === traceScope),
+    [traceScope, traces],
+  );
   const filteredTraces = useMemo(() => {
     const query = traceQuery.trim().toLowerCase();
-    if (!query) return traces;
-    return traces.filter((item) => `${item.session_id} ${item.events} ${item.size}`.toLowerCase().includes(query));
-  }, [traceQuery, traces]);
+    if (!query) return scopedTraces;
+    return scopedTraces.filter((item) => (
+      `${item.session_id} ${item.title || ''} ${item.events} ${item.size}`
+    ).toLowerCase().includes(query));
+  }, [scopedTraces, traceQuery]);
+
+  const traceCounts = useMemo(() => ({
+    chat: traces.filter((item) => (item.trace_type || 'chat') === 'chat').length,
+    evaluation: traces.filter((item) => item.trace_type === 'evaluation').length,
+  }), [traces]);
+
+  const switchTraceScope = (value: string | number) => {
+    const nextScope = value as TraceScope;
+    setTraceScope(nextScope);
+    const nextTraces = traces.filter((item) => (item.trace_type || 'chat') === nextScope);
+    const next = nextTraces[0];
+    if (next) {
+      selectSession(next.session_id, nextScope);
+    } else {
+      setSelected(null);
+      setDetail(null);
+      clearReplay();
+    }
+  };
 
   // 回放弹窗的轮次清单：直接取自已加载的 trace（无需先跑全量回放）。
   // 与后端轮次切分口径一致（一个 user_message = 一轮）；无 user_message 时
@@ -932,47 +976,81 @@ const TraceViewer: React.FC = () => {
 
   return (
     <Drawer
-      title="Trace 回放"
+      title={<div className="trace-drawer-title"><span>Trace 回放</span><Tag color={traceScope === 'evaluation' ? 'purple' : 'blue'}>{traceScope === 'evaluation' ? '评测 Trace' : '普通交互'}</Tag></div>}
       width={1000}
       open={traceVisible}
       onClose={handleClose}
-      styles={{ body: { padding: 0, display: 'flex', overflow: 'hidden' } }}
-      extra={
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button icon={<ReloadOutlined />} onClick={refreshList} loading={loadingList}>
-            刷新
-          </Button>          <Button icon={<FileAddOutlined />} onClick={() => { if (selected) { requestTraceCaseFactory(selected); setTraceSessionId(selected); setTraceVisible(false); setEvaluationVisible(true); } }} disabled={!selected}>
-            从 Trace 创建用例
-          </Button>
-          <Segmented
-            size="small"
-            value={replayMode}
-            onChange={(v) => { setReplayMode(v as 'mock' | 'rerun' | 'live'); clearReplay(); }}
-            options={[
-              { label: 'Mock', value: 'mock' },
-              { label: 'Rerun(真LLM)', value: 'rerun' },
-              { label: 'Live(真工具)', value: 'live' },
-            ]}
-          />
-          <Button icon={<SyncOutlined />} onClick={openReplay} disabled={!selected}>
-            回放执行
-          </Button>
-          {!playing ? (
-            <Button type="primary" icon={<CaretRightOutlined />} onClick={startPlay} disabled={totalItems === 0}>
-              自动播放
-            </Button>
-          ) : (
-            <Button icon={<PauseOutlined />} onClick={() => setPlaying(false)}>
-              暂停
-            </Button>
-          )}
-          <Button icon={<StepBackwardOutlined />} onClick={() => { setPlaying(false); setPlayIndex(-1); }} disabled={playIndex < 0}>
-            重置
-          </Button>
-        </div>
-      }
+      styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
     >
-      <div className="trace-viewer-body">
+      <div className="trace-viewer-shell">
+        <div className="trace-toolbar">
+          <div className="trace-toolbar-row">
+            <div className="trace-toolbar-source">
+              <span className="trace-toolbar-label">数据来源</span>
+              <Segmented
+                value={traceScope}
+                onChange={switchTraceScope}
+                options={[
+                  { label: `普通交互 (${traceCounts.chat})`, value: 'chat' },
+                  { label: `评测 Trace (${traceCounts.evaluation})`, value: 'evaluation' },
+                ]}
+              />
+            </div>
+            <div className="trace-toolbar-actions">
+              <Button icon={<ReloadOutlined />} onClick={refreshList} loading={loadingList}>
+                刷新列表
+              </Button>
+              <Button
+                icon={<FileAddOutlined />}
+                onClick={() => {
+                  if (selected) {
+                    requestTraceCaseFactory(selected);
+                    setTraceSessionId(selected);
+                    setTraceVisible(false);
+                    setEvaluationVisible(true);
+                  }
+                }}
+                disabled={!selected}
+              >
+                从 Trace 创建用例
+              </Button>
+            </div>
+          </div>
+          <div className="trace-toolbar-row trace-toolbar-playback">
+            <div className="trace-toolbar-group">
+              <span className="trace-toolbar-label">回放模式</span>
+              <Segmented
+                size="small"
+                value={replayMode}
+                onChange={(v) => { setReplayMode(v as 'mock' | 'rerun' | 'live'); clearReplay(); }}
+                options={[
+                  { label: 'Mock', value: 'mock' },
+                  { label: 'Rerun（真 LLM）', value: 'rerun' },
+                  { label: 'Live（真工具）', value: 'live' },
+                ]}
+              />
+            </div>
+            <div className="trace-toolbar-actions">
+              <Button icon={<SyncOutlined />} onClick={openReplay} disabled={!selected}>
+                回放执行
+              </Button>
+              {!playing ? (
+                <Button type="primary" icon={<CaretRightOutlined />} onClick={startPlay} disabled={totalItems === 0}>
+                  自动播放
+                </Button>
+              ) : (
+                <Button icon={<PauseOutlined />} onClick={() => setPlaying(false)}>
+                  暂停
+                </Button>
+              )}
+              <Button icon={<StepBackwardOutlined />} onClick={() => { setPlaying(false); setPlayIndex(-1); }} disabled={playIndex < 0}>
+                重置播放
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="trace-viewer-body">
         {/* 左侧：会话列表 */}
         <div className="trace-session-list">
           <div className="trace-session-toolbar">
@@ -981,14 +1059,18 @@ const TraceViewer: React.FC = () => {
               size="small"
               value={traceQuery}
               onChange={(event) => setTraceQuery(event.target.value)}
-              placeholder="搜索会话 ID"
+              placeholder="搜索当前来源的会话"
             />
-            <Typography.Text type="secondary">{filteredTraces.length} / {traces.length} 个会话</Typography.Text>
+            <Typography.Text type="secondary">{filteredTraces.length} / {scopedTraces.length} 个会话</Typography.Text>
           </div>
           {loadingList && traces.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
-          ) : traces.length === 0 ? (
-            <Empty description="暂无 trace" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 24 }} />
+          ) : scopedTraces.length === 0 ? (
+            <Empty
+              description={traceScope === 'evaluation' ? '暂无评测 Trace' : '暂无普通交互 Trace'}
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              style={{ marginTop: 24 }}
+            />
           ) : (
             <List
               size="small"
@@ -996,13 +1078,20 @@ const TraceViewer: React.FC = () => {
               renderItem={(t) => (
                 <List.Item
                   className={selected === t.session_id ? 'trace-session-item active' : 'trace-session-item'}
-                  onClick={() => selectSession(t.session_id)}
+                  onClick={() => selectSession(t.session_id, (t.trace_type || 'chat') as TraceScope)}
                 >
                   <List.Item.Meta
-                    title={<span style={{ fontSize: 13 }}>{t.session_id}</span>}
+                    title={
+                      <div className="trace-session-title">
+                        <span>{t.session_id}</span>
+                        <Tag color={t.trace_type === 'evaluation' ? 'purple' : 'blue'}>
+                          {t.trace_type === 'evaluation' ? '评测' : '交互'}
+                        </Tag>
+                      </div>
+                    }
                     description={
                       <span style={{ fontSize: 11, color: '#999' }}>
-                        {t.events} 事件 · {fmtSize(t.size)}
+                        {t.title ? `${truncate(t.title, 36)} · ` : ''}{t.events} 事件 · {fmtSize(t.size)}
                         {t.first_ts_ms ? ` · ${fmtTime(t.first_ts_ms)}` : ''}
                       </span>
                     }
@@ -1047,6 +1136,7 @@ const TraceViewer: React.FC = () => {
             })
           )}
         </div>
+      </div>
       </div>
 
       {/* 回放执行弹窗 */}
