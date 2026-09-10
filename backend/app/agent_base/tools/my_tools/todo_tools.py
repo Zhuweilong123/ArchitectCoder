@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import List
 
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.core.hooks import get_runtime

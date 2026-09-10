@@ -203,6 +203,7 @@ export interface TraceMeta {
   first_ts_ms: number | null;
   last_ts_ms: number | null;
   title?: string;
+  trace_type?: 'chat' | 'evaluation';
 }
 
 export interface TraceDetail {
@@ -210,13 +211,132 @@ export interface TraceDetail {
   events: Array<Record<string, any>>;
 }
 
+export interface TraceCaseProject {
+  id: string;
+  version: string;
+  fixture: string;
+  source_dir: string;
+  test_dir: string;
+}
+
+export interface TraceCaseDraft {
+  draft_id: string;
+  schema_version: string;
+  status: string;
+  created_at: string;
+  session_id: string;
+  trace_sha256: string;
+  trace_summary: Record<string, any>;
+  workspace: Record<string, string>;
+  candidate_checkers: Array<Record<string, any>>;
+  warnings: string[];
+  case: {
+    id: string;
+    name: string;
+    prompt: string;
+    turns?: Array<{ prompt: string; checkers: Array<Record<string, any>> }>;
+    project_id: string;
+    checkers: Array<Record<string, any>>;
+    hard_checkers: Array<Record<string, any>>;
+    metadata: Record<string, any>;
+  };
+  validation?: EvalResult | null;
+  capture?: {
+    capture_id: string;
+    project_id: string;
+    fixture: string;
+    sha256: string;
+    file_count: number;
+    manifest: Record<string, any>;
+  } | null;
+}
+
+export async function listTraceCaseProjects(): Promise<TraceCaseProject[]> {
+  const { data } = await api.get('/evals/trace-cases/projects');
+  return data.projects;
+}
+
+export async function listTraceCaseDrafts(): Promise<TraceCaseDraft[]> {
+  const { data } = await api.get('/evals/trace-cases/drafts');
+  return data.drafts;
+}
+
+export async function deleteTraceCaseDraft(draftId: string): Promise<{ draft_id: string; deleted: boolean }> {
+  const { data } = await api.delete(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, { timeout: 15000 });
+  return data;
+}
+export async function createTraceCaseDraft(req: {
+  session_id: string;
+  case_id?: string;
+  name?: string;
+  project_id?: string;
+  suite?: string;
+  include_trace_policy?: boolean;
+}): Promise<TraceCaseDraft> {
+  const { data } = await api.post('/evals/trace-cases/drafts', req, { timeout: 15000 });
+  return data;
+}
+
+export interface TraceCaseFixturePreview {
+  draft_id: string;
+  project_id: string;
+  version: string;
+  root: string;
+  manifest: Record<string, any>;
+  files: Array<{ path: string; size: number }>;
+  file_count: number;
+  total_bytes: number;
+  truncated: boolean;
+  project_exists: boolean;
+  warnings: string[];
+}
+
+export async function previewTraceCaseFixture(draftId: string, req: {
+  project_id?: string;
+  version?: string;
+} = {}): Promise<TraceCaseFixturePreview> {
+  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/fixture-preview`, req, { timeout: 30000 });
+  return data;
+}
+
+export async function captureTraceCaseFixture(draftId: string, req: {
+  project_id?: string;
+  version?: string;
+} = {}): Promise<TraceCaseDraft> {
+  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/capture-fixture`, req, { timeout: 30000 });
+  return data;
+}
+export async function reviewTraceCaseDraft(draftId: string, req: {
+  name?: string;
+  project_id?: string;
+  checkers?: Array<Record<string, any>>;
+  hard_checkers?: Array<Record<string, any>>;
+}): Promise<TraceCaseDraft> {
+  const { data } = await api.put(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, req, { timeout: 15000 });
+  return data;
+}
+export async function validateTraceCaseDraft(draftId: string): Promise<TraceCaseDraft> {
+  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/validate`, null, { timeout: 120000 });
+  return data;
+}
+
+export async function publishTraceCaseDraft(draftId: string, req: {
+  case_id?: string;
+  name?: string;
+  suite?: string;
+} = {}): Promise<{ draft_id: string; case_id: string; path: string; case: EvalCaseInfo }> {
+  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/publish`, req, { timeout: 15000 });
+  return data;
+}
 export async function listTraces(): Promise<TraceMeta[]> {
   const { data } = await api.get('/trace/list');
   return data.traces;
 }
 
-export async function getTrace(sessionId: string): Promise<TraceDetail> {
-  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`);
+export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type']): Promise<TraceDetail> {
+  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`, {
+    params: traceType ? { trace_type: traceType } : undefined,
+  });
   return data;
 }
 
@@ -344,6 +464,7 @@ export interface EvalTrend {
   status: string;
   started_at: string;
   finished_at: string;
+  case_ids: string[];
   summary: EvalSummary;
 }
 

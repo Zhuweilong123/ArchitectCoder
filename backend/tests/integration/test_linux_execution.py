@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from app.agent_base.execution.linux import (
+from app.runtime.command import (
     ExecutionEnvironmentError,
     WslBashExecutor,
     _decode_wsl_output,
@@ -30,7 +30,7 @@ def test_wsl_diagnostic_decodes_windows_utf16le():
 
 def test_wsl_executor_preflights_then_uses_linux_bash(monkeypatch):
     executor = WslBashExecutor(distribution="Ubuntu", executable="wsl.exe")
-    monkeypatch.setattr("app.agent_base.execution.linux.shutil.which", lambda _: "C:/Windows/System32/wsl.exe")
+    monkeypatch.setattr("app.runtime.command.shutil.which", lambda _: "C:/Windows/System32/wsl.exe")
 
     preflight = []
     launched = []
@@ -48,8 +48,8 @@ def test_wsl_executor_preflights_then_uses_linux_bash(monkeypatch):
         launched.append((args, kwargs))
         return object()
 
-    monkeypatch.setattr("app.agent_base.execution.linux.subprocess.run", fake_run)
-    monkeypatch.setattr("app.agent_base.execution.linux.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("app.runtime.command.subprocess.run", fake_run)
+    monkeypatch.setattr("app.runtime.command.subprocess.Popen", fake_popen)
 
     executor.start("pytest -q", r"D:\repo\tests")
 
@@ -65,7 +65,7 @@ def test_wsl_executor_preflights_then_uses_linux_bash(monkeypatch):
 
 def test_wsl_executor_retries_preflight_after_transient_failure(monkeypatch):
     executor = WslBashExecutor(executable="wsl.exe")
-    monkeypatch.setattr("app.agent_base.execution.linux.shutil.which", lambda _: "C:/Windows/System32/wsl.exe")
+    monkeypatch.setattr("app.runtime.command.shutil.which", lambda _: "C:/Windows/System32/wsl.exe")
 
     class _Result:
         returncode = 0
@@ -81,7 +81,7 @@ def test_wsl_executor_retries_preflight_after_transient_failure(monkeypatch):
             raise subprocess.TimeoutExpired("wsl.exe", 20)
         return _Result()
 
-    monkeypatch.setattr("app.agent_base.execution.linux.subprocess.run", fake_run)
+    monkeypatch.setattr("app.runtime.command.subprocess.run", fake_run)
 
     with pytest.raises(ExecutionEnvironmentError, match="TimeoutExpired"):
         executor.preflight()
@@ -91,7 +91,12 @@ def test_wsl_executor_retries_preflight_after_transient_failure(monkeypatch):
 
 
 def test_explicit_wsl_settings_build_wsl_executor():
-    settings = Settings(_env_file=None, deepseek_api_key="test-key")
+    settings = Settings(
+        _env_file=None,
+        llm_api_key="test-key",
+        llm_base_url="http://test-llm/v1",
+        llm_model_id="test-model",
+    )
     settings.agent_command_environment = "wsl"
 
     executor = build_linux_command_executor(settings)

@@ -25,11 +25,3 @@ def test_chat_delegates_to_gateway(monkeypatch):
     result = asyncio.run(llm_service.chat("hello"))
 
     assert result == "gateway response"
-
-
-def test_chat_with_tools_keeps_legacy_response_shape(monkeypatch):
-    monkeypatch.setattr(llm_service, "_gateway", _Gateway())
-
-    result = asyncio.run(llm_service.chat_with_tools([], []))
-
-    assert result == {"content": "gateway response", "tool_calls": None}

@@ -25,9 +25,9 @@ class EvalBatchRequest(BaseModel):
 
 
 class EvalBatchMergeRequest(BaseModel):
-    """Request for combining completed batches into a performance result."""
+    """Request for converting complete baseline batches into a performance result."""
 
-    batch_ids: list[str] = Field(min_length=2, max_length=20)
+    batch_ids: list[str] = Field(min_length=1, max_length=20)
     version: str = Field(default="working-tree", min_length=1, max_length=100)
     label: str = Field(default="", max_length=200)
 
@@ -45,6 +45,7 @@ class EvalPerformanceArchiveRequest(BaseModel):
     result_id: str = Field(min_length=1, max_length=300)
     version: str = Field(default="", max_length=100)
     note: str = Field(default="", max_length=500)
+
 
 
 class EvalProvider(Protocol):
@@ -85,6 +86,7 @@ class EvalProvider(Protocol):
     def delete_performance_result(self, result_id: str) -> dict[str, Any]: ...
 
     def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
+
 
 
 class NoOpEvalProvider:

@@ -10,7 +10,7 @@ Usage as router-level dependency:
 
 import hmac
 import logging
-from fastapi import HTTPException, Request, Depends, WebSocket
+from fastapi import HTTPException, Request, WebSocket
 
 from backend.config import get_settings
 

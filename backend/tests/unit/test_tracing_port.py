@@ -35,6 +35,13 @@ class _Sink:
     def llm_response(self, **kwargs):
         self.events.append(("llm_response", kwargs))
 
+    def tool_call(self, **kwargs):
+        self.events.append(("tool_call", kwargs))
+        return "tool-1"
+
+    def tool_result(self, **kwargs):
+        self.events.append(("tool_result", kwargs))
+
 
 class _Provider:
     def __init__(self, expected_session="provider-session"):
@@ -59,13 +66,30 @@ def test_trace_session_uses_provider_and_routes_llm_hook():
             "llm_request",
             model="test-model",
             messages=[{"role": "user", "content": "hello"}],
+            request_context={"scope": "single_llm_request", "tool_schema_mode": "full"},
         ) == "span-1"
         emit_trace("llm_response", span_id="span-1", content="ok")
+        assert emit_trace(
+            "tool_call",
+            step=1,
+            tool_name="read_file",
+            arguments={"path": "a.py"},
+        ) == "tool-1"
+        emit_trace(
+            "tool_result",
+            span_id="tool-1",
+            tool_name="read_file",
+            observation="ok",
+            duration_ms=12.5,
+        )
 
     assert provider.sink.closed is True
     assert [event[0] for event in provider.sink.events] == [
-        "start", "llm_request", "llm_response",
+        "start", "llm_request", "llm_response", "tool_call", "tool_result",
     ]
+    assert provider.sink.events[1][1]["request_context"]["tool_schema_mode"] == "full"
+    assert provider.sink.events[3][1]["tool_name"] == "read_file"
+    assert provider.sink.events[4][1]["observation"] == "ok"
 
 
 def test_disabled_trace_loads_noop_provider():

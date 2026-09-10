@@ -4,6 +4,7 @@ import json
 from app.agent_base.tools.my_tools.foundation_tools import ShellTool
 from app.agent_base.tools.review import ReviewManager
 from app.core.risk_policy import RiskPolicy
+from app.runtime.command import NativePowerShellExecutor
 
 
 class _Progress:
@@ -24,6 +25,28 @@ def test_risk_policy_classifies_and_scopes_approval():
     scope = policy.approval_scope("shell", {"command": "git reset --hard"})
     assert policy.approval_is_valid("shell", {"command": "git reset --hard"}, scope)
     assert not policy.approval_is_valid("shell", {"command": "git reset --soft"}, scope)
+
+
+def test_default_deny_policy_does_not_confuse_format_parameter_with_disk_formatting(tmp_path):
+    bash = ShellTool(str(tmp_path))
+
+    assert bash._risk_policy.evaluate(
+        "shell", {"command": 'Get-Date -Format "yyyy-MM-dd HH:mm:ss dddd"'},
+    ).action == "allow"
+    assert bash._risk_policy.evaluate(
+        "shell", {"command": "format C:"},
+    ).action == "deny"
+    assert bash._risk_policy.evaluate(
+        "shell", {"command": "Format-Volume -DriveLetter D -FileSystem NTFS"},
+    ).action == "deny"
+
+
+def test_powershell_allows_readonly_get_date_format():
+    executor = NativePowerShellExecutor(executable="powershell.exe")
+
+    assert executor.validate_command(
+        'Get-Date -Format "yyyy-MM-dd HH:mm:ss dddd"',
+    ) is None
 
 
 def test_bash_review_contains_risk_and_scope_metadata(tmp_path):

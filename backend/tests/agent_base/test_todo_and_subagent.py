@@ -143,6 +143,74 @@ def test_spawn_subagent_returns_summary_without_overriding_parent_model(tmp_path
     assert llm.last_model is None
 
 
+def test_spawn_subagent_emits_provider_valid_tool_messages(tmp_path):
+    class _RoleCheckingLLM(_MockLLM):
+        def __init__(self):
+            super().__init__()
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append([dict(message) for message in messages])
+            return await super().ainvoke_with_tools(messages, tools, tool_choice, **kwargs)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    llm = _RoleCheckingLLM()
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
+
+    assert asyncio.run(tool._execute({"description": "find files"})) == "summary text"
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_call_id") == "c1"
+        for message in llm.requests[1]
+    )
+
+
+def test_spawn_subagent_degrades_provider_exception_to_evidence_summary(tmp_path):
+    class _BrokenLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            raise RuntimeError("provider protocol failure")
+
+    tool = SpawnSubagentTool(llm=_BrokenLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "inspect the project"}))
+
+    assert "stopped safely" in result
+    assert "provider protocol failure" in result
+    assert tool.last_context_report["subagent_stop_reason"] == "internal child-run error"
+
+
+def test_spawn_subagent_rejects_malformed_tool_calls_without_raising(tmp_path):
+    class _MalformedLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            return {
+                "content": "",
+                "tool_calls": [{"id": "bad", "function": {"arguments": "{}"}}],
+            }
+
+    tool = SpawnSubagentTool(llm=_MalformedLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "inspect the project"}))
+
+    assert "stopped safely" in result
+    assert "malformed tool calls" in result
+
+
+def test_spawn_subagent_bounds_large_parent_report(tmp_path):
+    class _VerboseLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            return {"content": "HEAD\n" + ("detail\n" * 2000) + "TAIL", "tool_calls": None}
+
+    tool = SpawnSubagentTool(llm=_VerboseLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "summarize the project"}))
+
+    assert len(result) <= 6000
+    assert result.startswith("HEAD")
+    assert result.endswith("TAIL")
+    assert "complete report remains in the trace" in result
+
+
 def test_spawn_subagent_requires_description(tmp_path):
     llm = _MockLLM()
     tool = SpawnSubagentTool(llm=llm, source_dir=str(tmp_path))
@@ -161,7 +229,7 @@ def _build_spawn(tmp_path):
 
 def test_spawn_subagent_builds_all_supported_toolkits(tmp_path):
     tool = _build_spawn(tmp_path)
-    expected = {"standard", "read_only", "kg_analysis", "strategy"}
+    expected = {"standard", "read_only", "kg_analysis", "strategy", "verification"}
     assert set(tool.sub_registries.keys()) == expected
     assert set(tool.system_prompts.keys()) == expected
 
@@ -182,7 +250,7 @@ def test_standard_toolkit_full_editing(tmp_path):
 def test_read_only_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["read_only"].list_tools()
-    assert names == ["read_file"]
+    assert set(names) == {"list_files", "read_file", "search_text"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -190,7 +258,7 @@ def test_read_only_toolkit_no_writes(tmp_path):
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert set(names) == {"read_file", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -203,9 +271,9 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert set(names) == {"read_file", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
-    assert not ({"apply_changes", "run_program", "run_task", "shell", "list_files"} & set(names))
+    assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
     schema = tool.to_openai_schema()
     assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]
 
@@ -215,6 +283,22 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         assert "only once" in asyncio.run(tool._execute({"description": "plan again"}))
     finally:
         reset_runtime(runtime_token)
+
+
+def test_verification_toolkit_runs_only_fixed_checks(tmp_path):
+    tool = _build_spawn(tmp_path)
+    names = tool.sub_registries["verification"].list_tools()
+    assert set(names) == {
+        "list_files", "read_file", "search_text", "skill", "run_task",
+    }
+    assert not ({"apply_changes", "run_program", "shell"} & set(names))
+    schema = next(
+        item for item in tool.sub_registries["verification"].get_openai_specs()
+        if item["function"]["name"] == "run_task"
+    )
+    tasks = schema["function"]["parameters"]["properties"]["task"]["enum"]
+    assert set(tasks) == {"test", "build", "lint", "typecheck", "validate"}
+    assert "format" not in tasks
 
 
 def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
@@ -229,10 +313,16 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     assert llm.last_model is None
 
 
-def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
+def test_spawn_subagent_does_not_accumulate_token_budget_across_requests(tmp_path):
     class _BudgetLLM(_MockLLM):
         async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
             self.count += 1
+            if self.count > 1:
+                return {
+                    "content": "subagent completed",
+                    "tool_calls": None,
+                    "usage": {"total_tokens": 60},
+                }
             return {
                 "content": "",
                 "tool_calls": [{
@@ -246,11 +336,12 @@ def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
     llm = _BudgetLLM()
     tool = SpawnSubagentTool(
         llm=llm, source_dir=str(tmp_path), max_total_tokens=100,
+        emergency_max_total_tokens=120,
     )
 
     result = asyncio.run(tool._execute({"description": "find files"}))
 
-    assert "budget exceeded" in result
+    assert result == "subagent completed"
     assert tool.last_token_usage == 120
     assert llm.count == 2
 
@@ -292,9 +383,9 @@ def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
         token_finalization_reserve_tokens=1,
         context_budget=ContextBudgetManager(ContextBudget(
             max_context_tokens=4000,
-            output_reserve_tokens=100,
             max_history_tokens=500,
             max_summary_tokens=100,
+            soft_threshold_ratio=0.25,
             compaction_trigger_ratio=0.5,
         )),
     )

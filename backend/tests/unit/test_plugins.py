@@ -59,3 +59,21 @@ def test_plugin_manager_marks_disabled_slot_without_importing_provider():
         ),
     ) is None
     assert manager.status()[0]["status"] == "disabled"
+def test_plugin_manager_loads_optional_router_without_loading_provider(monkeypatch):
+    import sys
+
+    module_name = "test_managed_extension_router"
+    router = object()
+    monkeypatch.setitem(sys.modules, module_name, SimpleNamespace(router=router))
+    manager = PluginManager((PluginSpec(
+        name="demo",
+        enabled_setting="demo_enabled",
+        provider_setting="demo_provider",
+        default_provider="unused:create",
+        required_methods=(),
+        router_provider=f"{module_name}:router",
+    ),))
+
+    loaded = manager.load_router("demo", settings=SimpleNamespace(demo_enabled=True))
+
+    assert loaded is router

@@ -29,6 +29,7 @@ class PluginSpec:
     provider_setting: str
     default_provider: str
     required_methods: tuple[str, ...]
+    router_provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         provider_setting="agent_trace_provider",
         default_provider="extensions.trace:create",
         required_methods=("create",),
+        router_provider="extensions.trace.api:router",
     ),
     PluginSpec(
         name="evals",
@@ -77,6 +79,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         provider_setting="agent_evals_provider",
         default_provider="extensions.evals:create",
         required_methods=("list_cases", "get_case", "run_case", "list_results"),
+        router_provider="extensions.evals.full_api:router",
     ),
     PluginSpec(
         name="knowledge_graph",
@@ -183,6 +186,57 @@ class PluginManager:
             )
             return None
 
+    def load_contribution(
+        self,
+        name: str,
+        method: str,
+        *,
+        settings=None,
+        kwargs: Mapping[str, Any] | None = None,
+        default=None,
+    ):
+        """Call an optional provider contribution without domain-specific host code."""
+        instance = self.load(name, settings=settings, kwargs=kwargs)
+        if instance is None:
+            return default if default is not None else []
+        contributor = getattr(instance, method, None)
+        if not callable(contributor):
+            return default if default is not None else []
+        try:
+            result = contributor(**dict(kwargs or {}))
+            return result if result is not None else (default if default is not None else [])
+        except Exception:
+            logger.warning("[Plugins] %s contribution %s failed", name, method, exc_info=True)
+            return default if default is not None else []
+    def load_router(self, name: str, *, settings=None):
+        """Load an optional plugin-owned FastAPI router without loading its provider."""
+        spec = self._specs.get(name)
+        if spec is None:
+            raise KeyError(f"unknown plugin: {name}")
+        if not spec.router_provider:
+            return None
+        if settings is None:
+            try:
+                from backend.config import get_settings
+
+                settings = get_settings()
+            except Exception:
+                settings = None
+        # Keep the route mounted even when the provider is disabled so clients
+        # receive the provider's explicit 503 response instead of a route 404.
+        try:
+            self._ensure_extension_import_path()
+            module_name, separator, attribute = spec.router_provider.partition(":")
+            if not separator or not module_name or not attribute:
+                raise ValueError("plugin router must use 'module:attribute' syntax")
+            module = importlib.import_module(module_name)
+            router = getattr(module, attribute)
+            if router is None:
+                raise TypeError(f"plugin router is empty: {spec.router_provider}")
+            return router
+        except Exception as exc:
+            logger.warning("[Plugins] %s router unavailable", name, exc_info=True)
+            return None
     def status(self) -> list[dict[str, str]]:
         """Return states for all registered plugins, including not-yet-loaded ones."""
         return [

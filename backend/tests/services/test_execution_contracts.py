@@ -79,27 +79,29 @@ def test_validate_tool_returns_structured_verdict(tmp_path):
 
 @pytest.mark.parametrize("reason,status", [
     ("reserve_finalization", "budget_exceeded"), ("llm_timeout", "timed_out"),
-    ("productive_step_limit", "partial"), ("model_answer", "completed"),
+    ("model_answer", "completed"),
 ])
 def test_outcome_is_independent_of_answer_language(reason, status):
     for answer in ("完成", "All done", "解释 token 预算和时间预算"):
         assert RunOutcome.from_stop(reason, answer).status == status
 
 
-def test_react_publishes_stop_cause_before_final_yield():
+def test_react_does_not_accumulate_initial_request_usage_into_next_request():
     class LLM:
         async def ainvoke_with_tools(self, **kwargs):
             return {"content": "完成", "tool_calls": None, "usage": {"total_tokens": 1}}
 
     async def execute():
-        agent = ReActAgent("test", LLM(), ToolRegistry(), max_total_tokens=10,
+        agent = ReActAgent("test", LLM(), ToolRegistry(), max_total_tokens=9,
+                           emergency_max_total_tokens=10,
                            token_finalization_reserve_tokens=5)
-        stream = agent._arun_with_fc_stream("task", initial_token_usage=6)
+        stream = agent._arun_with_fc_stream("task", initial_token_usage=10)
         try:
             progress = await anext(stream)
-            assert progress.outcome.status == "budget_exceeded"
-            assert progress.outcome.total_tokens == 7
-            assert agent.last_context_report["token_budget_used"] == 7
+            assert progress.outcome.status == "completed"
+            assert progress.outcome.total_tokens == 11
+            assert agent.last_context_report["token_budget_used"] == 1
+            assert agent.last_context_report["token_usage_total_observed"] == 11
         finally:
             await stream.aclose()
     asyncio.run(execute())

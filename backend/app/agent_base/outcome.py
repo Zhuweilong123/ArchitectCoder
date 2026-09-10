@@ -22,9 +22,11 @@ class RunOutcome:
             "final_summary_timeout": "timed_out",
             "hard_limit_before_next_llm": "budget_exceeded",
             "hard_limit_after_current_tools": "budget_exceeded",
+            "emergency_token_limit": "budget_exceeded",
+            "emergency_token_limit_after_current_tools": "budget_exceeded",
+            "context_hard_limit": "budget_exceeded",
             "reserve_finalization": "budget_exceeded",
             "reserve_finalization_empty_response": "budget_exceeded",
-            "productive_step_limit": "partial",
             "tool_call_limit": "partial",
             "incomplete_plan": "partial",
         }.get(reason, "completed" if reason == "model_answer" else "partial")

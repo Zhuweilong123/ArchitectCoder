@@ -42,6 +42,15 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _baseline_case_ids() -> set[str]:
+    """Return the tracked cases that make up the formal baseline."""
+
+    return {
+        case_id for case_id, case in load_cases().items()
+        if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
+    }
+
+
 class EvalSummary(BaseModel):
     total: int = 0
     completed: int = 0
@@ -194,7 +203,7 @@ class EvalBatchManager:
         return batch
 
     def merge(self, request: EvalBatchMergeRequest) -> EvalBatch:
-        """Combine completed same-version batches into a performance result."""
+        """Convert complete baseline coverage into a performance result."""
         batches: list[EvalBatch] = []
         seen_batch_ids: set[str] = set()
         for batch_id in request.batch_ids:
@@ -208,12 +217,14 @@ class EvalBatchManager:
                 raise ValueError(f"evaluation batch is not completed: {batch_id}")
             batches.append(batch)
 
-        versions = {batch.version for batch in batches if batch.version}
-        if len(versions) > 1:
+        versions = {batch.version for batch in batches}
+        if len(versions) != 1 or not next(iter(versions), ""):
             raise ValueError("only batches from the same version can be merged")
         merged_version = request.version
         if not merged_version or merged_version == "working-tree":
             merged_version = next(iter(versions), "working-tree")
+        elif merged_version != next(iter(versions)):
+            raise ValueError("performance result version must match the selected batches")
 
         result_by_case: dict[str, EvalResult] = {}
         for batch in batches:
@@ -227,6 +238,8 @@ class EvalBatchManager:
         if not result_by_case:
             raise ValueError("selected batches contain no evaluation results")
         case_ids = sorted(result_by_case)
+        if set(case_ids) != _baseline_case_ids():
+            raise ValueError("selected batches must contain the complete baseline case set")
 
         merged = EvalBatch(
             batch_id=f"batch_{uuid.uuid4().hex[:16]}",
@@ -296,6 +309,7 @@ class EvalBatchManager:
                 "status": row.get("status", ""),
                 "started_at": row.get("started_at", ""),
                 "finished_at": row.get("finished_at", ""),
+                "case_ids": row.get("case_ids", []),
                 "summary": summary,
             })
         return trends[:max(1, min(limit, 100))]
@@ -312,11 +326,7 @@ class EvalBatchManager:
         # A formal baseline archive must contain exactly the current 16-case
         # catalog.  Trace regression cases and targeted suite runs are kept
         # separately and must not be presented as a baseline snapshot.
-        catalog = load_cases()
-        baseline_ids = {
-            case_id for case_id, case in catalog.items()
-            if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
-        }
+        baseline_ids = _baseline_case_ids()
         submitted_ids = set(batch.case_ids)
         if baseline_ids and submitted_ids != baseline_ids:
             raise ValueError("only the complete evaluation catalog (the 16-case baseline catalog) can be archived")

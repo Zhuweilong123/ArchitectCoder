@@ -21,7 +21,7 @@ package:
 - `orchestration/`: contracts, planner/orchestrator and provider adapter
 - `memory/`: SQLite memory manager, lifecycle, policies, models and provider
 - `trace/`: trace writer, reader, replay engine and provider adapter
-- `evals/`: evaluation models, catalog, runner, checkers, batches and provider
+- `evals/`: evaluation models, catalog, runner, checkers, batches, provider and plugin-owned API routers
 - `knowledge_graph/`: graph models, SQLite database, builder, retriever, v2 tools and provider
 
 Only stable application-facing ports, generic tool/runtime infrastructure and

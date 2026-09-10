@@ -100,7 +100,6 @@ class GrepFileTool(Tool):
         # 安全边界检查
         try:
             if allowed_roots:
-                common = os.path.commonpath([p] + [os.path.abspath(r) for r in allowed_roots if r])
                 allowed = os.path.commonpath([os.path.abspath(r) for r in allowed_roots if r])
                 if os.path.commonpath([p, allowed]) != allowed:
                     return None

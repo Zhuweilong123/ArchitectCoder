@@ -25,7 +25,6 @@ import os
 from typing import Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
-from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
 from app.runtime import workspace_root_for
@@ -147,7 +146,7 @@ def create_conversation_tools(
             review_manager=review_mgr, progress=progress,
             command_executor=command_executor,
             workspace_root=workspace_root,
-            toolkits=("strategy",),
+            toolkits=("strategy", "verification"),
             max_total_tokens=get_settings().agent_subagent_per_run_execution_budget_tokens,
             single_use=True,
         ))
@@ -159,11 +158,17 @@ def create_conversation_tools(
     # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
     # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
     # 关闭或 Provider 不可用时不会注册任何 KG 工具。
-    from app.agent_base.core.knowledge_graph import load_knowledge_graph_tools
-    tools.extend(load_knowledge_graph_tools(
+    from app.agent_base.core.plugins import get_plugin_manager
+    tools.extend(get_plugin_manager().load_contribution(
+        "knowledge_graph",
+        "create_tools",
         settings=get_settings(),
-        project_file=project_file,
-        source_dir=source_dir,
+        kwargs={
+            "project_file": project_file,
+            "source_dir": source_dir,
+            "include_compare": False,
+        },
+        default=[],
     ))
 
     if include_review:

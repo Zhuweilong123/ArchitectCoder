@@ -32,15 +32,13 @@ agent_base/
 │   └── agent.py                         # Agent 抽象基类（ABC, run() + 历史管理）
 │
 ├── agents/                              # Agent 实现层（2 种范式 + 可中断包装器）
-│   ├── react_agent.py                   # ReAct 循环（原生 FC + 文本解析降级）
+│   ├── react_agent.py                   # ReAct 循环（原生 Function Calling）
 │   ├── plan_solve_agent.py              # 先规划后执行（Planner→Executor）
 │   └── interruptible.py                 # 可中断包装器（前端 stop 按钮）
 │
 └── tools/                               # 工具系统层
     ├── base.py                          # Tool 基类 + ToolParameter + to_openai_schema()
     ├── registry.py                      # ToolRegistry（注册/发现/执行 + FC schema 生成）
-    ├── chain.py                         # ToolChain + ToolChainManager（顺序流 + 变量模板）
-    ├── async_executor.py                # AsyncToolExecutor（并行执行 I/O 密集任务）
     ├── review.py                        # ReviewManager（人工审核机制）+ SubmitUmlReviewTool
     │
     └── my_tools/                        # 项目特有工具
@@ -50,7 +48,6 @@ agent_base/
         ├── todo_tools.py                # TodoWriteTool（会话任务列表）
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
-        ├── uml_tools.py                 # UmlValidationTool（跨图一致性校验）
         ├── file_search_tools.py         # 有界文本搜索（grep 基类 / search_text）
         └── knowledge_graph_v2_tools.py  # 项目结构与设计-代码关系查询
 ```
@@ -87,7 +84,7 @@ from app.agent_base.tools import ToolRegistry
 registry = ToolRegistry()
 # ... 注册工具 ...
 
-agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry, use_native_fc=True)
+agent = ReActAgent(name="研究员", llm=llm, tool_registry=registry)
 answer = await agent.arun("搜索 2024 年 Java 最新特性")          # 异步 FC
 async for progress in agent.arun_stream("帮我优化这段代码"):      # 流式进度
     print(f"Step {progress.step}: {progress.actions}")
@@ -105,7 +102,6 @@ answer = agent.run("设计一个用户注册系统的数据库 schema")
 | 模式 | 机制 | 入口 | 适用 |
 |------|------|------|------|
 | 原生 Function Calling | LLM 内置工具调用，结构化 JSON 参数，支持多工具并行 | `arun()` / `arun_stream()` | 推荐 |
-| 文本解析降级 | 正则匹配 `Thought:/Action:` 格式 | `run()` | 兼容无 FC 模型 |
 
 **FC 核心循环**：构建 messages → `ainvoke_with_tools(tool_specs)` → 遍历 tool_calls
 并行执行 → 追加 assistant/tool 消息 → 循环直至最终文本或触发预算/收敛保护。
@@ -132,8 +128,6 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 - **AsyncTool**：异步工具基类。`run()` 返回 `self._execute(parameters)` 的 coroutine，
   由 `aexecute_tool_with_params()` await；`get_parameters()` 返回空，子类直接覆写
   `to_openai_schema()`。所有对话工具均继承 `AsyncTool`。
-- **ToolChain / ToolChainManager**：顺序编排 + 变量模板。
-- **AsyncToolExecutor**：并行执行 I/O 密集任务。
 - **ReviewManager**：人工审核机制（asyncio.Future 阻塞等待人工响应）。两个使用方：
   `SubmitUmlReviewTool`（UML diff 审核）与 `ShellTool`（敏感命令批准，见 foundation_tools）。
 
@@ -177,8 +171,6 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 ### 6.4 可复用但未自动注册
 
-- **`uml_tools.py`**：`UmlValidationTool`（`validate_uml_design`，跨图一致性校验），
-  供 demo / 测试 / 未来按需接入使用。
 - **`file_search_tools.py` / `extensions/knowledge_graph/tools.py`**：
   文件搜索工具接入生产工具工厂；知识图谱实现保留供测试与显式 opt-in，当前默认不注册到
   DevAgent，也不注入子代理工具包。
@@ -194,7 +186,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 前端（React 对话面板）
   ↕ WebSocket (/api/agent/ws/chat)
 后端 FastAPI
-  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护, use_native_fc=True）
+  ├── 单 ReActAgent（跨轮复用，懒创建，开放循环 + 预算/收敛保护）
   │   ├── system_prompt：行为准则 + 项目上下文 + 记忆注入
   │   └── ToolRegistry：文件系统原语 + 协作/任务工具（create_conversation_tools）
   ├── 流式进度 → ReActProgress → 前端实时渲染
@@ -342,7 +334,7 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/__init__.py` | Agent 框架公开导出 |
 | `backend/app/agent_base/core/llm.py` | `BaseAgentsLLM`（6 provider + 同步/异步/流式/FC） |
 | `backend/app/agent_base/core/agent.py` | Agent ABC + 历史管理 |
-| `backend/app/agent_base/agents/react_agent.py` | ReAct 循环（FC + 文本降级）+ ReActProgress |
+| `backend/app/agent_base/agents/react_agent.py` | ReAct Function Calling 循环 + ReActProgress |
 | `backend/app/agent_base/agents/react_runtime/` | ReAct Loop、工具批次、解析器和运行时类型 |
 | `backend/app/agent_base/tools/registry.py` | ToolRegistry（注册/发现/执行 + FC schema） |
 | `backend/app/agent_base/tools/review.py` | ReviewManager + SubmitUmlReviewTool |
@@ -353,7 +345,6 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/tools/my_tools/foundation_runtime.py` | Foundation 运行时实现 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
-| `backend/app/agent_base/tools/my_tools/uml_tools.py` | UmlValidationTool |
 | `backend/app/services/agent_chat_ws.py` | WebSocket 鉴权与协议适配 |
 | `backend/app/services/chat_session.py` | 会话协调与消息生命周期 |
 | `backend/app/services/agent_execution.py` | 单次 Agent 执行、checkpoint、审批和结果 |

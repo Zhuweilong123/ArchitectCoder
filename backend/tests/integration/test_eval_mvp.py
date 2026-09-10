@@ -32,7 +32,7 @@ from extensions.evals.runner import (
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
 from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize, write_performance_result
-from app.api.evals import BASELINE_PATH, get_baseline, get_repository
+from extensions.evals.full_api import BASELINE_PATH, get_baseline, get_repository
 
 
 class _FakeAgent:
@@ -104,7 +104,7 @@ def test_eval_agent_budget_defaults_to_production_settings():
     settings = SimpleNamespace(
         agent_max_tool_calls=100,
         agent_max_run_seconds=600,
-        agent_per_run_execution_budget_tokens=200000,
+        agent_context_soft_limit_tokens=200000,
     )
     case = EvalCase(
         id="production-budget",
@@ -127,7 +127,7 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
     settings = SimpleNamespace(
         agent_max_tool_calls=100,
         agent_max_run_seconds=600,
-        agent_per_run_execution_budget_tokens=200000,
+        agent_context_soft_limit_tokens=200000,
     )
     captured = {}
     fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))
@@ -156,7 +156,7 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
     assert captured["user_message"] == case.prompt
     assert captured["max_tool_calls"] == settings.agent_max_tool_calls
     assert captured["max_run_seconds"] == settings.agent_max_run_seconds
-    assert captured["max_total_tokens"] == settings.agent_per_run_execution_budget_tokens
+    assert captured["max_total_tokens"] == settings.agent_context_soft_limit_tokens
     assert not hasattr(agent, "_eval_context")
 
 
@@ -835,6 +835,7 @@ def test_eval_batch_summary_aggregates_runtime_metrics():
 
 def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monkeypatch):
     monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"case-a": object()})
     result = EvalResult(
         run_id="run-1",
         case_id="case-a",
@@ -876,6 +877,40 @@ def test_eval_batch_merge_deduplicates_and_registers_performance(tmp_path, monke
     assert performance_path.is_file()
     assert len(performance_path.read_text(encoding="utf-8").splitlines()) == 1
     assert not (tmp_path / "batches.jsonl").exists()
+
+
+def test_eval_batch_merge_accepts_a_single_completed_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr("extensions.evals.batches._eval_root", lambda: tmp_path)
+    monkeypatch.setattr("extensions.evals.batches.load_cases", lambda: {"baseline-case": object()})
+    result = EvalResult(
+        run_id="run-single",
+        case_id="baseline-case",
+        status="passed",
+        passed=True,
+        score=1.0,
+        started_at="2026-09-08T00:00:00+00:00",
+    )
+    batch = EvalBatch(
+        batch_id="batch-single",
+        version="dev-test",
+        case_ids=[result.case_id],
+        status="completed",
+        started_at="2026-09-08T00:00:00+00:00",
+        finished_at="2026-09-08T00:01:00+00:00",
+        results=[result],
+    )
+    manager = EvalBatchManager()
+    manager._batches[batch.batch_id] = batch
+
+    merged = manager.merge(EvalBatchMergeRequest(
+        batch_ids=[batch.batch_id],
+        version="dev-test",
+    ))
+
+    assert merged.case_ids == [result.case_id]
+    assert merged.source_batch_ids == [batch.batch_id]
+    assert merged.performance_result_id
+    assert Path(merged.performance_result_id).is_file()
 
 
 def test_cli_performance_registration_writes_catalog_result(tmp_path, monkeypatch):

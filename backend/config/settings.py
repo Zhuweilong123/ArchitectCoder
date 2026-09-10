@@ -17,16 +17,22 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    # DeepSeek LLM — API key MUST come from .env, never hardcoded
-    deepseek_api_key: str = Field(
+    # OpenAI-compatible LLM endpoint — credentials MUST come from .env.
+    llm_api_key: str = Field(
         ...,
-        description="DeepSeek API key (required, set in .env file)",
+        description="LLM API key (required, set in .env file)",
     )
-    deepseek_base_url: str = "https://api.deepseek.com"
+    llm_base_url: str = Field(
+        ...,
+        description="OpenAI-compatible LLM endpoint URL",
+    )
 
     # Fixed coding model for every agent in a session. Override via
-    # DEEPSEEK_MODEL in .env; application code must not route per message.
-    deepseek_model: str = "deepseek-v4-pro"
+    # LLM_MODEL_ID in .env; application code must not route per message.
+    llm_model_id: str = Field(
+        ...,
+        description="Model identifier accepted by the configured LLM endpoint",
+    )
 
     # Compatibility only: releases before the fixed-model policy accepted
     # SUB_AGENT_MODEL. Consume a stale deployment setting without using it so
@@ -35,16 +41,22 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="SUB_AGENT_MODEL",
         repr=False,
-        description="Deprecated and ignored; all agents use DEEPSEEK_MODEL.",
+        description="Deprecated and ignored; all agents use LLM_MODEL_ID.",
     )
 
     agent_max_tool_calls: int = 100
     agent_max_run_seconds: int = 600
-    agent_per_run_execution_budget_tokens: int = 200000
+    # One explicit request-context hard limit. Soft convergence and compaction
+    # thresholds are ratios of this value so deployments can scale it once.
+    agent_context_hard_limit_tokens: int = 256000
+    agent_context_soft_threshold_ratio: float = 0.78125
+    agent_context_compaction_threshold_ratio: float = 0.9
+    agent_session_compression_model: str = "deepseek-flash"
+    agent_session_compression_trigger_ratio: float = 0.7
+    agent_session_compression_max_tokens: int = 4000
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
-    agent_convergence_budget_ratio: float = 0.8
     agent_convergence_max_stalled_rounds: int = 3
     agent_convergence_max_recovery_rounds: int = 2
     agent_convergence_repeat_action_threshold: int = 3
@@ -53,15 +65,8 @@ class Settings(BaseSettings):
     agent_evidence_max_records: int = 128
     agent_final_summary_max_tokens: int = 3000
     agent_llm_timeout_seconds: int = 120
-    # The configured model supports a 1M window.  Keep 128K as the default
-    # active working set so the agent can retain substantially more evidence
-    # without blindly injecting an entire long-lived session.
-    agent_context_max_tokens: int = 131072
-    agent_context_output_reserve_tokens: int = 8192
-    agent_context_max_history_tokens: int = 88000
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
-    agent_context_compaction_trigger_ratio: float = 0.75
 
     # Main-flow orchestration knobs. The planner is deliberately small and the
     # optional strategy worker is bounded so orchestration cannot consume the
@@ -122,7 +127,7 @@ class Settings(BaseSettings):
 
     strict_production: bool = False
 
-    @field_validator("deepseek_api_key")
+    @field_validator("llm_api_key")
     @classmethod
     def check_key_not_default(cls, v: str) -> str:
         """Reject known placeholder/default keys to catch misconfiguration."""
@@ -131,7 +136,7 @@ class Settings(BaseSettings):
         for prefix in prohibited_prefixes:
             if v_lower.startswith(prefix):
                 logger.warning(
-                    "deepseek_api_key appears to be a placeholder or leaked default value. "
+                    "llm_api_key appears to be a placeholder or leaked default value. "
                     "Please set a valid key in backend/.env"
                 )
                 break
@@ -178,7 +183,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "populate_by_name": True,
+    }
+
+    @property
+    def agent_context_soft_limit_tokens(self) -> int:
+        return max(1, int(self.agent_context_hard_limit_tokens * self.agent_context_soft_threshold_ratio))
 
 
 @lru_cache()

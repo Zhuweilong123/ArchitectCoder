@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
-from app.models.uml import UmlDiagram, Project, create_default_project, ExportRequest
+from app.models.uml import UmlDiagram, Project, ExportRequest
 from app.services.file_service import (
     save_diagram, load_diagram, list_diagrams, export_markdown,
     save_project_with_result, load_project, list_projects,

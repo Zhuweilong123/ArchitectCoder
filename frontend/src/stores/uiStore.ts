@@ -66,6 +66,7 @@ interface UiState {
 
   // Evaluation center
   evaluationVisible: boolean;
+  traceCaseFactoryRequestedSessionId: string | null;
 
   // Actions
   toggleRightPanel: () => void;
@@ -112,6 +113,8 @@ interface UiState {
   // Trace viewer
   setTraceVisible: (visible: boolean) => void;
   setTraceSessionId: (sessionId: string | null) => void;
+  requestTraceCaseFactory: (sessionId: string) => void;
+  clearTraceCaseFactoryRequest: () => void;
   setEvaluationVisible: (visible: boolean) => void;
 }
 
@@ -154,6 +157,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   traceVisible: false,
   traceSessionId: null,
   evaluationVisible: false,
+  traceCaseFactoryRequestedSessionId: null,
   agentChatPosition: (() => {
     try {
       const saved = localStorage.getItem('agentChatPosition');
@@ -259,7 +263,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   setExportDialogVisible: (visible) => set({ exportDialogVisible: visible }),
   setCurrentBrowsePath: (path) => set({ currentBrowsePath: path }),
 
-  setAgentChatVisible: (visible) => set({ agentChatVisible: visible }),
+  setAgentChatVisible: (visible) => set((state) => ({
+    agentChatVisible: visible,
+    // A newly opened chat starts in the expanded layout for a clearer first-use experience.
+    ...(visible ? { agentChatExpanded: true } : {}),
+  })),
   setAgentChatExpanded: (expanded) => set({ agentChatExpanded: expanded }),
   setAgentChatPosition: (position) => {
     try {
@@ -270,5 +278,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setTraceVisible: (visible) => set({ traceVisible: visible }),
   setTraceSessionId: (sessionId) => set({ traceSessionId: sessionId }),
+  requestTraceCaseFactory: (sessionId) => set({ traceCaseFactoryRequestedSessionId: sessionId }),
+  clearTraceCaseFactoryRequest: () => set({ traceCaseFactoryRequestedSessionId: null }),
   setEvaluationVisible: (visible) => set({ evaluationVisible: visible }),
 }));

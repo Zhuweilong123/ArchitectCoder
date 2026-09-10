@@ -124,11 +124,6 @@ def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
     )
 
 
-def acceptance_todo_contract_complete(runtime: AgentRuntime | None = None) -> bool:
-    """Backward-compatible alias for the general TODO completion check."""
-    return todo_plan_complete(runtime)
-
-
 _runtime_var: ContextVar[AgentRuntime] = ContextVar(
     "agent_runtime", default=AgentRuntime()
 )
@@ -344,10 +339,15 @@ class RunPolicyHook:
         if ctx.event == HookEvent.LLM_BEFORE and budget is not None:
             reason = budget.before_llm()
             if reason:
+                message = (
+                    "The run time limit was reached; finalize with the verified evidence already gathered."
+                    if reason == "time_limit" else
+                    "The per-request emergency token ceiling was reached; finalize with the verified evidence already gathered."
+                )
                 decision = HookDecision(
                     action=HookAction.STOP,
                     reason=reason,
-                    message="Execution budget exhausted; finalize the response.",
+                    message=message,
                 )
                 runtime.control_decision = decision
                 return decision
@@ -410,6 +410,10 @@ def _register_default_hooks() -> None:
                 "search_text": 4000,
                 "run_task": 6000,
                 "skill": 20000,
+                # Delegated reports have a bounded head/tail excerpt in the
+                # subagent itself; preserve that excerpt instead of applying
+                # the generic 1200-character cap.
+                "spawn_subagent": 6000,
             },
         ),
         priority=0,

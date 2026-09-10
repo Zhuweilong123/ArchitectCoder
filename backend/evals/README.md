@@ -95,10 +95,11 @@ temporary execution directory has been removed.
 
 ## Batch and performance-result boundaries
 
-The Evaluation Center treats one execution as a runtime batch. Multiple
-completed batches from the same version can be selected and merged into one
-performance-result JSONL file. Results are keyed by `case_id`: exact duplicate
-results are kept once, while conflicting results for the same case are rejected.
+The Evaluation Center treats one execution as a runtime batch. A single
+completed batch can be converted only when it covers the complete baseline
+case set; multiple batches must cover that same set and share the same version.
+Results are keyed by `case_id`: exact duplicate results
+are kept once, while conflicting results for the same case are rejected.
 The merge does not modify `baseline.json`; only an explicit baseline promotion
 or archive operation changes the tracked baseline.
 

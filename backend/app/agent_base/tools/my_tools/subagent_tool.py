@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import json
 
 from app.agent_base.convergence import ConvergenceController
 from app.agent_base.core.hooks import (
     AgentRuntime, HookAction, HookContext, HookDecision, HookEvent,
     get_hooks, get_runtime, reset_runtime, set_runtime,
 )
+from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
@@ -17,7 +19,10 @@ from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.async_tool import AsyncTool
-from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
+from app.agent_base.tools.my_tools.foundation_tools import (
+    RunTaskTool,
+    create_foundation_tools,
+)
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 from app.runtime import build_command_executor, workspace_root_for
 
@@ -35,12 +40,40 @@ STRATEGY_SUBAGENT_SYSTEM = (
     "target scope, ordered steps, acceptance criteria, and risks. Do not spawn more agents."
 )
 
+VERIFICATION_SUBAGENT_SYSTEM = (
+    "You are a source-safe verification subagent. Inspect the relevant files, then "
+    "run only the minimum fixed project verification task needed: test, build, "
+    "lint, typecheck, or validate. Do not modify source files, run arbitrary programs, "
+    "use shell commands, or spawn more agents. Return concise evidence and any "
+    "failure diagnosis."
+)
+
 # ── 子代理工具包（toolkit）──────────────────────────────────────
 # 主 agent 按任务类型选工具包，框架展开成受限工具集。安全不变量由本表强制，
 # 不依赖主 agent 自觉：
 #   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
-TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy")
+TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
+SUBAGENT_RELAY_MAX_CHARS = 6000
+SUBAGENT_TRACE_SPAN = "child_agent"
+
+
+class VerificationRunTaskTool(RunTaskTool):
+    """Run only fixed, non-formatting project checks inside a subagent."""
+
+    TASKS = {
+        name: RunTaskTool.TASKS[name]
+        for name in ("test", "build", "lint", "typecheck", "validate")
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.description = (
+            "Run one fixed project verification task without source editing: test, "
+            "build, lint, typecheck, or validate. Formatting, arbitrary programs, "
+            "and shell commands are not available in this toolkit. Build/test "
+            "caches or generated artifacts may be produced."
+        )
 
 
 def _build_toolkit_tools(
@@ -60,15 +93,34 @@ def _build_toolkit_tools(
     if kind == "standard":
         return [*foundation, SkillTool()]
 
-    # Read-only toolkits intentionally expose only the foundation read contract.
-    # Read-only toolkits intentionally use only file inspection and skills.
+    # Read-only toolkits intentionally expose only the foundation inspection
+    # contract.  Directory listing and text search are needed to make a
+    # bounded analysis useful without granting execution or write access.
     # KG toolkit names remain for compatibility, but graph tools are disabled
     # for DevAgent to avoid broad exploration and repeated reads.
-    read_tool = by_name["read_file"]
+    inspection_tools = [
+        by_name["list_files"],
+        by_name["read_file"],
+        by_name["search_text"],
+    ]
     if kind == "read_only":
-        return [read_tool]
+        return inspection_tools
     if kind in {"kg_analysis", "strategy"}:
-        return [read_tool, SkillTool()]
+        return [*inspection_tools, SkillTool()]
+    if kind == "verification":
+        return [
+            *inspection_tools,
+            SkillTool(),
+            VerificationRunTaskTool(
+                source_dir=source_dir,
+                test_dir=test_dir,
+                design_dir=design_dir,
+                review_manager=review_manager,
+                progress=progress,
+                command_executor=command_executor,
+                workspace_root=workspace_root,
+            ),
+        ]
     raise ValueError(f"unknown toolkit: {kind}")
 
 
@@ -89,6 +141,7 @@ class SpawnSubagentTool(AsyncTool):
         design_dir: str = "",
         project_file: str = "",
         max_total_tokens: int = 500000,
+        emergency_max_total_tokens: int | None = None,
         context_budget: ContextBudgetManager | None = None,
         max_tool_calls: int | None = None,
         max_run_seconds: float | None = None,
@@ -115,6 +168,10 @@ class SpawnSubagentTool(AsyncTool):
         )
         self.llm = llm
         self.max_total_tokens = max(1, int(max_total_tokens))
+        self.emergency_max_total_tokens = (
+            max(1, int(emergency_max_total_tokens))
+            if emergency_max_total_tokens is not None else None
+        )
         from backend.config import get_settings
         settings = get_settings()
         if command_executor is None:
@@ -164,10 +221,148 @@ class SpawnSubagentTool(AsyncTool):
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
-            prompt = STRATEGY_SUBAGENT_SYSTEM if kind == "strategy" else SUBAGENT_SYSTEM
+            if kind == "strategy":
+                prompt = STRATEGY_SUBAGENT_SYSTEM
+            elif kind == "verification":
+                prompt = VERIFICATION_SUBAGENT_SYSTEM
+            else:
+                prompt = SUBAGENT_SYSTEM
             if kind == "standard" and skills:
                 prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
             self.system_prompts[kind] = prompt
+
+    @staticmethod
+    def _normalise_tool_calls(raw_tool_calls, step: int) -> tuple[list[dict], bool]:
+        """Normalize provider output before it is put back into the prompt.
+
+        Providers and test doubles occasionally return a single call, non-string
+        arguments, or a partially malformed call.  The parent ReAct loop should
+        never receive a malformed assistant message from a child run, because a
+        subsequent provider request would fail with an opaque protocol error.
+        Valid calls are retained; malformed calls are discarded and reported to
+        the caller so the child can terminate with a useful fallback summary.
+        """
+        if raw_tool_calls is None:
+            return [], False
+        candidates = raw_tool_calls if isinstance(raw_tool_calls, list) else [raw_tool_calls]
+        normalized: list[dict] = []
+        malformed = False
+        for index, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                malformed = True
+                continue
+            function = candidate.get("function")
+            if not isinstance(function, dict) or not str(function.get("name") or "").strip():
+                malformed = True
+                continue
+            arguments = function.get("arguments", "{}")
+            if not isinstance(arguments, str):
+                try:
+                    arguments = json.dumps(arguments, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    malformed = True
+                    continue
+            call_id = str(candidate.get("id") or f"subagent-{step}-{index}").strip()
+            if not call_id:
+                malformed = True
+                continue
+            normalized.append({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": str(function["name"]).strip(),
+                    # Keep invalid JSON as a string so the executor can return a
+                    # recoverable INVALID_ARGUMENTS observation to the model.
+                    "arguments": arguments,
+                },
+            })
+        return normalized, malformed and not normalized
+
+    @staticmethod
+    def _tool_messages(tool_results: list[dict]) -> list[dict]:
+        """Convert executor results to provider-valid ``role=tool`` messages."""
+        messages: list[dict] = []
+        for result in tool_results:
+            if not isinstance(result, dict):
+                raise ValueError("subagent tool result must be an object")
+            call_id = str(result.get("tool_call_id") or "").strip()
+            if not call_id:
+                raise ValueError("subagent tool result is missing tool_call_id")
+            content = result.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False, default=str)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content,
+            })
+        return messages
+
+    def _safe_failure_summary(
+        self,
+        reason: str,
+        evidence_summary: list[dict],
+        budget: ExecutionBudget | None = None,
+        error: Exception | None = None,
+    ) -> str:
+        """Return a bounded, evidence-preserving result instead of raising.
+
+        A subagent is an optional delegation.  Its transport/protocol failure
+        must be visible to the parent model but must not abort the parent task.
+        Only compact evidence facts are returned; raw tool output remains in the
+        trace and is not copied into the parent context.
+        """
+        error_text = ""
+        if error is not None:
+            error_text = f" ({type(error).__name__}: {str(error)[:240]})"
+        if budget is not None:
+            self.last_token_usage = budget.total_tokens
+            self.last_context_report.update({
+                "token_budget_used": budget.request_tokens,
+                "token_usage_total_observed": budget.total_tokens,
+                "token_budget_stop_reason": reason,
+            })
+        self.last_context_report["subagent_stop_reason"] = reason
+        compact_evidence = []
+        for item in evidence_summary[-8:]:
+            if not isinstance(item, dict):
+                continue
+            facts = "; ".join(str(value) for value in item.get("facts") or [])
+            detail = str(item.get("detail") or "")
+            line = " | ".join(
+                part for part in (
+                    str(item.get("tool_name") or "tool"),
+                    str(item.get("status") or "unknown"),
+                    facts,
+                    detail,
+                ) if part
+            )
+            if line:
+                compact_evidence.append(line[:360])
+        evidence_text = "\n".join(f"- {line}" for line in compact_evidence)
+        return (
+            f"Subagent stopped safely: {reason}{error_text}. "
+            "The parent task may continue without subagent findings."
+            + (f"\nVerified evidence gathered before stopping:\n{evidence_text}" if evidence_text else "")
+        )
+
+    @staticmethod
+    def _bound_parent_summary(content: str) -> str:
+        """Keep delegated results useful without copying a full report upstream.
+
+        The complete model response remains in the trace.  The parent receives a
+        bounded head/tail excerpt so large specialist reports do not force a
+        second broad source scan or consume the main context window.
+        """
+        if len(content) <= SUBAGENT_RELAY_MAX_CHARS:
+            return content
+        marker = (
+            "\n\n[Subagent report shortened for parent context; "
+            "the complete report remains in the trace.]\n"
+        )
+        head = 4500
+        tail = max(0, SUBAGENT_RELAY_MAX_CHARS - head - len(marker))
+        return content[:head] + marker + content[-tail:]
 
     async def _execute(self, params: dict) -> str:
         description = params.get("description", "")
@@ -175,7 +370,7 @@ class SpawnSubagentTool(AsyncTool):
             return "Error: description is required"
 
         if self.single_use and self._single_use_used:
-            return "Error: the strategy subagent may be used only once per task"
+            return "Error: the subagent may be used only once per task"
 
         toolkit = str(params.get("toolkit") or self.toolkits[0]).strip().lower()
         if toolkit not in self.sub_registries:
@@ -193,6 +388,7 @@ class SpawnSubagentTool(AsyncTool):
             max_tool_calls=self.max_tool_calls,
             max_run_seconds=self.max_run_seconds,
             max_total_tokens=self.max_total_tokens,
+            emergency_max_total_tokens=self.emergency_max_total_tokens,
             token_finalization_reserve_tokens=self.token_finalization_reserve_tokens,
         )
         child_runtime.execution_budget = budget
@@ -219,27 +415,41 @@ class SpawnSubagentTool(AsyncTool):
         self.last_context_report = built.to_dict()
         self.last_context_report["context_policy"] = {
             "max_context_tokens": self.context_budget.budget.max_context_tokens,
-            "output_reserve_tokens": self.context_budget.budget.output_reserve_tokens,
+            "soft_threshold_ratio": self.context_budget.budget.soft_threshold_ratio,
             "compaction_trigger_ratio": self.context_budget.budget.compaction_trigger_ratio,
             "compaction_target_tokens": self.context_budget.budget.max_history_tokens,
         }
+        self.last_context_report["token_budget_policy"] = {
+            "scope": "single_llm_request",
+            "soft_target_tokens": budget.max_total_tokens,
+            "emergency_limit_tokens": budget.emergency_max_total_tokens,
+            "task_total_tokens_observed": budget.total_tokens,
+        }
         forced_finalization_reason = ""
         finalization_added = False
+        context_soft_notified = False
         step = 0
 
         def budget_message(reason: str) -> str:
             return (
                 "Subagent execution budget exceeded: "
-                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                f"{reason}; latest request used {budget.request_tokens} of "
+                f"{budget.max_total_tokens} target tokens "
+                f"({budget.total_tokens} observed across requests). "
                 "Return the verified evidence gathered so far."
             )
 
         def stopped_message(reason: str) -> str:
             return (
                 "Subagent stopped: "
-                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                f"{reason}; latest request used {budget.request_tokens} of "
+                f"{budget.max_total_tokens} target tokens "
+                f"({budget.total_tokens} observed across requests). "
                 "Return the verified evidence gathered so far."
             )
+
+        def safe_failure(reason: str, error: Exception | None = None) -> str:
+            return self._safe_failure_summary(reason, evidence_summary, budget, error)
 
         try:
             get_hooks().trigger(
@@ -253,7 +463,9 @@ class SpawnSubagentTool(AsyncTool):
             )
             while True:
                 step += 1
-                finalization_mode = bool(forced_finalization_reason) or budget.finalization_required
+                # Token usage is observed per request. Convergence, time, and
+                # tool-call policies decide whether the subagent continues.
+                finalization_mode = bool(forced_finalization_reason)
                 active_tools = [] if finalization_mode else sub_tools
                 if finalization_mode and not finalization_added:
                     messages.append({
@@ -269,6 +481,20 @@ class SpawnSubagentTool(AsyncTool):
                         ),
                     })
                     finalization_added = True
+
+                if (
+                    not context_soft_notified
+                    and self.context_budget.soft_threshold_reached(messages, tools=active_tools)
+                ):
+                    context_soft_notified = True
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Context convergence checkpoint\n"
+                            "The request context is nearing its hard limit. Stop broad exploration, "
+                            "use only the minimum evidence-gathering actions, and prepare a concise summary."
+                        ),
+                    })
 
                 if self.context_budget.should_compact(messages, tools=active_tools):
                     prior_call_ids = [
@@ -297,6 +523,30 @@ class SpawnSubagentTool(AsyncTool):
                     tools=active_tools,
                     current_user_index=current_user_index,
                 )
+                request_context = {
+                    "scope": "single_llm_request",
+                    "estimated_context_tokens": self.context_budget.estimate_request_tokens(
+                        messages, tools=active_tools,
+                    ),
+                    "message_count": len(messages),
+                    "tool_schema_tokens": self.context_budget.tool_schema_tokens(active_tools),
+                    "tool_schema_mode": "full" if active_tools else "omitted_for_finalization",
+                    "request_budget_target_tokens": budget.max_total_tokens,
+                    "request_budget_emergency_tokens": budget.emergency_max_total_tokens,
+                    "context_soft_threshold_ratio": self.context_budget.budget.soft_threshold_ratio,
+                    "context_compaction_threshold_ratio": self.context_budget.budget.compaction_trigger_ratio,
+                    "context_hard_limit_tokens": self.context_budget.budget.max_context_tokens,
+                    "task_total_tokens_observed": budget.total_tokens,
+                }
+                self.last_context_report["last_request_context"] = request_context
+                if request_context["estimated_context_tokens"] >= self.context_budget.budget.max_context_tokens:
+                    self.last_token_usage = budget.total_tokens
+                    self.last_context_report.update({
+                        "token_budget_used": budget.request_tokens,
+                        "token_usage_total_observed": budget.total_tokens,
+                        "token_budget_stop_reason": "context_hard_limit",
+                    })
+                    return stopped_message("context hard limit")
                 before = get_hooks().trigger(
                     HookEvent.LLM_BEFORE,
                     HookContext(
@@ -313,19 +563,19 @@ class SpawnSubagentTool(AsyncTool):
 
                 from app.trace.tracing import trace_span
                 try:
-                    with trace_span("spawn_subagent"):
+                    with trace_span(SUBAGENT_TRACE_SPAN):
                         response = await asyncio.wait_for(
                             self.llm.ainvoke_with_tools(
                                 messages=messages,
                                 tools=active_tools,
                                 tool_choice="none" if finalization_mode else "auto",
                                 temperature=0.3,
+                                trace_context=request_context,
                             ),
                             timeout=self.llm_timeout_seconds,
                         )
                 except asyncio.TimeoutError:
-                    self.last_token_usage = budget.total_tokens
-                    return "Subagent LLM call timed out; return the verified evidence gathered so far."
+                    return safe_failure("LLM call timed out")
 
                 get_hooks().trigger(
                     HookEvent.LLM_AFTER,
@@ -340,17 +590,24 @@ class SpawnSubagentTool(AsyncTool):
                 )
                 self.last_token_usage = budget.total_tokens
                 self.last_context_report.update({
-                    "token_budget_used": budget.total_tokens,
+                    "token_budget_used": budget.request_tokens,
                     "token_budget_remaining": budget.remaining_tokens,
+                    "token_usage_total_observed": budget.total_tokens,
                 })
+                if not isinstance(response, dict):
+                    return safe_failure("provider returned a non-object response")
                 content = str(response.get("content") or "")
-                tool_calls = response.get("tool_calls")
+                tool_calls, malformed_tool_calls = self._normalise_tool_calls(
+                    response.get("tool_calls"), step,
+                )
+                if malformed_tool_calls:
+                    return safe_failure("provider returned malformed tool calls")
                 if finalization_mode:
-                    tool_calls = None
+                    tool_calls = []
 
                 if not tool_calls:
                     if content.strip():
-                        return content.strip()
+                        return self._bound_parent_summary(content.strip())
                     child_runtime.control_decision = None
                     get_hooks().emit(
                         HookEvent.TOOL_BATCH_AFTER,
@@ -385,7 +642,47 @@ class SpawnSubagentTool(AsyncTool):
                     "tool_calls": tool_calls,
                 })
                 round_result = await executor.execute(tool_calls, step=step)
-                messages.extend(round_result.tool_results)
+                # Child tool calls use the same trace contract as the parent
+                # agent.  Keep them under the child span so the trace viewer
+                # can render the normal tool cards inside the subagent panel.
+                from app.trace.tracing import emit_trace, trace_span
+                with trace_span(SUBAGENT_TRACE_SPAN):
+                    for detail in round_result.details:
+                        tool_name = str(detail.get("name") or "")
+                        status = str(detail.get("status") or "")
+                        tool_span = emit_trace(
+                            "tool_call",
+                            step=step,
+                            tool_name=tool_name,
+                            arguments=(
+                                detail.get("arguments")
+                                if isinstance(detail.get("arguments"), dict)
+                                else {}
+                            ),
+                        ) or ""
+                        emit_trace(
+                            "tool_result",
+                            span_id=tool_span,
+                            tool_name=tool_name,
+                            observation=str(detail.get("observation") or ""),
+                            error=(
+                                str(detail.get("error_code") or "")
+                                if status not in {"", "success", "completed"}
+                                else ""
+                            ),
+                            fed_truncated=bool(detail.get("fed_truncated", False)),
+                            fed_length=int(detail.get("fed_length") or 0),
+                            duration_ms=float(detail.get("duration_ms") or 0.0),
+                            evidence=(
+                                detail.get("evidence")
+                                if isinstance(detail.get("evidence"), dict)
+                                else None
+                            ),
+                        )
+                # ToolRoundExecutor returns an internal compact result shape.
+                # The child loop must add the provider-facing role explicitly;
+                # the parent FC loop does the same in fc_loop.py.
+                messages.extend(self._tool_messages(round_result.tool_results))
                 child_runtime.control_decision = None
                 get_hooks().emit(
                     HookEvent.TOOL_BATCH_AFTER,
@@ -413,9 +710,13 @@ class SpawnSubagentTool(AsyncTool):
                     if decision.action in {HookAction.FINALIZE, "finalize"}:
                         forced_finalization_reason = decision.reason or "convergence_stalled"
 
-                if budget.total_tokens >= budget.max_total_tokens:
-                    self.last_token_usage = budget.total_tokens
-                    return budget_message("after the current tool round")
+        except AgentInterrupted:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("[spawn_subagent] child run failed; degrading safely")
+            return safe_failure("internal child-run error", exc)
         finally:
             try:
                 get_hooks().trigger(

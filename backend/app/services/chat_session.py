@@ -32,10 +32,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.core.security import validate_agent_workspace_path
 from backend.config import get_settings
 
-from app.agent_base.assembly import (
-    DevPromptBuilder,
-    create_dev_agent,
-)
+from app.agent_base.assembly import create_dev_agent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.tools.my_tools.conversation_tools import (
@@ -50,11 +47,10 @@ from app.trace.tracing import (
     push_trace_hook,
 )
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
-from app.services.run_state import (
-    RunStateError, RunStatus, get_run_store, run_status_for_completion,
-)
+from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.services.audit_log import record_audit as _record_audit
 from app.services.run_lifecycle import RunLifecycle
+from app.services.session_compression import SessionContextCompressor
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
@@ -82,6 +78,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 tool_choice=kwargs.get("tool_choice"),
                 response_format=kwargs.get("response_format"),
                 timeout=kwargs.get("timeout"),
+                request_context=kwargs.get("request_context"),
                 span_path=span_path,
             )
         elif kind == "llm_response":
@@ -92,6 +89,27 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 usage=kwargs.get("usage"),
                 error=kwargs.get("error", ""),
                 duration_ms=kwargs.get("duration_ms", 0.0),
+                span_path=span_path,
+            )
+            return None
+        elif kind == "tool_call":
+            return tracer.tool_call(
+                step=int(kwargs.get("step") or 0),
+                tool_name=kwargs.get("tool_name", ""),
+                arguments=kwargs.get("arguments") if isinstance(kwargs.get("arguments"), dict) else {},
+                parent_span_id=kwargs.get("parent_span_id", ""),
+                span_path=span_path,
+            )
+        elif kind == "tool_result":
+            tracer.tool_result(
+                span_id=kwargs.get("span_id", ""),
+                tool_name=kwargs.get("tool_name", ""),
+                observation=str(kwargs.get("observation", "")),
+                duration_ms=float(kwargs.get("duration_ms") or 0.0),
+                error=kwargs.get("error", ""),
+                fed_truncated=bool(kwargs.get("fed_truncated", False)),
+                fed_length=int(kwargs.get("fed_length") or 0),
+                evidence=kwargs.get("evidence") if isinstance(kwargs.get("evidence"), dict) else None,
                 span_path=span_path,
             )
             return None
@@ -378,7 +396,7 @@ class ChatSessionCoordinator:
                     message, project_file=project_file,
                     source_dir=source_dir, test_dir=test_dir,
                 )
-                trace_log.event("agent_model", model=get_settings().deepseek_model,
+                trace_log.event("agent_model", model=get_settings().llm_model_id,
                                 policy="fixed_session_model")
                 _record_audit("run_started", run_id=run.run_id, session_id=session_id,
                               kind="agent_chat", project_file=project_file,
@@ -554,6 +572,31 @@ class ChatSessionCoordinator:
                         session.prompt_builder = prompt_builder
 
                     session.touch()
+
+                    # Session compression belongs between turns. The active
+                    # ReAct loop only compacts tool history; user/assistant
+                    # conversation is summarized here before the next turn.
+                    if dev_agent is not None and llm is not None:
+                        settings = get_settings()
+                        compression = SessionContextCompressor(
+                            llm,
+                            model=settings.agent_session_compression_model,
+                            hard_limit_tokens=settings.agent_context_hard_limit_tokens,
+                            trigger_ratio=settings.agent_session_compression_trigger_ratio,
+                            max_output_tokens=settings.agent_session_compression_max_tokens,
+                        )
+                        compression_result = await compression.maybe_compress(
+                            dev_agent,
+                            session_id=session_id,
+                            trace_log=trace_log,
+                        )
+                        if compression_result.error:
+                            trace_log.event(
+                                "session_context_compression_error",
+                                session_id=session_id,
+                                estimated_session_tokens=compression_result.estimated_tokens,
+                                error=compression_result.error,
+                            )
 
                     await _start_run(
                         effective_user_message, resume_record=resume_record,

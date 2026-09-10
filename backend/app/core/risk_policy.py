@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -22,9 +23,14 @@ class RiskPolicy:
         self,
         *,
         deny_patterns: Iterable[str] = (),
+        deny_regex_patterns: Iterable[str] = (),
         approval_patterns: Iterable[str] = (),
     ) -> None:
         self._deny = tuple(str(item).lower() for item in deny_patterns if item)
+        self._deny_regex = tuple(
+            (re.compile(str(item), re.IGNORECASE), str(item))
+            for item in deny_regex_patterns if item
+        )
         self._approval = tuple(str(item).lower() for item in approval_patterns if item)
 
     def evaluate(self, tool_name: str, parameters: dict[str, Any]) -> RiskDecision:
@@ -34,6 +40,9 @@ class RiskPolicy:
         lowered = command.lower()
         for pattern in self._deny:
             if pattern in lowered:
+                return RiskDecision("deny", "critical", "high-risk command", pattern)
+        for matcher, pattern in self._deny_regex:
+            if matcher.search(command):
                 return RiskDecision("deny", "critical", "high-risk command", pattern)
         for pattern in self._approval:
             if pattern in lowered:

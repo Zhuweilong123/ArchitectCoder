@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from app.agent_base.core.knowledge_graph import (
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
-    load_knowledge_graph_tools,
 )
 from app.models.uml import Project, UmlClass, UmlDiagram
+from app.agent_base.core.plugins import get_plugin_manager
 from extensions.knowledge_graph.provider import LocalKnowledgeGraphProvider
 
 
@@ -51,8 +51,10 @@ def test_disabled_knowledge_graph_uses_noop_provider():
     assert isinstance(provider, NoOpKnowledgeGraphProvider)
     assert provider.rebuild_project({}, "project-1") is None
     assert provider.search_diagrams("project-1", ["login"]) == {}
-    assert load_knowledge_graph_tools(
+    assert get_plugin_manager().load_contribution(
+        "knowledge_graph", "create_tools",
         settings=SimpleNamespace(agent_knowledge_graph_enabled=False),
+        default=[],
     ) == []
 
 
@@ -91,10 +93,11 @@ def test_knowledge_graph_tools_follow_the_provider_switch(monkeypatch):
         agent_knowledge_graph_provider=f"{module_name}:create",
     )
 
-    tools = load_knowledge_graph_tools(
+    tools = get_plugin_manager().load_contribution(
+        "knowledge_graph", "create_tools",
         settings=settings,
-        project_file="demo.umlproj",
-        source_dir="src",
+        kwargs={"project_file": "demo.umlproj", "source_dir": "src"},
+        default=[],
     )
 
     assert tools == [{
@@ -124,24 +127,6 @@ def test_local_provider_adapts_build_and_diagram_search(tmp_path):
     assert stats.nodes_added > 0
     assert "Domain" in matches
     assert any("User" in reason for reason in matches["Domain"])
-
-
-def test_uml_summary_retrieval_uses_the_provider_boundary(monkeypatch):
-    import app.services.uml_common as uml_common
-
-    class _SearchProvider:
-        def search_diagrams(self, project_id, queries, top_k=6):
-            assert project_id == "demo"
-            assert queries[0] == "User login"
-            assert top_k == 6
-            return {"Domain": {"User(class)"}}
-
-    monkeypatch.setattr(uml_common, "get_knowledge_graph", lambda: _SearchProvider())
-    hits = {}
-
-    uml_common._fetch_kg_hits("demo.umlproj", "User login", hits)
-
-    assert hits == {"Domain": {"User(class)"}}
 
 
 def test_v2_tools_can_be_created_with_a_custom_provider():

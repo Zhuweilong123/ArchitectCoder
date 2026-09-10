@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from .trace_cases import (TraceCaseCaptureRequest, TraceCaseDraftRequest, TraceCaseFactory, TraceCasePublishRequest, TraceCaseReviewRequest)
+
 from .batches import get_batch_manager
 from .registry import load_cases
 from .runner import EvalRunner
@@ -21,6 +23,39 @@ class LocalEvalProvider:
 
     def list_cases(self):
         return list(load_cases().values())
+
+    def _trace_case_factory(self):
+        return TraceCaseFactory(self._runner())
+
+    def list_trace_case_projects(self):
+        return self._trace_case_factory().list_projects()
+
+    def list_trace_case_drafts(self):
+        return self._trace_case_factory().list_drafts()
+
+    def delete_trace_case_draft(self, draft_id: str):
+        return self._trace_case_factory().delete_draft(draft_id)
+
+    async def create_trace_case_draft(self, request: TraceCaseDraftRequest):
+        return await self._trace_case_factory().create(request)
+
+    def get_trace_case_draft(self, draft_id: str):
+        return self._trace_case_factory().get(draft_id)
+
+    def review_trace_case_draft(self, draft_id: str, request: TraceCaseReviewRequest):
+        return self._trace_case_factory().review(draft_id, request)
+
+    def capture_trace_case_fixture(self, draft_id: str, request: TraceCaseCaptureRequest):
+        return self._trace_case_factory().capture(draft_id, request)
+
+    def preview_trace_case_fixture(self, draft_id: str, request: TraceCaseCaptureRequest):
+        return self._trace_case_factory().preview(draft_id, request)
+
+    async def validate_trace_case_draft(self, draft_id: str):
+        return await self._trace_case_factory().validate(draft_id)
+
+    def publish_trace_case_draft(self, draft_id: str, request: TraceCasePublishRequest):
+        return self._trace_case_factory().publish(draft_id, request)
 
     def get_case(self, case_id: str):
         return load_cases().get(case_id)

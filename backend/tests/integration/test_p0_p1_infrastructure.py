@@ -12,7 +12,12 @@ from extensions.trace.chat_trace import (
     EVT_SESSION_END,
     EVT_TASK_SUMMARY,
 )
-from extensions.trace.trace_reader import reconstruct_history, summarize_trace
+from extensions.trace.trace_reader import (
+    list_traces,
+    read_trace,
+    reconstruct_history,
+    summarize_trace,
+)
 
 
 class _Echo(Tool):
@@ -44,6 +49,32 @@ def test_trace_close_writes_session_end(tmp_path, monkeypatch):
     tracer.close()
     events = [json.loads(line) for line in (tmp_path / "trace_trace-test.jsonl").read_text(encoding="utf-8").splitlines()]
     assert events[-1]["event_type"] == EVT_SESSION_END
+
+
+def test_trace_sources_are_labeled_and_readable_independently(tmp_path, monkeypatch):
+    chat_dir = tmp_path / "chat"
+    evaluation_dir = tmp_path / "evaluation"
+    chat_dir.mkdir()
+    evaluation_dir.mkdir()
+    monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(chat_dir))
+    monkeypatch.setattr(
+        "extensions.trace.trace_reader.evaluation_traces_dir",
+        lambda: evaluation_dir,
+    )
+
+    chat_trace = ChatTraceLogger("shared-session", log_dir=str(chat_dir))
+    chat_trace.start()
+    chat_trace.user_message("interactive")
+    chat_trace.close()
+    evaluation_trace = ChatTraceLogger("shared-session", log_dir=str(evaluation_dir))
+    evaluation_trace.start()
+    evaluation_trace.user_message("evaluation")
+    evaluation_trace.close()
+
+    rows = list_traces()
+    assert {row["trace_type"] for row in rows} == {"chat", "evaluation"}
+    assert read_trace("shared-session", trace_type="chat")["events"][1]["message"] == "interactive"
+    assert read_trace("shared-session", trace_type="evaluation")["events"][1]["message"] == "evaluation"
 
 
 def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
@@ -230,7 +261,7 @@ def test_task_dirs_are_scoped():
 def test_agent_allowed_tools_and_budget():
     registry = ToolRegistry()
     registry.register_tool(_Echo())
-    agent = ReActAgent("budget", _LoopLLM(), registry, max_steps=1,
+    agent = ReActAgent("budget", _LoopLLM(), registry,
                        max_tool_calls=0)
 
     async def run():

@@ -900,7 +900,7 @@ const Toolbar: React.FC = () => {
         <Tooltip title={copy('assistant')}>
           <Button
             icon={<MessageOutlined />}
-            onClick={() => setAgentChatVisible(true)}
+            onClick={() => setAgentChatVisible(!agentChatVisible)}
             type={agentChatVisible ? 'primary' : 'default'}
             style={agentChatVisible ? { color: '#fff', borderColor: '#1677ff', background: '#1677ff' } : {}}
           >

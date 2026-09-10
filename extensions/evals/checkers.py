@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from app.runtime.encoding import decode_process_output
+
 from .models import CheckerResult
 
 
@@ -139,9 +141,9 @@ class PytestChecker(Checker):
             command = [sys.executable, "-m", "pytest", "-q", str(target), *self.args]
             proc = await asyncio.to_thread(
                 subprocess.run, command, cwd=str(workspace), capture_output=True,
-                text=True, timeout=self.timeout,
+                timeout=self.timeout,
             )
-            output = (proc.stdout + proc.stderr).strip()[-4000:]
+            output = (decode_process_output(proc.stdout) + decode_process_output(proc.stderr)).strip()[-4000:]
             passed = proc.returncode == 0
             return CheckerResult(checker=self.name, passed=passed,
                                  score=1.0 if passed else 0.0,
@@ -168,9 +170,9 @@ class HiddenPytestChecker(PytestChecker):
             command = [sys.executable, "-m", "pytest", "-q", str(target), *self.args]
             proc = await asyncio.to_thread(
                 subprocess.run, command, cwd=str(workspace), capture_output=True,
-                text=True, timeout=self.timeout, env=env,
+                timeout=self.timeout, env=env,
             )
-            output = (proc.stdout + proc.stderr).strip()[-4000:]
+            output = (decode_process_output(proc.stdout) + decode_process_output(proc.stderr)).strip()[-4000:]
             passed = proc.returncode == 0
             return CheckerResult(
                 checker=self.name, passed=passed, score=1.0 if passed else 0.0,

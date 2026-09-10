@@ -8,6 +8,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
+from app.runtime.encoding import decode_process_output
+
+from extensions.evals.api import router as trace_case_router
+
 from app.agent_base.core.evals import (
     EvalArchiveRequest,
     EvalBatchMergeRequest,
@@ -17,7 +21,7 @@ from app.agent_base.core.evals import (
 )
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # Compatibility export for existing integrations; baseline reads now go
 # through EvalProvider.get_baseline().
 BASELINE_PATH = REPOSITORY_ROOT / "backend" / "evals" / "baseline.json"
@@ -48,14 +52,14 @@ def _git_output(*args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(REPOSITORY_ROOT), *args],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+
+
             timeout=5,
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return result.stdout.strip()
+    return decode_process_output(result.stdout).strip()
 
 
 def _repository_info() -> dict[str, str | bool]:
@@ -163,7 +167,7 @@ async def archive_performance_result(request: EvalPerformanceArchiveRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("/runs")
+@router.post('/runs')
 async def start_eval_batch(request: EvalBatchRequest):
     try:
         batch = await load_evals().start_batch(request)
@@ -229,3 +233,6 @@ async def archive_eval(request: EvalArchiveRequest):
 @router.get("/archives")
 async def list_eval_archives(limit: int = 20):
     return {"archives": load_evals().list_archives(limit)}
+
+
+router.include_router(trace_case_router)
