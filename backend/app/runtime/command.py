@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.runtime.encoding import decode_process_output
+
 
 class ExecutionEnvironmentError(RuntimeError):
     """The configured command environment cannot safely execute a command."""
@@ -329,9 +331,11 @@ def windows_path_to_wsl(path: str) -> str:
 
 def _decode_wsl_output(data: bytes) -> str:
     """Decode WSL diagnostics from either UTF-8 or Windows UTF-16LE."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
     if b"\x00" in data:
         return data.decode("utf-16le", errors="replace")
-    return data.decode("utf-8", errors="replace")
+    return decode_process_output(data)
 
 
 class WslBashExecutor:

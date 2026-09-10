@@ -12,6 +12,22 @@ if _REPOSITORY_ROOT not in sys.path:
     sys.path.insert(0, _REPOSITORY_ROOT)
 
 os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+def _configure_stdio() -> None:
+    """Keep backend logs and direct Windows console output consistently UTF-8."""
+    for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
+_configure_stdio()
 sys.dont_write_bytecode = True  # Never generate __pycache__
 
 # ── Logging config ──────────────────────────────────

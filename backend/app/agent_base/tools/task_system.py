@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.agent_base.tools.base import Tool, ToolParameter
+from app.runtime.encoding import decode_process_output
 
 logger = logging.getLogger(__name__)
 
@@ -333,11 +334,11 @@ class WorktreeStore:
         try:
             result = subprocess.run(
                 ["git", *args], cwd=str(cwd) if cwd else None,
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return False, f"{type(exc).__name__}: {exc}"
-        output = (result.stdout + result.stderr).strip()
+        output = (decode_process_output(result.stdout) + decode_process_output(result.stderr)).strip()
         return result.returncode == 0, output[:5000] or "(no output)"
 
     def _registered_worktrees(self) -> tuple[dict, str | None]:

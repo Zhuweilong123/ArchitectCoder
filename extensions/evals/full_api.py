@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
+from app.runtime.encoding import decode_process_output
+
 from extensions.evals.api import router as trace_case_router
 
 from app.agent_base.core.evals import (
@@ -50,14 +52,14 @@ def _git_output(*args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(REPOSITORY_ROOT), *args],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+
+
             timeout=5,
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return result.stdout.strip()
+    return decode_process_output(result.stdout).strip()
 
 
 def _repository_info() -> dict[str, str | bool]:
