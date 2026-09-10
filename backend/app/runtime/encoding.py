@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import codecs
-import os
 
 
 def decode_process_output(data: bytes | str | None) -> str:
@@ -21,6 +20,7 @@ def decode_process_output(data: bytes | str | None) -> str:
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        if os.name == "nt":
-            return data.decode("gbk", errors="replace")
-        return data.decode("utf-8", errors="replace")
+        # Captured bytes do not carry the producer's platform.  Windows
+        # commands may emit GBK/cp936 even when the Agent or CI process runs
+        # on another host, so the fallback must not depend on os.name.
+        return data.decode("gbk", errors="replace")
