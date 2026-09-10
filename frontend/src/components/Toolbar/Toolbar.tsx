@@ -53,6 +53,36 @@ const LANGUAGES = [
   { value: 'php', label: 'PHP' },
 ];
 
+function summarizeProjectDiagrams(diagrams: Array<{ diagram_type?: string }>) {
+  const labels: Record<string, string> = {
+    class: '类图',
+    sequence: '时序图',
+    component: '组件图',
+  };
+  const order = ['class', 'sequence', 'component', 'other'];
+  const counts = diagrams.reduce<Record<string, number>>((result, diagram) => {
+    const type = diagram.diagram_type === 'class'
+      ? 'class'
+      : diagram.diagram_type === 'sequence'
+        ? 'sequence'
+        : diagram.diagram_type === 'component'
+          ? 'component'
+          : !diagram.diagram_type
+            ? 'class'
+            : 'other';
+    result[type] = (result[type] || 0) + 1;
+    return result;
+  }, {});
+  const parts = order
+    .filter((type) => counts[type])
+    .map((type) => `${labels[type] || '其他图表'} ${counts[type]} 张`);
+  return {
+    total: diagrams.length,
+    typeCount: parts.length,
+    text: parts.join('、'),
+  };
+}
+
 const Toolbar: React.FC = () => {
   const {
     diagram, project, isModified, undoStack, redoStack,
@@ -185,9 +215,16 @@ const Toolbar: React.FC = () => {
       }
     }
 
+    const summary = summarizeProjectDiagrams(useDiagramStore.getState().project?.diagrams || []);
+    const scope = summary.total > 0
+      ? `当前项目包含 ${summary.text}。`
+      : '当前项目暂无可分析的图表。';
+    const defaultRequest = summary.typeCount > 1
+      ? '请基于全部图表进行跨图一致性校验和综合优化。'
+      : '请基于当前图表进行一致性检查和综合优化。';
     const prompt = globalInstructions.trim()
-      ? `请对当前项目进行全局 UML 优化：${globalInstructions.trim()}`
-      : '请对当前项目进行全局 UML 优化，检查类图、时序图和组件图的一致性。';
+      ? `${scope}\n请执行全局 UML 优化：${globalInstructions.trim()}`
+      : `${scope}\n${defaultRequest}`;
     setAgentChatVisible(true);
     sendAgentMessage(prompt, {
       source_dir: sourceDir,
@@ -1228,14 +1265,21 @@ const Toolbar: React.FC = () => {
         cancelText="取消"
         width={650}
       >
-        <p style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
-          LLM 将同时分析项目中的类图、时序图、组件图，进行交叉一致性校验和综合优化。
+        <div style={{ marginBottom: 12, color: '#666', fontSize: 13, lineHeight: 1.7 }}>
           {(() => {
-            const proj = useDiagramStore.getState().project;
-            const types = proj.diagrams.map(d => d.diagram_type === 'sequence' ? '时序图' : d.diagram_type === 'component' ? '组件图' : '类图');
-            return <>当前项目包含：{types.join('、')}</>;
+            const summary = summarizeProjectDiagrams(useDiagramStore.getState().project?.diagrams || []);
+            const action = summary.typeCount > 1
+              ? '跨图一致性校验和综合优化'
+              : '一致性检查和综合优化';
+            return (
+              <div>
+                {summary.total > 0
+                  ? `将对当前项目的 ${summary.total} 张图表（${summary.text}）进行${action}。`
+                  : '当前项目暂无可分析的图表，请先创建或导入图表。'}
+              </div>
+            );
           })()}
-        </p>
+        </div>
         <Input.TextArea
           value={globalInstructions}
           onChange={(e) => setGlobalInstructions(e.target.value)}
