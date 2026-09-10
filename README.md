@@ -149,7 +149,7 @@ LLM-generated element positions auto-computed; manually positioned elements full
 | Frontend | React 18 + TypeScript + AntV X6 + Zustand + Ant Design 5 |
 | Backend | FastAPI (Python) + WebSocket |
 | Agent | BaseAgents (ReActAgent, native function calling) |
-| LLM | DeepSeek API (one fixed model per session, configured by `DEEPSEEK_MODEL`) |
+| LLM | OpenAI-compatible API (one fixed model per session, configured by `LLM_BASE_URL` and `LLM_MODEL_ID`) |
 | Knowledge Graph | SQLite + FTS5 |
 | Memory System | SQLite + FTS5 + jieba |
 | Testing | pytest (real subprocess execution) + openpyxl (Excel cases) |
@@ -228,10 +228,14 @@ no knowledge-graph tools are registered.
 ## Quick Start
 
 ```bash
+# From the repository root
+python -m pip install -r backend/requirements.txt
+# Create backend/.env from the provider-neutral template, then set:
+# LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL_ID
+copy backend\.env.example backend\.env       # Windows (use cp on Unix)
+
 # Backend
 cd backend
-python -m pip install -r requirements.txt
-# Create backend/.env and set at least: DEEPSEEK_API_KEY=your-key
 python -X utf8 -m app.main          # http://localhost:8001
 
 # Frontend
@@ -240,7 +244,22 @@ npm install
 npm run dev                           # http://localhost:3000
 ```
 
-Optional settings include `DEEPSEEK_MODEL` (one fixed model per session), the `AGENT_*_ENABLED` switches, and the `AGENT_*_PROVIDER` settings. Configuration definitions are centralized in `backend/config/settings.py` and `backend/config/agent_config.py`; provider entry points are managed through `backend/app/agent_base/core/plugins.py` and implemented under `extensions/`. Set a plugin enabled flag to `false`, or set its provider to `none`, `noop`, or `disabled`, to turn it off. `WORKSPACE_ROOTS` controls additional Agent workspace roots, and `AGENT_COMMAND_ENVIRONMENT` is native/auto by default; use `wsl` explicitly when needed. `SUB_AGENT_MODEL` is accepted only as a deprecated compatibility setting and is ignored. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. After dependencies are installed, Windows users can run `start.bat`; set `UVICORN_RELOAD=1` only when the development reloader is needed.
+### Try the bundled quickstart
+
+1. Open the project directory `examples/quickstart` in the ArchitectCoder UI. Select the directory root, not only its `design` subdirectory; the UI will discover `design/radar_design.umlproj`, `src/`, and `test/` as the Agent workspace.
+2. Open the floating **AI Assistant** and ask DevAgent to inspect or modify the Radar Signal Processing example. The bundled case is intentionally small and includes UML, Python source, pytest tests, and a design/source consistency check.
+3. Run the example tests from the case directory:
+
+   ```bash
+   cd examples/quickstart
+   python -m pytest test -q
+   ```
+
+4. The file `reference/performance-baseline.json` is a sanitized reference summary. It is not automatically registered as a live Performance Center result. To populate the Performance Center, run an evaluation batch and convert the completed batch to a performance result.
+
+If the quickstart is copied outside the repository, add its parent directory to `WORKSPACE_ROOTS` in `backend/.env` and restart the backend. Paths selected inside the checked-out repository are trusted automatically. On startup, the frontend checks persisted project, source, test, and design paths and removes only stale entries; it does not clear all browser site data.
+
+Optional settings include the `AGENT_*_ENABLED` switches and the `AGENT_*_PROVIDER` settings. The model is configured through the provider-neutral `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL_ID` variables. Configuration definitions are centralized in `backend/config/settings.py` and `backend/config/agent_config.py`; provider entry points are managed through `backend/app/agent_base/core/plugins.py` and implemented under `extensions/`. Set a plugin enabled flag to `false`, or set its provider to `none`, `noop`, or `disabled`, to turn it off. `WORKSPACE_ROOTS` controls additional Agent workspace roots, and `AGENT_COMMAND_ENVIRONMENT` is native/auto by default; use `wsl` explicitly when needed. `SUB_AGENT_MODEL` is accepted only as a deprecated compatibility setting and is ignored. If `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`. After dependencies are installed, Windows users can run `start.bat`; set `UVICORN_RELOAD=1` only when the development reloader is needed.
 
 ## API and Development Checks
 

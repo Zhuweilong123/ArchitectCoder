@@ -90,6 +90,16 @@ export async function browseDirectory(path?: string, safe = true): Promise<Brows
   return data;
 }
 
+export async function validateWorkspacePath(
+  path: string,
+  kind: 'directory' | 'file' = 'directory',
+): Promise<{ valid: boolean; path: string; error?: string | null }> {
+  const { data } = await api.get('/files/validate-workspace', {
+    params: { path, kind },
+  });
+  return data;
+}
+
 // ─── Review ────────────────────────────────────────────
 
 // ─── TestHub ──────────────────────────────────────────

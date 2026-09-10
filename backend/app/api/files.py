@@ -15,7 +15,12 @@ from app.services.file_service import (
 from app.services.project_repository import ProjectConflictError
 from backend.config import get_settings
 from app.core.auth import require_auth
-from app.core.security import safe_path, resolve_path, sanitize_path_segment
+from app.core.security import (
+    safe_path,
+    resolve_path,
+    sanitize_path_segment,
+    validate_agent_workspace_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +171,21 @@ async def browse_directory(path: str = "", safe: bool = True):
         "parent": parent,
         "dirs": dirs,
         "files": files,
+    }
+
+
+@router.get("/validate-workspace")
+async def validate_workspace_path(path: str, kind: str = "directory"):
+    """Validate a persisted Agent workspace path without changing filesystem state."""
+
+    if kind not in {"directory", "file"}:
+        raise HTTPException(status_code=400, detail="Invalid workspace path kind")
+
+    normalized, error = validate_agent_workspace_path(path, kind=kind)
+    return {
+        "valid": error is None,
+        "path": normalized,
+        "error": error,
     }
 
 
