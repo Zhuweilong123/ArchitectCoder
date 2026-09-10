@@ -55,6 +55,7 @@ VERIFICATION_SUBAGENT_SYSTEM = (
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
 TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
 SUBAGENT_RELAY_MAX_CHARS = 6000
+SUBAGENT_TRACE_SPAN = "child_agent"
 
 
 class VerificationRunTaskTool(RunTaskTool):
@@ -562,7 +563,7 @@ class SpawnSubagentTool(AsyncTool):
 
                 from app.trace.tracing import trace_span
                 try:
-                    with trace_span("spawn_subagent"):
+                    with trace_span(SUBAGENT_TRACE_SPAN):
                         response = await asyncio.wait_for(
                             self.llm.ainvoke_with_tools(
                                 messages=messages,
@@ -645,7 +646,7 @@ class SpawnSubagentTool(AsyncTool):
                 # agent.  Keep them under the child span so the trace viewer
                 # can render the normal tool cards inside the subagent panel.
                 from app.trace.tracing import emit_trace, trace_span
-                with trace_span("spawn_subagent"):
+                with trace_span(SUBAGENT_TRACE_SPAN):
                     for detail in round_result.details:
                         tool_name = str(detail.get("name") or "")
                         status = str(detail.get("status") or "")
