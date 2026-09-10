@@ -22,6 +22,8 @@ class RunOutcome:
             "final_summary_timeout": "timed_out",
             "hard_limit_before_next_llm": "budget_exceeded",
             "hard_limit_after_current_tools": "budget_exceeded",
+            "emergency_token_limit": "budget_exceeded",
+            "emergency_token_limit_after_current_tools": "budget_exceeded",
             "reserve_finalization": "budget_exceeded",
             "reserve_finalization_empty_response": "budget_exceeded",
             "tool_call_limit": "partial",

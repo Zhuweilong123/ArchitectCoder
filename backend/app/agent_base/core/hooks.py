@@ -342,7 +342,10 @@ class RunPolicyHook:
                 decision = HookDecision(
                     action=HookAction.STOP,
                     reason=reason,
-                    message="Execution budget exhausted; finalize the response.",
+                    message=(
+                        "The emergency token safety limit was reached; finalize with "
+                        "the verified evidence already gathered."
+                    ),
                 )
                 runtime.control_decision = decision
                 return decision

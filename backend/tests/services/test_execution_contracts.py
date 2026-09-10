@@ -92,14 +92,15 @@ def test_react_publishes_stop_cause_before_final_yield():
             return {"content": "完成", "tool_calls": None, "usage": {"total_tokens": 1}}
 
     async def execute():
-        agent = ReActAgent("test", LLM(), ToolRegistry(), max_total_tokens=10,
+        agent = ReActAgent("test", LLM(), ToolRegistry(), max_total_tokens=9,
+                           emergency_max_total_tokens=10,
                            token_finalization_reserve_tokens=5)
-        stream = agent._arun_with_fc_stream("task", initial_token_usage=6)
+        stream = agent._arun_with_fc_stream("task", initial_token_usage=10)
         try:
             progress = await anext(stream)
             assert progress.outcome.status == "budget_exceeded"
-            assert progress.outcome.total_tokens == 7
-            assert agent.last_context_report["token_budget_used"] == 7
+            assert progress.outcome.total_tokens == 10
+            assert agent.last_context_report["token_budget_used"] == 10
         finally:
             await stream.aclose()
     asyncio.run(execute())

@@ -185,7 +185,7 @@ def test_usage_budget_executes_current_tool_calls_before_stopping():
     assert "已执行本轮已返回的工具调用" in events[-1].final_answer
 
 
-def test_budget_reserve_requests_a_tool_free_final_answer():
+def test_soft_budget_keeps_tools_available_for_the_next_step():
     class ReserveLLM:
         def __init__(self):
             self.requests = []
@@ -216,7 +216,8 @@ def test_budget_reserve_requests_a_tool_free_final_answer():
     events = asyncio.run(_collect(agent))
 
     assert events[-1].final_answer == "任务已完成，已执行 echo。"
-    assert llm.requests[1] == ([], "none")
+    assert llm.requests[1][0] != []
+    assert llm.requests[1][1] == "auto"
 
 
 def test_budget_finalization_blocks_textual_tool_markup():
@@ -252,10 +253,9 @@ def test_budget_finalization_blocks_textual_tool_markup():
 
     events = asyncio.run(_collect(agent))
 
-    assert "DSML" not in events[-1].final_answer
-    assert "未执行" in events[-1].final_answer
-    assert agent.last_context_report["token_budget_stop_reason"] == "reserve_finalization"
-    assert agent.last_context_report["finalization_textual_tool_markup_blocked"] is True
+    assert "DSML" in events[-1].final_answer
+    assert agent.last_context_report["token_budget_stop_reason"] == "model_answer"
+    assert "finalization_textual_tool_markup_blocked" not in agent.last_context_report
 
 
 def test_legacy_step_argument_does_not_limit_open_fc_loop():
@@ -301,8 +301,8 @@ def test_soft_budget_instructs_the_next_step_to_converge():
 
     events = asyncio.run(_collect(agent))
 
-    assert llm.count == 3
-    assert "token" in events[-1].final_answer
+    assert llm.count == 5
+    assert "token" in events[-1].final_answer.lower()
     assert any(
         message.get("role") == "system" and "Token budget warning" in message.get("content", "")
         for message in llm.requests[2]
@@ -511,6 +511,24 @@ def test_execution_budget_policy_is_owned_by_hook():
     assert blocked.action == HookAction.VETO
     assert blocked.reason == "tool_call_limit"
     assert budget.tool_call_count == 2
+
+
+def test_execution_budget_soft_target_guides_without_blocking_next_llm():
+    budget = ExecutionBudget(
+        max_tool_calls=2,
+        max_run_seconds=60,
+        max_total_tokens=100,
+        emergency_max_total_tokens=200,
+    )
+    budget.start(initial_token_usage=100)
+
+    assert budget.soft_limit_reached is True
+    assert budget.finalization_required is False
+    assert budget.before_llm() is None
+
+    budget.record_tokens(100)
+    assert budget.emergency_limit_reached is True
+    assert budget.before_llm() == "emergency_token_limit"
 
 
 def test_hook_registry_emit_broadcasts_without_short_circuiting():

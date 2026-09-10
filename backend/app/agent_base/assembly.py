@@ -278,7 +278,6 @@ async def create_dev_agent(
             ),
         ),
         token_finalization_reserve_tokens=settings.agent_token_finalization_reserve_tokens,
-        convergence_budget_ratio=settings.agent_convergence_budget_ratio,
         convergence_max_stalled_rounds=settings.agent_convergence_max_stalled_rounds,
         convergence_max_recovery_rounds=settings.agent_convergence_max_recovery_rounds,
         convergence_repeat_action_threshold=settings.agent_convergence_repeat_action_threshold,

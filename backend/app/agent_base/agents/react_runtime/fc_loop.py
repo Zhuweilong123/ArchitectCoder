@@ -81,7 +81,7 @@ async def run_fc_loop(
         "compacted_messages": compacted.dropped_messages,
         "compacted_tokens": compacted.dropped_tokens,
         "convergence_policy": {
-            "budget_ratio": agent.convergence_budget_ratio,
+            "budget_threshold_tokens": agent.max_total_tokens,
             "evidence_max_records": agent.evidence_max_records,
             "open_ended_loop": True,
             "max_stalled_rounds": agent.convergence_max_stalled_rounds,
@@ -113,9 +113,15 @@ async def run_fc_loop(
         max_tool_calls=agent.max_tool_calls,
         max_run_seconds=agent.max_run_seconds,
         max_total_tokens=agent.max_total_tokens,
+        emergency_max_total_tokens=agent.emergency_max_total_tokens,
         token_finalization_reserve_tokens=agent.token_finalization_reserve_tokens,
     )
     budget.start(initial_token_usage)
+    agent.last_context_report["token_budget_policy"] = {
+        "soft_target_tokens": budget.max_total_tokens,
+        "emergency_limit_tokens": budget.emergency_max_total_tokens,
+        "convergence_threshold_tokens": budget.max_total_tokens,
+    }
     tool_call_count = budget.tool_call_count
     total_tokens = budget.total_tokens
     soft_budget_notified = False
@@ -158,9 +164,9 @@ async def run_fc_loop(
         while True:
             step += 1
             remaining_tokens = budget.remaining_tokens
-            finalization_mode = bool(forced_finalization_reason) or (
-                budget.finalization_required
-            )
+            # Token pressure is a convergence signal. Only the convergence
+            # controller is allowed to enter tool-free finalization mode.
+            finalization_mode = bool(forced_finalization_reason)
             active_tool_specs = [] if finalization_mode else (
                 compact_tool_specs if tool_call_count else full_tool_specs
             )
@@ -207,8 +213,8 @@ async def run_fc_loop(
                     )
                 )
             convergence_reasons = []
-            if total_tokens >= budget.max_total_tokens * agent.convergence_budget_ratio:
-                convergence_reasons.append("token_budget_ratio")
+            if budget.soft_limit_reached:
+                convergence_reasons.append("token_budget_threshold")
             if compacted_steps:
                 agent.last_context_report["react_compacted_steps"] = (
                     agent.last_context_report.get("react_compacted_steps", 0) + compacted_steps
@@ -348,14 +354,14 @@ async def run_fc_loop(
             if finalization_mode:
                 tool_calls = None
                 content, textual_tool_markup = remove_textual_tool_markup(content)
-            if not soft_budget_notified and total_tokens >= budget.max_total_tokens * agent.convergence_budget_ratio:
+            if not soft_budget_notified and budget.soft_limit_reached:
                 soft_budget_notified = True
                 agent.last_context_report["soft_budget_reached_tokens"] = total_tokens
                 messages.append({
                     "role": "system",
                     "content": (
                         "## Token budget warning\n"
-                        f"The run has used at least {agent.convergence_budget_ratio:.0%} of its token budget. "
+                        f"The run has reached its soft convergence target of {budget.max_total_tokens} tokens. "
                         "Stop broad discovery, "
                         "do not repeat failed exploration, and use only the minimum remaining "
                         "actions needed to edit, verify, or accurately report partial completion."
@@ -603,14 +609,17 @@ async def run_fc_loop(
             # selected before the hard limit was observed.  Execute them
             # under their normal safety policies, then prevent any new
             # model call instead of silently discarding the evidence.
-            if total_tokens >= budget.max_total_tokens:
+            if total_tokens >= budget.emergency_max_total_tokens:
                 final_answer = (
                     f"已达到 token 预算（{budget.max_total_tokens}）。"
                     "已执行本轮已返回的工具调用，但不会再发起新的模型调用。"
                 )
                 agent.last_context_report.update({
                     "token_budget_used": total_tokens,
-                    "token_budget_stop_reason": "hard_limit_after_current_tools",
+                    "token_budget_emergency_remaining": budget.remaining_emergency_tokens,
+                    "token_budget_stop_reason": "emergency_token_limit_after_current_tools",
+                    "token_budget_target": budget.max_total_tokens,
+                    "token_budget_emergency_limit": budget.emergency_max_total_tokens,
                 })
                 agent._record_turn(input_text, final_answer)
                 _turn_recorded = True

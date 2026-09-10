@@ -25,6 +25,7 @@ def test_settings_default_task_budget_is_200k():
     settings = _settings()
 
     assert settings.agent_per_run_execution_budget_tokens == 200000
+    assert settings.agent_emergency_execution_budget_tokens == 256000
 
 
 def test_settings_default_subagent_budget_is_500k():

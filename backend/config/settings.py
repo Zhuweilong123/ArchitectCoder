@@ -47,10 +47,13 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 100
     agent_max_run_seconds: int = 600
     agent_per_run_execution_budget_tokens: int = 200000
+    # Soft convergence target. The emergency ceiling is separate so
+    # productive work can continue after the target without becoming
+    # unbounded.
+    agent_emergency_execution_budget_tokens: int = 256000
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
-    agent_convergence_budget_ratio: float = 0.8
     agent_convergence_max_stalled_rounds: int = 3
     agent_convergence_max_recovery_rounds: int = 2
     agent_convergence_repeat_action_threshold: int = 3

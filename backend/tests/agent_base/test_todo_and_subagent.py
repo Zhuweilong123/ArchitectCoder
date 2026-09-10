@@ -246,11 +246,12 @@ def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
     llm = _BudgetLLM()
     tool = SpawnSubagentTool(
         llm=llm, source_dir=str(tmp_path), max_total_tokens=100,
+        emergency_max_total_tokens=120,
     )
 
     result = asyncio.run(tool._execute({"description": "find files"}))
 
-    assert "budget exceeded" in result
+    assert "emergency token safety limit" in result
     assert tool.last_token_usage == 120
     assert llm.count == 2
 

@@ -69,8 +69,8 @@ class ReActAgent(Agent):
         max_tool_calls: int = 100,
         max_run_seconds: float = 600.0,
         max_total_tokens: int = 200000,
+        emergency_max_total_tokens: int | None = None,
         token_finalization_reserve_tokens: int = 12000,
-        convergence_budget_ratio: float = 0.8,
         convergence_max_stalled_rounds: int = 3,
         convergence_max_recovery_rounds: int = 2,
         convergence_repeat_action_threshold: int = 3,
@@ -87,6 +87,10 @@ class ReActAgent(Agent):
         self.max_tool_calls = max(1, max_tool_calls)
         self.max_run_seconds = max(1.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
+        self.emergency_max_total_tokens = (
+            max(1, int(emergency_max_total_tokens))
+            if emergency_max_total_tokens is not None else None
+        )
         self.token_finalization_reserve_tokens = min(
             max(1, token_finalization_reserve_tokens),
             max(1, self.max_total_tokens - 1),
@@ -95,10 +99,10 @@ class ReActAgent(Agent):
             self.max_tool_calls = self.execution_budget.max_tool_calls
             self.max_run_seconds = self.execution_budget.max_run_seconds
             self.max_total_tokens = self.execution_budget.max_total_tokens
+            self.emergency_max_total_tokens = self.execution_budget.emergency_max_total_tokens
             self.token_finalization_reserve_tokens = (
                 self.execution_budget.token_finalization_reserve_tokens
             )
-        self.convergence_budget_ratio = min(1.0, max(0.0, float(convergence_budget_ratio)))
         self.convergence_max_stalled_rounds = max(1, convergence_max_stalled_rounds)
         self.convergence_max_recovery_rounds = max(1, convergence_max_recovery_rounds)
         self.convergence_repeat_action_threshold = max(2, convergence_repeat_action_threshold)
