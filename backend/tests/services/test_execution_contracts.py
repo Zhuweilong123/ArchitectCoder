@@ -86,7 +86,7 @@ def test_outcome_is_independent_of_answer_language(reason, status):
         assert RunOutcome.from_stop(reason, answer).status == status
 
 
-def test_react_publishes_stop_cause_before_final_yield():
+def test_react_does_not_accumulate_initial_request_usage_into_next_request():
     class LLM:
         async def ainvoke_with_tools(self, **kwargs):
             return {"content": "完成", "tool_calls": None, "usage": {"total_tokens": 1}}
@@ -98,9 +98,10 @@ def test_react_publishes_stop_cause_before_final_yield():
         stream = agent._arun_with_fc_stream("task", initial_token_usage=10)
         try:
             progress = await anext(stream)
-            assert progress.outcome.status == "budget_exceeded"
-            assert progress.outcome.total_tokens == 10
-            assert agent.last_context_report["token_budget_used"] == 10
+            assert progress.outcome.status == "completed"
+            assert progress.outcome.total_tokens == 11
+            assert agent.last_context_report["token_budget_used"] == 1
+            assert agent.last_context_report["token_usage_total_observed"] == 11
         finally:
             await stream.aclose()
     asyncio.run(execute())

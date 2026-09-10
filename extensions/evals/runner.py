@@ -189,13 +189,13 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
             "max_run_seconds": min(case.max_seconds, settings.agent_max_run_seconds),
             "max_total_tokens": min(
                 case.max_total_tokens,
-                settings.agent_per_run_execution_budget_tokens,
+                settings.agent_context_soft_limit_tokens,
             ),
         }
     return {
         "max_tool_calls": settings.agent_max_tool_calls,
         "max_run_seconds": settings.agent_max_run_seconds,
-        "max_total_tokens": settings.agent_per_run_execution_budget_tokens,
+        "max_total_tokens": settings.agent_context_soft_limit_tokens,
     }
 
 
@@ -304,7 +304,7 @@ class EvalRunner:
             "production_budget": {
                 "max_tool_calls": settings.agent_max_tool_calls,
                 "max_run_seconds": settings.agent_max_run_seconds,
-                "max_total_tokens": settings.agent_per_run_execution_budget_tokens,
+                "max_total_tokens": settings.agent_context_soft_limit_tokens,
             },
             "case_tool_call_limit": case.max_tool_calls,
             "budget_control_case": case.metadata.get("capability") == "budget_control",

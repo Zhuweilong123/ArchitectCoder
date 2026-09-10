@@ -8,20 +8,20 @@ from app.services.context_manager import (
 )
 
 
-def test_default_working_context_is_128k_with_token_based_compaction():
+def test_default_context_uses_one_hard_limit_and_ratio_thresholds():
     budget = ContextBudget()
 
-    assert budget.max_context_tokens == 131072
-    assert budget.output_reserve_tokens == 8192
-    assert budget.max_history_tokens == 88000
+    assert budget.max_context_tokens == 256000
+    assert budget.max_history_tokens == 200000
     assert budget.max_history_turns == 48
-    assert budget.compaction_trigger_ratio == 0.75
+    assert budget.soft_threshold_ratio == 0.78125
+    assert budget.compaction_trigger_ratio == 0.9
 
 
 def test_context_compaction_trigger_includes_tool_schema_tokens():
     manager = ContextBudgetManager(ContextBudget(
         max_context_tokens=120,
-        output_reserve_tokens=10,
+        soft_threshold_ratio=0.5,
         compaction_trigger_ratio=0.75,
     ))
     messages = [
@@ -41,7 +41,6 @@ def test_context_budget_preserves_current_input_and_caps_history():
     manager = ContextBudgetManager(
         ContextBudget(
             max_context_tokens=220,
-            output_reserve_tokens=20,
             max_system_tokens=20,
             max_history_tokens=80,
             max_current_task_tokens=45,
@@ -63,7 +62,7 @@ def test_context_budget_preserves_current_input_and_caps_history():
     assert result.messages[0]["role"] == "system"
     assert result.messages[-1]["role"] == "user"
     assert "CURRENT TASK" in result.messages[-1]["content"]
-    assert result.estimated_tokens <= 220 - 20
+    assert result.estimated_tokens <= 220
     assert result.truncated_current_task
 
 
@@ -144,7 +143,7 @@ def test_context_budget_keeps_task_summary_adjacent_and_model_compatible():
 
 def test_fit_messages_drops_function_call_and_results_as_one_group():
     manager = ContextBudgetManager(
-        ContextBudget(max_context_tokens=40, output_reserve_tokens=5)
+    ContextBudget(max_context_tokens=40)
     )
     messages = [
         {"role": "system", "content": "system"},

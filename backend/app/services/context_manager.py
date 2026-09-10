@@ -121,26 +121,36 @@ def _checkpoint_evidence_lines(checkpoint: str) -> list[str]:
 class ContextBudget:
     """Token allocation for one LLM request."""
 
-    max_context_tokens: int = 131072
-    output_reserve_tokens: int = 8192
+    max_context_tokens: int = 256000
     max_system_tokens: int = 5000
-    max_history_tokens: int = 88000
+    # Zero derives the history/checkpoint target from the soft threshold.
+    max_history_tokens: int = 0
     max_summary_tokens: int = 4000
     max_current_task_tokens: int = 5000
     max_tool_tokens: int = 6000
     max_history_turns: int = 48
-    compaction_trigger_ratio: float = 0.75
+    soft_threshold_ratio: float = 0.78125
+    compaction_trigger_ratio: float = 0.9
 
     def __post_init__(self) -> None:
+        if self.max_history_tokens <= 0:
+            object.__setattr__(
+                self,
+                "max_history_tokens",
+                max(1, int(self.max_context_tokens * self.soft_threshold_ratio)),
+            )
         for name in (
-            "max_context_tokens", "output_reserve_tokens", "max_system_tokens",
+            "max_context_tokens", "max_system_tokens",
             "max_history_tokens", "max_summary_tokens", "max_current_task_tokens",
             "max_tool_tokens", "max_history_turns",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
-        if not 0 < self.compaction_trigger_ratio <= 1:
-            raise ValueError("compaction_trigger_ratio must be in (0, 1]")
+        for name in ("soft_threshold_ratio", "compaction_trigger_ratio"):
+            if not 0 < getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be in (0, 1]")
+        if self.soft_threshold_ratio > self.compaction_trigger_ratio:
+            raise ValueError("soft_threshold_ratio must not exceed compaction_trigger_ratio")
 
 
 @dataclass
@@ -262,12 +272,11 @@ class ContextBudgetManager:
             from backend.config import get_settings
             settings = get_settings()
         return cls(budget=ContextBudget(
-            max_context_tokens=settings.agent_context_max_tokens,
-            output_reserve_tokens=settings.agent_context_output_reserve_tokens,
-            max_history_tokens=settings.agent_context_max_history_tokens,
+            max_context_tokens=settings.agent_context_hard_limit_tokens,
             max_history_turns=settings.agent_context_max_history_turns,
             max_summary_tokens=settings.agent_context_max_summary_tokens,
-            compaction_trigger_ratio=settings.agent_context_compaction_trigger_ratio,
+            soft_threshold_ratio=settings.agent_context_soft_threshold_ratio,
+            compaction_trigger_ratio=settings.agent_context_compaction_threshold_ratio,
         ))
 
     def prepare_history(
@@ -344,7 +353,6 @@ class ContextBudgetManager:
             truncated_current_task=current != current_before,
             metadata={
                 "max_context_tokens": self.budget.max_context_tokens,
-                "output_reserve_tokens": self.budget.output_reserve_tokens,
             },
         )
 
@@ -357,6 +365,10 @@ class ContextBudgetManager:
         """Estimate the full request footprint, including tool schemas."""
         return self._messages_tokens(messages) + self._tool_tokens(tools)
 
+    def tool_schema_tokens(self, tools: list[dict[str, Any]] | None = None) -> int:
+        """Return the estimated token footprint of the exact tool payload."""
+        return self._tool_tokens(tools)
+
     def should_compact(
         self,
         messages: Iterable[dict[str, Any]],
@@ -364,12 +376,19 @@ class ContextBudgetManager:
         tools: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Return whether the request is using too much of its context budget."""
-        usable_tokens = max(
-            1,
-            self.budget.max_context_tokens - self.budget.output_reserve_tokens,
-        )
         return self.estimate_request_tokens(messages, tools=tools) >= (
-            usable_tokens * self.budget.compaction_trigger_ratio
+            self.budget.max_context_tokens * self.budget.compaction_trigger_ratio
+        )
+
+    def soft_threshold_reached(
+        self,
+        messages: Iterable[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Return whether the request should explicitly converge."""
+        return self.estimate_request_tokens(messages, tools=tools) >= (
+            self.budget.max_context_tokens * self.budget.soft_threshold_ratio
         )
 
     def fit_messages(
@@ -382,7 +401,7 @@ class ContextBudgetManager:
         """Trim oldest non-essential messages while preserving the active task."""
         result = [dict(message) for message in messages]
         dropped = 0
-        limit = max(1, self.budget.max_context_tokens - self.budget.output_reserve_tokens)
+        limit = max(1, self.budget.max_context_tokens)
         tool_tokens = self._tool_tokens(tools)
 
         while len(result) > 1 and self._messages_tokens(result) + tool_tokens > limit:

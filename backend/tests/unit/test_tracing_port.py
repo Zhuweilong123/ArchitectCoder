@@ -59,6 +59,7 @@ def test_trace_session_uses_provider_and_routes_llm_hook():
             "llm_request",
             model="test-model",
             messages=[{"role": "user", "content": "hello"}],
+            request_context={"scope": "single_llm_request", "tool_schema_mode": "full"},
         ) == "span-1"
         emit_trace("llm_response", span_id="span-1", content="ok")
 
@@ -66,6 +67,7 @@ def test_trace_session_uses_provider_and_routes_llm_hook():
     assert [event[0] for event in provider.sink.events] == [
         "start", "llm_request", "llm_response",
     ]
+    assert provider.sink.events[1][1]["request_context"]["tool_schema_mode"] == "full"
 
 
 def test_disabled_trace_loads_noop_provider():

@@ -50,6 +50,7 @@ from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.services.audit_log import record_audit as _record_audit
 from app.services.run_lifecycle import RunLifecycle
+from app.services.session_compression import SessionContextCompressor
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 tool_choice=kwargs.get("tool_choice"),
                 response_format=kwargs.get("response_format"),
                 timeout=kwargs.get("timeout"),
+                request_context=kwargs.get("request_context"),
                 span_path=span_path,
             )
         elif kind == "llm_response":
@@ -549,6 +551,31 @@ class ChatSessionCoordinator:
                         session.prompt_builder = prompt_builder
 
                     session.touch()
+
+                    # Session compression belongs between turns. The active
+                    # ReAct loop only compacts tool history; user/assistant
+                    # conversation is summarized here before the next turn.
+                    if dev_agent is not None and llm is not None:
+                        settings = get_settings()
+                        compression = SessionContextCompressor(
+                            llm,
+                            model=settings.agent_session_compression_model,
+                            hard_limit_tokens=settings.agent_context_hard_limit_tokens,
+                            trigger_ratio=settings.agent_session_compression_trigger_ratio,
+                            max_output_tokens=settings.agent_session_compression_max_tokens,
+                        )
+                        compression_result = await compression.maybe_compress(
+                            dev_agent,
+                            session_id=session_id,
+                            trace_log=trace_log,
+                        )
+                        if compression_result.error:
+                            trace_log.event(
+                                "session_context_compression_error",
+                                session_id=session_id,
+                                estimated_session_tokens=compression_result.estimated_tokens,
+                                error=compression_result.error,
+                            )
 
                     await _start_run(
                         effective_user_message, resume_record=resume_record,

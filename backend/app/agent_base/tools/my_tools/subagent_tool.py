@@ -225,31 +225,36 @@ class SpawnSubagentTool(AsyncTool):
         self.last_context_report = built.to_dict()
         self.last_context_report["context_policy"] = {
             "max_context_tokens": self.context_budget.budget.max_context_tokens,
-            "output_reserve_tokens": self.context_budget.budget.output_reserve_tokens,
+            "soft_threshold_ratio": self.context_budget.budget.soft_threshold_ratio,
             "compaction_trigger_ratio": self.context_budget.budget.compaction_trigger_ratio,
             "compaction_target_tokens": self.context_budget.budget.max_history_tokens,
         }
         self.last_context_report["token_budget_policy"] = {
+            "scope": "single_llm_request",
             "soft_target_tokens": budget.max_total_tokens,
             "emergency_limit_tokens": budget.emergency_max_total_tokens,
-            "convergence_threshold_tokens": budget.max_total_tokens,
+            "task_total_tokens_observed": budget.total_tokens,
         }
         forced_finalization_reason = ""
         finalization_added = False
-        soft_budget_notified = False
+        context_soft_notified = False
         step = 0
 
         def budget_message(reason: str) -> str:
             return (
                 "Subagent execution budget exceeded: "
-                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                f"{reason}; latest request used {budget.request_tokens} of "
+                f"{budget.max_total_tokens} target tokens "
+                f"({budget.total_tokens} observed across requests). "
                 "Return the verified evidence gathered so far."
             )
 
         def stopped_message(reason: str) -> str:
             return (
                 "Subagent stopped: "
-                f"{reason}; used {budget.total_tokens} of {budget.max_total_tokens} tokens. "
+                f"{reason}; latest request used {budget.request_tokens} of "
+                f"{budget.max_total_tokens} target tokens "
+                f"({budget.total_tokens} observed across requests). "
                 "Return the verified evidence gathered so far."
             )
 
@@ -265,24 +270,8 @@ class SpawnSubagentTool(AsyncTool):
             )
             while True:
                 step += 1
-                if (
-                    not soft_budget_notified
-                    and budget.soft_limit_reached
-                ):
-                    soft_budget_notified = True
-                    self.last_context_report["soft_budget_reached_tokens"] = budget.total_tokens
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "## Subagent convergence checkpoint\n"
-                            "The soft token target has been reached. Stop broad discovery, "
-                            "avoid repeating reads, and take only the smallest action needed "
-                            "to verify or summarize the requested finding."
-                        ),
-                    })
-                # Soft token pressure narrows the next action; it does not
-                # disable tools. Only convergence or the emergency ceiling
-                # may finalize this subagent.
+                # Token usage is observed per request. Convergence, time, and
+                # tool-call policies decide whether the subagent continues.
                 finalization_mode = bool(forced_finalization_reason)
                 active_tools = [] if finalization_mode else sub_tools
                 if finalization_mode and not finalization_added:
@@ -299,6 +288,20 @@ class SpawnSubagentTool(AsyncTool):
                         ),
                     })
                     finalization_added = True
+
+                if (
+                    not context_soft_notified
+                    and self.context_budget.soft_threshold_reached(messages, tools=active_tools)
+                ):
+                    context_soft_notified = True
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "## Context convergence checkpoint\n"
+                            "The request context is nearing its hard limit. Stop broad exploration, "
+                            "use only the minimum evidence-gathering actions, and prepare a concise summary."
+                        ),
+                    })
 
                 if self.context_budget.should_compact(messages, tools=active_tools):
                     prior_call_ids = [
@@ -327,6 +330,30 @@ class SpawnSubagentTool(AsyncTool):
                     tools=active_tools,
                     current_user_index=current_user_index,
                 )
+                request_context = {
+                    "scope": "single_llm_request",
+                    "estimated_context_tokens": self.context_budget.estimate_request_tokens(
+                        messages, tools=active_tools,
+                    ),
+                    "message_count": len(messages),
+                    "tool_schema_tokens": self.context_budget.tool_schema_tokens(active_tools),
+                    "tool_schema_mode": "full" if active_tools else "omitted_for_finalization",
+                    "request_budget_target_tokens": budget.max_total_tokens,
+                    "request_budget_emergency_tokens": budget.emergency_max_total_tokens,
+                    "context_soft_threshold_ratio": self.context_budget.budget.soft_threshold_ratio,
+                    "context_compaction_threshold_ratio": self.context_budget.budget.compaction_trigger_ratio,
+                    "context_hard_limit_tokens": self.context_budget.budget.max_context_tokens,
+                    "task_total_tokens_observed": budget.total_tokens,
+                }
+                self.last_context_report["last_request_context"] = request_context
+                if request_context["estimated_context_tokens"] >= self.context_budget.budget.max_context_tokens:
+                    self.last_token_usage = budget.total_tokens
+                    self.last_context_report.update({
+                        "token_budget_used": budget.request_tokens,
+                        "token_usage_total_observed": budget.total_tokens,
+                        "token_budget_stop_reason": "context_hard_limit",
+                    })
+                    return stopped_message("context hard limit")
                 before = get_hooks().trigger(
                     HookEvent.LLM_BEFORE,
                     HookContext(
@@ -350,6 +377,7 @@ class SpawnSubagentTool(AsyncTool):
                                 tools=active_tools,
                                 tool_choice="none" if finalization_mode else "auto",
                                 temperature=0.3,
+                                trace_context=request_context,
                             ),
                             timeout=self.llm_timeout_seconds,
                         )
@@ -370,8 +398,9 @@ class SpawnSubagentTool(AsyncTool):
                 )
                 self.last_token_usage = budget.total_tokens
                 self.last_context_report.update({
-                    "token_budget_used": budget.total_tokens,
+                    "token_budget_used": budget.request_tokens,
                     "token_budget_remaining": budget.remaining_tokens,
+                    "token_usage_total_observed": budget.total_tokens,
                 })
                 content = str(response.get("content") or "")
                 tool_calls = response.get("tool_calls")
@@ -443,9 +472,6 @@ class SpawnSubagentTool(AsyncTool):
                     if decision.action in {HookAction.FINALIZE, "finalize"}:
                         forced_finalization_reason = decision.reason or "convergence_stalled"
 
-                if budget.total_tokens >= budget.emergency_max_total_tokens:
-                    self.last_token_usage = budget.total_tokens
-                    return stopped_message("emergency token safety limit after the current tool round")
         finally:
             try:
                 get_hooks().trigger(

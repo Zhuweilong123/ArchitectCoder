@@ -46,11 +46,14 @@ class Settings(BaseSettings):
 
     agent_max_tool_calls: int = 100
     agent_max_run_seconds: int = 600
-    agent_per_run_execution_budget_tokens: int = 200000
-    # Soft convergence target. The emergency ceiling is separate so
-    # productive work can continue after the target without becoming
-    # unbounded.
-    agent_emergency_execution_budget_tokens: int = 256000
+    # One explicit request-context hard limit. Soft convergence and compaction
+    # thresholds are ratios of this value so deployments can scale it once.
+    agent_context_hard_limit_tokens: int = 256000
+    agent_context_soft_threshold_ratio: float = 0.78125
+    agent_context_compaction_threshold_ratio: float = 0.9
+    agent_session_compression_model: str = "deepseek-flash"
+    agent_session_compression_trigger_ratio: float = 0.7
+    agent_session_compression_max_tokens: int = 4000
     # Reserve enough room to turn completed evidence into a final user-facing
     # answer.  This is a convergence guard, separate from the context limit.
     agent_token_finalization_reserve_tokens: int = 12000
@@ -62,15 +65,8 @@ class Settings(BaseSettings):
     agent_evidence_max_records: int = 128
     agent_final_summary_max_tokens: int = 3000
     agent_llm_timeout_seconds: int = 120
-    # The configured model supports a 1M window.  Keep 128K as the default
-    # active working set so the agent can retain substantially more evidence
-    # without blindly injecting an entire long-lived session.
-    agent_context_max_tokens: int = 131072
-    agent_context_output_reserve_tokens: int = 8192
-    agent_context_max_history_tokens: int = 88000
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
-    agent_context_compaction_trigger_ratio: float = 0.75
 
     # Main-flow orchestration knobs. The planner is deliberately small and the
     # optional strategy worker is bounded so orchestration cannot consume the
@@ -192,6 +188,10 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "populate_by_name": True,
     }
+
+    @property
+    def agent_context_soft_limit_tokens(self) -> int:
+        return max(1, int(self.agent_context_hard_limit_tokens * self.agent_context_soft_threshold_ratio))
 
 
 @lru_cache()

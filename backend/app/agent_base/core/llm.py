@@ -343,7 +343,8 @@ class BaseAgentsLLM:
                               messages=messages, temperature=call_kwargs.get("temperature"),
                               max_tokens=call_kwargs.get("max_tokens"),
                               response_format=call_kwargs.get("response_format"),
-                              timeout=call_kwargs.get("timeout")) or ""
+                              timeout=call_kwargs.get("timeout"),
+                              request_context=kwargs.get("trace_context")) or ""
         _t0 = time.monotonic()
         try:
             response = await self.gateway.complete(LLMRequest(
@@ -442,7 +443,8 @@ class BaseAgentsLLM:
         span_id = _trace_hook("llm_request", model=call_kwargs["model"],
                               messages=messages, temperature=call_kwargs.get("temperature"),
                               max_tokens=call_kwargs.get("max_tokens"),
-                              tools=tools or None, tool_choice=tool_choice if tools else None) or ""
+                              tools=tools or None, tool_choice=tool_choice if tools else None,
+                              request_context=kwargs.get("trace_context")) or ""
         _t0 = time.monotonic()
         try:
             response = await self.gateway.complete(LLMRequest(

@@ -19,6 +19,7 @@ from ...core.hooks import (
 )
 from ...core.policy import ExecutionBudget
 from ...evidence import EvidenceLedger
+from app.services.context_manager import HistoryCompaction
 from .react_parser import remove_textual_tool_markup
 from .react_types import ReActProgress
 from .tool_round_executor import ToolRoundExecutor
@@ -56,14 +57,12 @@ async def run_fc_loop(
         agent.tool_registry.get_openai_specs_for(allowed_tools)
         if allowed_tools is not None else agent.tool_registry.get_openai_specs()
     )
-    compact_tool_specs = (
-        agent.tool_registry.get_openai_specs_for(allowed_tools, compact=True)
-        if allowed_tools is not None else agent.tool_registry.get_openai_specs(compact=True)
+    # Session-level semantic compression runs between turns. Do not compact
+    # user/assistant conversation inside an active task execution.
+    compacted = HistoryCompaction(
+        messages=list(agent._history),
+        summary=agent._history_summary,
     )
-    compacted = agent.context_budget.prepare_history(
-        agent._history, agent._history_summary,
-    )
-    agent._history_summary = compacted.summary
     built = agent.context_budget.build_messages(
         agent._build_fc_system_prompt(),
         compacted.messages,
@@ -91,7 +90,7 @@ async def run_fc_loop(
         },
         "context_policy": {
             "max_context_tokens": agent.context_budget.budget.max_context_tokens,
-            "output_reserve_tokens": agent.context_budget.budget.output_reserve_tokens,
+            "soft_threshold_ratio": agent.context_budget.budget.soft_threshold_ratio,
             "compaction_trigger_ratio": agent.context_budget.budget.compaction_trigger_ratio,
             "compaction_target_tokens": agent.context_budget.budget.max_history_tokens,
         },
@@ -106,9 +105,9 @@ async def run_fc_loop(
     agent.current_history = []
     no_tool_call_streak = 0
     _turn_recorded = False
-    # Planning and read-only exploration happen immediately before this
-    # loop. Count their measured usage against the same task budget so a
-    # worker cannot silently extend the run beyond max_total_tokens.
+    # Planning and read-only exploration happen immediately before this loop.
+    # Token usage is observed for metrics, while the request ceiling is
+    # enforced by ContextBudgetManager for each individual LLM request.
     budget = agent.execution_budget or ExecutionBudget(
         max_tool_calls=agent.max_tool_calls,
         max_run_seconds=agent.max_run_seconds,
@@ -116,15 +115,16 @@ async def run_fc_loop(
         emergency_max_total_tokens=agent.emergency_max_total_tokens,
         token_finalization_reserve_tokens=agent.token_finalization_reserve_tokens,
     )
+    agent.execution_budget = budget
     budget.start(initial_token_usage)
     agent.last_context_report["token_budget_policy"] = {
+        "scope": "single_llm_request",
         "soft_target_tokens": budget.max_total_tokens,
         "emergency_limit_tokens": budget.emergency_max_total_tokens,
-        "convergence_threshold_tokens": budget.max_total_tokens,
+        "task_total_tokens_observed": budget.total_tokens,
     }
     tool_call_count = budget.tool_call_count
     total_tokens = budget.total_tokens
-    soft_budget_notified = False
     convergence_directive_added = False
     last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
     evidence_ledger = EvidenceLedger(max_records=agent.evidence_max_records)
@@ -164,12 +164,12 @@ async def run_fc_loop(
         while True:
             step += 1
             remaining_tokens = budget.remaining_tokens
-            # Token pressure is a convergence signal. Only the convergence
-            # controller is allowed to enter tool-free finalization mode.
+            # Only the convergence controller is allowed to enter tool-free
+            # finalization mode; token usage is request-scoped telemetry.
             finalization_mode = bool(forced_finalization_reason)
-            active_tool_specs = [] if finalization_mode else (
-                compact_tool_specs if tool_call_count else full_tool_specs
-            )
+            # Keep one stable tool payload for every request in this run so
+            # provider prompt-cache prefixes remain reusable.
+            active_tool_specs = [] if finalization_mode else full_tool_specs
             if finalization_mode:
                 messages.append({
                     "role": "system",
@@ -186,7 +186,7 @@ async def run_fc_loop(
                     ),
                 })
                 agent.last_context_report.update({
-                    "token_budget_used": total_tokens,
+                    "token_budget_used": budget.request_tokens,
                     "token_budget_remaining": remaining_tokens,
                     "token_budget_finalization_mode": True,
                 })
@@ -196,6 +196,11 @@ async def run_fc_loop(
             context_compaction_triggered = agent.context_budget.should_compact(
                 messages, tools=active_tool_specs,
             )
+            convergence_reasons = []
+            if agent.context_budget.soft_threshold_reached(
+                messages, tools=active_tool_specs,
+            ):
+                convergence_reasons.append("context_soft_threshold")
             prior_call_ids = [
                 str(message.get("tool_call_id") or "")
                 for message in messages
@@ -212,9 +217,6 @@ async def run_fc_loop(
                         evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
                     )
                 )
-            convergence_reasons = []
-            if budget.soft_limit_reached:
-                convergence_reasons.append("token_budget_threshold")
             if compacted_steps:
                 agent.last_context_report["react_compacted_steps"] = (
                     agent.last_context_report.get("react_compacted_steps", 0) + compacted_steps
@@ -246,7 +248,7 @@ async def run_fc_loop(
                         "reason": "context_budget" if context_compaction_triggered else "history_limit",
                         "triggered_by": ["context_usage_ratio"] if context_compaction_triggered else [],
                         "tool_call_count": tool_call_count,
-                        "token_budget_used": total_tokens,
+                        "token_budget_used": budget.request_tokens,
                         "context_target_tokens": agent.context_budget.budget.max_history_tokens,
                     })
             if convergence_reasons and not convergence_directive_added:
@@ -266,7 +268,7 @@ async def run_fc_loop(
                 agent.last_context_report["convergence_directive_added"] = {
                     "triggered_by": convergence_reasons,
                     "triggered_at_tool_calls": tool_call_count,
-                    "token_budget_used": total_tokens,
+                    "token_budget_used": budget.request_tokens,
                 }
             messages, dropped = agent.context_budget.fit_messages(
                 messages,
@@ -277,6 +279,43 @@ async def run_fc_loop(
                 agent.last_context_report["loop_dropped_messages"] = (
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
                 )
+            request_context = {
+                "scope": "single_llm_request",
+                "estimated_context_tokens": agent.context_budget.estimate_request_tokens(
+                    messages, tools=active_tool_specs,
+                ),
+                "message_count": len(messages),
+                "tool_schema_tokens": agent.context_budget.tool_schema_tokens(active_tool_specs),
+                "tool_schema_mode": "full" if active_tool_specs else "omitted_for_finalization",
+                "tool_schema_stable": bool(active_tool_specs) and active_tool_specs is full_tool_specs,
+                "request_budget_target_tokens": budget.max_total_tokens,
+                "request_budget_emergency_tokens": budget.emergency_max_total_tokens,
+                "context_soft_threshold_ratio": agent.context_budget.budget.soft_threshold_ratio,
+                "context_compaction_threshold_ratio": agent.context_budget.budget.compaction_trigger_ratio,
+                "context_hard_limit_tokens": agent.context_budget.budget.max_context_tokens,
+                "task_total_tokens_observed": budget.total_tokens,
+            }
+            agent.last_context_report["last_request_context"] = request_context
+            if request_context["estimated_context_tokens"] >= agent.context_budget.budget.max_context_tokens:
+                final_answer = (
+                    "请求上下文已达到硬上限，已停止继续扩展上下文；"
+                    "请基于已保留的证据完成任务。"
+                )
+                agent.last_context_report.update({
+                    "token_budget_used": budget.request_tokens,
+                    "token_usage_total_observed": budget.total_tokens,
+                    "token_budget_stop_reason": "context_hard_limit",
+                    "context_hard_limit_tokens": agent.context_budget.budget.max_context_tokens,
+                })
+                agent._record_turn(input_text, final_answer)
+                yield agent._final_progress(
+                    total_tokens=budget.total_tokens,
+                    step=step,
+                    thought=final_answer,
+                    is_final=True,
+                    final_answer=final_answer,
+                )
+                return
             logger.info("\n--- FC loop round %d ---", step)
             # 1. 调用 LLM（带工具 schemas）
             llm_before_decision = get_hooks().trigger(
@@ -295,7 +334,8 @@ async def run_fc_loop(
             ):
                 reason = llm_before_decision.reason
                 agent.last_context_report.update({
-                    "token_budget_used": budget.total_tokens,
+                    "token_budget_used": budget.request_tokens,
+                    "token_usage_total_observed": budget.total_tokens,
                     "token_budget_stop_reason": reason,
                 })
                 final_answer = (
@@ -319,12 +359,13 @@ async def run_fc_loop(
                             tools=active_tool_specs,
                             tool_choice="none" if finalization_mode else "auto",
                             temperature=kwargs.get("temperature", 0.3),
+                            trace_context=request_context,
                         ),
                         timeout=kwargs.get("llm_timeout_seconds", agent.llm_timeout_seconds),
                     )
                 except asyncio.TimeoutError:
                     agent.last_context_report.update({
-                        "token_budget_used": total_tokens,
+                        "token_budget_used": budget.request_tokens,
                         "token_budget_stop_reason": "llm_timeout",
                     })
                     final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
@@ -354,20 +395,6 @@ async def run_fc_loop(
             if finalization_mode:
                 tool_calls = None
                 content, textual_tool_markup = remove_textual_tool_markup(content)
-            if not soft_budget_notified and budget.soft_limit_reached:
-                soft_budget_notified = True
-                agent.last_context_report["soft_budget_reached_tokens"] = total_tokens
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "## Token budget warning\n"
-                        f"The run has reached its soft convergence target of {budget.max_total_tokens} tokens. "
-                        "Stop broad discovery, "
-                        "do not repeat failed exploration, and use only the minimum remaining "
-                        "actions needed to edit, verify, or accurately report partial completion."
-                    ),
-                })
-
             # 2. 无 tool_calls → 纯文本回复
             if not tool_calls:
                 no_tool_call_streak += 1
@@ -437,7 +464,7 @@ async def run_fc_loop(
                                 f"{content}"
                             )
                         agent.last_context_report.update({
-                            "token_budget_used": total_tokens,
+                            "token_budget_used": budget.request_tokens,
                             "token_budget_stop_reason": (
                                 forced_finalization_reason or "reserve_finalization"
                             ),
@@ -485,7 +512,7 @@ async def run_fc_loop(
                         "已停止发起新的工具调用。"
                     )
                     agent.last_context_report.update({
-                        "token_budget_used": total_tokens,
+                        "token_budget_used": budget.request_tokens,
                         "token_budget_stop_reason": (
                             forced_finalization_reason or "reserve_finalization_empty_response"
                         ),
@@ -609,13 +636,16 @@ async def run_fc_loop(
             # selected before the hard limit was observed.  Execute them
             # under their normal safety policies, then prevent any new
             # model call instead of silently discarding the evidence.
-            if total_tokens >= budget.emergency_max_total_tokens:
+            # A single provider request above the emergency ceiling remains a
+            # hard safety stop; usage from earlier requests is not involved.
+            if budget.emergency_limit_reached:
                 final_answer = (
                     f"已达到 token 预算（{budget.max_total_tokens}）。"
                     "已执行本轮已返回的工具调用，但不会再发起新的模型调用。"
                 )
                 agent.last_context_report.update({
-                    "token_budget_used": total_tokens,
+                    "token_budget_used": budget.request_tokens,
+                    "token_usage_total_observed": total_tokens,
                     "token_budget_emergency_remaining": budget.remaining_emergency_tokens,
                     "token_budget_stop_reason": "emergency_token_limit_after_current_tools",
                     "token_budget_target": budget.max_total_tokens,

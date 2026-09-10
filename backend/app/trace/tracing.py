@@ -424,6 +424,7 @@ class TraceSession:
                     tool_choice=kwargs.get("tool_choice"),
                     response_format=kwargs.get("response_format"),
                     timeout=kwargs.get("timeout"),
+                    request_context=kwargs.get("request_context"),
                     span_path=span_path,
                 )
             if kind == "llm_response":

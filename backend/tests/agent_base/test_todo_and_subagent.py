@@ -229,10 +229,16 @@ def test_spawn_subagent_defaults_to_standard_and_forwards_toolkit(tmp_path):
     assert llm.last_model is None
 
 
-def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
+def test_spawn_subagent_does_not_accumulate_token_budget_across_requests(tmp_path):
     class _BudgetLLM(_MockLLM):
         async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
             self.count += 1
+            if self.count > 1:
+                return {
+                    "content": "subagent completed",
+                    "tool_calls": None,
+                    "usage": {"total_tokens": 60},
+                }
             return {
                 "content": "",
                 "tool_calls": [{
@@ -251,7 +257,7 @@ def test_spawn_subagent_stops_at_independent_token_budget(tmp_path):
 
     result = asyncio.run(tool._execute({"description": "find files"}))
 
-    assert "emergency token safety limit" in result
+    assert result == "subagent completed"
     assert tool.last_token_usage == 120
     assert llm.count == 2
 
@@ -293,9 +299,9 @@ def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
         token_finalization_reserve_tokens=1,
         context_budget=ContextBudgetManager(ContextBudget(
             max_context_tokens=4000,
-            output_reserve_tokens=100,
             max_history_tokens=500,
             max_summary_tokens=100,
+            soft_threshold_ratio=0.25,
             compaction_trigger_ratio=0.5,
         )),
     )

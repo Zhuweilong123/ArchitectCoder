@@ -210,7 +210,11 @@ class ReActAgent(Agent):
         return final_answer
 
     def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
-        self.last_context_report["token_budget_used"] = total_tokens
+        request_tokens = total_tokens
+        if self.execution_budget is not None:
+            request_tokens = self.execution_budget.request_tokens
+        self.last_context_report["token_budget_used"] = request_tokens
+        self.last_context_report["token_usage_total_observed"] = total_tokens
         outcome = RunOutcome.from_stop(
             self.last_context_report.get("token_budget_stop_reason", "model_answer"),
             kwargs.get("final_answer", ""),

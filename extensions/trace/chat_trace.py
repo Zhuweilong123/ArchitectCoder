@@ -325,6 +325,7 @@ class ChatTraceLogger:
                     temperature: float | None, max_tokens: int | None,
                     tools: list | None = None, tool_choice: str | None = None,
                     response_format: dict | None = None, timeout: int | None = None,
+                    request_context: dict | None = None,
                     span_id: str = "", span_path: str = "") -> str:
         """记录 LLM 请求（原始 prompt）。返回 span_id 供 response 关联。
 
@@ -349,6 +350,7 @@ class ChatTraceLogger:
             "response_format": response_format,
             "timeout": timeout,
             "span_path": span_path,
+            "request_context": request_context or {},
             "prompt_structure": _prompt_structure(messages, system_prompt, stripped),
             "messages": stripped,
             "tools": tools,

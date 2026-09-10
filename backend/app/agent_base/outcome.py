@@ -24,6 +24,7 @@ class RunOutcome:
             "hard_limit_after_current_tools": "budget_exceeded",
             "emergency_token_limit": "budget_exceeded",
             "emergency_token_limit_after_current_tools": "budget_exceeded",
+            "context_hard_limit": "budget_exceeded",
             "reserve_finalization": "budget_exceeded",
             "reserve_finalization_empty_response": "budget_exceeded",
             "tool_call_limit": "partial",

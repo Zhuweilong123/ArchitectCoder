@@ -339,13 +339,15 @@ class RunPolicyHook:
         if ctx.event == HookEvent.LLM_BEFORE and budget is not None:
             reason = budget.before_llm()
             if reason:
+                message = (
+                    "The run time limit was reached; finalize with the verified evidence already gathered."
+                    if reason == "time_limit" else
+                    "The per-request emergency token ceiling was reached; finalize with the verified evidence already gathered."
+                )
                 decision = HookDecision(
                     action=HookAction.STOP,
                     reason=reason,
-                    message=(
-                        "The emergency token safety limit was reached; finalize with "
-                        "the verified evidence already gathered."
-                    ),
+                    message=message,
                 )
                 runtime.control_decision = decision
                 return decision

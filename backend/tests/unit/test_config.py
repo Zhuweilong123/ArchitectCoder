@@ -21,11 +21,15 @@ def test_settings_accepts_deprecated_sub_agent_model_without_routing(monkeypatch
     assert settings.legacy_sub_agent_model == "legacy-flash-model"
 
 
-def test_settings_default_task_budget_is_200k():
+def test_settings_default_context_limit_and_ratios():
     settings = _settings()
 
-    assert settings.agent_per_run_execution_budget_tokens == 200000
-    assert settings.agent_emergency_execution_budget_tokens == 256000
+    assert settings.agent_context_hard_limit_tokens == 256000
+    assert settings.agent_context_soft_threshold_ratio == 0.78125
+    assert settings.agent_context_compaction_threshold_ratio == 0.9
+    assert settings.agent_context_soft_limit_tokens == 200000
+    assert settings.agent_session_compression_model == "deepseek-flash"
+    assert settings.agent_session_compression_trigger_ratio == 0.7
 
 
 def test_settings_default_subagent_budget_is_500k():
