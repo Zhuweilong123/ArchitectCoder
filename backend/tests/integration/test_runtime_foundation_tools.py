@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 import platform
+import json
 
 from app.agent_base.assembly import DevPromptBuilder
+from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
 from app.agent_base.tools.registry import ToolRegistry
+from app.agent_base.tools.result import ToolResult
 from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.runtime import (
@@ -200,6 +203,88 @@ def test_apply_changes_supports_create_and_exact_replace(tmp_path):
     assert (source / "new.py").read_text(encoding="utf-8") == "print('ok')\n"
 
 
+def test_apply_changes_normalizes_patch_line_endings_and_preserves_target_style(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    target = source / "main.py"
+    target.write_bytes(b"value = 1\r\nname = 'old'\r\n")
+    patch = _tool(create_foundation_tools(str(source)), "apply_changes")
+
+    result = patch.run_result({
+        "changes": [{
+            "op": "patch",
+            "path": "main.py",
+            "old_text": "value = 1\nname = 'old'\n",
+            "new_text": "value = 2\nname = 'new'\n",
+        }],
+    })
+
+    assert result.status == "success"
+    assert target.read_bytes() == b"value = 2\r\nname = 'new'\r\n"
+
+
+def test_apply_changes_returns_actionable_patch_error(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    target = source / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch = _tool(create_foundation_tools(str(source)), "apply_changes")
+
+    result = patch.run_result({
+        "changes": [{
+            "op": "patch",
+            "path": "main.py",
+            "old_text": "value = 2",
+            "new_text": "value = 3",
+        }],
+    })
+
+    payload = json.loads(result.text)
+    assert result.status == "error"
+    assert result.error_code == "PATCH_TEXT_NOT_FOUND"
+    assert result.retryable
+    assert payload["path"] == "main.py"
+    assert payload["recovery_action"].startswith("Read or search")
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_tool_round_executor_requires_fresh_read_after_failed_edit():
+    executor = ToolRoundExecutor(ToolRegistry(), agent_name="test")
+    executor._edit_recovery_paths = {executor._normalise_path("main.py")}
+    call = {
+        "id": "call-1",
+        "function": {
+            "name": "apply_changes",
+            "arguments": json.dumps({
+                "changes": [{
+                    "op": "patch",
+                    "path": "main.py",
+                    "old_text": "old",
+                    "new_text": "new",
+                }],
+            }),
+        },
+    }
+
+    parsed = executor._parse_calls([call])
+
+    assert parsed[0][3] is not None
+    assert "read_file or search_text" in parsed[0][3]
+
+
+def test_tool_round_executor_clears_edit_recovery_after_fresh_read():
+    executor = ToolRoundExecutor(ToolRegistry(), agent_name="test")
+    executor._edit_recovery_paths = {executor._normalise_path("main.py")}
+
+    executor._update_edit_recovery_state(
+        "read_file",
+        {"path": "main.py"},
+        ToolResult.success("value = 1"),
+    )
+
+    assert executor._edit_recovery_paths == set()
+
+
 def test_apply_changes_accumulates_multiple_patches_for_one_file(tmp_path):
     source = tmp_path / "src"
     source.mkdir()
@@ -289,6 +374,31 @@ def test_change_set_commit_ignores_deleted_stale_uml_projects(tmp_path):
     assert not stale.exists()
     change_set.commit()
     assert project.exists()
+
+
+def test_change_set_normalizes_model_edited_project_revision(tmp_path):
+    project = tmp_path / "current.umlproj"
+    project.write_text(
+        json.dumps({"name": "current", "revision": 43, "diagrams": []}, indent=2),
+        encoding="utf-8",
+    )
+    change_set = ChangeSet(project_file=str(project))
+    change_set.begin()
+    changes = _tool(create_foundation_tools(str(tmp_path), change_set=change_set), "apply_changes")
+
+    result = changes.run({"changes": [{
+        "op": "patch",
+        "path": "current.umlproj",
+        "old_text": '"name": "current",\n  "revision": 43',
+        "new_text": '"name": "changed",\n  "revision": 44',
+    }]})
+
+    assert result.startswith("Applied changes:")
+    manifest = change_set.commit()
+    assert manifest
+    saved = json.loads(project.read_text(encoding="utf-8"))
+    assert saved["name"] == "changed"
+    assert saved["revision"] == 44
 
 
 def test_validate_task_validates_uml_project_directly(tmp_path):

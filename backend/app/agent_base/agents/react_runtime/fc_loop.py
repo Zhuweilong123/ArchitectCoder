@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from ...convergence import ConvergenceController
 from ...core.exceptions import AgentInterrupted
@@ -25,6 +25,76 @@ from .react_types import ReActProgress
 from .tool_round_executor import ToolRoundExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _failure_paths(detail: dict[str, Any]) -> tuple[str, ...]:
+    """Return stable target paths for a failed tool call."""
+    arguments = detail.get("arguments")
+    if not isinstance(arguments, dict):
+        return ()
+    if detail.get("name") != "apply_changes":
+        path = arguments.get("path")
+        return (str(path),) if isinstance(path, str) and path.strip() else ()
+    changes = arguments.get("changes")
+    if not isinstance(changes, list):
+        return ()
+    paths = {
+        str(change.get("path") or change.get("to") or change.get("from"))
+        for change in changes
+        if isinstance(change, dict)
+        and str(change.get("path") or change.get("to") or change.get("from") or "").strip()
+    }
+    return tuple(sorted(paths))
+
+
+def _failure_signature(detail: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    return (
+        str(detail.get("name") or "tool"),
+        str(detail.get("error_code") or "TOOL_ERROR"),
+        _failure_paths(detail),
+    )
+
+
+def _recovery_instruction(details: list[dict[str, Any]]) -> str:
+    """Build a targeted recovery instruction from structured tool failures."""
+    codes = {str(detail.get("error_code") or "") for detail in details}
+    paths = sorted({path for detail in details for path in _failure_paths(detail)})
+    path_text = ", ".join(paths[:4]) or "the reported target"
+    if "PATCH_TEXT_NOT_FOUND" in codes:
+        return (
+            f"The patch did not match the current contents of {path_text}. "
+            "Do not repeat the same apply_changes call. First use read_file or search_text "
+            "on the exact target, then rebuild the smallest patch from the returned text."
+        )
+    if "PATCH_AMBIGUOUS" in codes:
+        return (
+            f"The patch anchor matches multiple locations in {path_text}. "
+            "Read a narrower range and use a unique anchor before editing."
+        )
+    if "EXPECTED_SHA_MISMATCH" in codes or "CONCURRENT_CHANGE" in codes:
+        return (
+            f"The target changed since it was read ({path_text}). "
+            "Refresh the current file contents and rebuild the change; do not reuse stale text or hashes."
+        )
+    if "PROCESS_EXIT_ERROR" in codes:
+        return (
+            "The verification command failed. Read the complete failure output and run one valid, "
+            "focused task target; do not concatenate multiple paths into one target."
+        )
+    if "POLICY_BLOCKED" in codes or "HOOK_VETO" in codes:
+        return (
+            "The requested tool invocation was blocked by policy. Follow the supplied tool schema "
+            "and use a structured tool instead of shell syntax or an inline interpreter command."
+        )
+    if "PROJECT_REVISION_CONFLICT" in codes:
+        return (
+            "The UML project revision is stale. Re-read the project after review and continue from "
+            "the current revision; never patch the managed revision field manually."
+        )
+    return (
+        "Treat the failure output as primary evidence. Inspect only the reported target, change the "
+        "strategy, and run focused verification before continuing."
+    )
 
 
 async def run_fc_loop(
@@ -126,7 +196,8 @@ async def run_fc_loop(
     tool_call_count = budget.tool_call_count
     total_tokens = budget.total_tokens
     convergence_directive_added = False
-    last_failure_directive_signature: tuple[tuple[str, str], ...] = ()
+    last_failure_directive_signature: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    failure_attempts: dict[tuple[str, str, tuple[str, ...]], int] = {}
     evidence_ledger = EvidenceLedger(max_records=agent.evidence_max_records)
     convergence = ConvergenceController(
         max_stalled_rounds=agent.convergence_max_stalled_rounds,
@@ -563,30 +634,46 @@ async def run_fc_loop(
                     "content": tr["content"],
                 })
 
-            failed_tools = tuple(sorted(
-                (
-                    str(detail.get("name") or "tool"),
-                    str(detail.get("error_code") or "TOOL_ERROR"),
-                )
-                for detail in details
+            failed_details = [
+                detail for detail in details
                 if detail.get("status") != "success"
+            ]
+            failed_tools = tuple(sorted(
+                _failure_signature(detail)
+                for detail in failed_details
             ))
+            for failure in failed_tools:
+                failure_attempts[failure] = failure_attempts.get(failure, 0) + 1
             if failed_tools and failed_tools != last_failure_directive_signature:
                 messages.append({
                     "role": "system",
                     "content": (
                         "## Recovery checkpoint\n"
                         "The previous tool round reported a failure "
-                        f"({', '.join(name + ':' + code for name, code in failed_tools)}). "
-                        "Treat the failure output as primary evidence. Do not repeat the same "
-                        "call or resume broad discovery. For a repair task, inspect only the "
-                        "reported target, apply the smallest corrective change, and run the "
-                        "focused existing verification immediately. For an analysis-only task, "
-                        "use a different read or report the limitation. After recovery, finish "
-                        "with the verified result and remaining uncertainty."
+                        f"({', '.join(name + ':' + code for name, code, _ in failed_tools)}). "
+                        + _recovery_instruction(failed_details)
+                        + " After recovery, finish with the verified result and remaining uncertainty."
                     ),
                 })
                 last_failure_directive_signature = failed_tools
+
+            repeated_failure_paths = sorted({
+                path
+                for failure, count in failure_attempts.items()
+                if count >= 2
+                for path in failure[2]
+            })
+            if repeated_failure_paths:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "## Repeated edit failure guard\n"
+                        f"Repeated edit failures affect: {', '.join(repeated_failure_paths[:6])}. "
+                        "Do not issue another apply_changes patch for these paths until a fresh "
+                        "read_file or search_text result has been obtained. If the current text "
+                        "cannot be matched, report the blocker instead of guessing."
+                    ),
+                })
 
             get_hooks().emit(
                 HookEvent.TOOL_BATCH_AFTER,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -34,6 +35,14 @@ class ToolRoundResult:
 class ToolRoundExecutor:
     """Own tool-call parsing, execution, evidence, and tool lifecycle Hooks."""
 
+    _EDIT_RECOVERY_CODES = {
+        "PATCH_TEXT_NOT_FOUND",
+        "PATCH_AMBIGUOUS",
+        "EXPECTED_SHA_MISMATCH",
+        "CONCURRENT_CHANGE",
+        "PROJECT_REVISION_CONFLICT",
+    }
+
     def __init__(
         self,
         tool_registry: ToolRegistry,
@@ -54,6 +63,10 @@ class ToolRoundExecutor:
         self.evidence_summary = evidence_summary if evidence_summary is not None else []
         self.current_history = current_history if current_history is not None else []
         self.verifications = verifications if verifications is not None else {}
+        # A failed edit must be based on a fresh observation.  This state is
+        # deliberately local to one task execution, not persisted in session
+        # history, so a later user turn starts with a clean recovery boundary.
+        self._edit_recovery_paths: set[str] = set()
 
     async def execute(self, tool_calls: list[dict], *, step: int) -> ToolRoundResult:
         parsed_calls = self._parse_calls(tool_calls)
@@ -107,6 +120,7 @@ class ToolRoundExecutor:
             )
             self.evidence_summary.append(evidence.to_dict())
             del self.evidence_summary[:-32]
+            self._update_edit_recovery_state(tool_name, tool_args, tool_result)
             self.current_history.append(
                 f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"
                 f" → {observation_fed[:150]}"
@@ -131,6 +145,62 @@ class ToolRoundExecutor:
             })
 
         return result
+
+    @staticmethod
+    def _normalise_path(value: object) -> str:
+        return os.path.normcase(os.path.normpath(str(value).replace("/", os.sep)))
+
+    @classmethod
+    def _paths_for_call(cls, tool_name: str, tool_args: object) -> set[str]:
+        if not isinstance(tool_args, dict):
+            return set()
+        if tool_name == "apply_changes":
+            changes = tool_args.get("changes")
+            if not isinstance(changes, list):
+                return set()
+            values = {
+                change.get(field)
+                for change in changes
+                if isinstance(change, dict)
+                for field in ("path", "from", "to")
+                if isinstance(change.get(field), str) and change.get(field).strip()
+            }
+        elif tool_name in {"read_file", "search_text"}:
+            values = {tool_args.get("path")}
+        else:
+            values = set()
+        return {cls._normalise_path(value) for value in values if value}
+
+    @classmethod
+    def _paths_overlap(cls, left: str, right: str) -> bool:
+        left = cls._normalise_path(left)
+        right = cls._normalise_path(right)
+        return (
+            left == right
+            or left.endswith(os.sep + right)
+            or right.endswith(os.sep + left)
+        )
+
+    def _update_edit_recovery_state(
+        self,
+        tool_name: str,
+        tool_args: object,
+        tool_result: ToolResult,
+    ) -> None:
+        paths = self._paths_for_call(tool_name, tool_args)
+        if tool_name == "apply_changes":
+            if tool_result.error_code in self._EDIT_RECOVERY_CODES:
+                self._edit_recovery_paths.update(paths)
+            elif tool_result.status == "success":
+                self._edit_recovery_paths = {
+                    pending for pending in self._edit_recovery_paths
+                    if not any(self._paths_overlap(pending, path) for path in paths)
+                }
+        elif tool_name in {"read_file", "search_text"} and tool_result.status == "success":
+            self._edit_recovery_paths = {
+                pending for pending in self._edit_recovery_paths
+                if not any(self._paths_overlap(pending, path) for path in paths)
+            }
 
     def _parse_calls(self, tool_calls: list[dict]) -> list[tuple[dict, str, dict | str, str | None]]:
         runtime = get_runtime()
@@ -160,6 +230,19 @@ class ToolRoundExecutor:
                     f"Tool-call budget exceeded ({budget.max_tool_calls}). "
                     "Stop calling tools and summarize the result."
                 )
+            elif tool_name == "apply_changes":
+                edit_paths = self._paths_for_call(tool_name, tool_args)
+                stale_paths = sorted(
+                    pending for pending in self._edit_recovery_paths
+                    if any(self._paths_overlap(pending, path) for path in edit_paths)
+                )
+                if stale_paths:
+                    blocked = (
+                        "Recovery required before editing these previously failed targets: "
+                        f"{', '.join(stale_paths[:6])}. "
+                        "First call read_file or search_text for the exact target, then "
+                        "rebuild a fresh, minimal apply_changes request."
+                    )
             parsed_calls.append((tool_call, tool_name, tool_args, blocked))
         return parsed_calls
 

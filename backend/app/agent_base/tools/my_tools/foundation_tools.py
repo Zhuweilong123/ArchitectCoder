@@ -31,6 +31,27 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
 from app.runtime import FileSystemOperationError, NativeFileSystem
 
 
+class _ApplyChangesError(ValueError):
+    """Structured, model-actionable validation error for apply_changes."""
+
+    def __init__(self, message: str, code: str, **details: Any):
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
+
+def _normalise_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _newline_style(value: str) -> str:
+    return "\r\n" if "\r\n" in value else "\n"
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 class ListFilesTool(FoundationListFilesRuntime):
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
@@ -184,28 +205,152 @@ class ApplyChangesTool(Tool):
     def run_result(self, parameters: dict) -> ToolResult:
         return ToolResult.from_value(self._apply_changes(parameters))
 
+    @staticmethod
+    def _error_result(
+        message: str,
+        code: str,
+        *,
+        retryable: bool = True,
+        **details: Any,
+    ) -> ToolResult:
+        payload = {
+            "error": message,
+            "error_code": code,
+            "retryable": retryable,
+            **details,
+        }
+        if retryable:
+            payload.setdefault(
+                "recovery_action",
+                "Inspect the reported target and retry with a smaller, current-state change.",
+            )
+        return ToolResult.error(payload, code, retryable=retryable)
+
+    @staticmethod
+    def _error_details(
+        change: dict[str, Any],
+        index: int,
+        operation: str,
+    ) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "change_index": index,
+            "operation": operation,
+        }
+        path = change.get("path") or change.get("to") or change.get("from")
+        if isinstance(path, str) and path.strip():
+            details["path"] = path
+        return details
+
+    def _classify_error(
+        self,
+        exc: Exception,
+        change: dict[str, Any],
+        index: int,
+        operation: str,
+        states: dict[str, dict[str, Any]],
+    ) -> ToolResult:
+        message = str(exc)
+        details = self._error_details(change, index, operation)
+        if isinstance(exc, _ApplyChangesError):
+            # Keep the path as supplied by the model so the recovery call can
+            # reuse it.  Preserve a resolved path separately for diagnostics.
+            custom_details = dict(exc.details)
+            resolved_path = custom_details.pop("path", None)
+            if resolved_path is not None:
+                if details.get("path"):
+                    details["resolved_path"] = resolved_path
+                else:
+                    details["path"] = resolved_path
+            details.update(custom_details)
+            return self._error_result(
+                message,
+                exc.code,
+                **details,
+            )
+        if "text not found" in message.lower():
+            state = next(
+                (
+                    value for value in states.values()
+                    if str(value.get("path")) == str(details.get("path"))
+                ),
+                None,
+            )
+            if state and state.get("initial_raw") is not None:
+                details["current_file_sha256"] = hashlib.sha256(
+                    state["initial_raw"]
+                ).hexdigest()
+            old_text = change.get("old_text")
+            if isinstance(old_text, str):
+                details["old_text_sha256"] = _sha256_text(old_text)
+            return self._error_result(
+                message,
+                "PATCH_TEXT_NOT_FOUND",
+                recovery_action=(
+                    "Read or search the current target file, then rebuild the smallest patch. "
+                    "Do not repeat the same old_text."
+                ),
+                **details,
+            )
+        if "unsupported operation" in message.lower():
+            return self._error_result(
+                message,
+                "UNSUPPORTED_OPERATION",
+                recovery_action="Use one of create, replace, patch, delete, move, copy, or mkdir.",
+                **details,
+            )
+        if "changed since it was read" in message.lower():
+            return self._error_result(
+                message,
+                "EXPECTED_SHA_MISMATCH",
+                recovery_action="Re-read the target file and rebuild the change from its current contents.",
+                **details,
+            )
+        if "concurrent change detected" in message.lower():
+            return self._error_result(
+                message,
+                "CONCURRENT_CHANGE",
+                recovery_action="Re-read the target and retry only after confirming the current state.",
+                **details,
+            )
+        return self._error_result(message, "TOOL_REPORTED_ERROR", **details)
+
     def _apply_changes(self, parameters: dict):
         changes = parameters.get("changes")
         if not isinstance(changes, list) or not changes:
-            return "Error: changes must be a non-empty list"
+            return self._error_result(
+                "changes must be a non-empty list",
+                "INVALID_CHANGE_BATCH",
+                recovery_action="Send a non-empty changes array.",
+            )
 
         states: dict[str, dict[str, Any]] = {}
         operations: list[str] = []
         for index, change in enumerate(changes):
             if not isinstance(change, dict):
-                return f"Error: changes[{index}] must be an object"
+                return self._error_result(
+                    f"changes[{index}] must be an object",
+                    "INVALID_CHANGE",
+                    change_index=index,
+                    recovery_action="Send each change as an object with an operation and target.",
+                )
             operation = str(change.get("op") or "").lower().strip()
             try:
                 self._plan_change(states, operation, change, index)
             except (OSError, ValueError, FileSystemOperationError) as exc:
-                return f"Error: changes[{index}] {exc}"
+                return self._classify_error(
+                    exc, change, index, operation, states,
+                )
             operations.append(operation)
 
         try:
             self._commit_states(states)
         except (OSError, ValueError, FileSystemOperationError) as exc:
             self._restore_states(states)
-            return f"Error: changes rolled back: {exc}"
+            return self._error_result(
+                f"changes rolled back: {exc}",
+                "CHANGE_COMMIT_FAILED",
+                recovery_action="Re-read affected files and retry the smallest valid change batch.",
+            )
         result = ToolResult.success("Applied changes: " + ", ".join(operations))
         for state in states.values():
             if (state["exists"], state["is_dir"], state["content"]) == (
@@ -292,8 +437,11 @@ class ApplyChangesTool(Tool):
         raw = state.get("initial_raw")
         actual = hashlib.sha256(raw).hexdigest() if raw is not None else ""
         if str(expected).lower() != actual.lower():
-            raise ValueError(
-                f"{label} changed since it was read; expected sha256 {expected}, actual {actual}"
+            raise _ApplyChangesError(
+                f"{label} changed since it was read; expected sha256 {expected}, actual {actual}",
+                "EXPECTED_SHA_MISMATCH",
+                expected_sha256=str(expected),
+                actual_sha256=actual,
             )
 
     def _plan_change(
@@ -302,7 +450,10 @@ class ApplyChangesTool(Tool):
     ) -> None:
         supported = {"create", "replace", "patch", "delete", "move", "copy", "mkdir"}
         if operation not in supported:
-            raise ValueError(f"unsupported operation '{operation}'")
+            raise _ApplyChangesError(
+                f"unsupported operation '{operation}'",
+                "UNSUPPORTED_OPERATION",
+            )
 
         if operation in {"move", "copy"}:
             source = self._state(states, self._path(change.get("from"), index, "from"))
@@ -341,9 +492,40 @@ class ApplyChangesTool(Tool):
             new_text = change.get("new_text")
             if not isinstance(old_text, str) or not isinstance(new_text, str):
                 raise ValueError("old_text and new_text must be strings")
-            if old_text not in current:
-                raise ValueError(f"text not found in {state['path']}")
-            state["content"] = current.replace(old_text, new_text, 1)
+            if old_text in current:
+                state["content"] = current.replace(old_text, new_text, 1)
+                return
+
+            normalized_current = _normalise_newlines(current)
+            normalized_old = _normalise_newlines(old_text)
+            normalized_new = _normalise_newlines(new_text)
+            match_count = normalized_current.count(normalized_old)
+            if match_count == 1:
+                patched = normalized_current.replace(normalized_old, normalized_new, 1)
+                state["content"] = patched.replace("\n", _newline_style(current))
+                return
+            if match_count > 1:
+                raise _ApplyChangesError(
+                    f"patch text matches {match_count} locations in {state['path']}",
+                    "PATCH_AMBIGUOUS",
+                    path=str(state["path"]),
+                    match_count=match_count,
+                    old_text_sha256=_sha256_text(old_text),
+                    recovery_action="Read a narrower range and provide a unique patch anchor.",
+                )
+            raise _ApplyChangesError(
+                f"text not found in {state['path']}",
+                "PATCH_TEXT_NOT_FOUND",
+                path=str(state["path"]),
+                old_text_sha256=_sha256_text(old_text),
+                current_file_sha256=hashlib.sha256(
+                    bytes(state["initial_raw"] or b"")
+                ).hexdigest(),
+                recovery_action=(
+                    "Read or search the current target file, then rebuild the smallest patch. "
+                    "Do not repeat the same old_text."
+                ),
+            )
         elif operation == "delete":
             if not state["exists"]:
                 raise ValueError("target does not exist")

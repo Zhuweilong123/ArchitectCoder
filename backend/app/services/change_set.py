@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import tempfile
@@ -136,6 +137,15 @@ class ChangeSet:
                             expected,
                             self.project_repository.revision(project_path),
                         )
+                    if self._normalise_manual_revision_bump(
+                        path,
+                        expected_revision=expected,
+                        record=record,
+                    ):
+                        logger.warning(
+                            "[ChangeSet] normalized a manually edited UML revision before commit: %s",
+                            path,
+                        )
                     self.project_repository.commit_external_change(
                         project_path,
                         expected_revision=expected,
@@ -157,6 +167,45 @@ class ChangeSet:
         for project_path in dict.fromkeys(refresh_paths):
             self._refresh_kg(project_path)
         return manifest
+
+    def _normalise_manual_revision_bump(
+        self,
+        path: Path,
+        *,
+        expected_revision: int,
+        record: dict,
+    ) -> bool:
+        """Remove a model-edited revision bump before repository commit.
+
+        The project repository owns optimistic revisions.  Models sometimes
+        copy the observed ``revision`` field into an edit and increment it
+        manually, which makes ``commit_external_change`` see ``expected=43``
+        and ``actual=44`` even though the file has not changed concurrently.
+        Only normalize the exact, safe case where the current file still
+        matches this ChangeSet's after snapshot and the revision is exactly
+        one higher than the captured revision.  Any other mismatch remains a
+        real conflict.
+        """
+        try:
+            current_text = _read_text_preserving_newlines(path)
+            document = json.loads(current_text)
+            actual_revision = int(document.get("revision", 0) or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+        if actual_revision != int(expected_revision) + 1:
+            return False
+        if "revision" not in document:
+            return False
+
+        document["revision"] = int(expected_revision)
+        normalized = json.dumps(document, indent=2, ensure_ascii=False)
+        if current_text.endswith("\r\n"):
+            normalized += "\r\n"
+        elif current_text.endswith("\n"):
+            normalized += "\n"
+        _atomic_write(path, normalized)
+        record["after_sha256"] = _sha256(normalized)
+        return True
 
     def rollback(self) -> list[dict]:
         with self._lock:
