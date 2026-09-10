@@ -237,7 +237,7 @@ class NativePowerShellExecutor:
             executable = remainder.split(None, 1)[0].strip("'\"").lower()
         allowed = {
             "get-childitem", "gci", "dir", "get-content", "gc", "select-string", "sls",
-            "test-path", "pwd", "write-output", "echo", "python", "python.exe", "py",
+            "test-path", "get-date", "pwd", "write-output", "echo", "python", "python.exe", "py",
             "pytest", "git", "node", "node.exe", "npm", "npx", "pnpm", "yarn", "ruff",
             "mypy", "cargo", "go", "dotnet", "java", "mvn", "gradle",
         }

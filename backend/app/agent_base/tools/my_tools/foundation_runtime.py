@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 DENY_LIST = [
     "rm -rf /", "mkfs", "dd if=",
     # 格式化/磁盘/分区操作
-    "format", "diskpart", "clean all", "convert gpt", "convert mbr",
+    "diskpart", "clean all", "convert gpt", "convert mbr",
     # 引导记录破坏
     "bcdedit /delete", "bootrec /fixmbr", "bootrec /fixboot",
     # 安全策略/加密破坏
@@ -77,6 +77,10 @@ REVIEW_LIST = [
 ]
 
 # 匹配前统一转小写：命令会 lower()，名单预转小写避免混合大小写条目失效。
+DENY_REGEX_LIST = [
+    r"(?<![\w-])format(?:\.(?:com|exe))?(?=\s|$)",
+    r"(?<![\w-])format-volume(?=\s|$)",
+]
 _DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
 _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
@@ -333,6 +337,7 @@ class ShellTool(AsyncTool):
         self._output_cap = max(1024, min(int(output_cap), 1_000_000))
         self._risk_policy = risk_policy or RiskPolicy(
             deny_patterns=DENY_LIST,
+            deny_regex_patterns=DENY_REGEX_LIST,
             approval_patterns=REVIEW_LIST,
         )
 
