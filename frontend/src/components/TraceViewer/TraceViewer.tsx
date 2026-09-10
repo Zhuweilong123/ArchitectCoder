@@ -28,13 +28,18 @@ const { Text } = Typography;
 type TraceEvent = Record<string, any>;
 
 interface LlmItem { kind: 'llm'; request: TraceEvent; response?: TraceEvent; }
-interface ToolItem { kind: 'tool'; call: TraceEvent; result?: TraceEvent; }
+interface ToolItem { kind: 'tool'; call: TraceEvent; result?: TraceEvent; subagent?: SubagentItem; }
 interface StepItem { kind: 'step'; event: TraceEvent; }
 interface DoneItem { kind: 'done'; event: TraceEvent; }
 interface ErrorItem { kind: 'error'; event: TraceEvent; }
 interface SummaryItem { kind: 'summary'; event: TraceEvent; }
 interface ReviewItem { kind: 'review'; event: TraceEvent; }
-type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem;
+interface SubagentItem {
+  kind: 'subagent';
+  spanPath: string;
+  items: Item[];
+}
+type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | SubagentItem;
 
 interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
 
@@ -184,7 +189,61 @@ function buildTurns(events: TraceEvent[]): Turn[] {
         break;
     }
   }
-  return turns.filter((t) => t.items.length > 0 || t.userMessage);
+  return turns
+    .filter((t) => t.items.length > 0 || t.userMessage)
+    .map((turn) => ({ ...turn, items: groupSubagentItems(turn.items) }));
+}
+
+function eventSpanPath(item: Item): string {
+  if (item.kind === 'llm') return String(item.request.span_path || '');
+  if (item.kind === 'tool') return String(item.call.span_path || '');
+  return '';
+}
+
+function isSubagentEvent(item: Item): boolean {
+  const path = eventSpanPath(item);
+  return path.split('/').some((segment) => segment.toLowerCase().includes('subagent'));
+}
+
+function groupSubagentItems(items: Item[]): Item[] {
+  const grouped: Item[] = [];
+  const pending: SubagentItem[] = [];
+  let activeChildItems: Item[] = [];
+  let lastSpawnTool: ToolItem | undefined;
+
+  const flushChildItems = () => {
+    if (activeChildItems.length === 0) return;
+    const subagent: SubagentItem = {
+      kind: 'subagent',
+      spanPath: eventSpanPath(activeChildItems[0]) || 'subagent',
+      items: activeChildItems,
+    };
+    // Depending on when the trace sink flushes events, the parent tool_call can
+    // be recorded either before or after the nested child LLM events.
+    if (lastSpawnTool && !lastSpawnTool.subagent) lastSpawnTool.subagent = subagent;
+    else pending.push(subagent);
+    activeChildItems = [];
+  };
+
+  for (const item of items) {
+    if (isSubagentEvent(item)) {
+      activeChildItems.push(item);
+      continue;
+    }
+    flushChildItems();
+    if (item.kind === 'tool' && item.call.tool_name === 'spawn_subagent') {
+      lastSpawnTool = item;
+      const waiting = pending.shift();
+      if (waiting) item.subagent = waiting;
+    }
+    grouped.push(item);
+  }
+  flushChildItems();
+
+  // Keep unmatched child spans visible instead of dropping them. This also
+  // supports older traces that do not contain the parent tool_call event.
+  for (const orphan of pending) grouped.push(orphan);
+  return grouped;
 }
 
 // ── 渲染子组件 ────────────────────────────────────────
@@ -300,29 +359,95 @@ function renderTool(item: ToolItem): React.ReactNode {
   const obsLabel = res?.fed_truncated
     ? `返回 · 完整(模型仅看前${res.fed_length}字)`
     : '返回';
-  const panels: Array<{ key: string; label: string; children: React.ReactNode }> = [
-    { key: 'args', label: '参数', children: <pre className="trace-pre">{truncate(pretty(call.arguments))}</pre> },
-  ];
-  if (res) {
-    panels.push({
-      key: 'obs',
-      label: `${obsLabel}${res.error ? ' (error)' : ''}`,
-      children: res.error
-        ? <pre className="trace-pre trace-error-text">{truncate(String(res.error))}</pre>
-        : <pre className="trace-pre">{truncate(String(res.observation ?? ''))}</pre>,
-    });
-  }
+  const argsPanel = {
+    key: 'args', label: '参数', children: <pre className="trace-pre">{truncate(pretty(call.arguments))}</pre>,
+  };
+  const resultPanel = res ? {
+    key: 'obs',
+    label: `${obsLabel}${res.error ? ' (error)' : ''}`,
+    children: res.error
+      ? <pre className="trace-pre trace-error-text">{truncate(String(res.error))}</pre>
+      : <pre className="trace-pre">{truncate(String(res.observation ?? ''))}</pre>,
+  } : null;
+  const panels: Array<{ key: string; label: string; children: React.ReactNode }> = [argsPanel];
+  if (resultPanel) panels.push(resultPanel);
+  const hasSubagent = call.tool_name === 'spawn_subagent' && item.subagent;
   return (
     <div className="trace-card trace-tool">
       <div className="trace-card-head">
         <ToolOutlined className="trace-icon tool" />
         <span className="trace-title">{call.tool_name || 'tool'}</span>
+        {call.tool_name === 'spawn_subagent' ? <Tag color="purple">子代理委派</Tag> : null}
         {res?.fed_truncated ? (
           <Tag color="orange">模型仅收到前 {res.fed_length} 字</Tag>
         ) : null}
         {res?.duration_ms != null ? <span className="trace-meta">{res.duration_ms}ms</span> : null}
       </div>
-      <Collapse ghost items={panels} />
+      {hasSubagent ? (
+        <>
+          <Collapse ghost items={[argsPanel]} />
+          {renderSubagent(item.subagent as SubagentItem)}
+          {resultPanel ? <Collapse ghost items={[resultPanel]} /> : null}
+        </>
+      ) : (
+        <Collapse ghost items={panels} />
+      )}
+    </div>
+  );
+}
+
+function renderSubagent(item: SubagentItem): React.ReactNode {
+  const llmItems = item.items.filter((child): child is LlmItem => child.kind === 'llm');
+  const renderedToolCount = item.items.filter((child) => child.kind === 'tool').length;
+  const embeddedToolCount = llmItems.reduce(
+    (count, child) => count + (Array.isArray(child.response?.tool_calls) ? child.response.tool_calls.length : 0),
+    0,
+  );
+  // New traces have dedicated child tool cards. Older traces only expose the
+  // model's embedded tool_calls, so keep that as a compatibility fallback.
+  const toolCount = renderedToolCount || embeddedToolCount;
+  const duration = llmItems.reduce((total, child) => total + Number(child.response?.duration_ms || 0), 0);
+  const hasError = llmItems.some((child) => Boolean(child.response?.error))
+    || item.items.some((child) => child.kind === 'error');
+  const safelyStopped = !hasError && llmItems.some((child) => (
+    String(child.response?.content || '').startsWith('Subagent stopped safely:')
+  ));
+  const promptTokens = llmItems.reduce((total, child) => total + Number(child.response?.usage?.prompt_tokens || 0), 0);
+  const cachedTokens = llmItems.reduce((total, child) => total + Number(child.response?.usage?.cached_tokens || 0), 0);
+  const cacheRate = promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null;
+  const statusLabel = hasError ? '存在错误' : safelyStopped ? '安全停止' : '已完成';
+
+  return (
+    <div className={`trace-card trace-subagent${hasError ? ' trace-subagent-error' : ''}`}>
+      <Collapse
+        ghost
+        defaultActiveKey={hasError ? ['subagent'] : []}
+        items={[{
+          key: 'subagent',
+          label: (
+            <div className="trace-subagent-head">
+              <RobotOutlined className="trace-icon subagent" />
+              <span className="trace-title">子代理过程</span>
+              <Tag color={hasError ? 'red' : safelyStopped ? 'orange' : 'purple'}>{statusLabel}</Tag>
+              <Tag>{llmItems.length} 次模型请求</Tag>
+              {toolCount > 0 ? <Tag>{toolCount} 次工具调用</Tag> : null}
+              {cacheRate !== null ? <Tag color="cyan">缓存 {cacheRate}%</Tag> : null}
+              {promptTokens > 0 ? <Tag color="blue">{promptTokens.toLocaleString()} prompt tok</Tag> : null}
+              {duration > 0 ? <span className="trace-meta">{Math.round(duration)}ms</span> : null}
+              <span className="trace-subagent-path">{item.spanPath}</span>
+            </div>
+          ),
+          children: (
+            <div className="trace-subagent-body">
+              {item.items.map((child, index) => (
+                <div className="trace-subagent-event" key={`${item.spanPath}-${index}`}>
+                  {renderItem(child)}
+                </div>
+              ))}
+            </div>
+          ),
+        }]}
+      />
     </div>
   );
 }
@@ -454,6 +579,7 @@ function renderItem(item: Item): React.ReactNode {
     case 'error': return renderError(item.event);
     case 'summary': return renderTaskSummary(item.event);
     case 'review': return renderReview(item.event);
+    case 'subagent': return renderSubagent(item);
   }
 }
 

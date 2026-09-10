@@ -588,6 +588,43 @@ class SpawnSubagentTool(AsyncTool):
                     "tool_calls": tool_calls,
                 })
                 round_result = await executor.execute(tool_calls, step=step)
+                # Child tool calls use the same trace contract as the parent
+                # agent.  Keep them under the child span so the trace viewer
+                # can render the normal tool cards inside the subagent panel.
+                from app.trace.tracing import emit_trace, trace_span
+                with trace_span("spawn_subagent"):
+                    for detail in round_result.details:
+                        tool_name = str(detail.get("name") or "")
+                        status = str(detail.get("status") or "")
+                        tool_span = emit_trace(
+                            "tool_call",
+                            step=step,
+                            tool_name=tool_name,
+                            arguments=(
+                                detail.get("arguments")
+                                if isinstance(detail.get("arguments"), dict)
+                                else {}
+                            ),
+                        ) or ""
+                        emit_trace(
+                            "tool_result",
+                            span_id=tool_span,
+                            tool_name=tool_name,
+                            observation=str(detail.get("observation") or ""),
+                            error=(
+                                str(detail.get("error_code") or "")
+                                if status not in {"", "success", "completed"}
+                                else ""
+                            ),
+                            fed_truncated=bool(detail.get("fed_truncated", False)),
+                            fed_length=int(detail.get("fed_length") or 0),
+                            duration_ms=float(detail.get("duration_ms") or 0.0),
+                            evidence=(
+                                detail.get("evidence")
+                                if isinstance(detail.get("evidence"), dict)
+                                else None
+                            ),
+                        )
                 # ToolRoundExecutor returns an internal compact result shape.
                 # The child loop must add the provider-facing role explicitly;
                 # the parent FC loop does the same in fc_loop.py.

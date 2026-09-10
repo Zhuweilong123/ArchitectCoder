@@ -92,6 +92,27 @@ def _trace_hook_bridge(kind: str, *args, **kwargs):
                 span_path=span_path,
             )
             return None
+        elif kind == "tool_call":
+            return tracer.tool_call(
+                step=int(kwargs.get("step") or 0),
+                tool_name=kwargs.get("tool_name", ""),
+                arguments=kwargs.get("arguments") if isinstance(kwargs.get("arguments"), dict) else {},
+                parent_span_id=kwargs.get("parent_span_id", ""),
+                span_path=span_path,
+            )
+        elif kind == "tool_result":
+            tracer.tool_result(
+                span_id=kwargs.get("span_id", ""),
+                tool_name=kwargs.get("tool_name", ""),
+                observation=str(kwargs.get("observation", "")),
+                duration_ms=float(kwargs.get("duration_ms") or 0.0),
+                error=kwargs.get("error", ""),
+                fed_truncated=bool(kwargs.get("fed_truncated", False)),
+                fed_length=int(kwargs.get("fed_length") or 0),
+                evidence=kwargs.get("evidence") if isinstance(kwargs.get("evidence"), dict) else None,
+                span_path=span_path,
+            )
+            return None
     except Exception:
         logger.exception("[Trace] Bridge failed for kind=%s", kind)
     return None

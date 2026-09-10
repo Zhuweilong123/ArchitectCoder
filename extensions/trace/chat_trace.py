@@ -387,7 +387,7 @@ class ChatTraceLogger:
         )
 
     def tool_call(self, *, step: int, tool_name: str, arguments: dict,
-                  parent_span_id: str = "") -> str:
+                  parent_span_id: str = "", span_path: str = "") -> str:
         """记录工具调用。返回 span_id 供 tool_result 关联。"""
         sid = new_trace_id()
         self._write({
@@ -397,13 +397,14 @@ class ChatTraceLogger:
             "step": step,
             "tool_name": tool_name,
             "arguments": arguments,
+            "span_path": span_path,
         })
         return sid
 
     def tool_result(self, *, span_id: str, tool_name: str, observation: str,
                     duration_ms: float = 0.0, error: str = "",
                     fed_truncated: bool = False, fed_length: int = 0,
-                    evidence: dict | None = None) -> None:
+                    evidence: dict | None = None, span_path: str = "") -> None:
         """记录工具返回（完整 observation，不截断）。
 
         fed_truncated / fed_length 标记该返回喂回模型前是否被截断，
@@ -421,6 +422,7 @@ class ChatTraceLogger:
             "evidence": evidence or {},
             "duration_ms": round(duration_ms, 1),
             "error": error,
+            "span_path": span_path,
         })
 
     def review_request(self, *, review_id: int, review_type: str,
