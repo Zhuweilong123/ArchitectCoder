@@ -263,7 +263,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   setExportDialogVisible: (visible) => set({ exportDialogVisible: visible }),
   setCurrentBrowsePath: (path) => set({ currentBrowsePath: path }),
 
-  setAgentChatVisible: (visible) => set({ agentChatVisible: visible }),
+  setAgentChatVisible: (visible) => set((state) => ({
+    agentChatVisible: visible,
+    // A newly opened chat starts in the expanded layout for a clearer first-use experience.
+    ...(visible ? { agentChatExpanded: true } : {}),
+  })),
   setAgentChatExpanded: (expanded) => set({ agentChatExpanded: expanded }),
   setAgentChatPosition: (position) => {
     try {

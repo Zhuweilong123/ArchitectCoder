@@ -250,7 +250,7 @@ def test_standard_toolkit_full_editing(tmp_path):
 def test_read_only_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["read_only"].list_tools()
-    assert names == ["read_file"]
+    assert set(names) == {"list_files", "read_file", "search_text"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -258,7 +258,7 @@ def test_read_only_toolkit_no_writes(tmp_path):
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert set(names) == {"read_file", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -271,9 +271,9 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert set(names) == {"read_file", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
-    assert not ({"apply_changes", "run_program", "run_task", "shell", "list_files"} & set(names))
+    assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
     schema = tool.to_openai_schema()
     assert schema["function"]["parameters"]["properties"]["toolkit"]["enum"] == ["strategy"]
 

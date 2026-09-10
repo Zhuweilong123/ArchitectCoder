@@ -63,15 +63,20 @@ def _build_toolkit_tools(
     if kind == "standard":
         return [*foundation, SkillTool()]
 
-    # Read-only toolkits intentionally expose only the foundation read contract.
-    # Read-only toolkits intentionally use only file inspection and skills.
+    # Read-only toolkits intentionally expose only the foundation inspection
+    # contract.  Directory listing and text search are needed to make a
+    # bounded analysis useful without granting execution or write access.
     # KG toolkit names remain for compatibility, but graph tools are disabled
     # for DevAgent to avoid broad exploration and repeated reads.
-    read_tool = by_name["read_file"]
+    inspection_tools = [
+        by_name["list_files"],
+        by_name["read_file"],
+        by_name["search_text"],
+    ]
     if kind == "read_only":
-        return [read_tool]
+        return inspection_tools
     if kind in {"kg_analysis", "strategy"}:
-        return [read_tool, SkillTool()]
+        return [*inspection_tools, SkillTool()]
     raise ValueError(f"unknown toolkit: {kind}")
 
 
