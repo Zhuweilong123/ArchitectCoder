@@ -191,6 +191,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
 class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
+    _MAX_PATH_SUGGESTIONS = 5
+
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
                  workspace_root: str = ""):
         super().__init__(
@@ -221,7 +223,7 @@ class ReadFileTool(AsyncTool):
         try:
             lines = fp.read_text(encoding="utf-8").splitlines()
         except FileNotFoundError:
-            return f"Error: file not found: {path}"
+            return self._missing_file_message(path)
         except Exception as e:
             return f"Error: {e}"
 
@@ -232,6 +234,77 @@ class ReadFileTool(AsyncTool):
         if limit is not None and limit < len(lines):
             lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
         return "\n".join(lines)
+
+    def _missing_file_message(self, requested: object) -> str:
+        """Return a bounded, actionable error without guessing a target path."""
+        requested_text = str(requested or "")
+        candidates = self._find_candidates(requested_text)
+        lines = [
+            f"Error: file not found: {requested_text}",
+            "recovery_action: use an exact path returned by list_files or search_text.",
+        ]
+        if candidates:
+            lines.insert(1, "possible_paths: " + ", ".join(candidates))
+        return "\n".join(lines)
+
+    def _find_candidates(self, requested: str) -> list[str]:
+        """Find a few same-name files for model guidance after a miss.
+
+        This is deliberately advisory: the requested path is never rewritten and
+        ambiguous matches are all reported instead of silently selecting one.
+        The search is bounded and skips generated/dependency directories.
+        """
+        name = Path(requested).name.strip()
+        if not name or name in {".", ".."}:
+            return []
+        roots: list[Path] = []
+        for value in (
+            self._source_dir, self._test_dir, self._design_dir, self._workspace_root,
+        ):
+            if not value:
+                continue
+            root = Path(value).resolve()
+            if root not in roots and root.is_dir():
+                roots.append(root)
+
+        found: list[str] = []
+        seen: set[str] = set()
+        ignored = {".git", "node_modules", "__pycache__", ".pytest_cache"}
+        for root in roots:
+            try:
+                for candidate in root.rglob(name):
+                    if any(part in ignored for part in candidate.parts):
+                        continue
+                    resolved = candidate.resolve()
+                    if not resolved.is_file() or not resolved.is_relative_to(root):
+                        continue
+                    display = self._display_candidate(resolved)
+                    if display not in seen:
+                        seen.add(display)
+                        found.append(display)
+                    if len(found) >= self._MAX_PATH_SUGGESTIONS:
+                        return found
+            except OSError:
+                continue
+        return found
+
+    def _display_candidate(self, candidate: Path) -> str:
+        """Prefer stable workspace aliases over machine-specific absolute paths."""
+        for label, value in (
+            ("source", self._source_dir),
+            ("test", self._test_dir),
+            ("design", self._design_dir),
+            ("workspace", self._workspace_root),
+        ):
+            if not value:
+                continue
+            root = Path(value).resolve()
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            return f"{label}/{relative.as_posix()}"
+        return str(candidate)
 
     def to_openai_schema(self) -> dict:
         return {

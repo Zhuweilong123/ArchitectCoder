@@ -143,6 +143,74 @@ def test_spawn_subagent_returns_summary_without_overriding_parent_model(tmp_path
     assert llm.last_model is None
 
 
+def test_spawn_subagent_emits_provider_valid_tool_messages(tmp_path):
+    class _RoleCheckingLLM(_MockLLM):
+        def __init__(self):
+            super().__init__()
+            self.requests = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.requests.append([dict(message) for message in messages])
+            return await super().ainvoke_with_tools(messages, tools, tool_choice, **kwargs)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    llm = _RoleCheckingLLM()
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(src))
+
+    assert asyncio.run(tool._execute({"description": "find files"})) == "summary text"
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_call_id") == "c1"
+        for message in llm.requests[1]
+    )
+
+
+def test_spawn_subagent_degrades_provider_exception_to_evidence_summary(tmp_path):
+    class _BrokenLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            raise RuntimeError("provider protocol failure")
+
+    tool = SpawnSubagentTool(llm=_BrokenLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "inspect the project"}))
+
+    assert "stopped safely" in result
+    assert "provider protocol failure" in result
+    assert tool.last_context_report["subagent_stop_reason"] == "internal child-run error"
+
+
+def test_spawn_subagent_rejects_malformed_tool_calls_without_raising(tmp_path):
+    class _MalformedLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            return {
+                "content": "",
+                "tool_calls": [{"id": "bad", "function": {"arguments": "{}"}}],
+            }
+
+    tool = SpawnSubagentTool(llm=_MalformedLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "inspect the project"}))
+
+    assert "stopped safely" in result
+    assert "malformed tool calls" in result
+
+
+def test_spawn_subagent_bounds_large_parent_report(tmp_path):
+    class _VerboseLLM:
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            return {"content": "HEAD\n" + ("detail\n" * 2000) + "TAIL", "tool_calls": None}
+
+    tool = SpawnSubagentTool(llm=_VerboseLLM(), source_dir=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"description": "summarize the project"}))
+
+    assert len(result) <= 6000
+    assert result.startswith("HEAD")
+    assert result.endswith("TAIL")
+    assert "complete report remains in the trace" in result
+
+
 def test_spawn_subagent_requires_description(tmp_path):
     llm = _MockLLM()
     tool = SpawnSubagentTool(llm=llm, source_dir=str(tmp_path))

@@ -410,6 +410,10 @@ def _register_default_hooks() -> None:
                 "search_text": 4000,
                 "run_task": 6000,
                 "skill": 20000,
+                # Delegated reports have a bounded head/tail excerpt in the
+                # subagent itself; preserve that excerpt instead of applying
+                # the generic 1200-character cap.
+                "spawn_subagent": 6000,
             },
         ),
         priority=0,

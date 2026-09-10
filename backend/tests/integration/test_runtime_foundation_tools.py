@@ -109,6 +109,24 @@ def test_foundation_tools_use_project_root_with_named_directory_aliases(tmp_path
     assert cwd == str(source)
 
 
+def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    package = source / "package"
+    package.mkdir()
+    target = package / "database.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    read_file = _tool(create_foundation_tools(str(source)), "read_file")
+
+    import asyncio
+    result = asyncio.run(read_file._execute({"path": "database.py"}))
+
+    assert "Error: file not found: database.py" in result
+    assert "possible_paths: source/package/database.py" in result
+    assert "recovery_action:" in result
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_foundation_tool_surface_has_seven_stable_tools(tmp_path):
     names = [tool.name for tool in create_foundation_tools(str(tmp_path))]
     assert names == [
