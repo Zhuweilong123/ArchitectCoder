@@ -1,10 +1,11 @@
-# 知识图谱设计与实现归档
+# 知识图谱设计与实现说明
 
-> 本文保留知识图谱的数据模型和检索设计。当前具体实现位于
+> 状态：当前实现说明；更新日期：2026-09-11
+> 当前具体实现位于
 > `extensions/knowledge_graph/`，应用侧通过 `backend/app/agent_base/core/knowledge_graph.py`
 > 访问；文中的 `backend/knowledge_graph/`、`knowledge_graph_tools.py` 和
 > `explore_project_tools.py` 是历史路径。
-> 工具数量和默认注册状态以当前 provider 配置为准，不以本文旧版数字为准。
+> 默认 Agent 工具为 3 个，`compare_design_code` 仅在组合层显式启用时注册。
 > 为 AI 助手提供结构化的项目理解能力，让模型按需查询项目结构而非被动接收全部内容。
 
 ## 1. 核心理念
@@ -20,14 +21,13 @@ extensions/knowledge_graph/
 ├── models.py                       # 数据模型 (GraphNode / GraphEdge / NodeType / EdgeType / 枚举)
 ├── database.py                     # SQLite 图数据库 + FTS5 全文索引
 ├── builder.py                      # GraphBuilder (设计层 + 代码层构建)
-├── retriever.py                    # GraphRetriever (query / expand / trace / diff)
-└── README.md                       # 本文件（迁移自旧 README）
+└── retriever.py                    # GraphRetriever (query / expand / trace / diff)
 
 extensions/knowledge_graph/
 └── provider.py                     # 默认 SQLite provider 实现
 
 extensions/knowledge_graph/
-└── extensions/knowledge_graph/tools.py    # 结构化图谱工具（显式 opt-in）
+└── tools.py                         # 结构化图谱工具和 provider 注入工厂
 ```
 
 ### 2.1 Provider boundary
@@ -40,8 +40,9 @@ implementation. Set `AGENT_KNOWLEDGE_GRAPH_ENABLED=false` or use `noop` to disab
 retrieval without changing the agent runtime.
 
 The provider owns project rebuilds, diagram-oriented search used by UML scope analysis, and all
-structured operations exposed by the v2 graph tools. The v2 tools remain explicit opt-in, but their
-backend is now selected through the same provider boundary.
+structured operations exposed by the v2 graph tools. The default Agent composition registers the
+map/locate/expand tools when the plugin is enabled; the design-code comparison tool remains explicit
+opt-in through `include_compare=True`.
 
 ## 3. 数据模型
 
@@ -135,7 +136,7 @@ CREATE VIRTUAL TABLE kg_node_fts USING fts5(
 
 **content-sync 模式**：INSERT/UPDATE/DELETE 触发器自动维护 FTS 索引。
 `content_text` 由 builder 合成并**经 jieba 预分词**（与查询端 `tokenize_for_fts()`
-一致），FTS5 default tokenizer 再按空格切分。区别于 memory_system 的**手动 FTS**
+一致），FTS5 default tokenizer 再按空格切分。区别于 `extensions/memory` 的**手动 FTS**
 （显式 INSERT/DELETE），二者都走 jieba 预分词，差异仅在 FTS 维护方式。
 
 ### 4.4 索引
@@ -177,7 +178,7 @@ Project JSON → GraphBuilder.rebuild_project()
 
 ### 5.2 探索式构建（代码层）
 
-**触发点**：Agent 调用 `kg_diff` 时检测代码层是否已索引，未索引则自动
+**触发点**：Agent 调用 `compare_design_code` 时检测代码层是否已索引，未索引则自动
 `build_from_source_dir()`。
 
 ```
@@ -201,21 +202,22 @@ Python 源文件 → AST 解析 (ast.parse)
 | `trace` | 依赖路径追踪（SQLite recursive CTE，防环） |
 | `diff` | 设计 vs 代码差异（missing_implementation / extra_code / mismatch / no_coverage） |
 
-## 7. Agent 工具（历史设计快照）
+## 7. Agent 工具与注册边界
 
-5 个 `AsyncTool` 子类，遵循 `conversation_tools.py` 的 `run()→coroutine` 模式：
+`create_kg_v2_tools()` 当前创建 3 个默认 `AsyncTool`，遵循统一的
+`run() → coroutine` 模式；`include_compare=True` 时追加第 4 个工具：
 
 | 工具 | 功能 | 使用场景 |
 |------|------|----------|
-| `kg_query` | BM25 全文检索 | "项目里有没有 User 类？" |
-| `kg_expand` | 展开节点关系 | "User 类有哪些方法和依赖？" |
-| `kg_trace` | 依赖路径追踪 | "User 如何间接依赖 Logger？" |
-| `kg_diff` | 设计 vs 代码对比 | "UML 设计都实现完了吗？" |
-| `kg_project_structure` | 获取项目完整树状结构（图/类/方法/消息） | "总结项目结构" |
+| `get_project_map` | 获取项目结构摘要和高频类 | “总结项目结构” |
+| `find_nodes` | BM25/名称定位节点，可按类型和来源过滤 | “项目里有没有 User 类？” |
+| `expand_neighbors` | 有界邻域展开；`mode=impact` 时执行反向影响分析 | “User 类有哪些依赖/影响？” |
+| `compare_design_code` | 设计与代码差异、签名漂移和测试覆盖 | “UML 设计都实现完了吗？” |
 
-> **注意**：这 5 个工具**不直接暴露给主 Agent**。主 Agent 的只读探索统一收敛进
-> `explore_project`（内部调用 `kg_project_structure` 等）。这是为了避免主 Agent
-> 自己查图谱导致 token 膨胀。
+生产 `conversation_tools.py` 通过插件管理器调用 `create_tools()`，并固定传入
+`include_compare=False`，所以主 Agent 默认只注册前三个工具；比较工具必须由专门
+的组合场景显式传入 `include_compare=True`。provider 被禁用或不可用时，工厂返回
+空列表，不注册任何 KG 工具。
 
 ## 8. 集成点
 
@@ -228,15 +230,17 @@ def save_project(project, filepath=None):
     return filepath
 ```
 
-### 8.2 项目探索（历史设计）
+### 8.2 项目探索与 provider 注入
 
 早期 `explore_project_tools.py` 的统一入口设计已下线。当前 KG v2 工具由
-`extensions/knowledge_graph/tools.py` 提供，是否暴露给 Agent 由插件开关和 provider
-配置决定；不要依据本节的旧工具名推断当前默认工具集。
+`extensions/knowledge_graph/tools.py` 提供，具体 provider 由组合层通过
+`KnowledgeGraphProvider` 注入；工厂不再接受旧的 `db_path` 位置参数，也不在工具层
+按路径创建具体 SQLite provider。未显式注入时才通过 `get_knowledge_graph()` 获取
+进程默认 provider。
 
 ### 8.3 自动代码层索引
 
-`kg_diff` 检测 `source='code'` 节点是否存在，不存在则自动在 `source_dir` 上
+`compare_design_code` 检测 `source='code'` 节点是否存在，不存在则自动在 `source_dir` 上
 `build_from_source_dir()` —— 对 Agent 透明。
 
 ## 9. 设计决策
@@ -250,12 +254,12 @@ def save_project(project, filepath=None):
 | **Daemon 线程构建** | 不阻塞 HTTP 保存响应，WAL 模式支持并发读写 |
 | **content_text 合成** | name + 关键属性 + 中文 note（桥接中文搜索），jieba 预分词 |
 | **Recursive CTE** | 纯 SQL 路径查找，无需 Python BFS/DFS |
-| **5 个工具分拆** | 每个操作语义不同，单工具 "operation" 枚举会混淆 LLM 的 FC |
+| **按能力拆分工具** | map、locate、expand 和可选 compare 语义不同，避免单工具 operation 枚举混淆 LLM 的 FC |
 | **IMPLEMENTS 边** | 设计-代码的 pivot，diff() 的唯一判断依据 |
 
-## 10. 与 memory_system 的关系
+## 10. 与 `extensions/memory` 的关系
 
-| 维度 | knowledge_graph | memory_system |
+| 维度 | knowledge_graph | extensions/memory |
 |------|-----------------|---------------|
 | 数据来源 | UML 设计 JSON + Python AST | LLM 对话交互 |
 | 存储内容 | 项目结构（类/方法/关系） | 设计洞察/决策/偏好 |
@@ -268,7 +272,7 @@ def save_project(project, filepath=None):
 ## 11. 快速开始
 
 ```python
-from knowledge_graph import GraphBuilder, GraphRetriever, KnowledgeGraphDB
+from extensions.knowledge_graph import GraphBuilder, GraphRetriever, KnowledgeGraphDB
 
 # 1. 从项目构建知识图谱
 builder = GraphBuilder(db_path="./data/knowledge_graph.db")
@@ -295,6 +299,6 @@ retriever.close()
 | `extensions/knowledge_graph/database.py` | SQLite 图数据库 + FTS5 索引 + 幂等迁移 |
 | `extensions/knowledge_graph/builder.py` | `GraphBuilder`（设计层 + 代码层 + 跨图关联，项目作用域 id） |
 | `extensions/knowledge_graph/retriever.py` | `GraphRetriever`（query / expand / trace / diff） |
-| `extensions/knowledge_graph/tools.py` | KG v2 工具（`kg_*`）和统一工具工厂 |
+| `extensions/knowledge_graph/tools.py` | KG v2 工具（`get_project_map` / `find_nodes` / `expand_neighbors` / `compare_design_code`）和工具工厂 |
 | `backend/app/agent_base/core/knowledge_graph.py` | 应用侧知识图谱 provider 端口和 fallback |
 | `backend/app/services/file_service.py` | `save_project` 触发 KG 增量重建 |
