@@ -311,6 +311,68 @@ async def _load_review_baseline_async(project_file: str):
     )
 
 
+async def _prepare_orchestration(
+    agent: ReActAgent,
+    *,
+    user_message: str,
+    context: str,
+    project_file: str,
+    source_dir: str,
+    test_dir: str,
+    resume_checkpoint: dict,
+    trace_log: TraceSink | None,
+    run_id: str,
+) -> tuple[str, Any, str]:
+    """Plan an Agent run and return its augmented context and tool allowlist."""
+    logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
+    orchestrator = load_orchestrator(
+        llm=agent.llm,
+        settings=get_settings(),
+        project_file=project_file,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        explorer_factory=SpawnSubagentTool,
+    )
+    logger.info(
+        "[AgentExecution] orchestrator loaded run=%s type=%s",
+        run_id,
+        type(orchestrator).__name__,
+    )
+    if trace_log:
+        trace_log.event("orchestrator_phase", phase="plan", status="started")
+    result = await orchestrator.prepare(OrchestrationRequest(
+        user_message=user_message,
+        project_file=project_file,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        previous_checkpoint=resume_checkpoint,
+        available_tools=tuple(agent.tool_registry.list_tools()),
+    ))
+    if trace_log:
+        trace_log.event(
+            "orchestrator_plan",
+            **result.metadata,
+            phase=result.phase,
+            token_overhead=result.token_overhead,
+        )
+        if result.phase == "explore":
+            trace_log.event(
+                "orchestrator_phase",
+                phase="explore",
+                status="completed",
+                worker_tokens=result.metadata.get("worker_tokens", 0),
+            )
+    apply_runtime_directives(result.runtime_directives)
+    if result.context:
+        context = "\n\n".join(filter(None, [context, result.context]))
+    allowed_tools = None
+    if result.excluded_tools:
+        allowed_tools = exclude_tools(
+            agent.tool_registry.list_tools(), result.excluded_tools,
+        )
+    return context, allowed_tools, result.phase
+
+
 def _update_stream_checkpoint(
     agent: ReActAgent,
     step: dict,
@@ -598,57 +660,21 @@ async def handle_agent_execution(
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
         ]))
-        logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
-        orchestration_settings = get_settings()
-        orchestrator = load_orchestrator(
-            llm=agent.llm,
-            settings=orchestration_settings,
-            project_file=project_file,
-            source_dir=source_dir,
-            test_dir=test_dir,
-            explorer_factory=SpawnSubagentTool,
-        )
-        logger.info(
-            "[AgentExecution] orchestrator loaded run=%s type=%s",
-            run_id,
-            type(orchestrator).__name__,
-        )
-        if trace_log:
-            trace_log.event("orchestrator_phase", phase="plan", status="started")
-        orchestration_result = await orchestrator.prepare(OrchestrationRequest(
+        context, main_allowed_tools, orchestration_phase = await _prepare_orchestration(
+            agent,
             user_message=user_message,
+            context=context,
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
-            previous_checkpoint=resume_checkpoint,
-            available_tools=tuple(agent.tool_registry.list_tools()),
-        ))
-        if trace_log:
-            trace_log.event(
-                "orchestrator_plan",
-                **orchestration_result.metadata,
-                phase=orchestration_result.phase,
-                token_overhead=orchestration_result.token_overhead,
-            )
-            if orchestration_result.phase == "explore":
-                trace_log.event(
-                    "orchestrator_phase",
-                    phase="explore",
-                    status="completed",
-                    worker_tokens=orchestration_result.metadata.get("worker_tokens", 0),
-                )
-        apply_runtime_directives(orchestration_result.runtime_directives)
-        if orchestration_result.context:
-            context = "\n\n".join(filter(None, [context, orchestration_result.context]))
-        main_allowed_tools = None
-        if orchestration_result.excluded_tools:
-            main_allowed_tools = exclude_tools(
-                agent.tool_registry.list_tools(), orchestration_result.excluded_tools,
-            )
+            resume_checkpoint=resume_checkpoint,
+            trace_log=trace_log,
+            run_id=run_id,
+        )
         logger.info(
             "[AgentExecution] entering agent stream run=%s phase=%s",
             run_id,
-            orchestration_result.phase,
+            orchestration_phase,
         )
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
