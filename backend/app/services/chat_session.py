@@ -28,6 +28,7 @@ import logging
 import os
 import uuid
 from datetime import datetime
+from typing import Any, Callable
 from fastapi import WebSocket, WebSocketDisconnect
 from app.core.security import validate_agent_workspace_path
 from backend.config import get_settings
@@ -368,6 +369,154 @@ def _consume_task_exception(task: asyncio.Task) -> None:
         task.exception()
 
 
+async def _start_agent_chat_run(
+    *,
+    agent: ReActAgent,
+    review_manager: Any,
+    prompt_builder: Any,
+    progress: ProgressRelay | None,
+    message: str,
+    websocket: WebSocket,
+    trace_log: TraceSink,
+    session_id: str,
+    connection_owner: str,
+    source_dir: str,
+    test_dir: str,
+    project_file: str,
+    fallback_review_runs: dict[int, str],
+    stop_check: Callable[[], bool],
+    disconnect_check: Callable[[], bool],
+    parent_run_id: str = "",
+    resume_record: Any = None,
+    resume_checkpoint: dict | None = None,
+    request_id: str = "",
+) -> asyncio.Task | None:
+    """Create a durable run and start its transport-neutral execution task."""
+    lifecycle = RunLifecycle(get_run_store(), agent_runtime)
+    try:
+        run = lifecycle.start(
+            session_id=session_id,
+            owner=connection_owner,
+            metadata={
+                "message": message[:500],
+                "parent_run_id": parent_run_id,
+                "resume_of": resume_record.run_id if resume_record else "",
+                "source_dir": source_dir,
+                "test_dir": test_dir,
+                "project_file": project_file,
+            },
+            idempotency_key=f"{session_id}:{request_id}" if request_id else "",
+        )
+    except (SessionBusyError, RunStateError) as exc:
+        await _ws_send(websocket, {"event": "error", "message": str(exc)})
+        return None
+    try:
+        if resume_record is not None:
+            old_status = resume_record.status
+            consumed = dict(resume_checkpoint or {})
+            consumed.update(resume_consumed=True, resumed_by=run.run_id)
+            get_run_store().transition(
+                resume_record.run_id,
+                RunStatus.PAUSED if old_status == RunStatus.RUNNING.value else old_status,
+                expected={old_status},
+                owner_id=(
+                    resume_record.owner_id
+                    if old_status == RunStatus.RUNNING.value
+                    else ""
+                ),
+                metadata_patch={"checkpoint": consumed},
+            )
+        trace_log.set_run_id(run.run_id)
+        trace_log.user_message(
+            message,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+        )
+        trace_log.event(
+            "agent_model",
+            model=get_settings().llm_model_id,
+            policy="fixed_session_model",
+        )
+        _record_audit(
+            "run_started",
+            run_id=run.run_id,
+            session_id=session_id,
+            kind="agent_chat",
+            project_file=project_file,
+            parent_run_id=parent_run_id,
+        )
+        if not await _ws_send(websocket, {
+            "event": "run_started",
+            "run_id": run.run_id,
+            "status": RunStatus.RUNNING.value,
+        }):
+            raise ConnectionError("Transport disconnected before execution")
+        context = ""
+        if prompt_builder is not None:
+            context = await prompt_builder.build_context(
+                project_file, source_dir, test_dir, message,
+            )
+            trace_log.event(
+                "prompt_context",
+                prompt_version=f"devagent-{prompt_builder.prompt_version}",
+                static_prompt=prompt_builder.static_prompt_report,
+                history_structure=_history_structure(agent),
+                **prompt_builder.last_context_report,
+            )
+            from app.services.agent_metrics import get_agent_metrics
+
+            get_agent_metrics().record_prompt(
+                int(prompt_builder.static_prompt_report.get("estimated_tokens", 0) or 0)
+                + int(prompt_builder.last_context_report.get("estimated_tokens", 0) or 0),
+                prompt_version=f"devagent-{prompt_builder.prompt_version}",
+            )
+
+        async def execute() -> None:
+            try:
+                await handle_agent_execution(
+                    agent,
+                    review_manager,
+                    message,
+                    lambda payload: _ws_send(websocket, payload),
+                    stop_check,
+                    trace_log=trace_log,
+                    project_file=project_file,
+                    source_dir=source_dir,
+                    test_dir=test_dir,
+                    progress=progress,
+                    context=context,
+                    fallback_review_runs=fallback_review_runs,
+                    run_id=run.run_id,
+                    run_owner=connection_owner,
+                    resume_checkpoint=resume_checkpoint,
+                    disconnect_check=disconnect_check,
+                    session_id=session_id,
+                )
+            finally:
+                agent_runtime.release_run(session_id, connection_owner)
+
+        task = asyncio.create_task(execute())
+        task.add_done_callback(_consume_task_exception)
+        return task
+    except BaseException as exc:
+        try:
+            get_run_store().transition(
+                run.run_id,
+                (
+                    RunStatus.CANCELED
+                    if isinstance(exc, asyncio.CancelledError)
+                    else RunStatus.FAILED
+                ),
+                expected={RunStatus.RUNNING},
+                owner_id=connection_owner,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        finally:
+            agent_runtime.release_run(session_id, connection_owner)
+        raise
+
+
 
 
 class ChatSessionCoordinator:
@@ -405,7 +554,6 @@ class ChatSessionCoordinator:
         prompt_builder = session.prompt_builder
         stop_requested = False
         run_task: asyncio.Task | None = None
-        active_run = None
         connection_owner = uuid.uuid4().hex
         transport_disconnected = False
         # 兜底审核（run 结束后补推的 uml_review）与其原始 run 的映射。
@@ -421,99 +569,38 @@ class ChatSessionCoordinator:
         def _stop_check():
             return stop_requested
 
-        async def _start_run(message: str, *, parent_run_id: str = "",
-                             resume_record=None, resume_checkpoint=None, request_id=""):
-            nonlocal run_task, active_run
-            lifecycle = RunLifecycle(get_run_store(), agent_runtime)
-            try:
-                run = lifecycle.start(
-                    session_id=session_id, owner=connection_owner,
-                    metadata={
-                        "message": message[:500], "parent_run_id": parent_run_id,
-                        "resume_of": resume_record.run_id if resume_record else "",
-                        "source_dir": source_dir, "test_dir": test_dir,
-                        "project_file": project_file,
-                    },
-                    idempotency_key=f"{session_id}:{request_id}" if request_id else "",
-                )
-            except (SessionBusyError, RunStateError) as exc:
-                await _ws_send(websocket, {"event": "error", "message": str(exc)})
-                return
-            active_run = run
-            try:
-                if resume_record is not None:
-                    old_status = resume_record.status
-                    consumed = dict(resume_checkpoint or {})
-                    consumed.update(resume_consumed=True, resumed_by=run.run_id)
-                    get_run_store().transition(
-                        resume_record.run_id,
-                        RunStatus.PAUSED if old_status == RunStatus.RUNNING.value else old_status,
-                        expected={old_status},
-                        owner_id=resume_record.owner_id if old_status == RunStatus.RUNNING.value else "",
-                        metadata_patch={"checkpoint": consumed},
-                    )
-                trace_log.set_run_id(run.run_id)
-                trace_log.user_message(
-                    message, project_file=project_file,
-                    source_dir=source_dir, test_dir=test_dir,
-                )
-                trace_log.event("agent_model", model=get_settings().llm_model_id,
-                                policy="fixed_session_model")
-                _record_audit("run_started", run_id=run.run_id, session_id=session_id,
-                              kind="agent_chat", project_file=project_file,
-                              parent_run_id=parent_run_id)
-                if not await _ws_send(websocket, {
-                    "event": "run_started", "run_id": run.run_id,
-                    "status": RunStatus.RUNNING.value,
-                }):
-                    raise ConnectionError("Transport disconnected before execution")
-                context = ""
-                if prompt_builder is not None:
-                    context = await prompt_builder.build_context(
-                        project_file, source_dir, test_dir, message,
-                    )
-                    trace_log.event(
-                        "prompt_context",
-                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
-                        static_prompt=prompt_builder.static_prompt_report,
-                        history_structure=_history_structure(dev_agent),
-                        **prompt_builder.last_context_report,
-                    )
-                    from app.services.agent_metrics import get_agent_metrics
-                    get_agent_metrics().record_prompt(
-                        int(prompt_builder.static_prompt_report.get("estimated_tokens", 0) or 0)
-                        + int(prompt_builder.last_context_report.get("estimated_tokens", 0) or 0),
-                        prompt_version=f"devagent-{prompt_builder.prompt_version}",
-                    )
-                async def execute():
-                    try:
-                        await handle_agent_execution(
-                            dev_agent, review_mgr, message,
-                            lambda payload: _ws_send(websocket, payload), _stop_check,
-                            trace_log=trace_log, project_file=project_file,
-                            source_dir=source_dir, test_dir=test_dir,
-                            progress=progress, context=context,
-                            fallback_review_runs=fallback_review_runs,
-                            run_id=run.run_id, run_owner=connection_owner,
-                            resume_checkpoint=resume_checkpoint,
-                            disconnect_check=lambda: transport_disconnected,
-                            session_id=session_id,
-                        )
-                    finally:
-                        agent_runtime.release_run(session_id, connection_owner)
-                run_task = asyncio.create_task(execute())
-                run_task.add_done_callback(_consume_task_exception)
-            except BaseException as exc:
-                try:
-                    get_run_store().transition(
-                        run.run_id, RunStatus.CANCELED if isinstance(exc, asyncio.CancelledError)
-                        else RunStatus.FAILED,
-                        expected={RunStatus.RUNNING}, owner_id=connection_owner,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                finally:
-                    agent_runtime.release_run(session_id, connection_owner)
-                raise
+        async def _start_run(
+            message: str,
+            *,
+            parent_run_id: str = "",
+            resume_record=None,
+            resume_checkpoint=None,
+            request_id: str = "",
+        ) -> None:
+            nonlocal run_task
+            task = await _start_agent_chat_run(
+                agent=dev_agent,
+                review_manager=review_mgr,
+                prompt_builder=prompt_builder,
+                progress=progress,
+                message=message,
+                websocket=websocket,
+                trace_log=trace_log,
+                session_id=session_id,
+                connection_owner=connection_owner,
+                source_dir=source_dir,
+                test_dir=test_dir,
+                project_file=project_file,
+                fallback_review_runs=fallback_review_runs,
+                stop_check=_stop_check,
+                disconnect_check=lambda: transport_disconnected,
+                parent_run_id=parent_run_id,
+                resume_record=resume_record,
+                resume_checkpoint=resume_checkpoint,
+                request_id=request_id,
+            )
+            if task is not None:
+                run_task = task
 
         try:
             while True:
