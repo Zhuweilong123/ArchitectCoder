@@ -930,38 +930,29 @@ class EvalRunner:
                             turn_score_configs = turn_spec.checkers
                             if turn_hard_configs or turn_score_configs:
                                 failure_phase = "checker"
-                                turn_hard_results = await asyncio.gather(*(
-                                    checker.check(workspace)
-                                    for checker in build_checkers(
-                                        turn_hard_configs,
-                                        baseline_hashes,
-                                        answer=final_answer,
-                                        trace_path=tracer.path,
-                                        runtime={
-                                            "turn_tool_calls": turn_tool_calls,
-                                            "turn_tool_names": [
-                                                str(detail.get("name") or "")
-                                                for detail in turn_tool_details
-                                            ],
-                                        },
-                                    )
-                                ))
-                                turn_score_results = await asyncio.gather(*(
-                                    checker.check(workspace)
-                                    for checker in build_checkers(
-                                        turn_score_configs,
-                                        baseline_hashes,
-                                        answer=final_answer,
-                                        trace_path=tracer.path,
-                                        runtime={
-                                            "turn_tool_calls": turn_tool_calls,
-                                            "turn_tool_names": [
-                                                str(detail.get("name") or "")
-                                                for detail in turn_tool_details
-                                            ],
-                                        },
-                                    )
-                                ))
+                                turn_runtime = {
+                                    "turn_tool_calls": turn_tool_calls,
+                                    "turn_tool_names": [
+                                        str(detail.get("name") or "")
+                                        for detail in turn_tool_details
+                                    ],
+                                }
+                                turn_hard_results = await self._run_checkers(
+                                    turn_hard_configs,
+                                    workspace=workspace,
+                                    baseline_hashes=baseline_hashes,
+                                    answer=final_answer,
+                                    trace_path=tracer.path,
+                                    runtime=turn_runtime,
+                                )
+                                turn_score_results = await self._run_checkers(
+                                    turn_score_configs,
+                                    workspace=workspace,
+                                    baseline_hashes=baseline_hashes,
+                                    answer=final_answer,
+                                    trace_path=tracer.path,
+                                    runtime=turn_runtime,
+                                )
                                 _tag_criteria(
                                     turn_hard_results, "hard", "turn", turn_index
                                 )
@@ -1188,6 +1179,28 @@ class EvalRunner:
         get_agent_metrics().record_run(f"eval_{result.status}")
         return result
 
+    @staticmethod
+    async def _run_checkers(
+        configs: list[dict[str, Any]],
+        *,
+        workspace: Path,
+        baseline_hashes: dict[str, str | None],
+        answer: str,
+        trace_path: str,
+        runtime: dict[str, Any],
+    ) -> list[CheckerResult]:
+        """Build and run one criteria group with a consistent checker context."""
+        return list(await asyncio.gather(*(
+            checker.check(workspace)
+            for checker in build_checkers(
+                configs,
+                baseline_hashes,
+                answer=answer,
+                trace_path=trace_path,
+                runtime=runtime,
+            )
+        )))
+
     async def _evaluate_case_checkers(
         self,
         *,
@@ -1202,26 +1215,23 @@ class EvalRunner:
         execution_error: str,
     ) -> set[str]:
         """Apply case-level criteria and derive the evaluation outcome."""
-        hard_results = await asyncio.gather(*(
-            checker.check(workspace)
-            for checker in build_checkers(
-                case.hard_checkers,
-                baseline_hashes,
-                answer=final_answer,
-                trace_path=trace_path,
-                runtime={"total_tool_calls": result.tool_calls},
-            )
-        ))
-        score_results = await asyncio.gather(*(
-            checker.check(workspace)
-            for checker in build_checkers(
-                case.checkers,
-                baseline_hashes,
-                answer=final_answer,
-                trace_path=trace_path,
-                runtime={"total_tool_calls": result.tool_calls},
-            )
-        ))
+        runtime = {"total_tool_calls": result.tool_calls}
+        hard_results = await self._run_checkers(
+            case.hard_checkers,
+            workspace=workspace,
+            baseline_hashes=baseline_hashes,
+            answer=final_answer,
+            trace_path=trace_path,
+            runtime=runtime,
+        )
+        score_results = await self._run_checkers(
+            case.checkers,
+            workspace=workspace,
+            baseline_hashes=baseline_hashes,
+            answer=final_answer,
+            trace_path=trace_path,
+            runtime=runtime,
+        )
         _tag_criteria(hard_results, "hard", "case")
         _tag_criteria(score_results, "score", "case")
         # Keep non-file execution checkers (notably review_auto_stub), then
