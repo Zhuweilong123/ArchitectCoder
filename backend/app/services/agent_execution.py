@@ -48,6 +48,64 @@ logger = logging.getLogger(__name__)
 _TASK_BIND_TIMEOUT_SECONDS = 5.0
 _REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
 
+
+class _ExecutionProgressForwarder:
+    """Translate domain progress events into transport events for one run."""
+
+    def __init__(self, send: Callable[[dict], Awaitable[bool]], trace_log: TraceSink | None):
+        self._send = send
+        self._trace_log = trace_log
+        self.uml_review_seen = False
+
+    async def __call__(self, event: dict) -> None:
+        event_type = event.get("event")
+        if event_type == "design_element":
+            await self._send({
+                "event": "design_element",
+                "type": event.get("type", ""),
+                "data": event.get("data", ""),
+            })
+        elif event_type == "review_timeout":
+            await self._send({
+                "event": "review_timeout",
+                "review_id": event.get("review_id", 0),
+                "review_type": event.get("review_type", ""),
+                "title": event.get("title", ""),
+                "timeout": event.get("timeout", 0),
+            })
+        elif event_type == "review":
+            review_type = event.get("review_type", "code")
+            if review_type == "uml_diff":
+                self.uml_review_seen = True
+            if self._trace_log:
+                self._trace_log.review_request(
+                    review_id=event.get("review_id", 0),
+                    review_type=review_type,
+                    title=event.get("title", ""),
+                    question=event.get("question", ""),
+                    content=event.get("content", ""),
+                )
+            if review_type == "uml_diff":
+                metadata = event.get("metadata", {}) or {}
+                await self._send({
+                    "event": "uml_review",
+                    "review_id": event.get("review_id", 0),
+                    "title": event.get("title", ""),
+                    "diagrams": metadata.get("diagrams", []),
+                    "changed_diagrams": metadata.get("changed_diagrams"),
+                    "original_diagrams": metadata.get("original_diagrams"),
+                })
+            else:
+                await self._send({
+                    "event": "request_review",
+                    "review_id": event.get("review_id", 0),
+                    "review_type": review_type,
+                    "title": event.get("title", ""),
+                    "content": event.get("content", ""),
+                    "question": event.get("question", ""),
+                })
+
+
 def _todo_progress_state() -> dict:
     runtime = get_runtime()
     todos: list[dict] = []
@@ -241,7 +299,7 @@ async def handle_agent_execution(
     )
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
-    uml_review_seen = False
+    progress_forwarder = _ExecutionProgressForwarder(send, trace_log)
     resume_checkpoint = dict(resume_checkpoint or {})
     checkpoint_request_summary = str(
         resume_checkpoint.get("request_summary") or user_message
@@ -266,55 +324,6 @@ async def handle_agent_execution(
     }
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
     logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)
-
-    async def _on_progress(ev: dict):
-        """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
-        nonlocal uml_review_seen
-        if ev.get("event") == "design_element":
-            await send( {
-                "event": "design_element",
-                "type": ev.get("type", ""),
-                "data": ev.get("data", ""),
-            })
-        elif ev.get("event") == "review_timeout":
-            await send( {
-                "event": "review_timeout",
-                "review_id": ev.get("review_id", 0),
-                "review_type": ev.get("review_type", ""),
-                "title": ev.get("title", ""),
-                "timeout": ev.get("timeout", 0),
-            })
-        elif ev.get("event") == "review":
-            review_type = ev.get("review_type", "code")
-            if review_type == "uml_diff":
-                uml_review_seen = True
-            if trace_log:
-                trace_log.review_request(
-                    review_id=ev.get("review_id", 0),
-                    review_type=review_type,
-                    title=ev.get("title", ""),
-                    question=ev.get("question", ""),
-                    content=ev.get("content", ""),
-                )
-            if review_type == "uml_diff":
-                metadata = ev.get("metadata", {}) or {}
-                await send( {
-                    "event": "uml_review",
-                    "review_id": ev.get("review_id", 0),
-                    "title": ev.get("title", ""),
-                    "diagrams": metadata.get("diagrams", []),
-                    "changed_diagrams": metadata.get("changed_diagrams"),
-                    "original_diagrams": metadata.get("original_diagrams"),
-                })
-            else:
-                await send( {
-                    "event": "request_review",
-                    "review_id": ev.get("review_id", 0),
-                    "review_type": review_type,
-                    "title": ev.get("title", ""),
-                    "content": ev.get("content", ""),
-                    "question": ev.get("question", ""),
-                })
 
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
@@ -377,7 +386,7 @@ async def handle_agent_execution(
     try:
         if progress:
             logger.info("[AgentExecution] registering progress callback run=%s", run_id)
-            progress.on_progress(_on_progress)
+            progress.on_progress(progress_forwarder)
             logger.info("[AgentExecution] progress callback registered run=%s", run_id)
 
         # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
@@ -624,7 +633,7 @@ async def handle_agent_execution(
                 # accept 刷新 baseline，reject 由主循环开启一轮修订）。
                 if (
                     review_mgr is not None
-                    and not uml_review_seen
+                    and not progress_forwarder.uml_review_seen
                     and project_file
                     and os.path.isfile(project_file)
                     and review_mgr.baseline is not None
