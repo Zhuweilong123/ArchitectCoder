@@ -36,11 +36,6 @@ export async function openDiagram(filepath: string, safe = true): Promise<UmlDia
   return data.diagram;
 }
 
-export async function newDiagram(name = 'Untitled'): Promise<UmlDiagram> {
-  const { data } = await api.post('/files/new', null, { params: { name } });
-  return data.diagram;
-}
-
 export async function exportMarkdown(diagram: UmlDiagram): Promise<string> {
   const { data } = await api.post('/files/export/markdown', { diagram });
   return data;

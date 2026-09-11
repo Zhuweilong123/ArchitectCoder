@@ -189,11 +189,9 @@ export interface DiagramState {
   addDiagramsFromSpec: (specs: Array<{type: string; name: string; component_id: string; data: Record<string, unknown>}>) => void;
   removeDiagram: (index: number) => void;
 
-  // ── Legacy diagram actions (kept for compatibility) ──
+  // ── Active-diagram actions ──────────────────────
 
   setDiagram: (diagram: UmlDiagram) => void;
-  newDiagram: (name?: string) => void;
-  markModified: () => void;
 
   // ── Class operations ──────────────────────────
 
@@ -487,7 +485,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     });
   },
 
-  // ── Legacy diagram actions ────────────────────────────
+  // ── Active-diagram actions ────────────────────────────
 
   setDiagram: (diagram) => {
     const normalizedDiagram = normalizeDiagram(diagram);
@@ -496,24 +494,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const activeDiagram = _activeDiagram(project);
     set({ project, viewport: _viewportFromDiagram(activeDiagram), isModified: true });
   },
-
-  newDiagram: (name) => {
-    console.debug('[Store] newDiagram (legacy):', name);
-    const project = createDefaultProject(name);
-    localStorage.removeItem('currentFilepath');
-    set({
-      project,
-      viewport: _viewportFromDiagram(_activeDiagram(project)),
-      selectedClassId: null,
-      selectedRelationId: null,
-      isModified: false,
-      currentFilepath: null,
-      undoStack: [],
-      redoStack: [],
-    });
-  },
-
-  markModified: () => set({ isModified: true }),
 
   // ── Class operations ──────────────────────────────────
 
