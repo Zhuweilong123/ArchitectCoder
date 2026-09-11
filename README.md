@@ -217,7 +217,7 @@ Application and Agent configuration are centralized under `backend/config/`.
 Each extension exposes a `module:factory` entry point, for example
 `extensions.memory:create`. Plugins can be enabled, disabled, or replaced by
 setting the corresponding `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` variables in
-`backend/.env`. See [Plugin Architecture Design Archive](docs/plugin-architecture-design.md)
+`backend/.env`. See [Plugin Architecture and Extension Contract](docs/plugin-architecture-design.md)
 for the complete design, lifecycle, fallback behavior, and ownership rules.
 
 Knowledge-graph tools use the same `AGENT_KNOWLEDGE_GRAPH_ENABLED` switch as
