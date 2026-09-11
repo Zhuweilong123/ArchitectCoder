@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
+
+
+FailureClass = Literal["transient", "contract", "state_conflict", "policy", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -38,8 +41,36 @@ class ConvergenceController:
         self._action_results: dict[str, str] = {}
         self._action_counts: dict[str, int] = {}
         self._failure_counts: dict[str, int] = {}
+        self._failure_classes: dict[str, FailureClass] = {}
         self.stalled_rounds = 0
         self.recovery_rounds = 0
+
+    @staticmethod
+    def classify_failure(detail: dict[str, Any]) -> FailureClass:
+        """Classify a failed tool result without coupling to one tool.
+
+        A previously unseen failure is useful diagnostic evidence and should
+        not consume the no-progress allowance.  Only repeated failures or
+        rounds with no new evidence advance the stalled counter.
+        """
+        code = str(detail.get("error_code") or "").upper()
+        if code in {"POLICY_BLOCKED", "HOOK_VETO", "PERMISSION_DENIED", "ACCESS_DENIED"}:
+            return "policy"
+        if code in {
+            "INVALID_ARGUMENTS", "TOOL_REPORTED_ERROR", "PATH_TYPE_CONFLICT",
+            "TARGET_EXISTS", "TARGET_NOT_FOUND", "UNSUPPORTED_OPERATION",
+        }:
+            return "contract"
+        if code in {
+            "EXPECTED_SHA_MISMATCH", "CONCURRENT_CHANGE", "PROJECT_REVISION_CONFLICT",
+            "PATCH_TEXT_NOT_FOUND", "PATCH_AMBIGUOUS", "STALE_STATE",
+        }:
+            return "state_conflict"
+        if detail.get("retryable") or code in {
+            "PROCESS_EXIT_ERROR", "TIMEOUT", "RATE_LIMITED", "PROVIDER_ERROR",
+        }:
+            return "transient"
+        return "unknown"
 
     @staticmethod
     def _fingerprint(value: Any) -> str:
@@ -80,6 +111,7 @@ class ConvergenceController:
             return self._stalled_decision()
 
         meaningful_progress = False
+        new_diagnostic = False
         repeated_failure: str | None = None
         repeated_action: str | None = None
 
@@ -102,6 +134,9 @@ class ConvergenceController:
                 failure_key = self._failure_key(detail)
                 count = self._failure_counts.get(failure_key, 0) + 1
                 self._failure_counts[failure_key] = count
+                self._failure_classes[failure_key] = self.classify_failure(detail)
+                if count == 1:
+                    new_diagnostic = True
                 if count >= self.max_recovery_rounds + 1:
                     repeated_failure = failure_key
                 elif count >= self.max_recovery_rounds:
@@ -118,6 +153,15 @@ class ConvergenceController:
             self.recovery_rounds = 0
             return ConvergenceDecision()
 
+        # A new failure class/signature is diagnostic evidence: the model is
+        # exploring and has not demonstrated a loop yet.  Do not consume the
+        # stalled-round budget merely because the first recovery attempt used
+        # a different (and potentially better) strategy.
+        if new_diagnostic:
+            self.stalled_rounds = 0
+            self.recovery_rounds = 0
+            return ConvergenceDecision()
+
         self.stalled_rounds += 1
         if repeated_failure is not None:
             if self._failure_counts.get(repeated_failure, 0) > self.max_recovery_rounds:
@@ -127,10 +171,18 @@ class ConvergenceController:
                     "Stop retrying and report the blocker using the evidence above.",
                 )
             self.recovery_rounds += 1
+            failure_class = self._failure_classes.get(repeated_failure, "unknown")
+            guidance = {
+                "policy": "Select an allowed tool or adjust the request to the active policy.",
+                "contract": "Inspect the target state and correct the tool operation or arguments.",
+                "state_conflict": "Refresh the current state before attempting the change again.",
+                "transient": "Retry only after checking the reported transient failure details.",
+                "unknown": "Change the strategy and inspect the reported failure evidence.",
+            }[failure_class]
             return ConvergenceDecision(
                 "recover", "repeated_failure",
-                "The previous tool failure repeated. Change the strategy, narrow the "
-                "target, or run the focused verification; do not repeat the same call.",
+                "The previous tool failure repeated. " + guidance
+                + " Do not repeat the same call blindly.",
             )
 
         if repeated_action is not None:
