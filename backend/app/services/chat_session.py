@@ -310,7 +310,7 @@ def _resolve_workspace_paths(
             validated.append(normalized)
     if errors:
         return None, "Invalid workspace path: " + "; ".join(errors)
-    return (validated[0], validated[1], validated[2]), ""
+    return (validated[0], validated[1], validated[2], validated[3]), ""
 
 
 async def _compress_session_context(
