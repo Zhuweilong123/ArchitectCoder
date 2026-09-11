@@ -439,6 +439,111 @@ async def _request_fallback_uml_review(
         return fallback_requested
 
 
+async def _publish_terminal_execution(
+    *,
+    agent: ReActAgent,
+    terminal_status: str,
+    fallback_review_requested: bool,
+    task_tool_calls: list[dict],
+    user_message: str,
+    final_answer: str,
+    project_file: str,
+    run_id: str,
+    run_owner: str,
+    session_id: str,
+    trace_log: TraceSink | None,
+    send: Callable[[dict], Awaitable[bool]],
+    write_task_summary: Callable[[str], None],
+) -> None:
+    """Publish a terminal run as awaiting approval or a completed outcome."""
+    summary_status = (
+        "waiting_approval" if fallback_review_requested else terminal_status
+    )
+    agent.last_run_checkpoint["task_summary"] = build_task_execution_summary(
+        task_tool_calls, agent.last_run_checkpoint, summary_status,
+    )
+    # A fallback review has no Agent future waiting on it. Do not announce
+    # success until the human has resolved the review request.
+    if fallback_review_requested:
+        if run_id:
+            get_run_store().transition(
+                run_id,
+                RunStatus.WAITING_APPROVAL,
+                expected={RunStatus.RUNNING},
+                owner_id=run_owner,
+                metadata_patch={"checkpoint": agent.last_run_checkpoint},
+            )
+        write_task_summary(summary_status)
+        await send({
+            "event": "awaiting_review",
+            "run_id": run_id,
+            "checkpoint": agent.last_run_checkpoint,
+        })
+        return
+
+    try:
+        from app.services.agent_metrics import get_agent_metrics
+
+        get_agent_metrics().record_run(
+            "success" if terminal_status == "completed" else terminal_status,
+        )
+    except Exception:
+        pass
+    if run_id:
+        get_run_store().transition(
+            run_id,
+            run_status_for_completion(terminal_status),
+            expected={RunStatus.RUNNING},
+            owner_id=run_owner,
+            metadata_patch={"checkpoint": agent.last_run_checkpoint},
+        )
+        _record_audit(
+            "run_succeeded" if terminal_status == "completed" else "run_partial",
+            run_id=run_id,
+            session_id=session_id,
+            tool_call_count=len(task_tool_calls),
+        )
+    write_task_summary(summary_status)
+
+    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+    if project_id and _should_archive_task_memory(
+        terminal_status, task_tool_calls, agent.last_run_checkpoint,
+    ):
+        memory = getattr(agent, "memory_provider", None)
+        if memory is not None:
+            asyncio.create_task(_archive_task_to_memory(
+                memory=memory,
+                project_id=project_id,
+                user_message=user_message,
+                final_answer=final_answer,
+                tool_calls_detail=task_tool_calls,
+                run_id=run_id,
+                trace_id=trace_log.trace_id if trace_log else "",
+            ))
+
+    if trace_log:
+        report = getattr(agent, "last_context_report", {})
+        trace_log.done(answer=final_answer, runtime={
+            "token_budget_used": report.get("token_budget_used", 0),
+            "token_budget_stop_reason": report.get(
+                "token_budget_stop_reason", "model_answer",
+            ),
+            "convergence_policy": report.get("convergence_policy", {}),
+            "context_budget_compaction": report.get(
+                "context_budget_compaction", {},
+            ),
+            "finalization_textual_tool_markup_blocked": report.get(
+                "finalization_textual_tool_markup_blocked", False,
+            ),
+        })
+    await send({
+        "event": "done",
+        "result": final_answer,
+        "run_id": run_id,
+        "checkpoint": agent.last_run_checkpoint,
+    })
+
+
 def _update_stream_checkpoint(
     agent: ReActAgent,
     step: dict,
@@ -812,90 +917,21 @@ async def handle_agent_execution(
                     review_manager=review_mgr,
                 )
 
-                summary_status = (
-                    "waiting_approval" if fallback_review_requested else terminal_status
+                await _publish_terminal_execution(
+                    agent=agent,
+                    terminal_status=terminal_status,
+                    fallback_review_requested=fallback_review_requested,
+                    task_tool_calls=task_tool_calls,
+                    user_message=user_message,
+                    final_answer=d["final_answer"] or "",
+                    project_file=project_file,
+                    run_id=run_id,
+                    run_owner=run_owner,
+                    session_id=session_id,
+                    trace_log=trace_log,
+                    send=send,
+                    write_task_summary=_write_task_summary,
                 )
-                agent.last_run_checkpoint["task_summary"] = build_task_execution_summary(
-                    task_tool_calls, agent.last_run_checkpoint, summary_status,
-                )
-
-                # A fallback review has no Agent future waiting on it.  Do
-                # not announce success before the human has resolved it.
-                if fallback_review_requested:
-                    if run_id:
-                        get_run_store().transition(
-                            run_id, RunStatus.WAITING_APPROVAL,
-                            expected={RunStatus.RUNNING}, owner_id=run_owner,
-                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                        )
-                    _write_task_summary(summary_status)
-                    await send( {
-                        "event": "awaiting_review",
-                        "run_id": run_id,
-                        "checkpoint": agent.last_run_checkpoint,
-                    })
-                    return
-
-                run_status = run_status_for_completion(terminal_status)
-                try:
-                    from app.services.agent_metrics import get_agent_metrics
-                    get_agent_metrics().record_run(
-                        "success" if terminal_status == "completed" else terminal_status,
-                    )
-                except Exception:
-                    pass
-                if run_id:
-                    get_run_store().transition(
-                        run_id, run_status,
-                        expected={RunStatus.RUNNING}, owner_id=run_owner,
-                        metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                    )
-                    _record_audit(
-                        "run_succeeded" if terminal_status == "completed" else "run_partial",
-                        run_id=run_id, session_id=session_id,
-                        tool_call_count=len(task_tool_calls),
-                    )
-                _write_task_summary(summary_status)
-
-                # 异步后台归档到记忆系统（不阻塞返回 done）
-                project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
-                if project_id and _should_archive_task_memory(
-                    terminal_status, task_tool_calls, agent.last_run_checkpoint,
-                ):
-                    memory = getattr(agent, "memory_provider", None)
-                    if memory is not None:
-                        asyncio.create_task(_archive_task_to_memory(
-                            memory=memory,
-                            project_id=project_id,
-                            user_message=user_message,
-                            final_answer=d["final_answer"] or "",
-                            tool_calls_detail=task_tool_calls,
-                            run_id=run_id,
-                            trace_id=trace_log.trace_id if trace_log else "",
-                        ))
-
-                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
-                if trace_log:
-                    report = getattr(agent, "last_context_report", {})
-                    trace_log.done(answer=d["final_answer"], runtime={
-                        "token_budget_used": report.get("token_budget_used", 0),
-                        "token_budget_stop_reason": report.get("token_budget_stop_reason", "model_answer"),
-                        "convergence_policy": report.get("convergence_policy", {}),
-                        "context_budget_compaction": report.get(
-                            "context_budget_compaction", {}
-                        ),
-                        "finalization_textual_tool_markup_blocked": report.get(
-                            "finalization_textual_tool_markup_blocked", False
-                        ),
-                    })
-                ok = await send( {
-                    "event": "done",
-                    "result": d["final_answer"],
-                    "run_id": run_id,
-                    "checkpoint": agent.last_run_checkpoint,
-                })
-                if not ok:
-                    return
                 return
 
     except asyncio.CancelledError:
