@@ -628,7 +628,7 @@ class KgDiffTool(_KgTool):
 # ═══════════════════════════════════════════════════════════════
 
 def create_kg_v2_tools(
-    db_path: str | None = None,
+    *,
     project_file: str = "",
     source_dir: str = "",
     include_compare: bool = False,
@@ -640,23 +640,18 @@ def create_kg_v2_tools(
     全量设计-代码漂移分析；默认不暴露它，避免探索阶段产生大体量输出。
 
     Args:
-        db_path:     兼容旧调用的本地 SQLite 路径；传入 provider 时忽略
         project_file:.umlproj 路径（用于推导 project_id）
         source_dir:  源码目录（kg_diff 按需索引代码层时使用）
-        provider:    已加载的知识图谱 provider；未传入时使用默认 provider
+        provider:    已加载的知识图谱 provider；未传入时使用默认 provider。
+                     Local SQLite callers should create the provider at the
+                     composition boundary rather than coupling this tool
+                     factory to a concrete implementation.
 
     Returns:
         [KgMapTool, KgLocateTool, KgExpandTool]；include_compare=True 时追加 KgDiffTool
     """
     if provider is None:
-        if db_path is None:
-            provider = get_knowledge_graph()
-        else:
-            # Preserve the old test/embedding API while still routing every
-            # tool operation through the provider contract.
-            from extensions.knowledge_graph.provider import create as create_local_provider
-
-            provider = create_local_provider(db_path=db_path)
+        provider = get_knowledge_graph()
 
     project_id = ""
     if project_file:
