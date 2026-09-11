@@ -283,9 +283,9 @@ stats = builder.build_from_source_file("app.py", "my_project")
 
 # 3. 检索
 retriever = GraphRetriever(db_path="./data/knowledge_graph.db")
-results = await retriever.query("my_project", "User login")
-neighbors = await retriever.expand([results[0].node.id], depth=2)
-diffs = await retriever.diff("my_project")
+results = retriever.query("my_project", "User login")
+neighbors = retriever.expand("my_project", [results[0].node.id], depth=2)
+diffs = retriever.diff("my_project")
 
 builder.close()
 retriever.close()
