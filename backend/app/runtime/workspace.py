@@ -27,6 +27,7 @@ class WorkspaceManifest:
     project_file: str
     layout_mode: LayoutMode
     consistency_policy: Literal["strict"] = "strict"
+    project_files: tuple[str, ...] = ()
 
     @property
     def workspace_roots(self) -> tuple[str, ...]:
@@ -63,14 +64,18 @@ class WorkspaceManifest:
         # Accept a project directory at the same boundary as a project file.
         # A directory with multiple design files is ambiguous and must be
         # resolved by the caller instead of silently selecting one.
+        discovered: tuple[str, ...] = ()
+        selected_project = project if project and Path(project).is_file() else ""
         if project and Path(project).is_dir():
             root_hint = root_hint or project
-            project = _discover_project(Path(project) / "design")
+            discovered = _discover_projects(Path(project) / "design")
+            project = ""
 
         design = _resolve(design_dir)
         if design and Path(design).is_file():
             design = str(Path(design).parent)
-        if project:
+        if selected_project:
+            project = selected_project
             design = str(Path(project).parent)
 
         source = _resolve(source_dir)
@@ -90,8 +95,12 @@ class WorkspaceManifest:
                     + ", ".join(outside)
                 )
 
-        if not project and design:
-            project = _discover_project(Path(design))
+        if design:
+            discovered = discovered or _discover_projects(Path(design))
+            if project and project not in discovered:
+                discovered = tuple(sorted((*discovered, project)))
+            if not project and len(discovered) == 1:
+                project = discovered[0]
 
         conventional = bool(inferred_root) and all(
             not value or _inside(value, inferred_root)
@@ -105,9 +114,10 @@ class WorkspaceManifest:
             test_root=test,
             project_file=project,
             layout_mode=layout_mode,
+            project_files=discovered,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize the canonical layout for traces and run metadata."""
         return asdict(self)
 
@@ -144,19 +154,15 @@ def _common_root(values: list[str]) -> str:
         return ""
 
 
-def _discover_project(design_root: Path) -> str:
+def _discover_projects(design_root: Path) -> tuple[str, ...]:
     if not design_root.is_dir():
-        return ""
+        return ()
     files = sorted(
         path.resolve()
         for path in design_root.iterdir()
         if path.is_file() and path.suffix.lower() in {".umlproj", ".uml"}
     )
-    if len(files) > 1:
-        raise ValueError(
-            f"multiple design project files found in {design_root}; specify project_file explicitly"
-        )
-    return str(files[0]) if files else ""
+    return tuple(str(path) for path in files)
 
 
 __all__ = ["WorkspaceManifest"]
