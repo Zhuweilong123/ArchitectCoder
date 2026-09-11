@@ -706,12 +706,19 @@ class ChatSessionCoordinator:
                     # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                     if dev_agent is None:
                         progress = ProgressRelay()
-                        dev_agent, review_mgr, prompt_builder = await create_dev_agent(
-                            llm, source_dir, test_dir, project_file, effective_user_message,
-                            progress=progress, restore_history=restore_history,
-                            task_scope=session_id,
-                            workspace_root=workspace_root,
-                        )
+                        try:
+                            dev_agent, review_mgr, prompt_builder = await create_dev_agent(
+                                llm, source_dir, test_dir, project_file, effective_user_message,
+                                progress=progress, restore_history=restore_history,
+                                task_scope=session_id,
+                                workspace_root=workspace_root,
+                            )
+                        except ValueError as exc:
+                            await websocket.send_json({
+                                "event": "error",
+                                "message": f"Invalid workspace layout: {exc}",
+                            })
+                            continue
                         session.agent, session.review_mgr, session.progress = \
                             dev_agent, review_mgr, progress
                         session.prompt_builder = prompt_builder
