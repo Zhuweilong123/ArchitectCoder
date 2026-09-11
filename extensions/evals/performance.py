@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import EvalResult
+from .summary import summarize
 
 
 _VERSION_RE = re.compile(r"-v(?P<version>[0-9][A-Za-z0-9_.-]*)\.jsonl$")
@@ -100,8 +101,6 @@ def _suite_for(path: Path) -> str:
 
 
 def _summary(rows: list[EvalResult]) -> dict[str, Any]:
-    from .batches import summarize
-
     return summarize(rows).model_dump(mode="json")
 
 
