@@ -58,6 +58,8 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 所有工程能力统一使用工作区工具、审核门禁、Trace 记录和验证生命周期，确保对话、设计变更、代码实现与评测过程保持一致。
 
+本节涉及的实现边界详见[当前架构总览](docs/current-architecture.md)、[BaseAgents 框架](docs/baseagents-design.md)、[上下文管理](docs/context-management-design.md)、[收敛与预算](docs/agent-convergence-and-budget.md)和[运行时命令契约](docs/runtime-command-execution.md)。
+
 ### DevAgent 能力基准中心
 
 能力基准中心是生产 **DevAgent** 的质量闸门：把真实工程任务转化为可重复、可版本化、可提供证据的能力评估，而不是停留在主观演示层面。
@@ -67,7 +69,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 - **生产链路一致**：评测使用与产品对话相同的 DevAgent 运行时、工作区工具、安全策略、上下文管理和验证流程。
 - **面向任务覆盖**：通过版本化用例覆盖项目理解、单轮工程任务、多轮上下文连续性，以及设计、代码和测试协同任务。
 - **确定性结果校验**：每个用例绑定受控项目 fixture 和 manifest，通过硬门禁与诊断检查器校验文件、UML、测试、受保护路径和其他交付物。
-- **安全且可复现**：每次评测都在隔离工作区执行，并明确限制时间、步数、工具调用次数和 Token；当前 Git 分支与 commit 自动记录为评测版本，未提交修改会显式标记。
+- **安全且可复现**：每次评测都在隔离工作区执行，并明确限制时间、工具调用次数和 Token；当前 Git 分支与 commit 自动记录为评测版本，未提交修改会显式标记。
 - **结果可解释**：结果包含通过/失败状态、得分、检查器明细、工具调用、Token、耗时，以及完整 Agent Trace 的关联入口。
 - **支持回归与发布对比**：评测中心支持一键运行、历史批次、基线快照、性能 JSONL、结果归档和选中版本对比。
 
@@ -101,7 +103,8 @@ python -m extensions.evals.cli --suite single
 python -m extensions.evals.cli --suite multiturn
 ~~~
 
-详见[评测体系设计文档](docs/evaluation-system.md)，其中包含用例模型、检查器契约、隔离规则、结果生命周期和 API 说明。
+详见[评测体系设计文档](docs/evaluation-system.md)，其中包含用例模型、检查器契约、隔离规则、结果生命周期和 API 说明。[Trace Case Factory](docs/trace-to-eval-case-factory-design.md) 说明如何将真实 Trace 转成可审阅、可验证的评测用例草稿。
+
 ### 全局 UML 优化
 
 工具栏的“全局优化”现在会把自然语言需求提交给同一个 DevAgent 对话运行时。若当前工程尚未保存，工具栏会先保存；随后打开 AI 助手，并将项目、源码和测试目录作为上下文传入。Agent 通过标准工具检查和修改相关 `.umlproj` 设计文件，再按正常审核、Trace 记录和验证流程完成任务。
@@ -124,6 +127,8 @@ Excel 用例驱动的测试代码生成：
 - **三种回放模式**：`mock` 按记录重放且零网络；`rerun` 真实调用 LLM、工具仍 mock；`live` 真实调用 LLM，并按策略执行真实工具（默认 `readonly`，`full` 为显式有副作用模式）
 - 支持整段会话回放、按轮次累积单步执行、匹配状态展示，以及原始步骤与回放步骤对比
 
+详见[Trace 回放设计](docs/trace-replay-design.md)，了解事件格式、回放模式、工作区重建和 API 行为。
+
 ### 知识图谱
 
 SQLite 图数据库 + FTS5 全文索引，知识图谱插件开启后在工程保存时自动重建，
@@ -133,12 +138,33 @@ SQLite 图数据库 + FTS5 全文索引，知识图谱插件开启后在工程�
 - **双源构建**：设计层（UML JSON 自动同步）+ 代码层（AST 解析源码目录）
 - **Agent 查询**：项目地图、节点搜索和邻居展开，与文件级读取和搜索互补
 
+详见[知识图谱设计](docs/knowledge-graph-design.md)，了解索引构建、Provider 注入、工具边界和设计/代码对比。
+
+### 记忆系统
+
+Agent 通过 Provider 边界召回和归档项目级洞察。内置实现使用 SQLite + FTS5/BM25，支持主题更新、时间衰减、写入门禁和维护；可独立关闭或替换。
+
+详见[记忆系统设计](docs/memory-system-design.md)，了解存储、检索、生命周期和集成规则。
+
 ### 自动布局引擎
 
 LLM 返回的设计元素坐标自动计算，仅影响新生成元素，手动拖拽位置完全保留：
 - 类图：继承链分层 + 网格布局
 - 时序图：生命线等距水平排列 + 消息垂直递增
 - 组件图：流式排列自动换行
+
+## 能力与文档对应关系
+
+| 能力 | 关联文档 | 覆盖范围 |
+|---|---|---|
+| Agent 组合、工具和生命周期 | [当前架构总览](docs/current-architecture.md)、[BaseAgents](docs/baseagents-design.md) | 生产边界与框架 API |
+| 上下文、记忆和收敛 | [上下文管理](docs/context-management-design.md)、[记忆系统](docs/memory-system-design.md)、[收敛与预算](docs/agent-convergence-and-budget.md) | 运行时限制与长任务恢复 |
+| 命令执行与工作区安全 | [运行时命令契约](docs/runtime-command-execution.md) | OS 适配、文件系统和命令策略 |
+| Trace 记录与回放 | [Trace 回放设计](docs/trace-replay-design.md) | JSONL 事件、回放和 API |
+| 知识图谱 | [知识图谱设计](docs/knowledge-graph-design.md) | 索引、检索和 Provider 边界 |
+| 评测与 Trace Case Factory | [评测体系](docs/evaluation-system.md)、[Trace Case Factory](docs/trace-to-eval-case-factory-design.md) | 用例、fixture、检查器、批次和发布 |
+| 插件加载与替换 | [插件架构](docs/plugin-architecture-design.md) | Provider 生命周期、路由和降级 |
+| TestHub 与图编辑 | — | 暂无独立设计文档；当前 UI 契约以 API 文档和产品内说明为准 |
 
 ## 技术栈
 
