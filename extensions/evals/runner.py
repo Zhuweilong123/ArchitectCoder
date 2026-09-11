@@ -584,22 +584,6 @@ class EvalRunner:
                             active_turn["checkpoint"] = checkpoint
                             sync_task_binding(checkpoint)
 
-                        def write_turn_summary(status: str) -> None:
-                            """Write one trace checkpoint for the active eval task."""
-                            if not active_turn["turn"] or active_turn["summary_written"]:
-                                return
-                            checkpoint = dict(active_turn.get("checkpoint") or {})
-                            summary = build_task_execution_summary(
-                                active_turn.get("details") or [], checkpoint, status,
-                            )
-                            tracer.task_summary(
-                                summary=summary,
-                                status=status,
-                                tool_call_count=len(active_turn.get("details") or []),
-                                turn=active_turn["turn"],
-                            )
-                            active_turn["summary_written"] = True
-
                         def record_tool_details(
                             step: int,
                             details: list[dict],
@@ -691,7 +675,9 @@ class EvalRunner:
                                     getattr(agent, "last_run_checkpoint", {}) or {}
                                 )
                                 sync_task_binding(active_turn["checkpoint"])
-                                write_turn_summary("completed")
+                                self._write_turn_summary(
+                                    tracer, active_turn, "completed"
+                                )
                                 continue
 
                             context = ""
@@ -956,7 +942,9 @@ class EvalRunner:
                                             response=json.dumps(event, ensure_ascii=False),
                                         )
                                 approval_offset = len(review_mgr.approval_events)
-                            write_turn_summary(
+                            self._write_turn_summary(
+                                tracer,
+                                active_turn,
                                 "budget_exceeded"
                                 if budget_stop_reason in _HARD_BUDGET_STOP_REASONS
                                 else "partial"
@@ -1015,28 +1003,13 @@ class EvalRunner:
                         else "failed"
                     )
             except asyncio.TimeoutError:
-                if (
-                    "tracer" in locals()
-                    and "active_turn" in locals()
-                    and active_turn["turn"]
-                    and not active_turn["summary_written"]
-                ):
-                    active_turn["checkpoint"] = {
-                        **dict(active_turn.get("checkpoint") or {}),
-                        "stop_reason": f"evaluation exceeded {evaluation_deadline_seconds}s",
-                    }
-                    summary = build_task_execution_summary(
-                        active_turn.get("details") or [],
-                        active_turn.get("checkpoint") or {},
+                if "tracer" in locals() and "active_turn" in locals():
+                    self._write_turn_summary(
+                        tracer,
+                        active_turn,
                         "partial",
+                        stop_reason=f"evaluation exceeded {evaluation_deadline_seconds}s",
                     )
-                    tracer.task_summary(
-                        summary=summary,
-                        status="partial",
-                        tool_call_count=len(active_turn.get("details") or []),
-                        turn=active_turn["turn"],
-                    )
-                    active_turn["summary_written"] = True
                 change_set = locals().get("change_set")
                 if change_set is not None:
                     change_set.rollback()
@@ -1050,28 +1023,13 @@ class EvalRunner:
                 timeout_checkpoint["stop_reason"] = result.error
                 finalize_task("timed_out", timeout_checkpoint)
             except Exception as exc:
-                if (
-                    "tracer" in locals()
-                    and "active_turn" in locals()
-                    and active_turn["turn"]
-                    and not active_turn["summary_written"]
-                ):
-                    active_turn["checkpoint"] = {
-                        **dict(active_turn.get("checkpoint") or {}),
-                        "stop_reason": f"{type(exc).__name__}: {exc}",
-                    }
-                    summary = build_task_execution_summary(
-                        active_turn.get("details") or [],
-                        active_turn.get("checkpoint") or {},
+                if "tracer" in locals() and "active_turn" in locals():
+                    self._write_turn_summary(
+                        tracer,
+                        active_turn,
                         "failed",
+                        stop_reason=f"{type(exc).__name__}: {exc}",
                     )
-                    tracer.task_summary(
-                        summary=summary,
-                        status="failed",
-                        tool_call_count=len(active_turn.get("details") or []),
-                        turn=active_turn["turn"],
-                    )
-                    active_turn["summary_written"] = True
                 change_set = locals().get("change_set")
                 if change_set is not None:
                     change_set.rollback()
@@ -1195,6 +1153,32 @@ class EvalRunner:
             ),
             details={"responses": len(responses)},
         ))
+
+    @staticmethod
+    def _write_turn_summary(
+        tracer: Any,
+        active_turn: dict[str, Any],
+        status: str,
+        *,
+        stop_reason: str = "",
+    ) -> None:
+        """Write exactly one summary event for an active evaluation turn."""
+        if not active_turn["turn"] or active_turn["summary_written"]:
+            return
+        checkpoint = dict(active_turn.get("checkpoint") or {})
+        if stop_reason:
+            checkpoint["stop_reason"] = stop_reason
+            active_turn["checkpoint"] = checkpoint
+        summary = build_task_execution_summary(
+            active_turn.get("details") or [], checkpoint, status,
+        )
+        tracer.task_summary(
+            summary=summary,
+            status=status,
+            tool_call_count=len(active_turn.get("details") or []),
+            turn=active_turn["turn"],
+        )
+        active_turn["summary_written"] = True
 
     @staticmethod
     async def _run_checkers(
