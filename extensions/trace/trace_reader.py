@@ -15,16 +15,16 @@ import os
 from collections import Counter
 from datetime import datetime
 
-from extensions.trace.chat_trace import (
+from extensions.trace.format import (
     EVT_CONTEXT_COMPACTED,
     EVT_TASK_SUMMARY,
-    _chat_log_dir,
+    chat_log_dir,
 )
 from backend.config import evaluation_traces_dir
 
 
 def _trace_dir() -> str:
-    return _chat_log_dir()
+    return chat_log_dir()
 
 
 def _trace_sources() -> list[tuple[str, str]]:

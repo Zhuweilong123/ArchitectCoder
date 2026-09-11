@@ -483,21 +483,3 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   return ws;
 }
 
-// ── 兼容旧 API（deprecated，保留过渡期）───────────────
-
-/** @deprecated Use connectAgentChat + sendAgentMessage instead */
-export function createAgentChatWs(
-  onEvent: AgentEventCallback,
-  token?: string,
-): WebSocket {
-  return connectAgentChat(onEvent, token);
-}
-
-/** @deprecated Use sendAgentMessage instead */
-export function sendChatMessage(ws: WebSocket, message: string, opts?: {
-  source_dir?: string;
-  test_dir?: string;
-  project_file?: string;
-}) {
-  sendAgentMessage(message, opts);
-}

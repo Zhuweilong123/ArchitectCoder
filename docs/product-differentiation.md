@@ -306,7 +306,7 @@ draft → analyzing → design_pending → waiting_approval
 - 将 `design_constraints` 正式持久化；
 - 为设计影响型任务自动启用 `compare_design_code`；
 - **已完成（2026-09-07）**：结果与批次已区分 Agent、工具、环境、Checker、超时和
-  预算失败；当前 HEAD 已晋升为 `4.0@4076efc` 正式基线（通过率 50.0%，平均得分
+  预算失败；评测记录中的正式基线提交为 `4.0@4076efc`（通过率 50.0%，平均得分
   72.21%）。
 - 对外只承诺 Python 深度闭环。
 
@@ -428,6 +428,6 @@ draft → analyzing → design_pending → waiting_approval
 | [`knowledge-graph-design.md`](knowledge-graph-design.md) | 双向演进、影响分析和一致性 Diff 基础 |
 | [`evaluation-system.md`](evaluation-system.md) | Case、Fixture、Checker、基线和发布门禁 |
 | [`trace-replay-design.md`](trace-replay-design.md) | 证据回放和历史场景回归基础 |
-| [`memory-system-design.md`](memory-system-design.md) | “为什么这样设计”的历史参考层 |
+| [`memory-system-design.md`](memory-system-design.md) | 当前 MemoryPort、SQLite provider、检索与生命周期实现 |
 | [`context-management-design.md`](context-management-design.md) | Run/Session 上下文预算与恢复 |
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | Provider 边界和后续生态扩展 |

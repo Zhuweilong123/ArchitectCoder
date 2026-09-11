@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from backend.config import get_settings
 
@@ -47,6 +47,64 @@ logger = logging.getLogger(__name__)
 
 _TASK_BIND_TIMEOUT_SECONDS = 5.0
 _REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
+
+
+class _ExecutionProgressForwarder:
+    """Translate domain progress events into transport events for one run."""
+
+    def __init__(self, send: Callable[[dict], Awaitable[bool]], trace_log: TraceSink | None):
+        self._send = send
+        self._trace_log = trace_log
+        self.uml_review_seen = False
+
+    async def __call__(self, event: dict) -> None:
+        event_type = event.get("event")
+        if event_type == "design_element":
+            await self._send({
+                "event": "design_element",
+                "type": event.get("type", ""),
+                "data": event.get("data", ""),
+            })
+        elif event_type == "review_timeout":
+            await self._send({
+                "event": "review_timeout",
+                "review_id": event.get("review_id", 0),
+                "review_type": event.get("review_type", ""),
+                "title": event.get("title", ""),
+                "timeout": event.get("timeout", 0),
+            })
+        elif event_type == "review":
+            review_type = event.get("review_type", "code")
+            if review_type == "uml_diff":
+                self.uml_review_seen = True
+            if self._trace_log:
+                self._trace_log.review_request(
+                    review_id=event.get("review_id", 0),
+                    review_type=review_type,
+                    title=event.get("title", ""),
+                    question=event.get("question", ""),
+                    content=event.get("content", ""),
+                )
+            if review_type == "uml_diff":
+                metadata = event.get("metadata", {}) or {}
+                await self._send({
+                    "event": "uml_review",
+                    "review_id": event.get("review_id", 0),
+                    "title": event.get("title", ""),
+                    "diagrams": metadata.get("diagrams", []),
+                    "changed_diagrams": metadata.get("changed_diagrams"),
+                    "original_diagrams": metadata.get("original_diagrams"),
+                })
+            else:
+                await self._send({
+                    "event": "request_review",
+                    "review_id": event.get("review_id", 0),
+                    "review_type": review_type,
+                    "title": event.get("title", ""),
+                    "content": event.get("content", ""),
+                    "question": event.get("question", ""),
+                })
+
 
 def _todo_progress_state() -> dict:
     runtime = get_runtime()
@@ -112,6 +170,52 @@ def _terminal_checkpoint_status(
     ):
         return "partial", "task checklist has pending items"
     return "completed", None
+
+
+def _finalize_terminal_checkpoint(
+    agent: ReActAgent,
+    *,
+    outcome: RunOutcome | None,
+    run_id: str,
+    task_id: str,
+    request_summary: str,
+    fallback_review_requested: bool,
+    review_manager: Any,
+) -> tuple[str, list[dict]]:
+    """Shape the durable checkpoint for a completed streamed Agent run."""
+    todos = get_runtime().todos or []
+    terminal_status, stop_reason = _terminal_checkpoint_status(outcome, todos)
+    if terminal_status == "completed" and any(
+        not item["passed"]
+        for item in agent.last_run_checkpoint.get("verification_results", [])
+    ):
+        terminal_status, stop_reason = "partial", "verification_failed"
+    agent.last_run_checkpoint = {
+        **agent.last_run_checkpoint,
+        "run_id": run_id,
+        "task_id": task_id,
+        "status": "waiting_approval" if fallback_review_requested else terminal_status,
+        "request_summary": request_summary,
+        "completed_items": [
+            todo.get("content", "") for todo in todos
+            if isinstance(todo, dict) and todo.get("status") == "completed"
+        ],
+        "pending_items": [
+            todo.get("content", "") for todo in todos
+            if isinstance(todo, dict) and todo.get("status") != "completed"
+        ],
+        "last_error": None,
+        "stop_reason": stop_reason,
+    }
+    if outcome is not None:
+        agent.last_run_checkpoint["outcome"] = outcome.to_dict()
+    if fallback_review_requested:
+        agent.last_run_checkpoint.update({
+            "review_status": "pending",
+            "post_review_status": terminal_status,
+            "review_baseline": review_manager.baseline,
+        })
+    return terminal_status, todos
 
 async def _archive_task_to_memory(
     memory: MemoryPort,
@@ -206,6 +310,329 @@ async def _load_review_baseline_async(project_file: str):
         timeout=_REVIEW_BASELINE_TIMEOUT_SECONDS,
     )
 
+
+async def _prepare_orchestration(
+    agent: ReActAgent,
+    *,
+    user_message: str,
+    context: str,
+    project_file: str,
+    source_dir: str,
+    test_dir: str,
+    resume_checkpoint: dict,
+    trace_log: TraceSink | None,
+    run_id: str,
+) -> tuple[str, Any, str]:
+    """Plan an Agent run and return its augmented context and tool allowlist."""
+    logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
+    orchestrator = load_orchestrator(
+        llm=agent.llm,
+        settings=get_settings(),
+        project_file=project_file,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        explorer_factory=SpawnSubagentTool,
+    )
+    logger.info(
+        "[AgentExecution] orchestrator loaded run=%s type=%s",
+        run_id,
+        type(orchestrator).__name__,
+    )
+    if trace_log:
+        trace_log.event("orchestrator_phase", phase="plan", status="started")
+    result = await orchestrator.prepare(OrchestrationRequest(
+        user_message=user_message,
+        project_file=project_file,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        previous_checkpoint=resume_checkpoint,
+        available_tools=tuple(agent.tool_registry.list_tools()),
+    ))
+    if trace_log:
+        trace_log.event(
+            "orchestrator_plan",
+            **result.metadata,
+            phase=result.phase,
+            token_overhead=result.token_overhead,
+        )
+        if result.phase == "explore":
+            trace_log.event(
+                "orchestrator_phase",
+                phase="explore",
+                status="completed",
+                worker_tokens=result.metadata.get("worker_tokens", 0),
+            )
+    apply_runtime_directives(result.runtime_directives)
+    if result.context:
+        context = "\n\n".join(filter(None, [context, result.context]))
+    allowed_tools = None
+    if result.excluded_tools:
+        allowed_tools = exclude_tools(
+            agent.tool_registry.list_tools(), result.excluded_tools,
+        )
+    return context, allowed_tools, result.phase
+
+
+async def _request_fallback_uml_review(
+    *,
+    review_manager: Any,
+    uml_review_seen: bool,
+    project_file: str,
+    trace_log: TraceSink | None,
+    send: Callable[[dict], Awaitable[bool]],
+    fallback_review_runs: dict[int, str] | None,
+    run_id: str,
+) -> bool:
+    """Request review when a changed UML project bypassed the review tool."""
+    if (
+        review_manager is None
+        or uml_review_seen
+        or not project_file
+        or not os.path.isfile(project_file)
+        or review_manager.baseline is None
+    ):
+        return False
+    fallback_requested = False
+    try:
+        from app.services.file_service import load_project
+        from app.services.diagram_diff import changed_diagrams
+
+        after = [diagram.model_dump() for diagram in load_project(project_file).diagrams]
+        changed = changed_diagrams(after, review_manager.baseline)
+        if not changed:
+            return False
+        request = review_manager.submit(
+            review_type="uml_diff",
+            title="检测到未审核的设计变更",
+            content="Agent 修改了设计文件但未提交 diff 审核",
+            question="设计文件已被修改但未经审核，请确认是否接受此变更。",
+            metadata={
+                "diagrams": after,
+                "changed_diagrams": changed,
+                "original_diagrams": review_manager.baseline,
+            },
+        )
+        fallback_requested = True
+        if fallback_review_runs is not None:
+            fallback_review_runs[request.id] = run_id
+        if trace_log:
+            trace_log.review_request(
+                review_id=request.id,
+                review_type="uml_diff",
+                title=request.title,
+                question=request.question,
+                content=request.content,
+            )
+        logger.info("[AgentChat] 兜底审核补推: review_id=%d", request.id)
+        await send({
+            "event": "uml_review",
+            "review_id": request.id,
+            "title": request.title,
+            "diagrams": after,
+            "changed_diagrams": changed,
+            "original_diagrams": review_manager.baseline,
+            "auto": True,
+        })
+        return True
+    except Exception:
+        logger.exception("[AgentChat] Fallback review check failed")
+        return fallback_requested
+
+
+async def _publish_terminal_execution(
+    *,
+    agent: ReActAgent,
+    terminal_status: str,
+    fallback_review_requested: bool,
+    task_tool_calls: list[dict],
+    user_message: str,
+    final_answer: str,
+    project_file: str,
+    run_id: str,
+    run_owner: str,
+    session_id: str,
+    trace_log: TraceSink | None,
+    send: Callable[[dict], Awaitable[bool]],
+    write_task_summary: Callable[[str], None],
+) -> None:
+    """Publish a terminal run as awaiting approval or a completed outcome."""
+    summary_status = (
+        "waiting_approval" if fallback_review_requested else terminal_status
+    )
+    agent.last_run_checkpoint["task_summary"] = build_task_execution_summary(
+        task_tool_calls, agent.last_run_checkpoint, summary_status,
+    )
+    # A fallback review has no Agent future waiting on it. Do not announce
+    # success until the human has resolved the review request.
+    if fallback_review_requested:
+        if run_id:
+            get_run_store().transition(
+                run_id,
+                RunStatus.WAITING_APPROVAL,
+                expected={RunStatus.RUNNING},
+                owner_id=run_owner,
+                metadata_patch={"checkpoint": agent.last_run_checkpoint},
+            )
+        write_task_summary(summary_status)
+        await send({
+            "event": "awaiting_review",
+            "run_id": run_id,
+            "checkpoint": agent.last_run_checkpoint,
+        })
+        return
+
+    try:
+        from app.services.agent_metrics import get_agent_metrics
+
+        get_agent_metrics().record_run(
+            "success" if terminal_status == "completed" else terminal_status,
+        )
+    except Exception:
+        pass
+    if run_id:
+        get_run_store().transition(
+            run_id,
+            run_status_for_completion(terminal_status),
+            expected={RunStatus.RUNNING},
+            owner_id=run_owner,
+            metadata_patch={"checkpoint": agent.last_run_checkpoint},
+        )
+        _record_audit(
+            "run_succeeded" if terminal_status == "completed" else "run_partial",
+            run_id=run_id,
+            session_id=session_id,
+            tool_call_count=len(task_tool_calls),
+        )
+    write_task_summary(summary_status)
+
+    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+    if project_id and _should_archive_task_memory(
+        terminal_status, task_tool_calls, agent.last_run_checkpoint,
+    ):
+        memory = getattr(agent, "memory_provider", None)
+        if memory is not None:
+            asyncio.create_task(_archive_task_to_memory(
+                memory=memory,
+                project_id=project_id,
+                user_message=user_message,
+                final_answer=final_answer,
+                tool_calls_detail=task_tool_calls,
+                run_id=run_id,
+                trace_id=trace_log.trace_id if trace_log else "",
+            ))
+
+    if trace_log:
+        report = getattr(agent, "last_context_report", {})
+        trace_log.done(answer=final_answer, runtime={
+            "token_budget_used": report.get("token_budget_used", 0),
+            "token_budget_stop_reason": report.get(
+                "token_budget_stop_reason", "model_answer",
+            ),
+            "convergence_policy": report.get("convergence_policy", {}),
+            "context_budget_compaction": report.get(
+                "context_budget_compaction", {},
+            ),
+            "finalization_textual_tool_markup_blocked": report.get(
+                "finalization_textual_tool_markup_blocked", False,
+            ),
+        })
+    await send({
+        "event": "done",
+        "result": final_answer,
+        "run_id": run_id,
+        "checkpoint": agent.last_run_checkpoint,
+    })
+
+
+def _update_stream_checkpoint(
+    agent: ReActAgent,
+    step: dict,
+    task_tool_calls: list[dict],
+    *,
+    run_id: str,
+    run_owner: str,
+) -> dict:
+    """Persist one stream step and return its current todo projection."""
+    todo_state = _todo_progress_state()
+    todos = todo_state.get("todos", [])
+    agent.last_run_checkpoint.update({
+        "last_step": step.get("step", 0),
+        "completed_items": [
+            item.get("content", "")
+            for item in todos
+            if isinstance(item, dict) and item.get("status") == "completed"
+        ],
+        "pending_items": [
+            item.get("content", "")
+            for item in todos
+            if isinstance(item, dict) and item.get("status") != "completed"
+        ],
+        "tool_calls": [
+            {
+                "name": detail.get("name", ""),
+                "status": detail.get("status", ""),
+                "error_code": detail.get("error_code", ""),
+                "changes": detail.get("changes", []),
+                "verification": detail.get("verification"),
+            }
+            for detail in task_tool_calls[-32:]
+            if isinstance(detail, dict)
+        ],
+    })
+    update_checkpoint_evidence(agent.last_run_checkpoint, step.get("tool_calls_detail", []))
+    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+    return todo_state
+
+
+def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -> None:
+    """Write the complete, untruncated stream step to the optional trace sink."""
+    if trace_log is None:
+        return
+    trace_log.agent_step(
+        step=step["step"], thought=thought or "",
+        actions=step["actions"], is_final=step["is_final"],
+    )
+    for detail in step.get("tool_calls_detail", []):
+        tool_span = trace_log.tool_call(
+            step=step["step"], tool_name=detail.get("name", ""),
+            arguments=detail.get("arguments", {}),
+        )
+        trace_log.tool_result(
+            span_id=tool_span,
+            tool_name=detail.get("name", ""),
+            observation=str(detail.get("observation", "")),
+            error=(
+                str(detail.get("error_code", ""))
+                if detail.get("status") not in {"", "success", "completed"}
+                else ""
+            ),
+            fed_truncated=bool(detail.get("fed_truncated", False)),
+            fed_length=int(detail.get("fed_length") or 0),
+            duration_ms=float(detail.get("duration_ms") or 0.0),
+            evidence=detail.get("evidence") if isinstance(detail.get("evidence"), dict) else None,
+        )
+
+
+def _stream_progress_event(step: dict, todo_state: dict) -> dict:
+    """Build the bounded transport payload for a stream step."""
+    return {
+        "event": "progress",
+        "step": step["step"],
+        "actions": step["actions"],
+        "thought": step["thought"][:300],
+        "tool_calls_detail": [
+            {
+                "name": detail.get("name", ""),
+                "arguments": detail.get("arguments", {}),
+                "observation": str(detail.get("observation", ""))[:3000],
+            }
+            for detail in step.get("tool_calls_detail", [])[:5]
+        ],
+        "is_final": step["is_final"],
+        "final_answer": step["final_answer"] if step["is_final"] else "",
+        **todo_state,
+    }
+
 async def handle_agent_execution(
     agent: ReActAgent,
     review_mgr,
@@ -241,7 +668,7 @@ async def handle_agent_execution(
     )
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
-    uml_review_seen = False
+    progress_forwarder = _ExecutionProgressForwarder(send, trace_log)
     resume_checkpoint = dict(resume_checkpoint or {})
     checkpoint_request_summary = str(
         resume_checkpoint.get("request_summary") or user_message
@@ -266,55 +693,6 @@ async def handle_agent_execution(
     }
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
     logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)
-
-    async def _on_progress(ev: dict):
-        """将 ProgressRelay 的 design_element / review 事件转发为 WebSocket 消息。"""
-        nonlocal uml_review_seen
-        if ev.get("event") == "design_element":
-            await send( {
-                "event": "design_element",
-                "type": ev.get("type", ""),
-                "data": ev.get("data", ""),
-            })
-        elif ev.get("event") == "review_timeout":
-            await send( {
-                "event": "review_timeout",
-                "review_id": ev.get("review_id", 0),
-                "review_type": ev.get("review_type", ""),
-                "title": ev.get("title", ""),
-                "timeout": ev.get("timeout", 0),
-            })
-        elif ev.get("event") == "review":
-            review_type = ev.get("review_type", "code")
-            if review_type == "uml_diff":
-                uml_review_seen = True
-            if trace_log:
-                trace_log.review_request(
-                    review_id=ev.get("review_id", 0),
-                    review_type=review_type,
-                    title=ev.get("title", ""),
-                    question=ev.get("question", ""),
-                    content=ev.get("content", ""),
-                )
-            if review_type == "uml_diff":
-                metadata = ev.get("metadata", {}) or {}
-                await send( {
-                    "event": "uml_review",
-                    "review_id": ev.get("review_id", 0),
-                    "title": ev.get("title", ""),
-                    "diagrams": metadata.get("diagrams", []),
-                    "changed_diagrams": metadata.get("changed_diagrams"),
-                    "original_diagrams": metadata.get("original_diagrams"),
-                })
-            else:
-                await send( {
-                    "event": "request_review",
-                    "review_id": ev.get("review_id", 0),
-                    "review_type": review_type,
-                    "title": ev.get("title", ""),
-                    "content": ev.get("content", ""),
-                    "question": ev.get("question", ""),
-                })
 
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
@@ -377,7 +755,7 @@ async def handle_agent_execution(
     try:
         if progress:
             logger.info("[AgentExecution] registering progress callback run=%s", run_id)
-            progress.on_progress(_on_progress)
+            progress.on_progress(progress_forwarder)
             logger.info("[AgentExecution] progress callback registered run=%s", run_id)
 
         # 捕获本任务的 before 快照（框架负责 before/after，模型只负责改设计）。
@@ -453,57 +831,21 @@ async def handle_agent_execution(
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
         ]))
-        logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
-        orchestration_settings = get_settings()
-        orchestrator = load_orchestrator(
-            llm=agent.llm,
-            settings=orchestration_settings,
-            project_file=project_file,
-            source_dir=source_dir,
-            test_dir=test_dir,
-            explorer_factory=SpawnSubagentTool,
-        )
-        logger.info(
-            "[AgentExecution] orchestrator loaded run=%s type=%s",
-            run_id,
-            type(orchestrator).__name__,
-        )
-        if trace_log:
-            trace_log.event("orchestrator_phase", phase="plan", status="started")
-        orchestration_result = await orchestrator.prepare(OrchestrationRequest(
+        context, main_allowed_tools, orchestration_phase = await _prepare_orchestration(
+            agent,
             user_message=user_message,
+            context=context,
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
-            previous_checkpoint=resume_checkpoint,
-            available_tools=tuple(agent.tool_registry.list_tools()),
-        ))
-        if trace_log:
-            trace_log.event(
-                "orchestrator_plan",
-                **orchestration_result.metadata,
-                phase=orchestration_result.phase,
-                token_overhead=orchestration_result.token_overhead,
-            )
-            if orchestration_result.phase == "explore":
-                trace_log.event(
-                    "orchestrator_phase",
-                    phase="explore",
-                    status="completed",
-                    worker_tokens=orchestration_result.metadata.get("worker_tokens", 0),
-                )
-        apply_runtime_directives(orchestration_result.runtime_directives)
-        if orchestration_result.context:
-            context = "\n\n".join(filter(None, [context, orchestration_result.context]))
-        main_allowed_tools = None
-        if orchestration_result.excluded_tools:
-            main_allowed_tools = exclude_tools(
-                agent.tool_registry.list_tools(), orchestration_result.excluded_tools,
-            )
+            resume_checkpoint=resume_checkpoint,
+            trace_log=trace_log,
+            run_id=run_id,
+        )
         logger.info(
             "[AgentExecution] entering agent stream run=%s phase=%s",
             run_id,
-            orchestration_result.phase,
+            orchestration_phase,
         )
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
@@ -525,80 +867,13 @@ async def handle_agent_execution(
         async for step_progress in stream:
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
-            todo_state = _todo_progress_state()
-            todos = todo_state.get("todos", [])
-            agent.last_run_checkpoint.update({
-                "last_step": d.get("step", 0),
-                "completed_items": [
-                    item.get("content", "")
-                    for item in todos
-                    if isinstance(item, dict) and item.get("status") == "completed"
-                ],
-                "pending_items": [
-                    item.get("content", "")
-                    for item in todos
-                    if isinstance(item, dict) and item.get("status") != "completed"
-                ],
-                "tool_calls": [
-                    {
-                        "name": detail.get("name", ""),
-                        "status": detail.get("status", ""),
-                        "error_code": detail.get("error_code", ""),
-                        "changes": detail.get("changes", []),
-                        "verification": detail.get("verification"),
-                    }
-                    for detail in task_tool_calls[-32:]
-                    if isinstance(detail, dict)
-                ],
-            })
-            update_checkpoint_evidence(agent.last_run_checkpoint, d.get("tool_calls_detail", []))
-            _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+            todo_state = _update_stream_checkpoint(
+                agent, d, task_tool_calls, run_id=run_id, run_owner=run_owner,
+            )
             _sync_task_execution()
 
-            # 记录完整工具调用与返回（在截断发给前端之前）
-            if trace_log:
-                trace_log.agent_step(
-                    step=d["step"], thought=step_progress.thought or "",
-                    actions=d["actions"], is_final=d["is_final"],
-                )
-                for td in d.get("tool_calls_detail", []):
-                    tool_span = trace_log.tool_call(
-                        step=d["step"],
-                        tool_name=td.get("name", ""),
-                        arguments=td.get("arguments", {}),
-                    )
-                    trace_log.tool_result(
-                        span_id=tool_span,
-                        tool_name=td.get("name", ""),
-                        observation=str(td.get("observation", "")),
-                        error=(
-                            str(td.get("error_code", ""))
-                            if td.get("status") not in {"", "success", "completed"}
-                            else ""
-                        ),
-                        fed_truncated=bool(td.get("fed_truncated", False)),
-                        fed_length=int(td.get("fed_length") or 0),
-                        duration_ms=float(td.get("duration_ms") or 0.0),
-                        evidence=td.get("evidence") if isinstance(td.get("evidence"), dict) else None,
-                    )
-
-            ok = await send( {
-                "event": "progress",
-                "step": d["step"],
-                "actions": d["actions"],
-                "thought": d["thought"][:300],
-                "tool_calls_detail": [
-                    {
-                        "name": td.get("name", ""),
-                        "arguments": td.get("arguments", {}),
-                        "observation": str(td.get("observation", ""))[:3000],
-                    }
-                    for td in d.get("tool_calls_detail", [])[:5]
-                ],
-                "is_final": d["is_final"],
-                "final_answer": d["final_answer"] if d["is_final"] else "",
-                **_todo_progress_state(),
-            })
+            _record_stream_step(trace_log, d, step_progress.thought or "")
+            ok = await send(_stream_progress_event(d, todo_state))
             if not ok:
                 agent.last_run_checkpoint.update({
                     "status": "paused",
@@ -617,182 +892,46 @@ async def handle_agent_execution(
                 return
 
             if d["is_final"]:
-                fallback_review_requested = False
-                # ── 兜底审核：本轮改了 .umlproj 但没调 submit_uml_review ──
-                # 审核靠 prompt 自觉，模型可能漏调；这里对比本轮前后磁盘状态，
-                # 有变更则补推一次 uml_review（接受/拒绝语义与正常审核一致：
-                # accept 刷新 baseline，reject 由主循环开启一轮修订）。
-                if (
-                    review_mgr is not None
-                    and not uml_review_seen
-                    and project_file
-                    and os.path.isfile(project_file)
-                    and review_mgr.baseline is not None
-                ):
-                    try:
-                        from app.services.file_service import load_project
-                        from app.services.diagram_diff import changed_diagrams
-                        after = [d.model_dump() for d in load_project(project_file).diagrams]
-                        changed = changed_diagrams(after, review_mgr.baseline)
-                        if changed:
-                            req = review_mgr.submit(
-                                review_type="uml_diff",
-                                title="检测到未审核的设计变更",
-                                content="Agent 修改了设计文件但未提交 diff 审核",
-                                question="设计文件已被修改但未经审核，请确认是否接受此变更。",
-                                metadata={
-                                    "diagrams": after,
-                                    "changed_diagrams": changed,
-                                    "original_diagrams": review_mgr.baseline,
-                                },
-                            )
-                            if fallback_review_runs is not None:
-                                fallback_review_runs[req.id] = run_id
-                            fallback_review_requested = True
-                            if trace_log:
-                                trace_log.review_request(
-                                    review_id=req.id,
-                                    review_type="uml_diff",
-                                    title=req.title,
-                                    question=req.question,
-                                    content=req.content,
-                                )
-                            logger.info("[AgentChat] 兜底审核补推: review_id=%d", req.id)
-                            await send( {
-                                "event": "uml_review",
-                                "review_id": req.id,
-                                "title": req.title,
-                                "diagrams": after,
-                                "changed_diagrams": changed,
-                                "original_diagrams": review_mgr.baseline,
-                                "auto": True,
-                            })
-                    except Exception:
-                        logger.exception("[AgentChat] Fallback review check failed")
+                fallback_review_requested = await _request_fallback_uml_review(
+                    review_manager=review_mgr,
+                    uml_review_seen=progress_forwarder.uml_review_seen,
+                    project_file=project_file,
+                    trace_log=trace_log,
+                    send=send,
+                    fallback_review_runs=fallback_review_runs,
+                    run_id=run_id,
+                )
 
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
                 else:
                     manifest = []
-                todos = get_runtime().todos or []
-                terminal_status, stop_reason = _terminal_checkpoint_status(
-                    step_progress.outcome, todos,
-                )
-                if terminal_status == "completed" and any(
-                    not item["passed"] for item in agent.last_run_checkpoint.get("verification_results", [])
-                ):
-                    terminal_status, stop_reason = "partial", "verification_failed"
-                agent.last_run_checkpoint = {
-                    **agent.last_run_checkpoint,
-                    "run_id": run_id,
-                    "task_id": task_binding.task_id if task_binding else "",
-                    "status": "waiting_approval" if fallback_review_requested else terminal_status,
-                    "request_summary": checkpoint_request_summary,
-                    "completed_items": [
-                        t.get("content", "") for t in todos
-                        if isinstance(t, dict) and t.get("status") == "completed"
-                    ],
-                    "pending_items": [
-                        t.get("content", "") for t in todos
-                        if isinstance(t, dict) and t.get("status") != "completed"
-                    ],
-                    "last_error": None,
-                    "stop_reason": stop_reason,
-                }
-                if step_progress.outcome is not None:
-                    agent.last_run_checkpoint["outcome"] = step_progress.outcome.to_dict()
-                if fallback_review_requested:
-                    agent.last_run_checkpoint.update({
-                        "review_status": "pending",
-                        "post_review_status": terminal_status,
-                        "review_baseline": review_mgr.baseline,
-                    })
-
-                summary_status = (
-                    "waiting_approval" if fallback_review_requested else terminal_status
-                )
-                agent.last_run_checkpoint["task_summary"] = build_task_execution_summary(
-                    task_tool_calls, agent.last_run_checkpoint, summary_status,
+                terminal_status, todos = _finalize_terminal_checkpoint(
+                    agent,
+                    outcome=step_progress.outcome,
+                    run_id=run_id,
+                    task_id=task_binding.task_id if task_binding else "",
+                    request_summary=checkpoint_request_summary,
+                    fallback_review_requested=fallback_review_requested,
+                    review_manager=review_mgr,
                 )
 
-                # A fallback review has no Agent future waiting on it.  Do
-                # not announce success before the human has resolved it.
-                if fallback_review_requested:
-                    if run_id:
-                        get_run_store().transition(
-                            run_id, RunStatus.WAITING_APPROVAL,
-                            expected={RunStatus.RUNNING}, owner_id=run_owner,
-                            metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                        )
-                    _write_task_summary(summary_status)
-                    await send( {
-                        "event": "awaiting_review",
-                        "run_id": run_id,
-                        "checkpoint": agent.last_run_checkpoint,
-                    })
-                    return
-
-                run_status = run_status_for_completion(terminal_status)
-                try:
-                    from app.services.agent_metrics import get_agent_metrics
-                    get_agent_metrics().record_run(
-                        "success" if terminal_status == "completed" else terminal_status,
-                    )
-                except Exception:
-                    pass
-                if run_id:
-                    get_run_store().transition(
-                        run_id, run_status,
-                        expected={RunStatus.RUNNING}, owner_id=run_owner,
-                        metadata_patch={"checkpoint": agent.last_run_checkpoint},
-                    )
-                    _record_audit(
-                        "run_succeeded" if terminal_status == "completed" else "run_partial",
-                        run_id=run_id, session_id=session_id,
-                        tool_call_count=len(task_tool_calls),
-                    )
-                _write_task_summary(summary_status)
-
-                # 异步后台归档到记忆系统（不阻塞返回 done）
-                project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
-                if project_id and _should_archive_task_memory(
-                    terminal_status, task_tool_calls, agent.last_run_checkpoint,
-                ):
-                    memory = getattr(agent, "memory_provider", None)
-                    if memory is not None:
-                        asyncio.create_task(_archive_task_to_memory(
-                            memory=memory,
-                            project_id=project_id,
-                            user_message=user_message,
-                            final_answer=d["final_answer"] or "",
-                            tool_calls_detail=task_tool_calls,
-                            run_id=run_id,
-                            trace_id=trace_log.trace_id if trace_log else "",
-                        ))
-
-                # 历史由 _arun_with_fc_stream 内部统一写入，此处不再重复 add_message
-                if trace_log:
-                    report = getattr(agent, "last_context_report", {})
-                    trace_log.done(answer=d["final_answer"], runtime={
-                        "token_budget_used": report.get("token_budget_used", 0),
-                        "token_budget_stop_reason": report.get("token_budget_stop_reason", "model_answer"),
-                        "convergence_policy": report.get("convergence_policy", {}),
-                        "context_budget_compaction": report.get(
-                            "context_budget_compaction", {}
-                        ),
-                        "finalization_textual_tool_markup_blocked": report.get(
-                            "finalization_textual_tool_markup_blocked", False
-                        ),
-                    })
-                ok = await send( {
-                    "event": "done",
-                    "result": d["final_answer"],
-                    "run_id": run_id,
-                    "checkpoint": agent.last_run_checkpoint,
-                })
-                if not ok:
-                    return
+                await _publish_terminal_execution(
+                    agent=agent,
+                    terminal_status=terminal_status,
+                    fallback_review_requested=fallback_review_requested,
+                    task_tool_calls=task_tool_calls,
+                    user_message=user_message,
+                    final_answer=d["final_answer"] or "",
+                    project_file=project_file,
+                    run_id=run_id,
+                    run_owner=run_owner,
+                    session_id=session_id,
+                    trace_log=trace_log,
+                    send=send,
+                    write_task_summary=_write_task_summary,
+                )
                 return
 
     except asyncio.CancelledError:

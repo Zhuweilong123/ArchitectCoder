@@ -23,8 +23,26 @@ import os
 import threading
 import time
 import uuid
-from contextvars import ContextVar
 from datetime import datetime
+
+from . import format as trace_format
+from .format import (
+    EVT_AGENT_STEP,
+    EVT_CONTEXT_COMPACTED,
+    EVT_DONE,
+    EVT_ERROR,
+    EVT_KG_INJECT,
+    EVT_LLM_REQUEST,
+    EVT_LLM_RESPONSE,
+    EVT_REVIEW_REQUEST,
+    EVT_REVIEW_RESPONSE,
+    EVT_SESSION_END,
+    EVT_SESSION_START,
+    EVT_TASK_SUMMARY,
+    EVT_TOOL_CALL,
+    EVT_TOOL_RESULT,
+    EVT_USER_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,25 +137,6 @@ def _json_safe(value):
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return value
-
-
-# ── 事件类型常量 ─────────────────────────────────────
-
-EVT_SESSION_START = "session_start"
-EVT_SESSION_END = "session_end"
-EVT_USER_MESSAGE = "user_message"
-EVT_LLM_REQUEST = "llm_request"
-EVT_LLM_RESPONSE = "llm_response"
-EVT_AGENT_STEP = "agent_step"
-EVT_TOOL_CALL = "tool_call"
-EVT_TOOL_RESULT = "tool_result"
-EVT_REVIEW_REQUEST = "review_request"
-EVT_REVIEW_RESPONSE = "review_response"
-EVT_DONE = "done"
-EVT_ERROR = "error"
-EVT_KG_INJECT = "kg_inject"
-EVT_CONTEXT_COMPACTED = "context_compacted"
-EVT_TASK_SUMMARY = "task_summary"
 
 
 def _event(
@@ -442,229 +441,8 @@ class ChatTraceLogger:
 
 
 def _chat_log_dir() -> str:
-    """计算 chat_log 目录（与 pipeline_log 同级）。"""
-    from backend.config import get_settings
-    settings = get_settings()
-    return os.path.normpath(os.path.abspath(
-        os.path.join(os.path.dirname(settings.uml_dir), "chat_log"),
-    ))
-
-
-# ── trace_span — 调用栈标记（contextvars，线程+异步安全）────
-# 子 Agent 入口处用 `with trace_span("UmlOptimizer"):` 包裹，
-# 全局 LLM hook 自动将 span_path 注入每个 llm_request/llm_response 事件。
-
-import contextvars
-
-_trace_spans: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
-    "trace_spans", default=[]
-)
-
-
-class trace_span:
-    """上下文管理器 — 在 LLM trace 中标记当前调用栈层级。
-
-    用法::
-
-        with trace_span("UmlOptimizer"):
-            with trace_span("reflect"):
-                feedback = llm.invoke(...)  # span_path = "UmlOptimizer/reflect"
-
-    span_path 自动写入全局 hook 的 llm_request / llm_response 事件中。
-    """
-
-    def __init__(self, name: str):
-        self._name = name
-        self._token = None
-
-    def __enter__(self):
-        spans = list(_trace_spans.get())
-        spans.append(self._name)
-        self._token = _trace_spans.set(spans)
-        return self
-
-    def __exit__(self, *args):
-        if self._token is not None:
-            _trace_spans.reset(self._token)
-            self._token = None
-
-    async def __aenter__(self):
-        return self.__enter__()
-
-    async def __aexit__(self, *args):
-        self.__exit__(*args)
-
-
-def current_trace_spans() -> list[str]:
-    """返回当前线程/协程的 span_path 列表（最内层在末尾）。"""
-    return _trace_spans.get()
-
-
-# ── 全局 LLM trace 钩子 ──────────────────────────────
-# BaseAgentsLLM 不直接依赖本模块，通过注册的回调转发原始往返。
-#
-# 钩子栈（stack）语义 —— 嵌套场景（如 pipeline 调用 optimize_v2）下，
-# 内层 TraceSession push 自己的 bridge，外层不受影响。
-# LLM 调用总是路由到栈顶 handler。
-
-# 钩子必须按协程隔离。进程级 list 会让并发 WebSocket 互相覆盖/清理 hook，
-# 也会把一个会话的 LLM trace 写入另一个会话。
-_TRACE_HOOK_STACK: ContextVar[tuple] = ContextVar(
-    "trace_hook_stack", default=()
-)
-
-
-def push_trace_hook(handler) -> None:
-    """注册 LLM trace 处理器到栈顶。"""
-    _TRACE_HOOK_STACK.set((*_TRACE_HOOK_STACK.get(), handler))
-
-
-def pop_trace_hook(handler) -> None:
-    """注销栈顶 LLM trace 处理器（调用者应传入与 push 相同的 handler 对象）。"""
-    stack = _TRACE_HOOK_STACK.get()
-    if stack and stack[-1] is handler:
-        _TRACE_HOOK_STACK.set(stack[:-1])
-
-
-# 保留旧 API 兼容性（agent_chat_ws 等旧调用方仍在用，逐步迁移）
-def set_trace_hook(handler=None):
-    """已废弃 — 请使用 push_trace_hook / pop_trace_hook 或 TraceSession。
-
-    传入 None 时仅清空当前协程上下文的栈，不影响其他会话。
-    """
-    if handler is None:
-        _TRACE_HOOK_STACK.set(())
-    else:
-        push_trace_hook(handler)
-
-
-def get_trace_hook():
-    """返回栈顶 handler（栈空则 None）。"""
-    stack = _TRACE_HOOK_STACK.get()
-    return stack[-1] if stack else None
-
-
-def _safe_hook(kind: str, *args, **kwargs):
-    """安全调用栈顶 hook，异常不影响主流程。"""
-    handler = get_trace_hook()
-    if handler is None:
-        return None
-    try:
-        return handler(kind, *args, **kwargs)
-    except Exception:
-        logger.exception("[Trace] hook(%s) failed", kind)
-        return None
-
-
-# ── TraceSession — 任务函数内部自动管理 trace 生命周期 ────
-
-class TraceSession:
-    """trace 生命周期上下文管理器 — 在任务函数内部使用。
-
-    自动完成: 创建 ChatTraceLogger → start → push hook → run → pop hook → close
-
-    用法::
-
-        with TraceSession(session_id="my_proj_20240804_120000",
-                          user_message="优化类图",
-                          project_file="proj.umlproj") as tracer:
-            # LLM 调用自动记录 trace
-            result = await llm.ainvoke(...)
-            tracer.done(answer="优化完成")
-
-    嵌套安全：内层 TraceSession push 到栈顶，LLM 调用路由到最内层；
-    退出后自动恢复外层 handler。
-    """
-
-    def __init__(self, *, session_id: str, user_message: str = "",
-                 project_file: str = "", source_dir: str = "",
-                 test_dir: str = "", env_snapshot: dict | None = None):
-        self._sid = session_id
-        self._user_message = user_message
-        self._project_file = project_file
-        self._source_dir = source_dir
-        self._test_dir = test_dir
-        self._env_snapshot = env_snapshot
-        self._tracer: ChatTraceLogger | None = None
-        self._bridge = None
-
-    @property
-    def tracer(self) -> ChatTraceLogger:
-        if self._tracer is None:
-            raise RuntimeError("TraceSession not entered")
-        return self._tracer
-
-    # ── 内部 bridge ─────────────────────────────────
-
-    def _make_bridge(self):
-        """构造 bridge 闭包 — 捕获 self._tracer，直接桥接 LLM 事件。"""
-        tracer = self._tracer
-
-        def bridge(kind: str, *args, **kwargs):
-            spans = current_trace_spans()
-            span_path = "/".join(spans) if spans else ""
-            if kind == "llm_request":
-                return tracer.llm_request(
-                    provider=kwargs.get("provider", "unknown"),
-                    model=kwargs.get("model", ""),
-                    messages=kwargs.get("messages", []),
-                    temperature=kwargs.get("temperature"),
-                    max_tokens=kwargs.get("max_tokens"),
-                    tools=kwargs.get("tools"),
-                    tool_choice=kwargs.get("tool_choice"),
-                    response_format=kwargs.get("response_format"),
-                    timeout=kwargs.get("timeout"),
-                    span_path=span_path,
-                )
-            elif kind == "llm_response":
-                tracer.llm_response(
-                    span_id=kwargs.get("span_id", ""),
-                    content=kwargs.get("content", ""),
-                    tool_calls=kwargs.get("tool_calls"),
-                    usage=kwargs.get("usage"),
-                    error=kwargs.get("error", ""),
-                    duration_ms=kwargs.get("duration_ms", 0.0),
-                    span_path=span_path,
-                )
-                return None
-            return None
-
-        return bridge
-
-    # ── 上下文管理 ─────────────────────────────────
-
-    def __enter__(self):
-        self._tracer = ChatTraceLogger(session_id=self._sid)
-        self._tracer.start(
-            user_message=self._user_message,
-            project_file=self._project_file,
-            source_dir=self._source_dir,
-            test_dir=self._test_dir,
-            env_snapshot=self._env_snapshot,
-        )
-        self._bridge = self._make_bridge()
-        push_trace_hook(self._bridge)
-        return self._tracer
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if self._bridge is not None:
-                pop_trace_hook(self._bridge)
-        finally:
-            if self._tracer is not None and not self._tracer._closed:
-                if exc_type is not None:
-                    self._tracer.error(
-                        event_type="exception",
-                        message=f"{exc_type.__name__}: {exc_val}",
-                    )
-                self._tracer.close()
-        return False  # 不吞异常
-
-    async def __aenter__(self):
-        return self.__enter__()
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        return self.__exit__(exc_type, exc_val, exc_tb)
+    """Compatibility seam for callers that patch the writer's log directory."""
+    return trace_format.chat_log_dir()
 
 
 class JsonlTraceProvider:
@@ -721,24 +499,3 @@ def create(*, settings=None, **kwargs):
     """Provider factory loaded through ``agent_trace_provider``."""
     return JsonlTraceProvider()
 
-
-# Compatibility exports.  New core/application code imports these symbols
-# from ``app.trace.tracing``; existing integrations can migrate
-# without changing the on-disk JSONL format in one step.
-from app.trace.tracing import (  # noqa: E402  (intentional adapter boundary)
-    TraceSession as TraceSessionPort,
-    current_trace_spans as current_trace_spans_port,
-    get_trace_hook as get_trace_hook_port,
-    pop_trace_hook as pop_trace_hook_port,
-    push_trace_hook as push_trace_hook_port,
-    set_trace_hook as set_trace_hook_port,
-    trace_span as trace_span_port,
-)
-
-TraceSession = TraceSessionPort
-current_trace_spans = current_trace_spans_port
-get_trace_hook = get_trace_hook_port
-pop_trace_hook = pop_trace_hook_port
-push_trace_hook = push_trace_hook_port
-set_trace_hook = set_trace_hook_port
-trace_span = trace_span_port

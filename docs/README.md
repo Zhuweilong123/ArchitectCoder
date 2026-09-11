@@ -1,5 +1,7 @@
 # 文档导航
 
+> 文档核查更新：2026-09-11。当前事实以源码、配置和下列实现文档为准。
+
 ## 当前事实
 
 | 文档 | 说明 |
@@ -8,6 +10,7 @@
 | [`runtime-command-execution.md`](runtime-command-execution.md) | `run_task`、`run_program`、`shell` 和宿主命令安全契约 |
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | 插件加载、provider 和扩展所有权 |
+| [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
 
 ## 子系统设计
 
@@ -15,6 +18,7 @@
 - [`memory-system-design.md`](memory-system-design.md)：记忆模型、检索和生命周期。
 - [`knowledge-graph-design.md`](knowledge-graph-design.md)：知识图谱模型、构建和查询。
 - [`trace-replay-design.md`](trace-replay-design.md)：Trace 记录、回放、混合执行设计和使用手册。
+- [`trace-to-eval-case-factory-design.md`](trace-to-eval-case-factory-design.md)：Trace 转评测用例草稿、fixture、Checker 审核和发布流程。
 
 ## 历史与决策记录
 

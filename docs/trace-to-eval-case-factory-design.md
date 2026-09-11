@@ -1,6 +1,6 @@
 # Trace 转评测用例子能力设计
 
-> 状态：提案
+> 状态：已实现基线（设计与实现说明，2026-09-11 更新）
 >
 > 所属：`extensions/evals` 评测插件
 >
@@ -71,7 +71,7 @@ Trace 记录了 DevAgent 在真实工程任务中的用户请求、工具调用�
 |---|---|---|
 | Trace 持久化、查询和回放 | Trace 插件 | 提供只读 Trace 事件 |
 | 草稿提取、推断、校验、发布 | Evals 插件 | 完整拥有 Trace Case Factory |
-| API 鉴权与传输 | `backend/app/api/evals.py` | 仅转发请求到 Evals Provider |
+| API 鉴权与传输 | `extensions/evals/full_api.py`、`extensions/evals/api.py`、`backend/app/main.py` | 插件路由挂载、认证和请求转发 |
 | 评测用例编辑与发布体验 | Evaluation Center | 评测能力入口与状态展示 |
 
 Evals 插件只能依赖核心层暴露的 Trace 查询契约，不得直接导入 `extensions.trace` 的具体存储实现。
@@ -92,8 +92,7 @@ Evals 插件只能依赖核心层暴露的 Trace 查询契约，不得直接导�
 ## 4. 生命周期与状态机
 
 ```text
-eligible
-  → draft_created
+draft_created
   → fixture_bound
   → review_ready
   → validation_running
@@ -101,7 +100,6 @@ eligible
   → published
 ```
 
-- `eligible`：Trace 满足最低可转换条件。
 - `draft_created`：已提取 Prompt、轮次、工具摘要和候选检查器。
 - `fixture_bound`：已选择已有 fixture，或从用户确认的工作区捕获新 fixture。
 - `review_ready`：用户已审核 Case 元数据、检查器和安全提示。
@@ -116,11 +114,12 @@ eligible
 |---|---|---|
 | `user_message` 序列 | `prompt` / `turns` | 高置信度直接提取 |
 | `project_file`、`source_dir`、`test_dir` | fixture / manifest 候选项 | 需要用户确认与路径校验 |
-| `apply_changes` 参数与结果 | 可写范围、文件检查候选项 | 仅生成建议 |
-| `run_task`、`run_program` 成功证据 | `pytest` / `trace_policy` 候选项 | 需要命令语义确认 |
-| 设计文件变化 | UML Checker 候选项 | 根据最终 fixture 差异推断 |
-| `done.answer` | Answer Checker 候选项 | 默认诊断级，不作为硬门禁 |
-| 工具调用序列 | 行为参考与可视化证据 | 默认不要求精确复现 |
+| `user_message` 序列 | `prompt` 或 `turns` | 仅保留非空用户消息 |
+| 支持的工具调用名称 | `trace_policy` 候选 Checker | 仅作为观察证据，默认不升级为 hard checker |
+| `tool_result.error` | 草稿 `warnings` | 记录源 Trace 的工具错误数量 |
+| 事件类型和数量、Trace 内容 | `trace_summary`、`trace_sha256` | 用于审阅和来源追踪 |
+
+当前实现只自动生成 `trace_policy` 候选，不会从自然语言答案、设计差异或命令成功状态推断 UML、pytest 或 Answer Checker；这些检查器必须由用户在审阅阶段显式填写。
 
 ### 5.1 检查器原则
 
@@ -165,13 +164,20 @@ class TraceCaseFactory(Protocol):
 
 若当前 Provider 未实现该协议，接口返回“当前评测 Provider 不支持 Trace 转评测用例”，不影响既有评测功能。
 
-API 统一归属于 Evals：
+API 统一归属于 Evals，当前实现的完整路由为：
 
 ```text
 POST /api/evals/trace-cases/drafts
 GET  /api/evals/trace-cases/drafts/{draft_id}
 POST /api/evals/trace-cases/drafts/{draft_id}/validate
 POST /api/evals/trace-cases/drafts/{draft_id}/publish
+GET  /api/evals/trace-cases/projects
+GET  /api/evals/trace-cases/drafts
+GET  /api/evals/trace-cases/drafts/{draft_id}
+PUT  /api/evals/trace-cases/drafts/{draft_id}
+DELETE /api/evals/trace-cases/drafts/{draft_id}
+POST /api/evals/trace-cases/drafts/{draft_id}/fixture-preview
+POST /api/evals/trace-cases/drafts/{draft_id}/capture-fixture
 ```
 
 `/api/trace` 保持只读的浏览与回放职责，不承载草稿、fixture 或发布逻辑。
@@ -180,14 +186,8 @@ POST /api/evals/trace-cases/drafts/{draft_id}/publish
 
 ```text
 extensions/evals/
-├─ trace_cases/
-│  ├─ models.py          # 请求、草稿、校验和发布模型
-│  ├─ extractor.py       # Trace 事件归一化和轮次提取
-│  ├─ eligibility.py     # 可转换性与风险判断
-│  ├─ inference.py       # Case、预算和 Checker 候选推断
-│  ├─ fixture_capture.py # 受控快照捕获与清理
-│  ├─ drafts.py          # 草稿持久化与状态机
-│  └─ publisher.py       # Case / manifest / fixture 发布
+├─ trace_cases.py         # Trace 提取、草稿、fixture、校验与发布
+├─ api.py                 # /trace-cases/* HTTP 适配器
 ├─ provider.py            # 暴露可选子能力
 └─ runner.py              # 复用现有标准试运行能力
 ```
@@ -246,7 +246,7 @@ Trace 回放的 `mock` 模式只验证记录一致性，不能用于 Case 发布
 
 ## 12. 分期交付
 
-### Phase 1：可用 MVP
+### Phase 1：可用 MVP（当前已实现）
 
 - 单轮、成功工程 Trace 转草稿。
 - Prompt、路径、变更文件和工具摘要提取。
@@ -254,14 +254,16 @@ Trace 回放的 `mock` 模式只验证记录一致性，不能用于 Case 发布
 - 文件、UML 有效性、路径保护类 Checker。
 - 标准试运行与显式发布。
 
-### Phase 2：覆盖扩展
+当前实现额外支持：多轮 Trace、草稿编辑/删除、fixture 预览、受控路径捕获、Trace SHA-256、捕获快照 SHA-256 和原子发布。
+
+### Phase 2：覆盖扩展（后续规划）
 
 - 多轮 Trace 转 `turns`。
 - `pytest`、`trace_policy` 和 UML 结构 Checker 推荐。
 - 草稿质量评分、缺失项提示和敏感信息扫描。
 - TraceViewer 快捷跳转。
 
-### Phase 3：规模化沉淀
+### Phase 3：规模化沉淀（后续规划）
 
 - 失败 Trace 的缺陷复现工作流。
 - 相似 Trace 聚类、候选用例去重和资产 Diff。
@@ -274,7 +276,7 @@ Trace 回放的 `mock` 模式只验证记录一致性，不能用于 Case 发布
 - 从草稿生成到发布期间，未经确认不得写入 `backend/evals/`。
 - 发布后的 Case 能被既有 Registry 加载，并由既有 EvalRunner 执行。
 - 标准试运行不依赖 mock 回放，也不复用原 Trace 的工具结果。
-- 所有发布资产都包含来源追踪、fixture 哈希和人工确认记录。
+- 所有发布资产都包含来源 Trace、Trace 哈希、fixture（如有）哈希和审阅时间；人工确认以显式 review、validate、publish 请求为边界，不由系统伪造额外审批记录。
 ## Implementation boundary update
 
 The Trace-to-case capability is owned by the Evals extension:
@@ -283,6 +285,6 @@ The Trace-to-case capability is owned by the Evals extension:
 - `extensions/evals/api.py` owns the `/api/evals/trace-cases/*` HTTP routes.
 - `extensions/evals/provider.py` adapts the capability to the local Evals provider.
 - `backend/app/agent_base/core/plugins.py` only provides the generic plugin router mounting mechanism.
-- `backend/app/api/evals.py` keeps generic evaluation catalog and batch APIs; it no longer contains Trace-case routes.
+- `extensions/evals/full_api.py` keeps generic evaluation catalog and batch APIs and mounts the Trace-case router; it no longer relies on a host `backend/app/api/evals.py` module.
 
 This keeps the Trace-to-case feature optional and removable without adding Trace-specific business logic to the host application.

@@ -69,10 +69,12 @@ def build_knowledge_graph(tmp_path: Path) -> tuple[str, str, str]:
 
 
 def knowledge_graph_tools(db_path: str, source_dir: str, include_compare: bool = False):
+    from extensions.knowledge_graph.provider import create as create_local_provider
+
     project_file = str(Path(source_dir).parent / "proj.umlproj")
     return create_kg_v2_tools(
-        db_path=db_path,
         project_file=project_file,
         source_dir=source_dir,
         include_compare=include_compare,
+        provider=create_local_provider(db_path=db_path),
     )

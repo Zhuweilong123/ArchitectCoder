@@ -11,13 +11,17 @@ import { PlusOutlined } from '@ant-design/icons';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { getCanvasLabels, getFragmentLabels, getMessageTypeLabels } from './canvasLabels';
+import {
+  buildLifelineHTML, getMessageVisual, LIFELINE_HEIGHT, LIFELINE_WIDTH, LIFELINE_Y,
+} from './seqRenderUtils';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
-import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
+import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { snapCanvasPosition } from './core/snapToGrid';
 import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import type { FragmentType } from '../../types/sequence';
+import { sequenceMessageY } from '../../utils/sequenceLayout';
 import './SeqEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
 
@@ -118,67 +122,7 @@ function ensureShapesRegistered() {
   console.log('[SeqEditor] X6 sequence shapes registered');
 }
 
-// ── HTML builders ────────────────────────────────────
-
-function buildLifelineHTML(
-  lifeline: SeqLifeline,
-  selected: boolean,
-  endpointHighlighted: boolean,
-  theme: CanvasTheme,
-  language: Parameters<typeof getCanvasLabels>[0],
-): string {
-  const selClass = [
-    selected ? 'selected' : '',
-    endpointHighlighted ? 'message-endpoint' : '',
-  ].filter(Boolean).join(' ');
-  const hint = selected
-    ? `<div class="seq-click-hint">${getCanvasLabels(language).sequenceDiagram.selectedLifelineHint}</div>`
-    : '';
-  return `<div class="seq-lifeline-node theme-${theme} ${selClass}">
-    <div class="seq-lifeline-name">${escapeHtml(lifeline.name)}</div>
-    <div class="seq-lifeline-body">
-      ${hint}
-    </div>
-  </div>`;
-}
-
 // ── Component ────────────────────────────────────────
-
-const LIFELINE_WIDTH = 140;
-const LIFELINE_HEIGHT = 400;
-const LIFELINE_Y = 120;  // give top padding so lifelines aren't cut off
-const MESSAGE_START_Y = 190;
-const MESSAGE_GAP = 48;
-
-function getMessageVisual(type: MessageType, theme: CanvasTheme) {
-  const palette = theme === 'dark'
-    ? {
-        sync: '#60a5fa', async: '#4ade80', return: '#cbd5e1', simple: '#e2e8f0', self: '#a78bfa',
-      }
-    : theme === 'eye-care'
-      ? {
-          sync: '#547a5d', async: '#4f805d', return: '#718078', simple: '#52675a', self: '#89745d',
-        }
-      : {
-        sync: '#2563eb', async: '#16a34a', return: '#64748b', simple: '#475569', self: '#7c3aed',
-        };
-  const color = palette[type];
-  return {
-    color,
-    dash: type === 'return' ? '6,3' : '',
-    marker: type === 'simple' ? null : {
-      name: type === 'async' ? 'classic' : 'block',
-      width: 10,
-      height: 6,
-      fill: color,
-      stroke: color,
-    },
-  };
-}
-
-function getMessageY(message: SeqMessage): number {
-  return message.y || MESSAGE_START_Y + (message.order - 1) * MESSAGE_GAP;
-}
 
 type InlineEditKind = 'lifeline' | 'message' | 'fragment';
 interface InlineEditState {
@@ -531,8 +475,7 @@ const SeqEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graphRef.current = graph;
-    registerCanvasGraph(graph);
+    registerCanvasGraphInstance(graph, graphRef);
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
@@ -540,10 +483,9 @@ const SeqEditor: React.FC = () => {
 
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
-      document.removeEventListener('keydown', handleKeyDown);
-      unregisterCanvasGraph(graph);
-      try { graph.dispose(); } catch { /* ignore */ }
-      graphRef.current = null;
+      disposeCanvasGraphInstance(graph, graphRef, () => {
+        document.removeEventListener('keydown', handleKeyDown);
+      });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -587,7 +529,7 @@ const SeqEditor: React.FC = () => {
         if (message.type === 'return') return;
         const activationLifeline = message.to_lifeline || message.from_lifeline;
         const activations = autoActivationMap.get(activationLifeline) || [];
-        activations.push(getMessageY(message));
+        activations.push(sequenceMessageY(message));
         autoActivationMap.set(activationLifeline, activations);
       });
       const currentLIds = new Set(lifelines.map((l) => l.id));
@@ -607,7 +549,7 @@ const SeqEditor: React.FC = () => {
       // _SEQ_START_Y=190. Using msg.y directly avoids drift from formula mismatches.
       let maxMsgY = 0;
       for (const m of messages) {
-        const y = getMessageY(m);
+        const y = sequenceMessageY(m);
         if (y > maxMsgY) maxMsgY = y;
       }
       const neededHeight = Math.max(
@@ -785,7 +727,7 @@ const SeqEditor: React.FC = () => {
         if (!srcLL || !tgtLL) return;
 
         const isSelf = msg.from_lifeline === msg.to_lifeline;
-        const msgY = getMessageY(msg);  // persisted Y takes priority
+        const msgY = sequenceMessageY(msg);  // persisted Y takes priority
 
         // Connect to the visual axis of each lifeline instead of the outer
         // node boundary. This makes messages feel anchored to the dashed line.

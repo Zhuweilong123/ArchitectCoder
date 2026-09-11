@@ -9,13 +9,12 @@ import {
 } from 'antd';
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
-  UndoOutlined, RedoOutlined, RobotOutlined,
+  RobotOutlined,
   FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
-  PlusSquareOutlined, DownOutlined, TableOutlined,
-  ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
-  BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
+  DownOutlined, TableOutlined,
+  ProjectOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
   ExportOutlined,
 } from '@ant-design/icons';
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
@@ -24,16 +23,24 @@ import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, listDiagrams,
-  saveProject, openProject, listProjects,
+  listProjects,
   exportMarkdown,
   browseDirectory, type BrowseResult,
 } from '../../services/api';
+import {
+  openToolbarDiagram, openToolbarProject, saveToolbarProject,
+} from '../../services/toolbarProjectApi';
 import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
+import DiagramTypeControls from './DiagramTypeControls';
+import {
+  fileStem, normalizePath, pathBaseName, pathDirName, relativePath,
+  summarizeProjectDiagrams,
+} from './toolbarUtils';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
 // (reserved for future use)
@@ -52,36 +59,6 @@ const LANGUAGES = [
   { value: 'kotlin', label: 'Kotlin' },
   { value: 'php', label: 'PHP' },
 ];
-
-function summarizeProjectDiagrams(diagrams: Array<{ diagram_type?: string }>) {
-  const labels: Record<string, string> = {
-    class: '类图',
-    sequence: '时序图',
-    component: '组件图',
-  };
-  const order = ['class', 'sequence', 'component', 'other'];
-  const counts = diagrams.reduce<Record<string, number>>((result, diagram) => {
-    const type = diagram.diagram_type === 'class'
-      ? 'class'
-      : diagram.diagram_type === 'sequence'
-        ? 'sequence'
-        : diagram.diagram_type === 'component'
-          ? 'component'
-          : !diagram.diagram_type
-            ? 'class'
-            : 'other';
-    result[type] = (result[type] || 0) + 1;
-    return result;
-  }, {});
-  const parts = order
-    .filter((type) => counts[type])
-    .map((type) => `${labels[type] || '其他图表'} ${counts[type]} 张`);
-  return {
-    total: diagrams.length,
-    typeCount: parts.length,
-    text: parts.join('、'),
-  };
-}
 
 const Toolbar: React.FC = () => {
   const {
@@ -162,22 +139,6 @@ const Toolbar: React.FC = () => {
   // Keep the toolbar compact while still showing where the active design is
   // located.  Paths are displayed relative to the workspace's parent; the
   // full host path remains available in the tooltip.
-  const normalizePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
-  const pathBaseName = (value: string) => normalizePath(value).split('/').pop() || value;
-  const fileStem = (value: string) =>
-    (pathBaseName(value).replace(/[^\w.-]/g, '_').replace(/^\.+|\.+$/g, '') || 'Untitled');
-  const pathDirName = (value: string) => {
-    const normalized = normalizePath(value);
-    const index = normalized.lastIndexOf('/');
-    return index > 0 ? normalized.slice(0, index) : normalized;
-  };
-  const relativePath = (value: string, root: string) => {
-    const target = normalizePath(value);
-    const base = normalizePath(root);
-    if (target === base) return '.';
-    const prefix = `${base}/`;
-    return target.startsWith(prefix) ? target.slice(prefix.length) : pathBaseName(target);
-  };
   // ── Save As dialog ──────────────────────────────────
   const [saveAsVisible, setSaveAsVisible] = useState(false);
   const [saveFilename, setSaveFilename] = useState('');
@@ -200,7 +161,7 @@ const Toolbar: React.FC = () => {
         const targetPath = currentWorkspacePath
           ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
           : `${projName}.umlproj`;
-        const result = await saveProject(
+        const result = await saveToolbarProject(
           { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
           targetPath,
           currentWorkspacePath ? currentWorkspaceSafe : true,
@@ -399,7 +360,7 @@ const Toolbar: React.FC = () => {
     if (diagramFiles.length > 1) {
       try {
         const diagrams = await Promise.all(
-          diagramFiles.map((item) => openDiagram(item.path, safe)),
+          diagramFiles.map((item) => openToolbarDiagram(item.path, safe)),
         );
         setProject({
           version: '1.0',
@@ -434,7 +395,7 @@ const Toolbar: React.FC = () => {
     try {
       if (isProject) {
         const safe = !browseUnsafe.current;
-        const proj = await openProject(path, safe);
+        const proj = await openToolbarProject(path, safe);
         setProject(proj);
         setCurrentFilepath(path);
         setCurrentWorkspacePath(pathDirName(path), safe);
@@ -443,7 +404,7 @@ const Toolbar: React.FC = () => {
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
       } else {
         const safe = !browseUnsafe.current;
-        const d = await openDiagram(path, safe);
+        const d = await openToolbarDiagram(path, safe);
         // Wrap single .uml diagram in a fresh Project so stale
         // sequence/component entries from the previous project are cleared.
         const proj = {
@@ -559,7 +520,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentFilepath ||
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
-      const result = await saveProject(proj, targetPath, targetSafe);
+      const result = await saveToolbarProject(proj, targetPath, targetSafe);
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
@@ -598,7 +559,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentWorkspacePath
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
         : filename;
-      const result = await saveProject(
+      const result = await saveToolbarProject(
         { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
@@ -738,124 +699,17 @@ const Toolbar: React.FC = () => {
 
         {/* Diagram dropdowns — grouped by type */}
         <div className={showTestCaseInCanvas ? 'toolbar-mode-controls is-hidden' : 'toolbar-mode-controls'}>
-        {(() => {
-          const TYPE_SPECS = [
-            { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />, color: '#d48806' },
-            { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />, color: '#1677ff' },
-            { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />, color: '#52c41a' },
-          ] as const;
-
-          const compDiag = project.diagrams.find((dd) => dd.diagram_type === 'component');
-          const activeIdx = project.active_diagram_index;
-
-          const handleDelete = (index: number, name: string) => {
-            Modal.confirm({
-              title: `删除「${name}」`,
-              content: '确认删除此图？此操作不可撤销。',
-              okText: '删除', okType: 'danger', cancelText: '取消',
-              onOk: () => removeDiagram(index),
-            });
-          };
-
-          return TYPE_SPECS.map(spec => {
-            const items = project.diagrams
-              .map((d, i) => ({ d, i }))
-              .filter(({ d }) => (d.diagram_type || 'class') === spec.key);
-
-            if (items.length === 0) return null;
-
-            const activeItem = items.find(({ i }) => i === activeIdx);
-            const displayLabel = activeItem
-              ? (() => {
-                  const d = activeItem.d;
-                  const isAuto = !d.name || d.name === 'Untitled' || /^(class|sequence|component)_\d+$/.test(d.name);
-                  const parentComp = d.component_id
-                    ? (compDiag?.components || []).find((c) => c.id === d.component_id)
-                    : null;
-                  const base = isAuto ? spec.label : d.name;
-                  return parentComp ? `${parentComp.name} › ${base}` : base;
-                })()
-              : `${spec.label} (${items.length})`;
-
-            const menuItems = items.map(({ d, i }) => {
-              const isActive = i === activeIdx;
-              const isAuto = !d.name || d.name === 'Untitled' || /^(class|sequence|component)_\d+$/.test(d.name);
-              const parentComp = d.component_id
-                ? (compDiag?.components || []).find((c) => c.id === d.component_id)
-                : null;
-              const itemLabel = isAuto ? spec.label : d.name;
-              const fullLabel = parentComp ? `${parentComp.name} › ${itemLabel}` : itemLabel;
-              return {
-                key: String(i),
-                icon: isActive ? <span style={{ color: spec.color, fontWeight: 'bold' }}>✔</span> : <span style={{ width: 14, display: 'inline-block' }} />,
-                label: (
-                  <span style={{
-                    display: 'flex', justifyContent: 'space-between',
-                    alignItems: 'center', minWidth: 180, gap: 8,
-                    fontWeight: isActive ? 600 : 400,
-                    color: isActive ? spec.color : 'inherit',
-                  }}>
-                    <span style={{
-                      overflow: 'hidden', textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap', maxWidth: 200,
-                    }}>{fullLabel}</span>
-                    <span
-                      style={{ cursor: 'pointer', color: '#999', fontSize: 12, flexShrink: 0 }}
-                      onClick={(e) => { e.stopPropagation(); handleDelete(i, fullLabel); }}
-                      title="删除此图"
-                    >🗑</span>
-                  </span>
-                ),
-                onClick: () => setActiveDiagram(i),
-              };
-            });
-
-            return (
-              <Dropdown key={spec.key} menu={{ items: menuItems }} trigger={['click']}>
-                <Button
-                  type={activeItem ? 'primary' : 'default'}
-                  icon={spec.icon}
-                  style={{
-                    marginRight: 2, maxWidth: 200,
-                    borderColor: activeItem ? spec.color : undefined,
-                    color: activeItem ? spec.color : undefined,
-                  }}
-                >
-                  <span style={{
-                    overflow: 'hidden', textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap', display: 'inline-block', maxWidth: 150,
-                  }}>{displayLabel}</span>
-                  <DownOutlined style={{ fontSize: 10, marginLeft: 4 }} />
-                </Button>
-              </Dropdown>
-            );
-          });
-        })()}
-
-        <Tooltip title={copy('addDiagram')}>
-          <Dropdown menu={{
-            items: [
-              { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />,
-                onClick: () => addDiagram('class') },
-              { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />,
-                onClick: () => addDiagram('sequence') },
-              { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />,
-                onClick: () => addDiagram('component') },
-            ],
-          }} trigger={['click']}>
-            <Button icon={<PlusSquareOutlined />} />
-          </Dropdown>
-        </Tooltip>
-
-        <Divider type="vertical" />
-
-        {/* Undo/Redo */}
-        <Tooltip title={copy('undo') + ' Ctrl+Z'}>
-          <Button icon={<UndoOutlined />} disabled={undoStack.length === 0} onClick={undo} />
-        </Tooltip>
-        <Tooltip title={copy('redo') + ' Ctrl+Y'}>
-          <Button icon={<RedoOutlined />} disabled={redoStack.length === 0} onClick={redo} />
-        </Tooltip>
+        <DiagramTypeControls
+          project={project}
+          copy={copy}
+          setActiveDiagram={setActiveDiagram}
+          addDiagram={addDiagram}
+          removeDiagram={removeDiagram}
+          undoStack={undoStack}
+          redoStack={redoStack}
+          undo={undo}
+          redo={redo}
+        />
         </div>
       </div>
       <div className="toolbar-right"><SettingsPopover /></div>

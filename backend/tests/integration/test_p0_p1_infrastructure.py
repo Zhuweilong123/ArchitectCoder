@@ -43,7 +43,7 @@ class _LoopLLM:
 
 
 def test_trace_close_writes_session_end(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("trace-test")
     tracer.start()
     tracer.close()
@@ -78,7 +78,7 @@ def test_trace_sources_are_labeled_and_readable_independently(tmp_path, monkeypa
 
 
 def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("strict-json-test")
     tracer.llm_request(
         provider="test", model="test",
@@ -112,7 +112,7 @@ def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypa
 
 
 def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("checkpoint-test")
     tracer.start()
@@ -138,7 +138,7 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
 
 
 def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("task-summary-test")
     tracer.start()
@@ -170,7 +170,7 @@ def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
 
 
 def test_task_execution_summaries_stay_with_their_task(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("task-summary-association-test")
     tracer.start()

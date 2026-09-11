@@ -11,9 +11,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { getCanvasLabels } from './canvasLabels';
+import {
+  buildCompHTML, CHILD_HEIGHT, CHILD_WIDTH, COMP_HEIGHT, COMP_WIDTH,
+  componentThemeVisuals, getCompNodeSize,
+} from './compRenderUtils';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
-import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
+import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
@@ -22,17 +26,6 @@ import {
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
 import './CompEditor.css';
-import { escapeHtml } from '../../utils/safeHtml';
-
-const componentThemeVisuals: Record<CanvasTheme, {
-  surface: string;
-  accent: string;
-}> = {
-  light: { surface: '#fffaf1', accent: '#b7791f' },
-  dark: { surface: '#172033', accent: '#60a5fa' },
-  blueprint: { surface: '#f6fbff', accent: '#0284c7' },
-  'eye-care': { surface: '#f8f7ee', accent: '#547a5d' },
-};
 
 // ── Register X6 shapes (once) ────────────────────────
 
@@ -92,51 +85,11 @@ function ensureShapesRegistered() {
   console.log('[CompEditor] X6 component shapes registered');
 }
 
-// ── HTML builder ─────────────────────────────────────
-
-function buildCompHTML(comp: CompNode, selected: boolean, theme: CanvasTheme, language: Parameters<typeof getCanvasLabels>[0]): string {
-  const labels = getCanvasLabels(language).componentDiagram;
-  const isChild = !!comp.parent_id;
-  const selClass = selected ? 'selected' : '';
-  const childClass = isChild ? 'child' : '';
-
-  // UML 2.5.1 lollipop (provided) and socket (required) notation
-  const provided = (comp.provided_interfaces || []).map((i) =>
-    `<div class="comp-iface provided"><span class="comp-lollipop">⊃</span> ${escapeHtml(i)}</div>`
-  ).join('');
-  const required = (comp.required_interfaces || []).map((i) =>
-    `<div class="comp-iface required"><span class="comp-socket">⊂</span> ${escapeHtml(i)}</div>`
-  ).join('');
-
-  return `<div class="comp-node theme-${theme} ${childClass} ${selClass}">
-    <div class="comp-stereotype">${isChild ? '' : '«component»'}</div>
-    <div class="comp-name">${escapeHtml(comp.name)}</div>
-    ${provided ? `<div class="comp-block"><div class="comp-block-label">${labels.providedInterfaces}</div>${provided}</div>` : ''}
-    ${required ? `<div class="comp-block"><div class="comp-block-label">${labels.requiredInterfaces}</div>${required}</div>` : ''}
-  </div>`;
-}
-
 // ── Component ────────────────────────────────────────
-
-const COMP_WIDTH = 200;
-const COMP_HEIGHT = 160;
-const CHILD_WIDTH = 150;
-const CHILD_HEIGHT = 100;
 
 interface ComponentClipboard {
   components: CompNode[];
   relations: CompRelation[];
-}
-
-function getCompNodeSize(comp: CompNode): { width: number; height: number } {
-  const isChild = !!comp.parent_id;
-  const interfaceCount = (comp.provided_interfaces || []).length
-    + (comp.required_interfaces || []).length;
-  const minHeight = 76 + (interfaceCount > 0 ? 24 + interfaceCount * 18 : 0);
-  return {
-    width: comp.width || (isChild ? CHILD_WIDTH : COMP_WIDTH),
-    height: Math.max(comp.height || (isChild ? CHILD_HEIGHT : COMP_HEIGHT), minHeight),
-  };
 }
 
 const CompEditor: React.FC = () => {
@@ -443,17 +396,15 @@ const CompEditor: React.FC = () => {
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
-    graphRef.current = graph;
-    registerCanvasGraph(graph);
+    registerCanvasGraphInstance(graph, graphRef);
     console.log('[CompEditor] Graph initialized');
 
     return () => {
       _didFirstSync.current = false;
-      document.removeEventListener('keydown', handleKeyDown);
-      detachCanvasEvents();
-      unregisterCanvasGraph(graph);
-      try { graph.dispose(); } catch { /* ignore */ }
-      graphRef.current = null;
+      disposeCanvasGraphInstance(graph, graphRef, () => {
+        document.removeEventListener('keydown', handleKeyDown);
+        detachCanvasEvents();
+      });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

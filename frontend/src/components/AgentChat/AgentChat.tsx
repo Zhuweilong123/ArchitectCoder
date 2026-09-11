@@ -28,97 +28,19 @@ import {
   connectAgentChat, sendAgentMessage, sendStopMessage,
   isAgentConnected, onAgentMessage, startNewSession,
   getCurrentSessionId, switchSession,
-  type AgentEvent, type AgentProgressEvent, type AgentReviewEvent, type AgentTodoItem,
+  type AgentProgressEvent, type AgentTodoItem,
 } from '../../services/agentChat';
 import { listTraces, getTraceHistory, type TraceMeta } from '../../services/api';
 import {
-  activateDiagramForDiffKey, handleDesignElement, processDesignUpdated,
+  activateDiagramForDiffKey, handleDesignElement,
 } from '../../services/designElementHandler';
 import { useReviewStore } from '../../stores/reviewStore';
+import {
+  clampStepForStorage, formatTs, latestTodoState,
+  sessionTimeFromId, truncateTitle, type ChatMessage,
+} from './agentChatUtils';
+import { createAgentChatEventHandler } from './agentChatEventHandler';
 import './AgentChat.css';
-
-// ── 消息类型 ──────────────────────────────────────────
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'agent' | 'system';
-  content: string;
-  timestamp: number;
-  steps?: AgentProgressEvent[];
-  review?: AgentReviewEvent;
-  // 消息类别标记：'disconnect' 用于断线提示去重（连续断线只保留一条）
-  kind?: string;
-}
-
-// 持久化时裁剪 tool observation，避免撑爆 localStorage（5MB）
-const OBS_LIMIT = 500;
-const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] =>
-  steps.map((s) => ({
-    ...s,
-    tool_calls_detail: s.tool_calls_detail?.map((td) => ({
-      ...td,
-      observation: String(td.observation).slice(0, OBS_LIMIT),
-    })),
-  }));
-
-function latestTodoState(messages: ChatMessage[]): {
-  todos: AgentTodoItem[];
-  planningMode: boolean;
-  strategyAdvised: boolean;
-} {
-  for (const message of [...messages].reverse()) {
-    for (const step of [...(message.steps || [])].reverse()) {
-      if (Array.isArray(step.todos) && step.todos.length > 0) {
-        return {
-          todos: step.todos,
-          planningMode: Boolean(step.planning_mode),
-          strategyAdvised: Boolean(step.strategy_advised),
-        };
-      }
-    }
-  }
-  return { todos: [], planningMode: false, strategyAdvised: false };
-}
-
-// ── 会话标识 ──────────────────────────────────────────
-
-// 从 session_id（YYYYMMDD_HHMMSS[_suffix]）解析可读时间 "MM-DD HH:MM"
-function sessionTimeFromId(id: string): string {
-  const m = id.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
-  if (!m) return '';
-  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
-}
-
-// 时间戳 → "MM-DD HH:MM"
-function formatTs(ms: number | null | undefined): string {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-// 会话主题：截断到 ~16 字
-function truncateTitle(s: string): string {
-  const clean = s.replace(/\s+/g, ' ').trim();
-  return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
-}
-
-// 将后端 uml_review 的 diagram 对象归一化为 {type, name, component_id, data}
-// 兼容两种形态：{type,name,data} 包裹式，或原始图对象（diagram_type/classes/... 平铺）。
-function normalizeReviewDiagrams(
-  raw: any[] | null | undefined,
-): Array<{ type: string; name: string; component_id: string; data: any }> {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((d) => {
-    const type = d.type || d.diagram_type || 'class';
-    const name = d.name || '';
-    const component_id = d.component_id || '';
-    const data = (d.data && typeof d.data === 'object' && !Array.isArray(d.data))
-      ? d.data
-      : d;
-    return { type, name, component_id, data };
-  });
-}
 
 // ── 组件 ──────────────────────────────────────────────
 
@@ -246,260 +168,20 @@ const AgentChat: React.FC = () => {
   // ── 连接 WebSocket ──
   const connect = useCallback((open = true) => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
-    const ws = connectAgentChat((event: AgentEvent) => {
-      switch (event.event) {
-        // ── 聊天流式 ──
-        case 'chat_chunk': {
-          setMessages((prev) => {
-            const lastIdx = prev.length - 1;
-            const lastMsg = prev[lastIdx];
-            if (lastMsg && lastMsg.role === 'agent' && lastMsg.id.startsWith('stream_')) {
-              const copy = [...prev];
-              copy[lastIdx] = { ...lastMsg, content: lastMsg.content + event.content };
-              return copy;
-            }
-            return [...prev, {
-              id: `stream_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              role: 'agent' as const,
-              content: event.content,
-              timestamp: Date.now(),
-            }];
-          });
-          break;
-        }
-
-        // ── 开发进度 ──
-        case 'progress': {
-          liveStepsRef.current = [
-            ...liveStepsRef.current.filter((s) => s.step !== event.step),
-            event,
-          ].sort((a, b) => a.step - b.step);
-          // 只同步最新一步触发渲染，避免每步全量 setState
-          setCurrentSteps([...liveStepsRef.current]);
-          if (Array.isArray(event.todos) && event.todos.length > 0) {
-            liveTodosRef.current = event.todos;
-            setCurrentTodos(event.todos);
-            setTodoPlanningMode(Boolean(event.planning_mode));
-            setStrategyAdvised(Boolean(event.strategy_advised));
-            if (!todoSeenInTaskRef.current) {
-              todoSeenInTaskRef.current = true;
-              setTodoExpanded(true);
-            }
-          }
-          break;
-        }
-
-        // ── 审核请求（敏感命令批准等，复用通用审核卡）──
-        case 'request_review': {
-          const isBash = event.review_type === 'bash_command';
-          useReviewStore.getState().showReview({
-            reviewId: event.review_id,
-            reviewType: event.review_type,
-            title: event.title,
-            content: event.content,
-            question: event.question,
-          });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `review_${Date.now()}`,
-              role: 'system',
-              content: isBash
-                ? `🛡️ Agent 请求执行敏感命令:\n\n${event.content}\n\n❓ ${event.question}`
-                : `🔔 Agent 请求审核 [${event.review_type}]: ${event.title}\n\n${event.content}\n\n❓ ${event.question}`,
-              timestamp: Date.now(),
-              review: event,
-            },
-          ]);
-          break;
-        }
-
-        // ── UML diff 审核（submit_uml_review / 框架兜底补推）──
-        case 'uml_review': {
-          const diagrams = normalizeReviewDiagrams(event.diagrams);
-          // Backend sends changed_diagrams in the raw UML project shape
-          // (diagram_type/classes/components...). Normalize it before the
-          // diff builder, while preserving legacy-event fallback behavior.
-          const changedDiagrams = event.changed_diagrams === undefined
-            ? undefined
-            : normalizeReviewDiagrams(event.changed_diagrams);
-          // 用原始图列表构造快照，DiffViewer 据此生成 before/after 对比
-          const snapshot: Record<string, any> = {};
-          for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
-            snapshot[`${spec.type}:${spec.name || ''}`] = spec.data;
-          }
-          processDesignUpdated(
-            diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
-            changedDiagrams,
-          );
-          // 登记共享审核状态，DiffViewer 与聊天审核卡据此联动
-          useReviewStore.getState().showReview({
-            reviewId: event.review_id,
-            reviewType: 'uml_diff',
-            title: event.title,
-            question: '是否接受此变更？',
-          });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `review_${Date.now()}`,
-              role: 'system',
-              content: event.auto
-                ? `🛡️ ${event.title}\n\nAgent 修改了设计文件但未主动提交审核，框架已自动补推。请在右侧「差异对比」面板查看变更，并确认是否接受。`
-                : `🔔 Agent 请求 UML 设计审核: ${event.title}\n\n请在右侧「差异对比」面板查看变更，并确认是否接受。`,
-              timestamp: Date.now(),
-            },
-          ]);
-          break;
-        }
-
-        // ── 审核超时（Agent 已继续自行推进）──
-        case 'review_timeout': {
-          useReviewStore.getState().expire(
-            `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`,
-          );
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `review_timeout_${Date.now()}`,
-              role: 'system',
-              content: `⏰ 审核「${event.title}」超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行。如需检查变更，请查看右侧「差异对比」面板。`,
-              timestamp: Date.now(),
-            },
-          ]);
-          break;
-        }
-
-        // ── 审核已失效（重连补发后后端找不到该待审核请求）──
-        case 'review_expired': {
-          useDiagramStore.getState().endBatch();
-          useReviewStore.getState().expire('连接中断期间后端已取消该任务');
-          setBusy(false);
-          settleTodos('pending');
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `review_expired_${Date.now()}`,
-              role: 'system',
-              content: '⚠️ 审核已失效（连接中断期间后端已取消该任务）。请重新发起请求。',
-              timestamp: Date.now(),
-            },
-          ]);
-          break;
-        }
-
-        // ── 完成 ──
-        case 'done': {
-          useDiagramStore.getState().endBatch();
-          setBusy(false);
-          const steps = liveStepsRef.current;
-          liveStepsRef.current = [];
-          setCurrentSteps([]);
-          const todoStatus = !event.checkpoint || event.checkpoint.status === 'completed'
-            ? 'completed'
-            : 'pending';
-          const finalTodos = settleTodos(todoStatus);
-          const finalSteps = steps.map((step) => (
-            Array.isArray(step.todos) && step.todos.length
-              ? { ...step, todos: finalTodos }
-              : step
-          ));
-          setMessages((prev) => {
-            const hasStream = prev.some((m) => m.id.startsWith('stream_'));
-            if (hasStream) {
-              // finalize 流式消息，不追加重复内容
-              return prev.map((m) =>
-                m.id.startsWith('stream_')
-                  ? {
-                      ...m,
-                      id: m.id.replace('stream_', 'agent_'),
-                      content: event.result || m.content,
-                      steps: finalSteps.length ? finalSteps : undefined,
-                    }
-                  : m,
-              );
-            }
-            // 无流式消息（如 SSE 直出结果），追加新消息
-            return [
-              ...prev,
-              {
-                id: `agent_${Date.now()}`,
-                role: 'agent' as const,
-                content: event.result || '(空回复)',
-                timestamp: Date.now(),
-                steps: finalSteps.length ? finalSteps : undefined,
-              },
-            ];
-          });
-          break;
-        }
-
-        // ── 流式元素（optimize_uml 流式模式逐元素渲染）──
-        case 'design_element': {
-          handleDesignElementWrapper(event);
-          break;
-        }
-
-        // ── 停止 ──
-        case 'stopped': {
-          useDiagramStore.getState().endBatch();
-          setBusy(false);
-          settleTodos('pending');
-          liveStepsRef.current = [];
-          setCurrentSteps([]);
-          // 任务中断时挂起的审核已无人消费，置为失效
-          useReviewStore.getState().expire('任务已停止，审核随之失效');
-          // 聊天模式下把流式消息 finalize
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_') }
-                : m,
-            ),
-          );
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `system_${Date.now()}`,
-              role: 'system',
-              content: `⏹️ ${event.reason}`,
-              timestamp: Date.now(),
-            },
-          ]);
-          break;
-        }
-
-        // ── 错误 ──
-        case 'error': {
-          useDiagramStore.getState().endBatch();
-          setBusy(false);
-          settleTodos('pending');
-          liveStepsRef.current = [];
-          setCurrentSteps([]);
-          // 任务出错时挂起的审核已无人消费，置为失效
-          useReviewStore.getState().expire('任务出错，审核随之失效');
-          // 聊天流式半途断掉，finalize 已收到的部分
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id.startsWith('stream_')
-                ? { ...m, id: m.id.replace('stream_', 'agent_') }
-                : m,
-            ),
-          );
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `error_${Date.now()}`,
-              role: 'system',
-              content: `❌ ${event.message}`,
-              timestamp: Date.now(),
-            },
-          ]);
-          break;
-        }
-      }
-    }, token, open);
-
+    const ws = connectAgentChat(createAgentChatEventHandler({
+      setMessages,
+      setBusy,
+      setCurrentSteps,
+      setCurrentTodos,
+      setTodoPlanningMode,
+      setStrategyAdvised,
+      setTodoExpanded,
+      liveStepsRef,
+      liveTodosRef,
+      todoSeenInTaskRef,
+      settleTodos,
+      handleDesignElement: handleDesignElementWrapper,
+    }), token, open);
     return ws;
   }, [handleDesignElementWrapper, settleTodos]);
 
