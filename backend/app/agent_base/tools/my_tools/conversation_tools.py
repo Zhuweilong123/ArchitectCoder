@@ -85,7 +85,6 @@ def create_conversation_tools(
     include_subagent: bool = False,
     include_task_system: bool = False,
     workspace_root: str = "",
-    protected_paths=(),
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -125,7 +124,6 @@ def create_conversation_tools(
         change_set=change_set,
         command_executor=command_executor,
         workspace_root=workspace_root,
-        protected_paths=protected_paths,
     ))
 
     # todo_write：会话任务列表
@@ -148,7 +146,6 @@ def create_conversation_tools(
             review_manager=review_mgr, progress=progress,
             command_executor=command_executor,
             workspace_root=workspace_root,
-            protected_paths=protected_paths,
             toolkits=("strategy", "verification"),
             max_total_tokens=get_settings().agent_subagent_per_run_execution_budget_tokens,
             single_use=True,
