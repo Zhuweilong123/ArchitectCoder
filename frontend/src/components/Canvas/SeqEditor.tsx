@@ -16,7 +16,7 @@ import {
 } from './seqRenderUtils';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
-import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
+import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { snapCanvasPosition } from './core/snapToGrid';
 import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
@@ -475,8 +475,7 @@ const SeqEditor: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
 
-    graphRef.current = graph;
-    registerCanvasGraph(graph);
+    registerCanvasGraphInstance(graph, graphRef);
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
@@ -484,10 +483,9 @@ const SeqEditor: React.FC = () => {
 
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
-      document.removeEventListener('keydown', handleKeyDown);
-      unregisterCanvasGraph(graph);
-      try { graph.dispose(); } catch { /* ignore */ }
-      graphRef.current = null;
+      disposeCanvasGraphInstance(graph, graphRef, () => {
+        document.removeEventListener('keydown', handleKeyDown);
+      });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

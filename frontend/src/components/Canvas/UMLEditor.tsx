@@ -13,7 +13,7 @@ import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { getCanvasLabels } from './canvasLabels';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
-import { registerCanvasGraph, unregisterCanvasGraph } from './core/canvasRegistry';
+import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
@@ -473,17 +473,15 @@ const UMLEditor: React.FC = () => {
     if (!(viewport.panX || viewport.panY) && viewport.zoom === 1) {
       graph.centerContent();
     }
-    graphRef.current = graph;
-    registerCanvasGraph(graph);
+    registerCanvasGraphInstance(graph, graphRef);
     console.log('[UML Editor] Initialized. Shape registered:', shapeRegistered);
 
     return () => {
       _didFirstSync.current = false;
-      document.removeEventListener('keydown', handleKeyDown);
-      detachCanvasEvents();
-      unregisterCanvasGraph(graph);
-      try { graph.dispose(); } catch { /* ignore */ }
-      graphRef.current = null;
+      disposeCanvasGraphInstance(graph, graphRef, () => {
+        document.removeEventListener('keydown', handleKeyDown);
+        detachCanvasEvents();
+      });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
