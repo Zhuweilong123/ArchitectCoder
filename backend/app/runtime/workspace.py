@@ -86,14 +86,26 @@ class WorkspaceManifest:
             test = test or _child_dir(root_hint, "test")
 
         roots = [value for value in (design, source, test) if value]
-        inferred_root = root_hint or _common_root(roots)
         if root_hint:
             outside = [value for value in roots if not _inside(value, root_hint)]
             if outside:
-                raise ValueError(
-                    "workspace paths are outside workspace_root: "
-                    + ", ".join(outside)
-                )
+                # The UI may report the active design file's directory as the
+                # workspace (``.../design``), while source/test are its
+                # conventional siblings. Promote that hint to the project
+                # root instead of rejecting an otherwise valid layout.
+                parent = Path(root_hint).parent
+                conventional_hint = Path(root_hint).name.lower() in {
+                    "design", "src", "test", "tests"
+                }
+                if conventional_hint and all(_inside(value, str(parent)) for value in roots):
+                    root_hint = str(parent.resolve())
+                else:
+                    raise ValueError(
+                        "workspace paths are outside workspace_root: "
+                        + ", ".join(outside)
+                    )
+
+        inferred_root = root_hint or _common_root(roots)
 
         if design:
             discovered = discovered or _discover_projects(Path(design))
