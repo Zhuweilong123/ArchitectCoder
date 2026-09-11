@@ -305,6 +305,36 @@ def _resolve_workspace_paths(
     return (validated[0], validated[1], validated[2]), ""
 
 
+async def _compress_session_context(
+    agent: ReActAgent,
+    llm: BaseAgentsLLM,
+    *,
+    session_id: str,
+    trace_log: TraceSink,
+) -> None:
+    """Compact cross-turn chat history and record non-fatal failures."""
+    settings = get_settings()
+    compressor = SessionContextCompressor(
+        llm,
+        model=settings.agent_session_compression_model,
+        hard_limit_tokens=settings.agent_context_hard_limit_tokens,
+        trigger_ratio=settings.agent_session_compression_trigger_ratio,
+        max_output_tokens=settings.agent_session_compression_max_tokens,
+    )
+    result = await compressor.maybe_compress(
+        agent,
+        session_id=session_id,
+        trace_log=trace_log,
+    )
+    if result.error:
+        trace_log.event(
+            "session_context_compression_error",
+            session_id=session_id,
+            estimated_session_tokens=result.estimated_tokens,
+            error=result.error,
+        )
+
+
 
 
 
@@ -590,26 +620,12 @@ class ChatSessionCoordinator:
                     # ReAct loop only compacts tool history; user/assistant
                     # conversation is summarized here before the next turn.
                     if dev_agent is not None and llm is not None:
-                        settings = get_settings()
-                        compression = SessionContextCompressor(
-                            llm,
-                            model=settings.agent_session_compression_model,
-                            hard_limit_tokens=settings.agent_context_hard_limit_tokens,
-                            trigger_ratio=settings.agent_session_compression_trigger_ratio,
-                            max_output_tokens=settings.agent_session_compression_max_tokens,
-                        )
-                        compression_result = await compression.maybe_compress(
+                        await _compress_session_context(
                             dev_agent,
+                            llm,
                             session_id=session_id,
                             trace_log=trace_log,
                         )
-                        if compression_result.error:
-                            trace_log.event(
-                                "session_context_compression_error",
-                                session_id=session_id,
-                                estimated_session_tokens=compression_result.estimated_tokens,
-                                error=compression_result.error,
-                            )
 
                     await _start_run(
                         effective_user_message, resume_record=resume_record,
