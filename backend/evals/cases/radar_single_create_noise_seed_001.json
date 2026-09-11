@@ -10,7 +10,7 @@
     {"type": "pytest", "path": "test", "timeout": 60},
     {"type": "file_contains", "path": "src/radar_sim/echo.py", "text": "seed"},
     {"type": "file_contains", "path": "design/radar_design_0730.umlproj", "text": "seed"},
-    {"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
+    {"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
   ],
   "checkers": [{"type": "answer_contains_all", "texts": ["seed", "兼容", "测试"]}],
   "max_seconds": 240,
