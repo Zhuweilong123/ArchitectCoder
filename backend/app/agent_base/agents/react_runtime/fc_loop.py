@@ -97,6 +97,54 @@ def _recovery_instruction(details: list[dict[str, Any]]) -> str:
     )
 
 
+def _append_failure_recovery_guidance(
+    messages: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    failure_attempts: dict[tuple[str, str, tuple[str, ...]], int],
+    last_directive_signature: tuple[tuple[str, str, tuple[str, ...]], ...],
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Record failed tool calls and append targeted recovery constraints."""
+    failed_details = [
+        detail for detail in details if detail.get("status") != "success"
+    ]
+    failed_tools = tuple(sorted(
+        _failure_signature(detail) for detail in failed_details
+    ))
+    for failure in failed_tools:
+        failure_attempts[failure] = failure_attempts.get(failure, 0) + 1
+    if failed_tools and failed_tools != last_directive_signature:
+        messages.append({
+            "role": "system",
+            "content": (
+                "## Recovery checkpoint\n"
+                "The previous tool round reported a failure "
+                f"({', '.join(name + ':' + code for name, code, _ in failed_tools)}). "
+                + _recovery_instruction(failed_details)
+                + " After recovery, finish with the verified result and remaining uncertainty."
+            ),
+        })
+        last_directive_signature = failed_tools
+
+    repeated_failure_paths = sorted({
+        path
+        for failure, count in failure_attempts.items()
+        if count >= 2
+        for path in failure[2]
+    })
+    if repeated_failure_paths:
+        messages.append({
+            "role": "system",
+            "content": (
+                "## Repeated edit failure guard\n"
+                f"Repeated edit failures affect: {', '.join(repeated_failure_paths[:6])}. "
+                "Do not issue another apply_changes patch for these paths until a fresh "
+                "read_file or search_text result has been obtained. If the current text "
+                "cannot be matched, report the blocker instead of guessing."
+            ),
+        })
+    return last_directive_signature
+
+
 async def run_fc_loop(
     agent,
     input_text: str,
@@ -634,46 +682,12 @@ async def run_fc_loop(
                     "content": tr["content"],
                 })
 
-            failed_details = [
-                detail for detail in details
-                if detail.get("status") != "success"
-            ]
-            failed_tools = tuple(sorted(
-                _failure_signature(detail)
-                for detail in failed_details
-            ))
-            for failure in failed_tools:
-                failure_attempts[failure] = failure_attempts.get(failure, 0) + 1
-            if failed_tools and failed_tools != last_failure_directive_signature:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "## Recovery checkpoint\n"
-                        "The previous tool round reported a failure "
-                        f"({', '.join(name + ':' + code for name, code, _ in failed_tools)}). "
-                        + _recovery_instruction(failed_details)
-                        + " After recovery, finish with the verified result and remaining uncertainty."
-                    ),
-                })
-                last_failure_directive_signature = failed_tools
-
-            repeated_failure_paths = sorted({
-                path
-                for failure, count in failure_attempts.items()
-                if count >= 2
-                for path in failure[2]
-            })
-            if repeated_failure_paths:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "## Repeated edit failure guard\n"
-                        f"Repeated edit failures affect: {', '.join(repeated_failure_paths[:6])}. "
-                        "Do not issue another apply_changes patch for these paths until a fresh "
-                        "read_file or search_text result has been obtained. If the current text "
-                        "cannot be matched, report the blocker instead of guessing."
-                    ),
-                })
+            last_failure_directive_signature = _append_failure_recovery_guidance(
+                messages,
+                details,
+                failure_attempts,
+                last_failure_directive_signature,
+            )
 
             get_hooks().emit(
                 HookEvent.TOOL_BATCH_AFTER,
