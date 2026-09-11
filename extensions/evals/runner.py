@@ -988,27 +988,7 @@ class EvalRunner:
                     if review_mgr is not None:
                         result.metadata["approval_events"] = review_mgr.approval_events
                     if case.metadata.get("require_auto_approval"):
-                        approval_events = review_mgr.approval_events if review_mgr else []
-                        responses = [
-                            event for event in approval_events
-                            if event.get("event") == "review_response"
-                        ]
-                        approval_passed = bool(responses) and all(
-                            event.get("approval_mode") == "auto_stub"
-                            and event.get("decision") == "accept"
-                            for event in responses
-                        )
-                        result.checker_results.append(CheckerResult(
-                            checker="review_auto_stub",
-                            passed=approval_passed,
-                            score=1.0 if approval_passed else 0.0,
-                            message=(
-                                "all reviews accepted by auto stub"
-                                if approval_passed else
-                                "review approval was not fully auto-stub accepted"
-                            ),
-                            details={"responses": len(responses)},
-                        ))
+                        self._record_auto_approval_result(result, review_mgr)
                     if progress_relay is not None:
                         result.metadata["progress_events"] = progress_relay.events
                     final_answer = (
@@ -1189,6 +1169,32 @@ class EvalRunner:
                 else:
                     baseline_hashes[relative_path] = None
         return baseline_hashes
+
+    @staticmethod
+    def _record_auto_approval_result(result: EvalResult, review_manager: Any) -> None:
+        """Add the required auto-approval gate from captured review events."""
+        approval_events = (
+            review_manager.approval_events if review_manager is not None else []
+        )
+        responses = [
+            event for event in approval_events if event.get("event") == "review_response"
+        ]
+        approval_passed = bool(responses) and all(
+            event.get("approval_mode") == "auto_stub"
+            and event.get("decision") == "accept"
+            for event in responses
+        )
+        result.checker_results.append(CheckerResult(
+            checker="review_auto_stub",
+            passed=approval_passed,
+            score=1.0 if approval_passed else 0.0,
+            message=(
+                "all reviews accepted by auto stub"
+                if approval_passed
+                else "review approval was not fully auto-stub accepted"
+            ),
+            details={"responses": len(responses)},
+        ))
 
     @staticmethod
     async def _run_checkers(
