@@ -13,6 +13,17 @@ import {
   SEQUENCE_MESSAGE_START_Y,
   sequenceMessageY,
 } from '../utils/sequenceLayout';
+import type {
+  DiagramHistorySnapshot,
+  DiagramViewport,
+} from './diagramHistory';
+import {
+  beginHistoryBatch,
+  endHistoryBatch,
+  pushHistorySnapshot,
+  redoHistory,
+  undoHistory,
+} from './diagramHistory';
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -20,21 +31,11 @@ function clampCoord(val: number | undefined, def: number, min = 50, max = 3000):
   return val;
 }
 
-// Undo/Redo snapshot (per-diagram)
-interface Snapshot {
-  diagram: UmlDiagram;
-  timestamp: number;
-}
-
 // Keep the empty-project fallback referentially stable. Selectors are allowed
 // to return a placeholder, but must not allocate one on every store read.
 const _emptyProjectDiagramCache = new WeakMap<Project, UmlDiagram>();
 
-export interface ViewportState {
-  zoom: number;
-  panX: number;
-  panY: number;
-}
+export type ViewportState = DiagramViewport;
 
 // Helper: get active diagram from project.
 // Returns a safe fallback for empty projects so existing code doesn't need null checks.
@@ -61,15 +62,6 @@ function _viewportFromDiagram(diagram: UmlDiagram): ViewportState {
     zoom: diagram.zoom || 1,
     panX: diagram.pan_x || 0,
     panY: diagram.pan_y || 0,
-  };
-}
-
-function _applyViewport(diagram: UmlDiagram, viewport: ViewportState): UmlDiagram {
-  return {
-    ...diagram,
-    zoom: viewport.zoom,
-    pan_x: viewport.panX,
-    pan_y: viewport.panY,
   };
 }
 
@@ -159,8 +151,8 @@ export interface DiagramState {
   currentWorkspaceSafe: boolean;
 
   // History (per active diagram)
-  undoStack: Snapshot[];
-  redoStack: Snapshot[];
+  undoStack: DiagramHistorySnapshot[];
+  redoStack: DiagramHistorySnapshot[];
   lastOperationTime: number;
   lastMergeKey: string | null;
   maxHistorySteps: number;
@@ -168,7 +160,7 @@ export interface DiagramState {
   /** When true, edits are accumulated into one undo transaction. */
   isBatching: boolean;
   /** Original diagram captured at the start of the current edit transaction. */
-  batchSnapshot: Snapshot | null;
+  batchSnapshot: DiagramHistorySnapshot | null;
 
   // ── Diagram access ────────────────────────────
 
@@ -1064,55 +1056,18 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   },
 
   pushSnapshot: (op, mergeKey) => {
-    const state = get();
-    if (state.isBatching) return;  // bulk/streaming update — suppress per-op snapshots
-    const now = Date.now();
-    // Merge consecutive ops with the same key (e.g. a drag, or typing in the
-    // property panel) into a single undo step within the merge window.
-    if (mergeKey && state.lastMergeKey === mergeKey &&
-        (now - state.lastOperationTime) < state.mergeWindowMs) {
-      set({ lastOperationTime: now });
-      return;
-    }
-    const snapshot = {
-      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
-      timestamp: now,
-    };
-    const newUndo = [...state.undoStack, snapshot].slice(-state.maxHistorySteps);
-    set({ undoStack: newUndo, redoStack: [], lastOperationTime: now, lastMergeKey: mergeKey ?? null });
+    const patch = pushHistorySnapshot(get(), mergeKey);
+    if (patch) set(patch);
   },
 
   beginBatch: () => {
-    const state = get();
-    if (state.isBatching) return;
-    set({
-      isBatching: true,
-      batchSnapshot: {
-        diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
-        timestamp: Date.now(),
-      },
-    });
+    const patch = beginHistoryBatch(get());
+    if (patch) set(patch);
   },
 
   endBatch: () => {
-    const state = get();
-    if (!state.isBatching) return;
-    const baseline = state.batchSnapshot;
-    const changed = Boolean(
-      baseline
-      && JSON.stringify(baseline.diagram) !== JSON.stringify(_activeDiagram(state.project)),
-    );
-    const undoStack = changed && baseline
-      ? [...state.undoStack, baseline].slice(-state.maxHistorySteps)
-      : state.undoStack;
-    set({
-      isBatching: false,
-      batchSnapshot: null,
-      undoStack,
-      redoStack: changed ? [] : state.redoStack,
-      lastOperationTime: changed ? Date.now() : state.lastOperationTime,
-      lastMergeKey: null,
-    });
+    const patch = endHistoryBatch(get());
+    if (patch) set(patch);
   },
 
   // ── Component diagram operations ───────────────────────
@@ -1486,45 +1441,13 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // ── Undo/Redo ─────────────────────────────────────────
 
   undo: () => {
-    const state = get();
-    if (state.undoStack.length === 0) return;
-    const currentSnapshot: Snapshot = {
-      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
-      timestamp: Date.now(),
-    };
-    const newUndo = [...state.undoStack];
-    const target = newUndo.pop()!;
-    const newRedo = [...state.redoStack, currentSnapshot];
-    const restoredDiagram = _applyViewport(target.diagram, state.viewport);
-    const project = _updateActiveDiagram(state.project, () => restoredDiagram);
-    set({
-      project,
-      viewport: state.viewport,
-      undoStack: newUndo,
-      redoStack: newRedo,
-      isModified: true,
-    });
+    const patch = undoHistory(get());
+    if (patch) set(patch);
   },
 
   redo: () => {
-    const state = get();
-    if (state.redoStack.length === 0) return;
-    const currentSnapshot: Snapshot = {
-      diagram: JSON.parse(JSON.stringify(_activeDiagram(state.project))),
-      timestamp: Date.now(),
-    };
-    const newRedo = [...state.redoStack];
-    const target = newRedo.pop()!;
-    const newUndo = [...state.undoStack, currentSnapshot];
-    const restoredDiagram = _applyViewport(target.diagram, state.viewport);
-    const project = _updateActiveDiagram(state.project, () => restoredDiagram);
-    set({
-      project,
-      viewport: state.viewport,
-      undoStack: newUndo,
-      redoStack: newRedo,
-      isModified: true,
-    });
+    const patch = redoHistory(get());
+    if (patch) set(patch);
   },
 
   clearHistory: () => set({ undoStack: [], redoStack: [], lastOperationTime: 0, lastMergeKey: null }),
