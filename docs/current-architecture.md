@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`2bdc5b3`（`dev-4.0`）
+> 代码基线：`ffdac8c`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -47,6 +47,10 @@ WebSocket / Evaluation / future HTTP or CLI
 | 文件与变更 | `app/agent_base/tools/my_tools/foundation_tools.py`、`app/agent_base/tools/my_tools/foundation_runtime.py`、`app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
 | 扩展能力 | `extensions/*` + `app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
 | Trace 端口 | `app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
+| 图表历史 | `frontend/src/stores/diagramHistory.ts` | 撤销、重做、批处理和快照；`diagramStore` 只负责状态组合 |
+| 图表布局 | `frontend/src/utils/componentLayout.ts` | 组件自动布局的纯计算；画布状态写入仍由 `diagramStore` 完成 |
+| AgentChat 数据 | `frontend/src/components/AgentChat/agentChatUtils.ts` | 消息持久化裁剪、会话格式化和审核图归一化 |
+| AgentChat 事件 | `frontend/src/components/AgentChat/agentChatEventHandler.ts` | WebSocket 事件到消息、进度、审核和终态状态的适配 |
 
 ## 3. 当前基础工具契约
 
@@ -118,7 +122,12 @@ extensions.knowledge_graph:create
   终态 checkpoint 塑形和终态发布均通过独立职责边界完成。
 - `react_runtime/fc_loop.py` 只管理回合状态；LLM hook/trace/超时调用和工具失败恢复
   分别由独立函数负责，不能把传输或会话状态引入 FC 循环。
+- `diagramStore.ts` 不重新实现历史或布局算法；历史操作依赖 `diagramHistory.ts`，
+  组件自动布局依赖 `componentLayout.ts`。
+- `AgentChat.tsx` 只组合 UI、连接生命周期和用户操作；消息数据转换与 WebSocket
+  事件分发分别位于 `agentChatUtils.ts`、`agentChatEventHandler.ts`，避免在组件中
+  直接堆叠协议分支。
 
-下一阶段优先拆分前端 `diagramStore`、`Toolbar`、`AgentChat`、`EvaluationCenter` 和
-Canvas 编辑器的共同行为。拆分必须保持公开工具/Provider 契约不变，并复用既有单元或
-集成测试验证迁移路径。
+下一阶段继续检查前端 `Toolbar`、`EvaluationCenter` 和 Canvas 编辑器的共同行为。
+拆分必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，先使用
+既有构建和检查命令验证迁移路径。
