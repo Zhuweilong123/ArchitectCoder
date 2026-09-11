@@ -7,5 +7,5 @@
   "source_dir": "src",
   "test_dir": "test",
   "protected_paths": ["design/radar_design_0730.umlproj", "test"],
-  "allowed_write_paths": ["src"]
+  "allowed_write_paths": ["src", "test"]
 }
