@@ -62,8 +62,8 @@ class WorkspaceManifest:
         project = _resolve(project_file)
 
         # Accept a project directory at the same boundary as a project file.
-        # A directory with multiple design files is ambiguous and must be
-        # resolved by the caller instead of silently selecting one.
+        # Discover all design files.  Select an active project only when the
+        # directory is unambiguous; callers may still provide one explicitly.
         discovered: tuple[str, ...] = ()
         selected_project = project if project and Path(project).is_file() else ""
         if project and Path(project).is_dir():
