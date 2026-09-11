@@ -393,9 +393,7 @@ class EvalRunner:
             finished = self._finish(
                 result, "error", str(exc), started, "environment_failure"
             )
-            self._append_result(finished)
-            get_agent_metrics().record_run("eval_error")
-            return finished
+            return self._record_completed_result(finished, started)
 
         # Agent tools may create POSIX-style links (for example ``venv/lib64``)
         # inside the Windows-backed fixture. Cleanup must not erase the result
@@ -417,9 +415,7 @@ class EvalRunner:
                         "environment_failure",
                     )
                     finished.workspace = ""
-                    self._append_result(finished)
-                    get_agent_metrics().record_run("eval_error")
-                    return finished
+                    return self._record_completed_result(finished, started)
                 try:
                     materialize_fixture(fixture, workspace, manifest)
                 except (OSError, ValueError) as exc:
@@ -431,9 +427,7 @@ class EvalRunner:
                         "environment_failure",
                     )
                     finished.workspace = ""
-                    self._append_result(finished)
-                    get_agent_metrics().record_run("eval_error")
-                    return finished
+                    return self._record_completed_result(finished, started)
 
             layout_errors = _validate_project_layout(workspace, manifest)
             if layout_errors:
@@ -445,9 +439,7 @@ class EvalRunner:
                     "environment_failure",
                 )
                 finished.workspace = ""
-                self._append_result(finished)
-                get_agent_metrics().record_run("eval_error")
-                return finished
+                return self._record_completed_result(finished, started)
             if manifest is not None:
                 result.metadata["project_manifest"] = {
                     "id": manifest.id,
@@ -1266,6 +1258,10 @@ class EvalRunner:
                 result.trace_path = str(Path(tracer.path)) if "tracer" in locals() else ""
 
             self._persist_workspace_snapshot(workspace, run_id, result)
+        return self._record_completed_result(result, started)
+
+    def _record_completed_result(self, result: EvalResult, started: float) -> EvalResult:
+        """Finalize observability fields, persist one result, and emit one metric."""
         result.total_tokens = max(result.total_tokens, _trace_total_tokens(result.trace_path))
         (
             result.prompt_tokens,
