@@ -23,6 +23,9 @@ import {
   fmtPromptCacheRate, fmtPromptPrefixReuseRate, fmtTime, traceSessionFromResult,
   validateCheckerConfigs, type CheckerDefinition, type CheckerFieldKind, type CheckerFieldSpec,
 } from './evaluationUtils';
+import {
+  loadEvaluationOverview, loadTraceCaseFactoryResources,
+} from '../../services/evaluationCenterApi';
 import './EvaluationCenter.css';
 
 const { Text } = Typography;
@@ -286,16 +289,14 @@ const EvaluationCenter: React.FC = () => {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [caseList, trendList, archiveList, performanceList] = await Promise.all([
-        listEvalCases(), listEvalTrends(), listEvalArchives(), listEvalPerformanceResults(),
-      ]);
-      setCases(caseList);
-      setTrends(trendList);
-      setArchives(archiveList);
-      setPerformanceRuns(performanceList);
-      setRepository(await getEvalRepository());
+      const overview = await loadEvaluationOverview();
+      setCases(overview.cases);
+      setTrends(overview.trends);
+      setArchives(overview.archives);
+      setPerformanceRuns(overview.performanceRuns);
+      setRepository(overview.repository);
       const storedBatchId = window.localStorage.getItem(ACTIVE_BATCH_STORAGE_KEY);
-      const latestBatchId = storedBatchId || trendList[0]?.batch_id;
+      const latestBatchId = storedBatchId || overview.trends[0]?.batch_id;
       if (latestBatchId) {
         try {
           setBatch(await getEvalBatch(latestBatchId));
@@ -306,11 +307,7 @@ const EvaluationCenter: React.FC = () => {
       } else {
         setBatch(null);
       }
-      try {
-        setBaseline(await getEvalBaseline());
-      } catch {
-        setBaseline(null);
-      }
+      setBaseline(overview.baseline);
     } catch (error: any) {
       message.error(`评测数据加载失败：${error?.response?.data?.detail || error.message || error}`);
     } finally {
@@ -445,7 +442,8 @@ const EvaluationCenter: React.FC = () => {
     setTraceCaseFixturePreview(null);
     setTraceCaseLoading(true);
     try {
-      const [traces, projects, drafts] = await Promise.all([listTraces(), listTraceCaseProjects(), listTraceCaseDrafts()]);
+      const resources = await loadTraceCaseFactoryResources();
+      const { traces, projects, drafts } = resources;
       setTraceCaseTraces(traces);
       setTraceCaseDrafts(drafts);
       setTraceCaseProjects(projects);

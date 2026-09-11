@@ -23,10 +23,13 @@ import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, listDiagrams,
-  saveProject, openProject, listProjects,
+  listProjects,
   exportMarkdown,
   browseDirectory, type BrowseResult,
 } from '../../services/api';
+import {
+  openToolbarDiagram, openToolbarProject, saveToolbarProject,
+} from '../../services/toolbarProjectApi';
 import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
@@ -158,7 +161,7 @@ const Toolbar: React.FC = () => {
         const targetPath = currentWorkspacePath
           ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
           : `${projName}.umlproj`;
-        const result = await saveProject(
+        const result = await saveToolbarProject(
           { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
           targetPath,
           currentWorkspacePath ? currentWorkspaceSafe : true,
@@ -357,7 +360,7 @@ const Toolbar: React.FC = () => {
     if (diagramFiles.length > 1) {
       try {
         const diagrams = await Promise.all(
-          diagramFiles.map((item) => openDiagram(item.path, safe)),
+          diagramFiles.map((item) => openToolbarDiagram(item.path, safe)),
         );
         setProject({
           version: '1.0',
@@ -392,7 +395,7 @@ const Toolbar: React.FC = () => {
     try {
       if (isProject) {
         const safe = !browseUnsafe.current;
-        const proj = await openProject(path, safe);
+        const proj = await openToolbarProject(path, safe);
         setProject(proj);
         setCurrentFilepath(path);
         setCurrentWorkspacePath(pathDirName(path), safe);
@@ -401,7 +404,7 @@ const Toolbar: React.FC = () => {
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
       } else {
         const safe = !browseUnsafe.current;
-        const d = await openDiagram(path, safe);
+        const d = await openToolbarDiagram(path, safe);
         // Wrap single .uml diagram in a fresh Project so stale
         // sequence/component entries from the previous project are cleared.
         const proj = {
@@ -517,7 +520,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentFilepath ||
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
-      const result = await saveProject(proj, targetPath, targetSafe);
+      const result = await saveToolbarProject(proj, targetPath, targetSafe);
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
@@ -556,7 +559,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentWorkspacePath
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
         : filename;
-      const result = await saveProject(
+      const result = await saveToolbarProject(
         { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,
