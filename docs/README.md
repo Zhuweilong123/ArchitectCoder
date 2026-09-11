@@ -1,5 +1,7 @@
 # 文档导航
 
+> 文档核查更新：2026-09-11。当前事实以源码、配置和下列实现文档为准。
+
 ## 当前事实
 
 | 文档 | 说明 |
@@ -8,6 +10,7 @@
 | [`runtime-command-execution.md`](runtime-command-execution.md) | `run_task`、`run_program`、`shell` 和宿主命令安全契约 |
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | 插件加载、provider 和扩展所有权 |
+| [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
 
 ## 子系统设计
 
