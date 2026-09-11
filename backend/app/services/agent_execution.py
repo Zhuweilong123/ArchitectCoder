@@ -264,6 +264,96 @@ async def _load_review_baseline_async(project_file: str):
         timeout=_REVIEW_BASELINE_TIMEOUT_SECONDS,
     )
 
+
+def _update_stream_checkpoint(
+    agent: ReActAgent,
+    step: dict,
+    task_tool_calls: list[dict],
+    *,
+    run_id: str,
+    run_owner: str,
+) -> dict:
+    """Persist one stream step and return its current todo projection."""
+    todo_state = _todo_progress_state()
+    todos = todo_state.get("todos", [])
+    agent.last_run_checkpoint.update({
+        "last_step": step.get("step", 0),
+        "completed_items": [
+            item.get("content", "")
+            for item in todos
+            if isinstance(item, dict) and item.get("status") == "completed"
+        ],
+        "pending_items": [
+            item.get("content", "")
+            for item in todos
+            if isinstance(item, dict) and item.get("status") != "completed"
+        ],
+        "tool_calls": [
+            {
+                "name": detail.get("name", ""),
+                "status": detail.get("status", ""),
+                "error_code": detail.get("error_code", ""),
+                "changes": detail.get("changes", []),
+                "verification": detail.get("verification"),
+            }
+            for detail in task_tool_calls[-32:]
+            if isinstance(detail, dict)
+        ],
+    })
+    update_checkpoint_evidence(agent.last_run_checkpoint, step.get("tool_calls_detail", []))
+    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+    return todo_state
+
+
+def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -> None:
+    """Write the complete, untruncated stream step to the optional trace sink."""
+    if trace_log is None:
+        return
+    trace_log.agent_step(
+        step=step["step"], thought=thought or "",
+        actions=step["actions"], is_final=step["is_final"],
+    )
+    for detail in step.get("tool_calls_detail", []):
+        tool_span = trace_log.tool_call(
+            step=step["step"], tool_name=detail.get("name", ""),
+            arguments=detail.get("arguments", {}),
+        )
+        trace_log.tool_result(
+            span_id=tool_span,
+            tool_name=detail.get("name", ""),
+            observation=str(detail.get("observation", "")),
+            error=(
+                str(detail.get("error_code", ""))
+                if detail.get("status") not in {"", "success", "completed"}
+                else ""
+            ),
+            fed_truncated=bool(detail.get("fed_truncated", False)),
+            fed_length=int(detail.get("fed_length") or 0),
+            duration_ms=float(detail.get("duration_ms") or 0.0),
+            evidence=detail.get("evidence") if isinstance(detail.get("evidence"), dict) else None,
+        )
+
+
+def _stream_progress_event(step: dict, todo_state: dict) -> dict:
+    """Build the bounded transport payload for a stream step."""
+    return {
+        "event": "progress",
+        "step": step["step"],
+        "actions": step["actions"],
+        "thought": step["thought"][:300],
+        "tool_calls_detail": [
+            {
+                "name": detail.get("name", ""),
+                "arguments": detail.get("arguments", {}),
+                "observation": str(detail.get("observation", ""))[:3000],
+            }
+            for detail in step.get("tool_calls_detail", [])[:5]
+        ],
+        "is_final": step["is_final"],
+        "final_answer": step["final_answer"] if step["is_final"] else "",
+        **todo_state,
+    }
+
 async def handle_agent_execution(
     agent: ReActAgent,
     review_mgr,
@@ -534,80 +624,13 @@ async def handle_agent_execution(
         async for step_progress in stream:
             d = step_progress.to_dict()
             task_tool_calls.extend(d.get("tool_calls_detail", []))
-            todo_state = _todo_progress_state()
-            todos = todo_state.get("todos", [])
-            agent.last_run_checkpoint.update({
-                "last_step": d.get("step", 0),
-                "completed_items": [
-                    item.get("content", "")
-                    for item in todos
-                    if isinstance(item, dict) and item.get("status") == "completed"
-                ],
-                "pending_items": [
-                    item.get("content", "")
-                    for item in todos
-                    if isinstance(item, dict) and item.get("status") != "completed"
-                ],
-                "tool_calls": [
-                    {
-                        "name": detail.get("name", ""),
-                        "status": detail.get("status", ""),
-                        "error_code": detail.get("error_code", ""),
-                        "changes": detail.get("changes", []),
-                        "verification": detail.get("verification"),
-                    }
-                    for detail in task_tool_calls[-32:]
-                    if isinstance(detail, dict)
-                ],
-            })
-            update_checkpoint_evidence(agent.last_run_checkpoint, d.get("tool_calls_detail", []))
-            _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+            todo_state = _update_stream_checkpoint(
+                agent, d, task_tool_calls, run_id=run_id, run_owner=run_owner,
+            )
             _sync_task_execution()
 
-            # 记录完整工具调用与返回（在截断发给前端之前）
-            if trace_log:
-                trace_log.agent_step(
-                    step=d["step"], thought=step_progress.thought or "",
-                    actions=d["actions"], is_final=d["is_final"],
-                )
-                for td in d.get("tool_calls_detail", []):
-                    tool_span = trace_log.tool_call(
-                        step=d["step"],
-                        tool_name=td.get("name", ""),
-                        arguments=td.get("arguments", {}),
-                    )
-                    trace_log.tool_result(
-                        span_id=tool_span,
-                        tool_name=td.get("name", ""),
-                        observation=str(td.get("observation", "")),
-                        error=(
-                            str(td.get("error_code", ""))
-                            if td.get("status") not in {"", "success", "completed"}
-                            else ""
-                        ),
-                        fed_truncated=bool(td.get("fed_truncated", False)),
-                        fed_length=int(td.get("fed_length") or 0),
-                        duration_ms=float(td.get("duration_ms") or 0.0),
-                        evidence=td.get("evidence") if isinstance(td.get("evidence"), dict) else None,
-                    )
-
-            ok = await send( {
-                "event": "progress",
-                "step": d["step"],
-                "actions": d["actions"],
-                "thought": d["thought"][:300],
-                "tool_calls_detail": [
-                    {
-                        "name": td.get("name", ""),
-                        "arguments": td.get("arguments", {}),
-                        "observation": str(td.get("observation", ""))[:3000],
-                    }
-                    for td in d.get("tool_calls_detail", [])[:5]
-                ],
-                "is_final": d["is_final"],
-                "final_answer": d["final_answer"] if d["is_final"] else "",
-                **_todo_progress_state(),
-            })
+            _record_stream_step(trace_log, d, step_progress.thought or "")
+            ok = await send(_stream_progress_event(d, todo_state))
             if not ok:
                 agent.last_run_checkpoint.update({
                     "status": "paused",
