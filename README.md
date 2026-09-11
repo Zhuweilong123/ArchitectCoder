@@ -60,6 +60,8 @@ The bottom-right robot button opens the floating chat panel. The production **De
 
 All engineering capabilities use the same workspace tools, review gates, trace recording, and verification lifecycle, so chat, design changes, implementation, and evaluation remain consistent.
 
+For the implementation boundaries behind this section, see the [current architecture](docs/current-architecture.md), [BaseAgents framework](docs/baseagents-design.md), [context management](docs/context-management-design.md), [convergence and budget rules](docs/agent-convergence-and-budget.md), and [runtime command contract](docs/runtime-command-execution.md).
+
 ### DevAgent Capability Benchmark Center
 
 The Capability Benchmark Center is the quality gate for the production **DevAgent**. It turns engineering tasks into repeatable, versioned, evidence-backed evaluations instead of subjective demos.
@@ -69,7 +71,7 @@ The Capability Benchmark Center is the quality gate for the production **DevAgen
 - **Production-path fidelity**: the benchmark exercises the same DevAgent runtime, workspace tools, safety policies, context handling, and verification flow used by the product.
 - **Task-oriented coverage**: versioned cases cover project understanding, single-turn engineering work, multi-turn continuity, and design/code/test workflows.
 - **Deterministic ground truth**: each case is bound to a controlled project fixture and manifest, then checked with hard gates and diagnostic checkers for files, UML, tests, protected paths, and other deliverables.
-- **Safe and reproducible execution**: every run uses an isolated workspace with explicit time, step, tool-call, and token budgets. The current Git branch and commit are recorded as the evaluation version, and dirty workspaces are visible.
+- **Safe and reproducible execution**: every run uses an isolated workspace with explicit time, tool-call, and token budgets. The current Git branch and commit are recorded as the evaluation version, and dirty workspaces are visible.
 - **Explainable evidence**: every result includes pass/fail state, score, checker details, tool usage, token usage, duration, and a link to the complete Agent Trace.
 - **Regression and release comparison**: the Evaluation Center supports one-click runs, historical batches, baseline snapshots, performance JSONL results, archives, and selected-version comparison.
 
@@ -103,7 +105,8 @@ python -m extensions.evals.cli --suite single
 python -m extensions.evals.cli --suite multiturn
 ~~~
 
-See the [evaluation system design](docs/evaluation-system.md) for the case model, checker contract, isolation rules, result lifecycle, and API surface.
+See the [evaluation system design](docs/evaluation-system.md) for the case model, checker contract, isolation rules, result lifecycle, and API surface. The [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) documents conversion of real traces into reviewable, validated evaluation-case drafts.
+
 ### Global UML Optimization
 
 The toolbar's **Optimize / 全局优化** action now submits a natural-language request to the same DevAgent chat runtime. It saves the current project first when necessary, opens the assistant, and passes the project/source/test paths as context. The Agent then inspects and updates the relevant `.umlproj` artifacts through its normal tools, review gates, trace recording, and verification flow.
@@ -126,6 +129,8 @@ Excel test-case-driven test code generation:
 - **Deterministic replay**: `mock` mode replays from the recording with zero network access; `rerun` mode re-runs the real LLM while tools stay mocked; `live` mode runs the real LLM with real tools according to policy (`readonly` by default, `full` explicitly side-effecting)
 - Replay supports whole-session execution, cumulative per-turn replay, match status, and original-vs-replay step comparison
 
+See the [Trace replay design](docs/trace-replay-design.md) for event format, replay modes, workspace reconstruction, and API behavior.
+
 ### Knowledge Graph
 
 SQLite graph database + FTS5 full-text index, rebuilt on project save when the
@@ -135,12 +140,35 @@ knowledge-graph plugin is enabled, giving the AI assistant structured project un
 - **Dual-source build**: design layer (UML JSON auto-sync) + code layer (AST parsing of source directories)
 - **Agent queries**: project maps, node search, and neighbor expansion complement file-level reading and search
 
+See the [knowledge graph design](docs/knowledge-graph-design.md) for indexing, provider injection, tool boundaries, and design/code comparison.
+
+### Memory System
+
+The Agent recalls and archives project-scoped insights through a provider boundary. The bundled implementation uses SQLite + FTS5/BM25 with subject-based updates, recency scoring, decay, write gates, and maintenance; it can be disabled or replaced independently.
+
+See the [memory system design](docs/memory-system-design.md) for storage, retrieval, lifecycle, and integration rules.
+
 ### Auto-Layout Engine
 
 LLM-generated element positions auto-computed; manually positioned elements fully preserved:
 - Class Diagram: inheritance layering + grid layout
 - Sequence Diagram: lifelines evenly spaced + messages ordered vertically
 - Component Diagram: flow layout with auto-wrap
+
+## Capability documentation map
+
+| Capability | Related documentation | Scope |
+|---|---|---|
+| Diagram editor and project management | [Current architecture](docs/current-architecture.md) | Frontend boundaries and workspace path policy; detailed interaction remains in-product |
+| Agent composition, tools, lifecycle | [Current architecture](docs/current-architecture.md), [BaseAgents](docs/baseagents-design.md) | Production boundaries and framework APIs |
+| Context, memory, convergence | [Context management](docs/context-management-design.md), [Memory system](docs/memory-system-design.md), [Convergence and budget](docs/agent-convergence-and-budget.md) | Runtime limits and long-task recovery |
+| Command execution and workspace safety | [Runtime command contract](docs/runtime-command-execution.md) | OS adapters, filesystem and command policy |
+| Global UML optimization | [Current architecture](docs/current-architecture.md) | Shared DevAgent chat path, review, checkpoint and trace behavior |
+| Trace recording and replay | [Trace replay design](docs/trace-replay-design.md) | JSONL events, replay and API |
+| Knowledge graph | [Knowledge graph design](docs/knowledge-graph-design.md) | Indexing, retrieval and provider boundary |
+| Evaluation and Trace Case Factory | [Evaluation system](docs/evaluation-system.md), [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) | Cases, fixtures, checkers, batches and publishing |
+| Plugin loading and replacement | [Plugin architecture](docs/plugin-architecture-design.md) | Provider lifecycle, routing and fallback |
+| TestHub and diagram editing | — | No standalone design document; use the API docs and in-product help for current UI contracts |
 
 ## Tech Stack
 
