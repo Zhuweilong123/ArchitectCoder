@@ -48,7 +48,7 @@ agent_base/
         ├── skill_loader.py              # SkillTool（L1/L2/L3 渐进式披露）
         ├── subagent_tool.py             # SpawnSubagentTool（通用子代理）
         ├── file_search_tools.py         # 有界文本搜索（grep 基类 / search_text）
-        └── knowledge_graph_v2_tools.py  # 项目结构与设计-代码关系查询
+        └── file_search_tools.py         # 有界文本搜索辅助工具
 ```
 
 ## 3. 快速开始
