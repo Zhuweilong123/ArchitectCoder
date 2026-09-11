@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from collections.abc import Iterable
 
 from backend.config import get_settings
 
@@ -61,6 +62,7 @@ class DevPromptBuilder:
         environment_context=None,
         memory_recall_top_k: int = 3,
         memory_recall_max_tokens: int = 500,
+        protected_paths: Iterable[str] = (),
     ):
         self.prompt_version = "3.1-r4"
         if environment_context is None:
@@ -77,6 +79,7 @@ class DevPromptBuilder:
             )
         self.system_prompt = self._build_static_prompt(
             environment_context=environment_context,
+            protected_paths=protected_paths,
         )
         self.memory = memory if memory is not None else NoOpMemory()
         self.memory_recall_top_k = max(1, int(memory_recall_top_k))
@@ -95,7 +98,7 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt(
-        *, environment_context=None,
+        *, environment_context=None, protected_paths: Iterable[str] = (),
     ) -> str:
         runtime_block = (
             environment_context.to_prompt()
@@ -133,6 +136,19 @@ class DevPromptBuilder:
         skills_section = build_skills_section()
         if skills_section:
             prompt_parts.extend(["", skills_section])
+        immutable = [
+            str(path).replace("\\", "/").strip().strip("/")
+            for path in protected_paths
+            if isinstance(path, str) and path.strip()
+        ]
+        if immutable:
+            prompt_parts.extend([
+                "",
+                "## Immutable evaluation paths",
+                "Never create, edit, delete, move, or copy these paths. Read them when useful, "
+                "but apply requested changes only to other workspace artifacts:",
+                *[f"- {path}" for path in dict.fromkeys(immutable)],
+            ])
         return "\n".join(prompt_parts)
 
     async def build_context(
@@ -204,8 +220,10 @@ async def create_dev_agent(
     max_tool_calls: int | None = None,
     max_run_seconds: float | None = None,
     max_total_tokens: int | None = None,
+    protected_paths: Iterable[str] | None = None,
 ):
     """Assemble the production DevAgent independently of any transport."""
+    protected_paths = tuple(protected_paths or ())
     settings = get_settings()
     change_set = ChangeSet(project_file=project_file)
     command_executor = build_command_executor(settings)
@@ -232,10 +250,14 @@ async def create_dev_agent(
         command_executor=command_executor,
         include_subagent=settings.agent_main_subagent_enabled,
         workspace_root=workspace_root,
+        protected_paths=protected_paths,
     )
 
     workspace_roots = [workspace_root] if workspace_root else []
-    registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
+    registry = ToolRegistry(policy=CapabilityPolicy(
+        workspace_roots=workspace_roots,
+        write_protected_paths=protected_paths,
+    ))
     for tool in tools:
         registry.register_tool(tool)
 
@@ -258,6 +280,7 @@ async def create_dev_agent(
         environment_context=environment_context,
         memory_recall_top_k=settings.agent_memory_recall_top_k,
         memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
+        protected_paths=protected_paths or (),
     )
     agent = ReActAgent(
         name="DevAgent",

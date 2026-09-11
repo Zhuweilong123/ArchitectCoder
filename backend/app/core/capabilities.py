@@ -26,11 +26,24 @@ class CapabilityPolicy:
         *,
         workspace_roots: Iterable[str] = (),
         allowed_tools: Iterable[str] | None = None,
-        protected_paths: Iterable[str] = _PROTECTED_PATTERNS,
+        protected_paths: Iterable[str] | None = None,
+        write_protected_paths: Iterable[str] | None = None,
     ) -> None:
         self._roots = tuple(Path(root).resolve() for root in workspace_roots if root)
         self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
-        self._protected_paths = tuple(protected_paths)
+        # Keep the process-wide safety defaults even when a caller adds
+        # workspace-specific protected paths (for example an evaluation case
+        # whose checker requires files to remain byte-for-byte unchanged).
+        self._protected_paths = tuple(_PROTECTED_PATTERNS) + tuple(
+            str(path).replace("\\", "/").strip().strip("/")
+            for path in (protected_paths or ())
+            if str(path).strip()
+        )
+        self._write_protected_paths = tuple(
+            str(path).replace("\\", "/").strip().strip("/")
+            for path in (write_protected_paths or ())
+            if str(path).strip()
+        )
 
     def set_allowed_tools(self, names: Iterable[str] | None) -> None:
         self._allowed_tools = set(names) if names is not None else None
@@ -77,7 +90,7 @@ class CapabilityPolicy:
                         continue
                     if not isinstance(value, str) or not value.strip():
                         return f"each change {key} must be a non-empty string"
-                    error = self._check_path(value)
+                    error = self._check_path(value, write=True)
                     if error:
                         return error
             return None
@@ -91,13 +104,13 @@ class CapabilityPolicy:
             return self._check_path(path)
         return None
 
-    def _check_path(self, value: str) -> str | None:
+    def _check_path(self, value: str, *, write: bool = False) -> str | None:
         normalized = value.replace("\\", "/").lstrip("/")
         while normalized.startswith("./"):
             normalized = normalized[2:]
         if any(part == ".." for part in value.replace("\\", "/").split("/")):
             return "path traversal is not allowed"
-        if self._is_protected(normalized):
+        if self._is_protected(normalized, write=write):
             return f"access to protected path is denied: {value}"
         candidate = Path(value)
         if candidate.is_absolute():
@@ -121,10 +134,32 @@ class CapabilityPolicy:
                 return f"shell path is outside configured workspace roots: {raw_path}"
         return None
 
-    def _is_protected(self, value: str) -> bool:
-        normalized = value.strip("/")
-        return any(
-            fnmatch.fnmatchcase(normalized, pattern)
-            or normalized.startswith(pattern.rstrip("/*") + "/")
-            for pattern in self._protected_paths
+    def _is_protected(self, value: str, *, write: bool = False) -> bool:
+        normalized = value.replace("\\", "/").strip("/")
+        candidates = [normalized]
+        # Tool calls may use absolute paths even though the model is normally
+        # instructed to use workspace-relative paths. Compare an absolute
+        # target against each configured root as well, otherwise an absolute
+        # path could bypass an evaluation-specific relative protection rule.
+        candidate = Path(value)
+        if candidate.is_absolute():
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                resolved = None
+            if resolved is not None:
+                for root in self._roots:
+                    try:
+                        candidates.append(resolved.relative_to(root).as_posix())
+                    except ValueError:
+                        continue
+
+        def matches(item: str, pattern: str) -> bool:
+            return fnmatch.fnmatchcase(item, pattern) or item.startswith(
+                pattern.rstrip("/*") + "/"
+            )
+
+        patterns = self._protected_paths + (
+            self._write_protected_paths if write else ()
         )
+        return any(matches(item, pattern) for item in candidates for pattern in patterns)

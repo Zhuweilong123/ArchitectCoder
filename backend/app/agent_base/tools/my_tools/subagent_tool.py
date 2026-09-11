@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+from collections.abc import Iterable
 
 from app.agent_base.convergence import ConvergenceController
 from app.agent_base.core.hooks import (
@@ -18,6 +19,7 @@ from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExe
 from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
 from app.agent_base.tools.registry import ToolRegistry
+from app.core.capabilities import CapabilityPolicy
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.my_tools.foundation_tools import (
     RunTaskTool,
@@ -81,6 +83,7 @@ def _build_toolkit_tools(
     source_dir: str, test_dir: str, design_dir: str,
     db_path: str, project_file: str,
     review_manager, progress, command_executor, workspace_root,
+    protected_paths: Iterable[str] = (),
 ) -> list:
     """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
     foundation = create_foundation_tools(
@@ -88,6 +91,7 @@ def _build_toolkit_tools(
         review_manager=review_manager, progress=progress,
         command_executor=command_executor,
         workspace_root=workspace_root,
+        protected_paths=protected_paths,
     )
     by_name = {tool.name: tool for tool in foundation}
     if kind == "standard":
@@ -151,6 +155,7 @@ class SpawnSubagentTool(AsyncTool):
         progress=None,
         command_executor=None,
         workspace_root: str = "",
+        protected_paths: Iterable[str] = (),
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
     ):
@@ -199,6 +204,7 @@ class SpawnSubagentTool(AsyncTool):
         self.last_evidence_summary: list[dict] = []
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
+        self.protected_paths = tuple(protected_paths)
         self._single_use_used = False
         unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
         if not self.toolkits or unknown_toolkits:
@@ -213,11 +219,14 @@ class SpawnSubagentTool(AsyncTool):
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
         for kind in self.toolkits:
-            registry = ToolRegistry()
+            registry = ToolRegistry(policy=CapabilityPolicy(
+                workspace_roots=([workspace_root] if workspace_root else []),
+                write_protected_paths=self.protected_paths,
+            ))
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
                 db_path, project_file, review_manager, progress,
-                command_executor, workspace_root,
+                command_executor, workspace_root, self.protected_paths,
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry

@@ -7,6 +7,7 @@ tools remain available only to compatibility and trace-replay callers.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import os
@@ -141,7 +142,7 @@ class ApplyChangesTool(Tool):
     """Apply a validated batch of semantic workspace changes."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
-                 workspace_root: str = ""):
+                 workspace_root: str = "", protected_paths=()):
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
         self._change_set = change_set
         super().__init__(name="apply_changes", description=(
@@ -151,6 +152,11 @@ class ApplyChangesTool(Tool):
             "and expected_sha256 prevents overwriting concurrent edits."
         ))
         self._workspace_root = workspace_root
+        self._protected_paths = tuple(
+            str(path).replace("\\", "/").strip().strip("/")
+            for path in protected_paths
+            if isinstance(path, str) and path.strip()
+        )
         self._source_dir = source_dir
         self._test_dir = test_dir
         self._design_dir = design_dir
@@ -379,7 +385,36 @@ class ApplyChangesTool(Tool):
             value, self._workspace_root, self._source_dir,
             self._test_dir, self._design_dir,
         )
-        return safe_path(value, self._roots, require_exist=False)
+        path = safe_path(value, self._roots, require_exist=False)
+        if self._is_protected(path):
+            raise _ApplyChangesError(
+                f"access to protected path is denied: {value}",
+                "PROTECTED_PATH",
+                path=str(path),
+                recovery_action=(
+                    "Do not modify this protected path; apply the requested change "
+                    "to an allowed source artifact instead."
+                ),
+            )
+        return path
+
+    def _is_protected(self, path: Path) -> bool:
+        if not self._protected_paths:
+            return False
+        candidates = [path.as_posix().strip("/")]
+        if self._workspace_root:
+            try:
+                candidates.append(
+                    path.resolve().relative_to(Path(self._workspace_root).resolve()).as_posix()
+                )
+            except ValueError:
+                pass
+        return any(
+            fnmatch.fnmatchcase(candidate, pattern)
+            or candidate.startswith(pattern.rstrip("/*") + "/")
+            for candidate in candidates
+            for pattern in self._protected_paths
+        )
 
     def _state(self, states: dict[str, dict[str, Any]], path: Path) -> dict[str, Any]:
         key = str(path.resolve())
@@ -862,7 +897,7 @@ class RunTaskTool(RunProgramTool):
 def create_foundation_tools(
     source_dir: str = "", test_dir: str = "", design_dir: str = "",
     review_manager=None, progress=None, change_set=None, command_executor=None,
-    workspace_root: str = "",
+    workspace_root: str = "", protected_paths=(),
 ) -> list[Tool]:
     common = dict(
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
@@ -880,6 +915,7 @@ def create_foundation_tools(
         ApplyChangesTool(
             source_dir, test_dir, design_dir,
             change_set=change_set, workspace_root=workspace_root,
+            protected_paths=protected_paths,
         ),
         RunProgramTool(**common),
         RunTaskTool(**common),

@@ -277,6 +277,51 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     }
 
 
+def _paths_unchanged_configs(case: EvalCase) -> list[dict[str, Any]]:
+    """Return every paths_unchanged config, including turn-local gates."""
+    groups = [case.hard_checkers, case.checkers]
+    groups.extend(
+        group
+        for turn in case.turns
+        for group in (turn.hard_checkers, turn.checkers)
+    )
+    return [
+        config
+        for configs in groups
+        for config in configs
+        if config.get("type") == "paths_unchanged"
+    ]
+
+
+def _case_protected_paths(case: EvalCase, manifest) -> list[str]:
+    """Collect paths that the evaluation contract requires to stay unchanged.
+
+    ``paths_unchanged`` used to be a post-run assertion only.  Feeding the
+    same paths into the capability policy makes the contract enforceable at
+    the write boundary, while keeping the checker as an independent final
+    guard against out-of-band changes.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.replace("\\", "/").strip().strip("/")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            paths.append(normalized)
+
+    if manifest is not None:
+        for path in manifest.protected_paths:
+            add(path)
+
+    for config in _paths_unchanged_configs(case):
+        for path in config.get("paths", []):
+            add(path)
+    return paths
+
+
 async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
@@ -294,6 +339,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
     progress = ProgressRelay()
     budget = _agent_budget(case, settings)
+    protected_paths = _case_protected_paths(case, manifest)
     agent, review_mgr, prompt_builder = await create_dev_agent(
         llm,
         source_dir=str(source_dir),
@@ -303,6 +349,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
         progress=progress,
         task_scope=f"eval_{case.id}",
         auto_approve_reviews=True,
+        protected_paths=protected_paths,
         **budget,
     )
     agent._eval_prompt_builder = prompt_builder
@@ -1113,9 +1160,7 @@ class EvalRunner:
     ) -> dict[str, str | None]:
         """Capture protected file hashes used by paths_unchanged checkers."""
         baseline_hashes: dict[str, str | None] = {}
-        for config in [*case.hard_checkers, *case.checkers]:
-            if config.get("type") != "paths_unchanged":
-                continue
+        for config in _paths_unchanged_configs(case):
             for relative_path in config.get("paths", []):
                 candidate = (workspace / relative_path).resolve()
                 if not candidate.is_relative_to(workspace):
