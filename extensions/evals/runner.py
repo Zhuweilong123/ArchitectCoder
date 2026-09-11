@@ -1068,107 +1068,17 @@ class EvalRunner:
                         if result.metadata.get("turns") else ""
                     )
                     failure_phase = "checker"
-                    hard_results = await asyncio.gather(*(
-                        checker.check(workspace)
-                        for checker in build_checkers(
-                            case.hard_checkers,
-                            baseline_hashes,
-                            answer=final_answer,
-                            trace_path=tracer.path,
-                            runtime={"total_tool_calls": result.tool_calls},
-                        )
-                    ))
-                    score_results = await asyncio.gather(*(
-                        checker.check(workspace)
-                        for checker in build_checkers(
-                            case.checkers,
-                            baseline_hashes,
-                            answer=final_answer,
-                            trace_path=tracer.path,
-                            runtime={"total_tool_calls": result.tool_calls},
-                        )
-                    ))
-                    _tag_criteria(hard_results, "hard", "case")
-                    _tag_criteria(score_results, "score", "case")
-                    # Keep non-file execution checkers (notably
-                    # review_auto_stub), then combine the retained per-turn
-                    # criteria with the final case-level criteria exactly once.
-                    execution_results = [
-                        item for item in result.checker_results
-                        if item.checker == "review_auto_stub"
-                    ]
-                    _tag_criteria(execution_results, "hard", "execution")
-                    gate_results = [
-                        *execution_results,
-                        *turn_hard_checker_results,
-                        *hard_results,
-                    ]
-                    scored_results = [
-                        *gate_results,
-                        *turn_score_checker_results,
-                        *score_results,
-                    ]
-                    checker_results = [
-                        *scored_results,
-                    ]
-                    result.checker_results = list(checker_results)
-                    result.score = (
-                        sum(item.score for item in checker_results) / len(checker_results)
-                        if checker_results else 1.0
+                    budget_reasons = await self._evaluate_case_checkers(
+                        case=case,
+                        workspace=workspace,
+                        baseline_hashes=baseline_hashes,
+                        trace_path=tracer.path,
+                        final_answer=final_answer,
+                        result=result,
+                        turn_hard_results=turn_hard_checker_results,
+                        turn_score_results=turn_score_checker_results,
+                        execution_error=execution_error,
                     )
-                    # Hard criteria are the release gate; score criteria are
-                    # diagnostic and affect only the score. Cases without any
-                    # hard criterion retain the legacy all-checkers behavior.
-                    pass_inputs = gate_results or checker_results
-                    result.passed = bool(pass_inputs) and all(
-                        item.passed for item in pass_inputs
-                    )
-                    result.metadata["eval_contract"]["pass_rule"] = (
-                        "all_hard_checkers"
-                        if gate_results else "all_checkers_legacy_fallback"
-                    )
-                    result.metadata["criterion_summary"] = {
-                        "hard": {
-                            "total": len(gate_results),
-                            "passed": sum(item.passed for item in gate_results),
-                        },
-                        "score": {
-                            "total": len(turn_score_checker_results) + len(score_results),
-                            "passed": sum(
-                                item.passed
-                                for item in [*turn_score_checker_results, *score_results]
-                            ),
-                        },
-                    }
-                    budget_events = result.metadata.get("token_budget_stop_reasons", [])
-                    budget_reasons = {
-                        str(event.get("reason") or "")
-                        for event in budget_events
-                    }
-                    if execution_error:
-                        result.status = "error"
-                        result.passed = False
-                        result.error = execution_error
-                        result.failure_category = (
-                            "tool_failure"
-                            if _trace_has_tool_failure(tracer.path)
-                            else "agent_failure"
-                        )
-                    elif budget_reasons & _HARD_BUDGET_STOP_REASONS:
-                        result.status = "budget_exceeded"
-                        result.passed = False
-                        result.error = "evaluation stopped after a hard execution budget was exhausted"
-                        result.failure_category = "budget_exceeded"
-                    elif budget_reasons & _FINALIZATION_BUDGET_STOP_REASONS:
-                        result.status = "budget_finalized"
-                        result.failure_category = (
-                            "none" if result.passed else "budget_exceeded"
-                        )
-                    else:
-                        result.status = "passed" if result.passed else "failed"
-                        result.failure_category = (
-                            "none" if result.passed else "agent_failure"
-                        )
                     finalize_task(
                         "budget_exceeded"
                         if budget_reasons & _HARD_BUDGET_STOP_REASONS
@@ -1277,6 +1187,107 @@ class EvalRunner:
         self._append_result(result)
         get_agent_metrics().record_run(f"eval_{result.status}")
         return result
+
+    async def _evaluate_case_checkers(
+        self,
+        *,
+        case: EvalCase,
+        workspace: Path,
+        baseline_hashes: dict[str, str | None],
+        trace_path: str,
+        final_answer: str,
+        result: EvalResult,
+        turn_hard_results: list[CheckerResult],
+        turn_score_results: list[CheckerResult],
+        execution_error: str,
+    ) -> set[str]:
+        """Apply case-level criteria and derive the evaluation outcome."""
+        hard_results = await asyncio.gather(*(
+            checker.check(workspace)
+            for checker in build_checkers(
+                case.hard_checkers,
+                baseline_hashes,
+                answer=final_answer,
+                trace_path=trace_path,
+                runtime={"total_tool_calls": result.tool_calls},
+            )
+        ))
+        score_results = await asyncio.gather(*(
+            checker.check(workspace)
+            for checker in build_checkers(
+                case.checkers,
+                baseline_hashes,
+                answer=final_answer,
+                trace_path=trace_path,
+                runtime={"total_tool_calls": result.tool_calls},
+            )
+        ))
+        _tag_criteria(hard_results, "hard", "case")
+        _tag_criteria(score_results, "score", "case")
+        # Keep non-file execution checkers (notably review_auto_stub), then
+        # combine the retained per-turn criteria with final case criteria once.
+        execution_results = [
+            item for item in result.checker_results
+            if item.checker == "review_auto_stub"
+        ]
+        _tag_criteria(execution_results, "hard", "execution")
+        gate_results = [
+            *execution_results,
+            *turn_hard_results,
+            *hard_results,
+        ]
+        checker_results = [
+            *gate_results,
+            *turn_score_results,
+            *score_results,
+        ]
+        result.checker_results = checker_results
+        result.score = (
+            sum(item.score for item in checker_results) / len(checker_results)
+            if checker_results else 1.0
+        )
+        # Hard criteria are the release gate; score criteria are diagnostic.
+        # Cases without hard criteria retain the legacy all-checkers behavior.
+        pass_inputs = gate_results or checker_results
+        result.passed = bool(pass_inputs) and all(item.passed for item in pass_inputs)
+        result.metadata["eval_contract"]["pass_rule"] = (
+            "all_hard_checkers" if gate_results else "all_checkers_legacy_fallback"
+        )
+        result.metadata["criterion_summary"] = {
+            "hard": {
+                "total": len(gate_results),
+                "passed": sum(item.passed for item in gate_results),
+            },
+            "score": {
+                "total": len(turn_score_results) + len(score_results),
+                "passed": sum(
+                    item.passed for item in [*turn_score_results, *score_results]
+                ),
+            },
+        }
+        budget_reasons = {
+            str(event.get("reason") or "")
+            for event in result.metadata.get("token_budget_stop_reasons", [])
+        }
+        if execution_error:
+            result.status = "error"
+            result.passed = False
+            result.error = execution_error
+            result.failure_category = (
+                "tool_failure" if _trace_has_tool_failure(trace_path) else "agent_failure"
+            )
+        elif budget_reasons & _HARD_BUDGET_STOP_REASONS:
+            result.status = "budget_exceeded"
+            result.passed = False
+            result.error = "evaluation stopped after a hard execution budget was exhausted"
+            result.failure_category = "budget_exceeded"
+        elif budget_reasons & _FINALIZATION_BUDGET_STOP_REASONS:
+            result.status = "budget_finalized"
+            result.failure_category = "none" if result.passed else "budget_exceeded"
+        else:
+            result.status = "passed" if result.passed else "failed"
+            result.failure_category = "none" if result.passed else "agent_failure"
+        return budget_reasons
 
     @staticmethod
     def _finish(
