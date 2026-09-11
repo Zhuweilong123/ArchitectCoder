@@ -1,9 +1,8 @@
 # BaseAgents 框架设计
 
-> 本文归档 ArchitectCoder 的 Agent 框架（`backend/app/agent_base/`）设计，
-> 反映框架层的长期设计原则。当前生产组合、工具契约和运行时边界请以
-> [`current-architecture.md`](current-architecture.md) 为准；本文中的旧工具名、示例导入路径和目录树可能仅代表历史实现。
-> 作为后续扩展工具、接入新 Agent 范式、调整运行时的参考基线。
+> 本文记录 ArchitectCoder 的 Agent 框架（`backend/app/agent_base/`）设计与当前公开入口。
+> 生产组合、工具契约和运行时边界以 [`current-architecture.md`](current-architecture.md) 为准；
+> 本文的范式示例用于框架扩展，不等同于 DevAgent 当前默认装配结果。
 
 ## 1. 定位与核心原则
 
@@ -31,10 +30,10 @@ agent_base/
 │   ├── llm.py                           # 统一 LLM 接口（6 种 provider + 同步/异步/流式/FC）
 │   └── agent.py                         # Agent 抽象基类（ABC, run() + 历史管理）
 │
-├── agents/                              # Agent 实现层（2 种范式 + 可中断包装器）
+├── agents/                              # Agent 实现层（ReAct + PlanAndSolve）
 │   ├── react_agent.py                   # ReAct 循环（原生 Function Calling）
 │   ├── plan_solve_agent.py              # 先规划后执行（Planner→Executor）
-│   └── interruptible.py                 # 可中断包装器（前端 stop 按钮）
+│   └── react_runtime/                   # 回合循环、工具批次和运行时类型
 │
 └── tools/                               # 工具系统层
     ├── base.py                          # Tool 基类 + ToolParameter + to_openai_schema()
@@ -113,10 +112,12 @@ final_answer`。
 
 Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后续步骤。
 
-### 4.5 InterruptibleAgent — 可中断包装器
+### 4.5 可恢复执行边界
 
-每轮 ReAct 步骤前检查 `should_stop()` 回调。前端 WebSocket 发送 `{"type": "stop"}`
-→ 当前运行保存 checkpoint 并进入 `paused`，后续可通过“继续”恢复。
+当前生产停止、checkpoint 和恢复不依赖独立 `InterruptibleAgent` 包装器：前端 WebSocket
+发送 `{"type": "stop"}` 后，由 `chat_session.py`、`agent_execution.py` 和运行时状态协作
+保存 checkpoint 并进入 `paused`；恢复入口重新装配执行上下文。ReAct 回合本身只处理
+工具循环和预算/收敛状态。
 
 ## 5. 工具系统
 
@@ -169,11 +170,12 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 `create_task` / `update_task` / `list_tasks` / `get_task` / `claim_task` /
 `complete_task` / `create_worktree` —— 持久化任务 DAG + git worktree 隔离。
 
-### 6.4 可复用但未自动注册
+### 6.4 知识图谱与可选工具
 
-- **`file_search_tools.py` / `extensions/knowledge_graph/tools.py`**：
-  文件搜索工具接入生产工具工厂；知识图谱实现保留供测试与显式 opt-in，当前默认不注册到
-  DevAgent，也不注入子代理工具包。
+- **`file_search_tools.py`**：文件搜索能力由 foundation 工具工厂按场景复用。
+- **`extensions/knowledge_graph/tools.py`**：主 Agent 通过插件贡献接口按开关注入
+  `get_project_map`、`find_nodes`、`expand_neighbors`；`compare_design_code` 默认不注入，
+  由显式能力场景按需开启。Provider 不可用或插件关闭时不注册任何 KG 工具。
 
 ## 7. 运行时架构
 
@@ -233,9 +235,10 @@ DevAgent 通过 `backend/app/services/context_manager.py` 管理请求级上下�
 当前任务和输出预留分配预算；`HistoryCompactor` 在长会话中保留最近轮次，并将旧消息生成
 checkpoint。工具循环每次调用 LLM 前还会执行一次最旧非关键消息裁剪。
 
-默认配置：`agent_context_max_tokens=32768`、`agent_context_output_reserve_tokens=4096`、
-`agent_context_max_history_tokens=12000`、`agent_context_max_history_turns=12`。压缩摘要通过
-`ChatTraceLogger` 的 `context_compacted` 事件持久化，服务重启时由 `trace_reader` 恢复。
+默认配置：`agent_context_hard_limit_tokens=256000`、软阈值比例 `0.78125`（约 200000）、
+压缩触发比例 `0.9`、`agent_context_max_history_turns=48`、会话压缩最大摘要
+`agent_session_compression_max_tokens=4000`。单请求裁剪由 `ContextBudgetManager` 完成；
+会话级语义摘要由 `SessionContextCompressor` 生成，并通过 Trace 事件记录来源和结果。
 
 上下文分为三层：
 
@@ -341,7 +344,6 @@ class MyNewTool(AsyncTool):
 | `backend/app/agent_base/tools/async_tool.py` | AsyncTool 基类 |
 | `backend/app/agent_base/tools/my_tools/conversation_tools.py` | ProgressRelay + create_conversation_tools |
 | `backend/app/agent_base/tools/my_tools/foundation_tools.py` | 当前生产基础工具和执行边界 |
-| `backend/app/agent_base/tools/my_tools/foundation_tools.py` | DevAgent 与子代理共享的 foundation 工具契约 |
 | `backend/app/agent_base/tools/my_tools/foundation_runtime.py` | Foundation 运行时实现 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | SkillTool（L1/L2/L3 渐进式披露） |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | SpawnSubagentTool |
