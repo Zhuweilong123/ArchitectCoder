@@ -53,10 +53,8 @@ const AgentChat: React.FC = () => {
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
-  const { currentFilepath, currentWorkspacePath } = useDiagramStore((s) => ({
-    currentFilepath: s.currentFilepath,
-    currentWorkspacePath: s.currentWorkspacePath,
-  }));
+  const currentFilepath = useDiagramStore((s) => s.currentFilepath);
+  const currentWorkspacePath = useDiagramStore((s) => s.currentWorkspacePath);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
