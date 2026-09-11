@@ -28,6 +28,7 @@ from .core.knowledge_graph import (
     NoOpKnowledgeGraphProvider,
     load_knowledge_graph,
 )
+from .core.contract_pipeline import ContractAssembly, assemble_contract
 from .core.plugins import (
     PluginManager,
     PluginSpec,
@@ -55,6 +56,8 @@ __all__ = [
     "KnowledgeGraphProvider",
     "NoOpKnowledgeGraphProvider",
     "load_knowledge_graph",
+    "ContractAssembly",
+    "assemble_contract",
     "PluginManager",
     "PluginSpec",
     "PluginState",

@@ -198,3 +198,13 @@ file scope     = 一个活动设计文件及其声明的组件/模块
 - 后续 Checker 可以读取本契约文档定义的实体和结果格式，而不再复制项目专用判断逻辑。
 
 本文件只定义契约语义；具体 AST、UML 解析和测试执行实现属于下一阶段的规则引擎设计。
+
+## 11. 知识图谱复用边界
+
+设计契约插件可以复用知识图谱已经构建的节点和关系，尤其是 `implements`、`tests` 等跨设计/源码/测试关系。知识图谱通过 `KnowledgeGraphProvider.contract_facts` 提供有界、只读的中立事实；契约插件通过适配器将其转换为 `ContractMapping`。
+
+知识图谱只作为可追溯的关系证据和影响分析索引，不改变 `ContractSnapshot` 的权威性，也不在契约采集过程中重建或修改图谱。图谱不可用、过期或由旧版插件提供时，契约插件继续使用本地 UML/AST 解析并记录图谱不可用原因。
+
+解析层统一锚点为 `backend/app/agent_base/core/contracts.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
+
+统一编排入口为 `app.agent_base.core.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from app.agent_base.core.contracts import ContractEntity, ContractMapping, ContractSnapshot
+from app.agent_base.core.contracts import (
+    ArtifactFacts,
+    ContractEntity,
+    ContractMapping,
+    ContractSnapshot,
+)
+
+from .kg_adapter import KnowledgeGraphContractAdapter
 
 
 class DesignContractProvider:
@@ -16,6 +25,7 @@ class DesignContractProvider:
 
     def __init__(self, *, settings=None, **kwargs):
         self.settings = settings
+        self._kg = KnowledgeGraphContractAdapter(settings=settings)
 
     def collect(
         self,
@@ -23,6 +33,35 @@ class DesignContractProvider:
         project_id: str = "",
         scope: str = "project",
     ) -> ContractSnapshot:
+        facts = self.collect_facts(manifest, project_id=project_id, scope=scope)
+        return self.snapshot_from_facts(facts)
+
+    def snapshot_from_facts(self, facts: ArtifactFacts) -> ContractSnapshot:
+        """Project a previously collected fact bundle without reparsing files."""
+        graph_facts = self._kg.collect(facts.project_id)
+        graph_mappings = self._kg.infer_mappings(list(facts.entities), graph_facts)
+        mappings = _merge_mappings(list(facts.mappings), graph_mappings)
+        metadata = dict(facts.metadata)
+        metadata.update({
+            "knowledge_graph": _graph_metadata(graph_facts, graph_mappings),
+            "errors": list(facts.diagnostics),
+        })
+        return ContractSnapshot(
+            project_id=facts.project_id,
+            scope=facts.scope,
+            status=facts.status,
+            entities=facts.entities,
+            mappings=tuple(mappings),
+            metadata=metadata,
+        )
+
+    def collect_facts(
+        self,
+        manifest: Any,
+        project_id: str = "",
+        scope: str = "project",
+    ) -> ArtifactFacts:
+        """Parse artifacts once into the shared facts-layer anchor."""
         values = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
         workspace = _path(values.get("workspace_root", ""))
         design_root = _path(values.get("design_root", ""))
@@ -48,21 +87,27 @@ class DesignContractProvider:
         self._collect_source(source_root, workspace, entities, errors)
         self._collect_tests(test_root, workspace, entities, errors)
         mappings = _infer_mappings(entities)
+        resolved_project_id = project_id or _project_id(values, workspace)
         status = "collected" if entities else "blocked"
         if errors and entities:
             status = "partial"
-        return ContractSnapshot(
-            project_id=project_id or _project_id(values, workspace),
+        artifacts = _artifact_records(
+            project_files, source_root, test_root, workspace, errors,
+        )
+        return ArtifactFacts(
+            project_id=resolved_project_id,
             scope=scope,
             status=status,
             entities=tuple(entities),
             mappings=tuple(mappings),
+            diagnostics=tuple(errors),
             metadata={
                 "workspace_root": workspace,
                 "layout_mode": values.get("layout_mode", ""),
                 "design_file_count": len(project_files),
                 "entity_counts": _counts(entities),
-                "errors": errors,
+                "artifacts": artifacts,
+                "parser_version": "design-contract-v1",
             },
         )
 
@@ -243,6 +288,88 @@ def _counts(entities: list[ContractEntity]) -> dict[str, int]:
     for entity in entities:
         counts[entity.entity_type] = counts.get(entity.entity_type, 0) + 1
     return counts
+
+
+def _artifact_records(
+    project_files: tuple[str, ...],
+    source_root: str,
+    test_root: str,
+    workspace: str,
+    errors: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    error_paths = {str(item.get("path", "")) for item in errors}
+    records: list[dict[str, Any]] = []
+
+    def add(artifact_type: str, path: Path) -> None:
+        relative = _relative(path, workspace)
+        exists = path.is_file()
+        records.append({
+            "artifact_id": f"{artifact_type}:{relative}",
+            "artifact_type": artifact_type,
+            "path": relative,
+            "fingerprint": _file_fingerprint(path) if exists else "missing",
+            "parser_version": "design-contract-v1",
+            "status": "error" if relative in error_paths else "ready",
+        })
+
+    for filepath in project_files:
+        add("design", Path(filepath))
+    for artifact_type, root in (("source", source_root), ("test", test_root)):
+        if not root or not Path(root).is_dir():
+            continue
+        for path in sorted(Path(root).rglob("*.py")):
+            if path.is_file():
+                add(artifact_type, path)
+    return records
+
+
+def _file_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return "unreadable"
+    return digest.hexdigest()
+
+
+def _merge_mappings(
+    inferred: list[ContractMapping], graph: list[ContractMapping],
+) -> list[ContractMapping]:
+    """Prefer graph-backed evidence for a pair while retaining other inference."""
+    inferred_by_pair = {
+        (item.design_entity_id, item.source_entity_id): item for item in inferred
+    }
+    enriched_graph: list[ContractMapping] = []
+    for item in graph:
+        prior = inferred_by_pair.get((item.design_entity_id, item.source_entity_id))
+        if prior is not None:
+            item = replace(item, test_entity_ids=tuple(dict.fromkeys(
+                (*prior.test_entity_ids, *item.test_entity_ids),
+            )))
+        enriched_graph.append(item)
+    graph_pairs = {
+        (item.design_entity_id, item.source_entity_id) for item in enriched_graph
+    }
+    retained = [
+        item for item in inferred
+        if (item.design_entity_id, item.source_entity_id) not in graph_pairs
+    ]
+    return [*retained, *enriched_graph]
+
+
+def _graph_metadata(facts: dict[str, Any], mappings: list[ContractMapping]) -> dict[str, Any]:
+    stats = facts.get("stats") if isinstance(facts, dict) else {}
+    return {
+        "available": bool(facts.get("available")) if isinstance(facts, dict) else False,
+        "node_count": len(facts.get("nodes", ())) if isinstance(facts, dict) else 0,
+        "edge_count": len(facts.get("edges", ())) if isinstance(facts, dict) else 0,
+        "mapping_count": len(mappings),
+        "truncated": facts.get("truncated", {}) if isinstance(facts, dict) else {},
+        "stats": stats if isinstance(stats, dict) else {},
+        "error": str(facts.get("error", "")) if isinstance(facts, dict) else "",
+    }
 
 
 def _item_name(item: Any) -> str:

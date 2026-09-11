@@ -107,6 +107,35 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.map_project(project_id, top_classes),
         )
 
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+        if not os.path.isfile(self.db_path):
+            return {
+                "available": False,
+                "project_id": project_id,
+                "nodes": [],
+                "edges": [],
+                "error": "knowledge graph index does not exist",
+            }
+        return self._run_service(
+            lambda service: service.contract_facts(project_id, max_items),
+        )
+
+    def index_facts(self, facts: Any) -> Any:
+        """Project shared ``ArtifactFacts`` into the local graph when requested."""
+        builder = GraphBuilder(db_path=self.db_path)
+        try:
+            return builder.index_facts(facts)
+        finally:
+            builder.close()
+
+    def sync_facts(self, facts: Any) -> Any:
+        """Synchronize the local graph from changed artifact facts."""
+        builder = GraphBuilder(db_path=self.db_path)
+        try:
+            return builder.sync_facts(facts)
+        finally:
+            builder.close()
+
     def locate(self, project_id: str, pattern: str, node_types=None,
                source=None, top_k: int = 10) -> dict:
         return self._run_service(

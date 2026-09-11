@@ -32,6 +32,27 @@ class ContractMapping:
 
 
 @dataclass(frozen=True)
+class ArtifactFacts:
+    """Parser output shared by contract rules and derived indexes.
+
+    This is deliberately below ``ContractSnapshot``: it describes what was
+    found in artifacts, while the snapshot describes the contract view after
+    optional relationship enrichment and rule preparation.
+    """
+
+    project_id: str
+    scope: str
+    status: str
+    entities: tuple[ContractEntity, ...] = ()
+    mappings: tuple[ContractMapping, ...] = ()
+    diagnostics: tuple[dict[str, str], ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ContractSnapshot:
     """Immutable, serializable project contract snapshot."""
 
@@ -57,6 +78,17 @@ class ContractProvider(Protocol):
     ) -> ContractSnapshot: ...
 
 
+class ArtifactFactsProvider(Protocol):
+    """Provider port for the shared parse/fact extraction stage."""
+
+    def collect_facts(
+        self,
+        manifest: Any,
+        project_id: str = "",
+        scope: str = "project",
+    ) -> ArtifactFacts: ...
+
+
 class NoOpContractProvider:
     """Explicit fallback when contract collection is disabled/unavailable."""
 
@@ -80,8 +112,10 @@ def load_contracts(*, settings=None, **kwargs) -> ContractProvider:
 __all__ = [
     "ContractEntity",
     "ContractMapping",
+    "ArtifactFacts",
     "ContractSnapshot",
     "ContractProvider",
+    "ArtifactFactsProvider",
     "NoOpContractProvider",
     "load_contracts",
 ]
