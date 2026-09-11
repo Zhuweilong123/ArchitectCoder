@@ -66,7 +66,7 @@ ReActAgent 循环
 ### 5.1 M1 — TraceViewer（可视化查看/调试）
 
 - **后端** `extensions/trace/trace_reader.py`：`list_traces()` / `read_trace()`（复用 JSONL adapter 的目录策略，防路径穿越）。
-- **后端** `backend/app/api/trace.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`。
+- **后端** `extensions/trace/api.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`；由插件路由挂载到应用。
 - **前端** `frontend/src/components/TraceViewer/`：Drawer，左会话列表 + 右时间轴；按 `user_message` 分轮次、按 `span_id` 配对 LLM/工具；支持「自动播放」逐条高亮滚动。
 - **入口**：Toolbar「Trace」按钮 → `uiStore.traceVisible`。
 
@@ -201,7 +201,7 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
 | `extensions/trace/trace_reader.py` | 读取解析 JSONL（list / read） |
 | `extensions/trace/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |
-| `backend/app/api/trace.py` | `/api/trace/*` 端点 |
+| `extensions/trace/api.py` | `/api/trace/*` 端点；由 Trace 插件路由挂载 |
 | `backend/app/services/agent_chat_ws.py` | agent 对话 WS，记录 tool_call/result/done，补 `start()` |
 | `frontend/src/components/TraceViewer/` | 前端查看/回放 UI |
 

@@ -13,13 +13,13 @@
 - **职责单一**：Agent 只管推理循环，Tool 只管执行逻辑。
 - **接口统一**：Agent 与 Tool 通过 ABC 抽象基类约束，子类实现标准接口。
 
-公开入口 `__init__.py` 导出 **18 个符号**（core 10 + agents 2 + tools 6）。
+公开入口 `__init__.py` 当前导出 **24 个符号**（core 17 + agents 2 + tools 5）。
 
 ## 2. 架构
 
 ```
 agent_base/
-├── __init__.py                          # 统一导出入口（20 个公开符号）
+├── __init__.py                          # 统一导出入口（24 个公开符号）
 │
 ├── examples/                            # 示例代码（非生产代码）
 │   ├── demo_reflection.py / demo_simple.py / demo_uml_tool.py
@@ -133,7 +133,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 
 ## 6. 对话 Agent 工具集
 
-主 Agent 由 `app/agent_base/assembly.py` 统一装配工具集；`agent_chat_ws.py` 只负责 WebSocket 传输适配。
+主 Agent 由 `backend/app/agent_base/assembly.py` 统一装配工具集；`agent_chat_ws.py` 只负责 WebSocket 传输适配。
 代码生成闭环工具（`generate_code` / `validate_code` / `generate_tests` / `fix_code` /
 `run_tests` / `write_files`）已下线移除，当前助手通过**文件系统原语**自主读写代码。
 

@@ -15,6 +15,7 @@
 - [`memory-system-design.md`](memory-system-design.md)：记忆模型、检索和生命周期。
 - [`knowledge-graph-design.md`](knowledge-graph-design.md)：知识图谱模型、构建和查询。
 - [`trace-replay-design.md`](trace-replay-design.md)：Trace 记录、回放、混合执行设计和使用手册。
+- [`trace-to-eval-case-factory-design.md`](trace-to-eval-case-factory-design.md)：Trace 转评测用例草稿、fixture、Checker 审核和发布流程。
 
 ## 历史与决策记录
 

@@ -4,7 +4,7 @@
 >
 > 文档状态：当前实现说明 + 截至 3.3（含 3.3.x）的历史数据指标
 >
-> 适用范围：`extensions/evals`、`backend/evals`、`backend/app/api/evals.py` 和评测中心前端
+> 适用范围：`extensions/evals`、`backend/evals` 和评测中心前端；API 由 Evals 插件路由提供
 
 本文只把 3.4 的评测结构和运行规则作为当前事实。历史性能数字统一保留至 3.3（含 3.3.1、3.3.2、3.3.3），并按采集时间归档；3.4 的新结果以 Evaluation Center 生成的运行批次、性能结果和归档快照为准，不再写入历史表。
 
@@ -116,7 +116,8 @@ Runner 会分别执行两组 Checker，并把结果合并到最终结果中；�
 
 ## 3. API 与评测中心
 
-评测 API 位于 `backend/app/api/evals.py`，由统一认证依赖保护：
+评测 API 由 `extensions/evals/full_api.py` 和 `extensions/evals/api.py` 提供，
+由 `backend/app/main.py` 通过插件管理器挂载，并由统一认证依赖保护：
 
 | API | 作用 |
 |---|---|

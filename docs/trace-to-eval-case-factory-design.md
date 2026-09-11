@@ -1,6 +1,6 @@
 # Trace 转评测用例子能力设计
 
-> 状态：提案
+> 状态：已实现基线（设计与实现说明）
 >
 > 所属：`extensions/evals` 评测插件
 >
@@ -71,7 +71,7 @@ Trace 记录了 DevAgent 在真实工程任务中的用户请求、工具调用�
 |---|---|---|
 | Trace 持久化、查询和回放 | Trace 插件 | 提供只读 Trace 事件 |
 | 草稿提取、推断、校验、发布 | Evals 插件 | 完整拥有 Trace Case Factory |
-| API 鉴权与传输 | `backend/app/api/evals.py` | 仅转发请求到 Evals Provider |
+| API 鉴权与传输 | `extensions/evals/full_api.py`、`extensions/evals/api.py`、`backend/app/main.py` | 插件路由挂载、认证和请求转发 |
 | 评测用例编辑与发布体验 | Evaluation Center | 评测能力入口与状态展示 |
 
 Evals 插件只能依赖核心层暴露的 Trace 查询契约，不得直接导入 `extensions.trace` 的具体存储实现。
@@ -283,6 +283,6 @@ The Trace-to-case capability is owned by the Evals extension:
 - `extensions/evals/api.py` owns the `/api/evals/trace-cases/*` HTTP routes.
 - `extensions/evals/provider.py` adapts the capability to the local Evals provider.
 - `backend/app/agent_base/core/plugins.py` only provides the generic plugin router mounting mechanism.
-- `backend/app/api/evals.py` keeps generic evaluation catalog and batch APIs; it no longer contains Trace-case routes.
+- `extensions/evals/full_api.py` keeps generic evaluation catalog and batch APIs and mounts the Trace-case router; it no longer relies on a host `backend/app/api/evals.py` module.
 
 This keeps the Trace-to-case feature optional and removable without adding Trace-specific business logic to the host application.

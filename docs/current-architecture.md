@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`78af79b`（`dev-4.0`）
+> 代码基线：`e1564b6`（`dev-4.0`；文档同步提交另见 Git 历史）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -12,7 +12,7 @@
 WebSocket / Evaluation / future HTTP or CLI
               |
               v
-        app/agent_base/assembly.py
+        backend/app/agent_base/assembly.py
               |
               +-- runtime environment + command executor
               +-- memory / plugin providers
@@ -32,21 +32,21 @@ WebSocket / Evaluation / future HTTP or CLI
 ```
 
 `agent_chat_ws.py` 只负责 WebSocket 鉴权和协议适配；会话协调由
-`app/services/chat_session.py` 负责，单次 Agent 执行由
-`app/services/agent_execution.py` 负责。评测入口复用同一套 assembly，不应再维护
+`backend/app/services/chat_session.py` 负责，单次 Agent 执行由
+`backend/app/services/agent_execution.py` 负责。评测入口复用同一套 assembly，不应再维护
 一套独立的工具或提示词装配逻辑。
 
 ## 2. 稳定边界
 
 | 边界 | 当前所有者 | 说明 |
 |---|---|---|
-| Agent 组合 | `app/agent_base/assembly.py` | 统一创建 LLM、工具、运行时、记忆和提示词 |
-| Agent 循环 | `app/agent_base/agents/react_agent.py` | 推理、工具调用、预算和收敛控制 |
-| 单次执行 | `app/services/agent_execution.py` | 生命周期、checkpoint、审批、证据和结果 |
-| 会话/传输 | `app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
-| 文件与变更 | `app/agent_base/tools/my_tools/foundation_tools.py`、`app/agent_base/tools/my_tools/foundation_runtime.py`、`app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
-| 扩展能力 | `extensions/*` + `app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
-| Trace 端口 | `app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
+| Agent 组合 | `backend/app/agent_base/assembly.py` | 统一创建 LLM、工具、运行时、记忆和提示词 |
+| Agent 循环 | `backend/app/agent_base/agents/react_agent.py` | 推理、工具调用、预算和收敛控制 |
+| 单次执行 | `backend/app/services/agent_execution.py` | 生命周期、checkpoint、审批、证据和结果 |
+| 会话/传输 | `backend/app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
+| 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
+| 扩展能力 | `extensions/*` + `backend/app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
+| Trace 端口 | `backend/app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
 | 图表历史 | `frontend/src/stores/diagramHistory.ts` | 撤销、重做、批处理和快照；`diagramStore` 只负责状态组合 |
 | 图表布局 | `frontend/src/utils/componentLayout.ts` | 组件自动布局的纯计算；画布状态写入仍由 `diagramStore` 完成 |
 | AgentChat 数据 | `frontend/src/components/AgentChat/agentChatUtils.ts` | 消息持久化裁剪、会话格式化和审核图归一化 |
@@ -75,7 +75,7 @@ WebSocket / Evaluation / future HTTP or CLI
 
 执行路由固定为：`run_task` → `run_program` → `shell`。Windows 默认使用
 原生 PowerShell；WSL Bash 只有在显式配置时启用。命令适配器和宿主策略位于
-`app/runtime/command.py`，工具描述和路由规则位于 `assembly.py`。
+`backend/app/runtime/command.py`，工具描述和路由规则位于 `assembly.py`。
 
 ## 4. 可选扩展
 
@@ -95,11 +95,11 @@ extensions.knowledge_graph:create
 
 ## 5. 上下文、记忆和 Trace
 
-- 上下文预算由 `app/services/context_manager.py` 管理；它只负责本次请求的
+- 上下文预算由 `backend/app/services/context_manager.py` 管理；它只负责本次请求的
   prompt 预算、历史压缩和恢复，不直接实现长期记忆。
 - 长期记忆通过 `MemoryPort` 访问，具体 SQLite、BM25、生命周期和策略位于
   `extensions/memory`。
-- Trace 的运行时 hook 位于 `app/trace/tracing.py`，JSONL 写入、读取和回放位于
+- Trace 的运行时 hook 位于 `backend/app/trace/tracing.py`，JSONL 写入、读取和回放位于
   `extensions/trace`。
 - 记忆、Trace 和上下文都是参考数据，当前用户指令优先级最高。
 

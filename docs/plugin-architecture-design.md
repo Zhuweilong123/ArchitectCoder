@@ -75,16 +75,16 @@ extensions/
 The `backend` layer owns stable contracts, generic runtime infrastructure and
 the central manager. The `extensions` layer owns operational plugin logic.
 
-Agent construction is centralized in `app/agent_base/assembly.py`, so the
+Agent construction is centralized in `backend/app/agent_base/assembly.py`, so the
 interactive WebSocket adapter and the Evals adapter share the same production
 tool, memory, prompt, and budget assembly. A single Agent run is coordinated
-by `app/services/agent_execution.py` through an injected async `send(payload)`
+by `backend/app/services/agent_execution.py` through an injected async `send(payload)`
 callback; it does not depend on FastAPI or WebSocket types. Session lifecycle
-and message coordination live in `app/services/chat_session.py`; the WebSocket
+and message coordination live in `backend/app/services/chat_session.py`; the WebSocket
 module owns authentication and transport adaptation only.
 
 The async tool base is framework infrastructure under
-`app/agent_base/tools/async_tool.py`; conversation-specific factories and
+`backend/app/agent_base/tools/async_tool.py`; conversation-specific factories and
 extensions no longer import it from `conversation_tools.py`. Optional
 orchestration exploration receives an injected `explorer_factory`, keeping the
 orchestration extension independent of the concrete subagent tool class.
