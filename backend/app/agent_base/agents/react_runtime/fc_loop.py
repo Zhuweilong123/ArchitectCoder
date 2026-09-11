@@ -145,6 +145,68 @@ def _append_failure_recovery_guidance(
     return last_directive_signature
 
 
+async def _invoke_fc_model(
+    agent,
+    *,
+    messages: list[dict[str, Any]],
+    tool_specs: list[dict[str, Any]],
+    finalization_mode: bool,
+    request_context: dict[str, Any],
+    runtime: Any,
+    temperature: float,
+    timeout_seconds: float,
+) -> tuple[Any | None, str, str]:
+    """Invoke the model inside its hook and tracing boundary.
+
+    Returns ``(response, failure_kind, reason)``. A missing response is an
+    intentional terminal condition, either stopped by a hook or timed out.
+    """
+    before_decision = get_hooks().trigger(
+        HookEvent.LLM_BEFORE,
+        HookContext(
+            event=HookEvent.LLM_BEFORE,
+            agent_name=agent.name,
+            run_id=runtime.run_id,
+            runtime=runtime,
+            messages=messages,
+        ),
+    )
+    if (
+        isinstance(before_decision, HookDecision)
+        and before_decision.action == HookAction.STOP
+    ):
+        return None, "hook_stop", before_decision.reason
+
+    from app.trace.tracing import trace_span
+
+    with trace_span(agent.name):
+        try:
+            response = await asyncio.wait_for(
+                agent.llm.ainvoke_with_tools(
+                    messages=messages,
+                    tools=tool_specs,
+                    tool_choice="none" if finalization_mode else "auto",
+                    temperature=temperature,
+                    trace_context=request_context,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return None, "timeout", "llm_timeout"
+    get_hooks().trigger(
+        HookEvent.LLM_AFTER,
+        HookContext(
+            event=HookEvent.LLM_AFTER,
+            agent_name=agent.name,
+            run_id=runtime.run_id,
+            runtime=runtime,
+            messages=messages,
+            llm_response=response,
+        ),
+    )
+    return response, "", ""
+
+
 async def run_fc_loop(
     agent,
     input_text: str,
@@ -163,8 +225,6 @@ async def run_fc_loop(
     4. yield ReActProgress → 追加 assistant + tool 消息
     5. 重复直到模型返回最终文本，或触发资源预算/收敛保护
     """
-    from app.trace.tracing import trace_span
-
     allowed_tools = kwargs.pop("allowed_tools", None)
     initial_token_usage = max(0, int(kwargs.pop("initial_token_usage", 0) or 0))
     allowed_set = set(allowed_tools) if allowed_tools is not None else None
@@ -437,25 +497,23 @@ async def run_fc_loop(
                 return
             logger.info("\n--- FC loop round %d ---", step)
             # 1. 调用 LLM（带工具 schemas）
-            llm_before_decision = get_hooks().trigger(
-                HookEvent.LLM_BEFORE,
-                HookContext(
-                    event=HookEvent.LLM_BEFORE,
-                    agent_name=agent.name,
-                    run_id=runtime.run_id,
-                    runtime=runtime,
-                    messages=messages,
+            response, failure_kind, failure_reason = await _invoke_fc_model(
+                agent,
+                messages=messages,
+                tool_specs=active_tool_specs,
+                finalization_mode=finalization_mode,
+                request_context=request_context,
+                runtime=runtime,
+                temperature=kwargs.get("temperature", 0.3),
+                timeout_seconds=kwargs.get(
+                    "llm_timeout_seconds", agent.llm_timeout_seconds,
                 ),
             )
-            if (
-                isinstance(llm_before_decision, HookDecision)
-                and llm_before_decision.action == HookAction.STOP
-            ):
-                reason = llm_before_decision.reason
+            if response is None and failure_kind == "hook_stop":
                 agent.last_context_report.update({
                     "token_budget_used": budget.request_tokens,
                     "token_usage_total_observed": budget.total_tokens,
-                    "token_budget_stop_reason": reason,
+                    "token_budget_stop_reason": failure_reason,
                 })
                 final_answer = (
                     "Execution budget reached before the next model call; "
@@ -470,39 +528,21 @@ async def run_fc_loop(
                     final_answer=final_answer,
                 )
                 return
-            with trace_span(f"{agent.name}"):
-                try:
-                    response = await asyncio.wait_for(
-                        agent.llm.ainvoke_with_tools(
-                            messages=messages,
-                            tools=active_tool_specs,
-                            tool_choice="none" if finalization_mode else "auto",
-                            temperature=kwargs.get("temperature", 0.3),
-                            trace_context=request_context,
-                        ),
-                        timeout=kwargs.get("llm_timeout_seconds", agent.llm_timeout_seconds),
-                    )
-                except asyncio.TimeoutError:
-                    agent.last_context_report.update({
-                        "token_budget_used": budget.request_tokens,
-                        "token_budget_stop_reason": "llm_timeout",
-                    })
-                    final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
-                    agent._record_turn(input_text, final_answer)
-                    yield agent._final_progress(total_tokens=total_tokens,step=step, thought=final_answer,
-                                        is_final=True, final_answer=final_answer)
-                    return
-            get_hooks().trigger(
-                HookEvent.LLM_AFTER,
-                HookContext(
-                    event=HookEvent.LLM_AFTER,
-                    agent_name=agent.name,
-                    run_id=runtime.run_id,
-                    runtime=runtime,
-                    messages=messages,
-                    llm_response=response,
-                ),
-            )
+            if response is None:
+                agent.last_context_report.update({
+                    "token_budget_used": budget.request_tokens,
+                    "token_budget_stop_reason": failure_reason,
+                })
+                final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
+                agent._record_turn(input_text, final_answer)
+                yield agent._final_progress(
+                    total_tokens=total_tokens,
+                    step=step,
+                    thought=final_answer,
+                    is_final=True,
+                    final_answer=final_answer,
+                )
+                return
 
             tool_calls = response.get("tool_calls")
             content = response.get("content") or ""
