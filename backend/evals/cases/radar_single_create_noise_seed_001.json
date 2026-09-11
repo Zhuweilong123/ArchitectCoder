@@ -3,7 +3,7 @@
   "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-create-noise-seed-001",
   "name": "新增可复现噪声能力",
-  "prompt": "为 NoiseAdder 增加可选 seed 注入能力：相同 seed、输入和 SNR 必须产生相同结果，不同 seed 应产生不同结果，并保持 NoiseAdder().addNoise(signal, SNR) 的旧调用兼容；同步 UML 和测试。",
+  "prompt": "为 NoiseAdder 增加可选 seed 注入能力：相同 seed、输入和 SNR 必须产生相同结果，不同 seed 应产生不同结果，并保持 NoiseAdder().addNoise(signal, SNR) 的旧调用兼容；同步 UML，并使用现有测试验证（不要修改受保护的测试文件）。",
   "project_id": "project_radar_v1",
   "hard_checkers": [
     {"type": "hidden_pytest", "path": "project_radar/test_noise_seed.py", "timeout": 60},

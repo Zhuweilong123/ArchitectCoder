@@ -3,7 +3,7 @@
   "tool_protocol_version": "foundation-tools-v1",
   "id": "radar-single-update-delay-001",
   "name": "修复源码时延方向并回归",
-  "prompt": "修复 DelayProcessor 的时延方向：正整数延迟必须让单位冲激向后移动；补充或保留回归测试，运行全部测试，并确认 UML 契约未被破坏。",
+  "prompt": "修复 DelayProcessor 的时延方向：正整数延迟必须让单位冲激向后移动；保留现有回归测试，不修改受保护的测试文件，运行全部测试，并确认 UML 契约未被破坏。",
   "project_id": "project_radar_delay_bug_v1",
   "hard_checkers": [
     {"type": "hidden_pytest", "path": "project_radar/test_delay_direction.py", "timeout": 60},
