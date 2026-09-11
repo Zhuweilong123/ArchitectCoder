@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`65f8fab`（`dev-3.0`）
+> 代码基线：`6f4acb0`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -97,3 +97,23 @@ extensions.knowledge_graph:create
 - 评测运行链路和指标：`evaluation-system.md`。
 - memory、knowledge graph、trace 的领域细节：对应子系统设计文档。
 - 旧版本基线和实施过程已从工作树移除；如需复盘，请通过 Git 历史查看对应提交。
+
+## 7. 模块边界维护规则
+
+以下规则用于避免新的功能把已建立的边界重新耦合：
+
+- `extensions/trace/format.py` 只保存 JSONL 格式常量和默认存储路径；读取器和
+  写入器都依赖它，但不能互相导入。
+- `extensions/evals/summary.py` 是批次和性能结果的唯一汇总实现；批次管理和性能
+  浏览不得相互导入。
+- 知识图谱工具工厂只接受 `KnowledgeGraphProvider`。本地 SQLite Provider 必须由
+  组合层创建后注入，工具层不得回退导入具体 Provider。
+- 内置插件 Provider 默认值只在 `config/plugin_defaults.py` 定义，`Settings` 和
+  `PluginManager` 只引用该定义。
+- `agent_execution.py` 保持传输无关：新增进度事件先扩展独立的事件适配器，再接入
+  执行生命周期，避免把 WebSocket 协议分支重新塞回主协调器。
+
+后续拆分优先级为：`agent_execution.handle_agent_execution`、
+`extensions.evals.runner.EvalRunner.run_case`、前端 `diagramStore`，以及三个 Canvas
+编辑器的共同行为。拆分必须保持公开工具/Provider 契约不变，并以对应单元或集成测试
+覆盖迁移路径。
