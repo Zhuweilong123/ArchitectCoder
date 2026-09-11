@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`6f4acb0`（`dev-4.0`）
+> 代码基线：`2bdc5b3`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -112,8 +112,13 @@ extensions.knowledge_graph:create
   `PluginManager` 只引用该定义。
 - `agent_execution.py` 保持传输无关：新增进度事件先扩展独立的事件适配器，再接入
   执行生命周期，避免把 WebSocket 协议分支重新塞回主协调器。
+- `chat_session.py` 只协调会话、WebSocket 命令和连接生命周期；持久 Run 创建、
+  恢复 checkpoint、提示词上下文构建和后台执行启动由独立启动边界负责。
+- `agent_execution.py` 只编排一次 Agent 任务；编排器准备、fallback UML 审核、
+  终态 checkpoint 塑形和终态发布均通过独立职责边界完成。
+- `react_runtime/fc_loop.py` 只管理回合状态；LLM hook/trace/超时调用和工具失败恢复
+  分别由独立函数负责，不能把传输或会话状态引入 FC 循环。
 
-后续拆分优先级为：`agent_execution.handle_agent_execution`、
-`extensions.evals.runner.EvalRunner.run_case`、前端 `diagramStore`，以及三个 Canvas
-编辑器的共同行为。拆分必须保持公开工具/Provider 契约不变，并以对应单元或集成测试
-覆盖迁移路径。
+下一阶段优先拆分前端 `diagramStore`、`Toolbar`、`AgentChat`、`EvaluationCenter` 和
+Canvas 编辑器的共同行为。拆分必须保持公开工具/Provider 契约不变，并复用既有单元或
+集成测试验证迁移路径。
