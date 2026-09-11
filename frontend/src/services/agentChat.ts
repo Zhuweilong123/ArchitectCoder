@@ -211,6 +211,7 @@ export function sendAgentMessage(message: string, opts?: {
   source_dir?: string;
   test_dir?: string;
   project_file?: string;
+  workspace_root?: string;
   stream_mode?: boolean;
   /** 跳过监听器通知 — 调用方已自行添加用户消息到 UI 时设为 true */
   skipNotify?: boolean;
@@ -221,6 +222,7 @@ export function sendAgentMessage(message: string, opts?: {
     source_dir: opts?.source_dir || '',
     test_dir: opts?.test_dir || '',
     project_file: opts?.project_file || '',
+    workspace_root: opts?.workspace_root || '',
     stream_mode: opts?.stream_mode ? true : undefined,
   };
 

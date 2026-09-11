@@ -54,6 +54,7 @@ const AgentChat: React.FC = () => {
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
+  const currentWorkspacePath = useDiagramStore((s) => s.currentWorkspacePath);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -196,6 +197,7 @@ const AgentChat: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
+      workspace_root: currentWorkspacePath || '',
       skipNotify: true,
     });
 
@@ -218,7 +220,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath]);
+  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath, currentWorkspacePath]);
 
   // ── 中断 ──
   const handleStop = useCallback(() => {

@@ -27,7 +27,12 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
 from app.agent_base.tools.registry import ToolRegistry
-from app.runtime import build_command_executor, build_environment_context, workspace_root_for
+from app.runtime import (
+    WorkspaceManifest,
+    build_command_executor,
+    build_environment_context,
+    workspace_root_for,
+)
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
@@ -204,16 +209,30 @@ async def create_dev_agent(
     max_tool_calls: int | None = None,
     max_run_seconds: float | None = None,
     max_total_tokens: int | None = None,
+    design_dir: str = "",
+    workspace_root: str = "",
 ):
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
+    # Keep the legacy global UML directory for explicit source/test-only
+    # callers, while project-root callers derive ``design/`` from the root.
+    design_hint = design_dir or (
+        settings.uml_dir if not project_file and not workspace_root else ""
+    )
+    manifest = WorkspaceManifest.from_paths(
+        project_file=project_file,
+        source_dir=source_dir,
+        test_dir=test_dir,
+        design_dir=design_hint,
+        workspace_root=workspace_root,
+    )
+    source_dir = manifest.source_root
+    test_dir = manifest.test_root
+    project_file = manifest.project_file
+    design_dir = manifest.design_root
+    workspace_root = manifest.workspace_root
     change_set = ChangeSet(project_file=project_file)
     command_executor = build_command_executor(settings)
-    design_dir = (
-        os.path.dirname(os.path.abspath(project_file))
-        if project_file else os.path.abspath(settings.uml_dir)
-    )
-    workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
     tools, review_mgr = create_conversation_tools(
         llm,
         source_dir=source_dir,
@@ -232,9 +251,10 @@ async def create_dev_agent(
         command_executor=command_executor,
         include_subagent=settings.agent_main_subagent_enabled,
         workspace_root=workspace_root,
+        design_dir=design_dir,
     )
 
-    workspace_roots = [workspace_root] if workspace_root else []
+    workspace_roots = list(manifest.workspace_roots)
     registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
     for tool in tools:
         registry.register_tool(tool)
@@ -294,6 +314,7 @@ async def create_dev_agent(
     )
     agent.change_set = change_set
     agent.memory_provider = memory_provider
+    agent.workspace_manifest = manifest.to_dict()
     if restore_history:
         agent.restore_history(restore_history)
     return agent, review_mgr, prompt_builder

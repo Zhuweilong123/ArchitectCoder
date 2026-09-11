@@ -85,6 +85,7 @@ def create_conversation_tools(
     include_subagent: bool = False,
     include_task_system: bool = False,
     workspace_root: str = "",
+    design_dir: str = "",
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -114,8 +115,10 @@ def create_conversation_tools(
     from .foundation_tools import create_foundation_tools
     from backend.config import get_settings
     # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
-    design_dir = (os.path.dirname(os.path.abspath(project_file))
-                  if project_file else os.path.abspath(get_settings().uml_dir))
+    design_dir = design_dir or (
+        os.path.dirname(os.path.abspath(project_file))
+        if project_file else os.path.abspath(get_settings().uml_dir)
+    )
     if not workspace_root:
         workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
     tools.extend(create_foundation_tools(

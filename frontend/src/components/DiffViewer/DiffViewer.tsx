@@ -24,7 +24,7 @@ const { TextArea } = Input;
 
 const DiffViewer: React.FC = () => {
   const {
-    setDiagram, diagram, applyProjectUpdate, setActiveDiagram, project, currentFilepath, triggerRecenter,
+    setDiagram, diagram, applyProjectUpdate, setActiveDiagram, project, currentFilepath, currentWorkspacePath, triggerRecenter,
   } = useDiagramStore(useShallow((s) => ({
     setDiagram: s.setDiagram,
     diagram: selectActiveDiagram(s),
@@ -32,6 +32,7 @@ const DiffViewer: React.FC = () => {
     setActiveDiagram: s.setActiveDiagram,
     project: s.project,
     currentFilepath: s.currentFilepath,
+    currentWorkspacePath: s.currentWorkspacePath,
     triggerRecenter: s.triggerRecenter,
   })));
   const {
@@ -275,7 +276,7 @@ const DiffViewer: React.FC = () => {
         //  此处若 connectAgentChat(() => {}) 反而会用空回调覆盖掉常驻 handler）
         sendAgentMessage(
           `请对当前项目进行全局UML交叉验证和优化: ${rejectInstructions}`,
-          { project_file: currentFilepath || '' },
+          { project_file: currentFilepath || '', workspace_root: currentWorkspacePath || '' },
         );
         // 优化结果通过 Agent WebSocket 的 design_updated 事件异步返回
         await saveReview({
