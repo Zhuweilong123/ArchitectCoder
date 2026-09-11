@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from backend.config import get_settings
 
@@ -170,6 +170,52 @@ def _terminal_checkpoint_status(
     ):
         return "partial", "task checklist has pending items"
     return "completed", None
+
+
+def _finalize_terminal_checkpoint(
+    agent: ReActAgent,
+    *,
+    outcome: RunOutcome | None,
+    run_id: str,
+    task_id: str,
+    request_summary: str,
+    fallback_review_requested: bool,
+    review_manager: Any,
+) -> tuple[str, list[dict]]:
+    """Shape the durable checkpoint for a completed streamed Agent run."""
+    todos = get_runtime().todos or []
+    terminal_status, stop_reason = _terminal_checkpoint_status(outcome, todos)
+    if terminal_status == "completed" and any(
+        not item["passed"]
+        for item in agent.last_run_checkpoint.get("verification_results", [])
+    ):
+        terminal_status, stop_reason = "partial", "verification_failed"
+    agent.last_run_checkpoint = {
+        **agent.last_run_checkpoint,
+        "run_id": run_id,
+        "task_id": task_id,
+        "status": "waiting_approval" if fallback_review_requested else terminal_status,
+        "request_summary": request_summary,
+        "completed_items": [
+            todo.get("content", "") for todo in todos
+            if isinstance(todo, dict) and todo.get("status") == "completed"
+        ],
+        "pending_items": [
+            todo.get("content", "") for todo in todos
+            if isinstance(todo, dict) and todo.get("status") != "completed"
+        ],
+        "last_error": None,
+        "stop_reason": stop_reason,
+    }
+    if outcome is not None:
+        agent.last_run_checkpoint["outcome"] = outcome.to_dict()
+    if fallback_review_requested:
+        agent.last_run_checkpoint.update({
+            "review_status": "pending",
+            "post_review_status": terminal_status,
+            "review_baseline": review_manager.baseline,
+        })
+    return terminal_status, todos
 
 async def _archive_task_to_memory(
     memory: MemoryPort,
@@ -707,39 +753,15 @@ async def handle_agent_execution(
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
                 else:
                     manifest = []
-                todos = get_runtime().todos or []
-                terminal_status, stop_reason = _terminal_checkpoint_status(
-                    step_progress.outcome, todos,
+                terminal_status, todos = _finalize_terminal_checkpoint(
+                    agent,
+                    outcome=step_progress.outcome,
+                    run_id=run_id,
+                    task_id=task_binding.task_id if task_binding else "",
+                    request_summary=checkpoint_request_summary,
+                    fallback_review_requested=fallback_review_requested,
+                    review_manager=review_mgr,
                 )
-                if terminal_status == "completed" and any(
-                    not item["passed"] for item in agent.last_run_checkpoint.get("verification_results", [])
-                ):
-                    terminal_status, stop_reason = "partial", "verification_failed"
-                agent.last_run_checkpoint = {
-                    **agent.last_run_checkpoint,
-                    "run_id": run_id,
-                    "task_id": task_binding.task_id if task_binding else "",
-                    "status": "waiting_approval" if fallback_review_requested else terminal_status,
-                    "request_summary": checkpoint_request_summary,
-                    "completed_items": [
-                        t.get("content", "") for t in todos
-                        if isinstance(t, dict) and t.get("status") == "completed"
-                    ],
-                    "pending_items": [
-                        t.get("content", "") for t in todos
-                        if isinstance(t, dict) and t.get("status") != "completed"
-                    ],
-                    "last_error": None,
-                    "stop_reason": stop_reason,
-                }
-                if step_progress.outcome is not None:
-                    agent.last_run_checkpoint["outcome"] = step_progress.outcome.to_dict()
-                if fallback_review_requested:
-                    agent.last_run_checkpoint.update({
-                        "review_status": "pending",
-                        "post_review_status": terminal_status,
-                        "review_baseline": review_mgr.baseline,
-                    })
 
                 summary_status = (
                     "waiting_approval" if fallback_review_requested else terminal_status
