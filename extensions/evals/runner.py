@@ -1265,26 +1265,7 @@ class EvalRunner:
             finally:
                 result.trace_path = str(Path(tracer.path)) if "tracer" in locals() else ""
 
-            # Keep the final materialized workspace so file/UML/test checkers
-            # can be audited or replayed after the temporary execution
-            # directory is removed. A snapshot failure must not change the
-            # Agent result.
-            snapshot_root = evaluation_root() / "artifacts" / run_id
-            try:
-                snapshot_root.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(
-                    workspace, snapshot_root, symlinks=True, dirs_exist_ok=True,
-                )
-                result.workspace = str(snapshot_root)
-                result.metadata["workspace_ephemeral"] = False
-                result.metadata["workspace_snapshot"] = str(snapshot_root)
-            except (OSError, shutil.Error) as exc:
-                logger.warning(
-                    "[Eval] Could not persist workspace snapshot for %s: %s",
-                    run_id, exc,
-                )
-                result.workspace = ""
-                result.metadata["workspace_snapshot_error"] = str(exc)
+            self._persist_workspace_snapshot(workspace, run_id, result)
         result.total_tokens = max(result.total_tokens, _trace_total_tokens(result.trace_path))
         (
             result.prompt_tokens,
@@ -1314,6 +1295,33 @@ class EvalRunner:
         result.failure_category = failure_category
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         return result
+
+    @staticmethod
+    def _persist_workspace_snapshot(
+        workspace: Path,
+        run_id: str,
+        result: EvalResult,
+    ) -> None:
+        """Persist the final workspace without allowing archival to affect a run."""
+        # File/UML/test checkers need a durable workspace for audit or replay
+        # after TemporaryDirectory removes the execution directory. Snapshot
+        # failures are observational only and must not alter the Agent result.
+        snapshot_root = evaluation_root() / "artifacts" / run_id
+        try:
+            snapshot_root.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(
+                workspace, snapshot_root, symlinks=True, dirs_exist_ok=True,
+            )
+            result.workspace = str(snapshot_root)
+            result.metadata["workspace_ephemeral"] = False
+            result.metadata["workspace_snapshot"] = str(snapshot_root)
+        except (OSError, shutil.Error) as exc:
+            logger.warning(
+                "[Eval] Could not persist workspace snapshot for %s: %s",
+                run_id, exc,
+            )
+            result.workspace = ""
+            result.metadata["workspace_snapshot_error"] = str(exc)
 
     def _append_result(self, result: EvalResult) -> None:
         self.results_path.parent.mkdir(parents=True, exist_ok=True)
