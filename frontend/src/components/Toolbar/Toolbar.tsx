@@ -34,6 +34,10 @@ import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } fro
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
+import {
+  fileStem, normalizePath, pathBaseName, pathDirName, relativePath,
+  summarizeProjectDiagrams,
+} from './toolbarUtils';
 
 // 占位回调：Toolbar 用它来预先建立 WebSocket 连接，
 // (reserved for future use)
@@ -52,36 +56,6 @@ const LANGUAGES = [
   { value: 'kotlin', label: 'Kotlin' },
   { value: 'php', label: 'PHP' },
 ];
-
-function summarizeProjectDiagrams(diagrams: Array<{ diagram_type?: string }>) {
-  const labels: Record<string, string> = {
-    class: '类图',
-    sequence: '时序图',
-    component: '组件图',
-  };
-  const order = ['class', 'sequence', 'component', 'other'];
-  const counts = diagrams.reduce<Record<string, number>>((result, diagram) => {
-    const type = diagram.diagram_type === 'class'
-      ? 'class'
-      : diagram.diagram_type === 'sequence'
-        ? 'sequence'
-        : diagram.diagram_type === 'component'
-          ? 'component'
-          : !diagram.diagram_type
-            ? 'class'
-            : 'other';
-    result[type] = (result[type] || 0) + 1;
-    return result;
-  }, {});
-  const parts = order
-    .filter((type) => counts[type])
-    .map((type) => `${labels[type] || '其他图表'} ${counts[type]} 张`);
-  return {
-    total: diagrams.length,
-    typeCount: parts.length,
-    text: parts.join('、'),
-  };
-}
 
 const Toolbar: React.FC = () => {
   const {
@@ -162,22 +136,6 @@ const Toolbar: React.FC = () => {
   // Keep the toolbar compact while still showing where the active design is
   // located.  Paths are displayed relative to the workspace's parent; the
   // full host path remains available in the tooltip.
-  const normalizePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
-  const pathBaseName = (value: string) => normalizePath(value).split('/').pop() || value;
-  const fileStem = (value: string) =>
-    (pathBaseName(value).replace(/[^\w.-]/g, '_').replace(/^\.+|\.+$/g, '') || 'Untitled');
-  const pathDirName = (value: string) => {
-    const normalized = normalizePath(value);
-    const index = normalized.lastIndexOf('/');
-    return index > 0 ? normalized.slice(0, index) : normalized;
-  };
-  const relativePath = (value: string, root: string) => {
-    const target = normalizePath(value);
-    const base = normalizePath(root);
-    if (target === base) return '.';
-    const prefix = `${base}/`;
-    return target.startsWith(prefix) ? target.slice(prefix.length) : pathBaseName(target);
-  };
   // ── Save As dialog ──────────────────────────────────
   const [saveAsVisible, setSaveAsVisible] = useState(false);
   const [saveFilename, setSaveFilename] = useState('');
