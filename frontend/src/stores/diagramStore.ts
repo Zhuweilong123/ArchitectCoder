@@ -8,9 +8,11 @@ import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } fr
 import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
-
-const SEQUENCE_MESSAGE_START_Y = 190;
-const SEQUENCE_MESSAGE_GAP = 48;
+import {
+  SEQUENCE_MESSAGE_GAP,
+  SEQUENCE_MESSAGE_START_Y,
+  sequenceMessageY,
+} from '../utils/sequenceLayout';
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -90,11 +92,6 @@ function _expandFragmentForMessage(
   });
 }
 
-/** Calculate a stable message coordinate for both legacy and current diagrams. */
-function _sequenceMessageY(message: SeqMessage): number {
-  return message.y || SEQUENCE_MESSAGE_START_Y + (message.order - 1) * SEQUENCE_MESSAGE_GAP;
-}
-
 /** Fit fragments to the messages currently inside them while preserving empty fragments. */
 function _fitSequenceFragments(
   fragments: SeqFragment[],
@@ -102,7 +99,7 @@ function _fitSequenceFragments(
 ): SeqFragment[] {
   return fragments.map((fragment) => {
     const contained = messages
-      .map((message) => ({ message, y: _sequenceMessageY(message) }))
+      .map((message) => ({ message, y: sequenceMessageY(message) }))
       .filter(({ y }) => y >= fragment.y_start && y <= fragment.y_end);
     if (contained.length === 0) return fragment;
 
@@ -977,7 +974,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
     const oldMessageY = new Map(messages.map((message) => [
       message.id,
-      _sequenceMessageY(message),
+      sequenceMessageY(message),
     ]));
     const messageY = new Map<string, number>();
     const arrangedMessages = messages.map((message, index) => {

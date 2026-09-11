@@ -18,6 +18,7 @@ import { snapCanvasPosition } from './core/snapToGrid';
 import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import type { FragmentType } from '../../types/sequence';
+import { sequenceMessageY } from '../../utils/sequenceLayout';
 import './SeqEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
 
@@ -147,8 +148,6 @@ function buildLifelineHTML(
 const LIFELINE_WIDTH = 140;
 const LIFELINE_HEIGHT = 400;
 const LIFELINE_Y = 120;  // give top padding so lifelines aren't cut off
-const MESSAGE_START_Y = 190;
-const MESSAGE_GAP = 48;
 
 function getMessageVisual(type: MessageType, theme: CanvasTheme) {
   const palette = theme === 'dark'
@@ -174,10 +173,6 @@ function getMessageVisual(type: MessageType, theme: CanvasTheme) {
       stroke: color,
     },
   };
-}
-
-function getMessageY(message: SeqMessage): number {
-  return message.y || MESSAGE_START_Y + (message.order - 1) * MESSAGE_GAP;
 }
 
 type InlineEditKind = 'lifeline' | 'message' | 'fragment';
@@ -587,7 +582,7 @@ const SeqEditor: React.FC = () => {
         if (message.type === 'return') return;
         const activationLifeline = message.to_lifeline || message.from_lifeline;
         const activations = autoActivationMap.get(activationLifeline) || [];
-        activations.push(getMessageY(message));
+        activations.push(sequenceMessageY(message));
         autoActivationMap.set(activationLifeline, activations);
       });
       const currentLIds = new Set(lifelines.map((l) => l.id));
@@ -607,7 +602,7 @@ const SeqEditor: React.FC = () => {
       // _SEQ_START_Y=190. Using msg.y directly avoids drift from formula mismatches.
       let maxMsgY = 0;
       for (const m of messages) {
-        const y = getMessageY(m);
+        const y = sequenceMessageY(m);
         if (y > maxMsgY) maxMsgY = y;
       }
       const neededHeight = Math.max(
@@ -785,7 +780,7 @@ const SeqEditor: React.FC = () => {
         if (!srcLL || !tgtLL) return;
 
         const isSelf = msg.from_lifeline === msg.to_lifeline;
-        const msgY = getMessageY(msg);  // persisted Y takes priority
+        const msgY = sequenceMessageY(msg);  // persisted Y takes priority
 
         // Connect to the visual axis of each lifeline instead of the outer
         // node boundary. This makes messages feel anchored to the dashed line.
