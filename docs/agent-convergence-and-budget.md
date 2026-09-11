@@ -1,184 +1,137 @@
 # Agent 运行收敛与资源预算
 
-本文归档 ArchitectCoder 当前 DevAgent 的两类运行时治理能力：
+> 状态：当前实现说明
+> 更新日期：2026-09-11
+> 适用范围：`backend/app/agent_base/core/policy.py`、`backend/app/agent_base/convergence.py`、`core/hooks.py` 和 `agents/react_runtime/fc_loop.py`。
 
-- `ExecutionBudget`：控制一次运行可消耗的硬资源；
-- `ConvergenceController`：识别模型是否持续重复、失败重试或没有产生有效进展。
+## 1. 总体边界
 
-两者通过通用 Hook 接入 Agent 主循环。主循环只发布生命周期事件并消费控制信号，不直接实现策略细节。
+Agent 使用开放式 ReAct 循环，不以固定步数作为正常终止条件。运行边界由三类
+策略共同维护：
 
-## 1. 设计目标
+1. `ExecutionBudget`：限制工具调用、运行时长和单次 LLM 请求 token。
+2. `ContextBudgetManager`：限制单次请求携带的消息、历史、工具 schema 和摘要。
+3. `ConvergenceController`：识别重复动作、重复失败和无进展批次，要求恢复或最终化。
 
-DevAgent 使用开放式 `while True` 循环，不以固定步数作为正常任务的终止条件。这样可以支持复杂的多文件修改、验证和修复任务，避免任务仅因为达到固定步数而被截断。
+Trace、Evidence Ledger 和 `last_context_report` 记录这些策略的决定；最终化只表示
+停止继续探索，不等于任务成功。
 
-开放循环并不意味着没有边界：
+## 2. `ExecutionBudget`
 
-1. `ExecutionBudget` 防止单次运行无限消耗工具调用、时间或 Token；
-2. `ConvergenceController` 防止模型在相同动作、相同失败或无进展状态中持续循环；
-3. 上下文预算和压缩机制控制发送给模型的上下文规模；
-4. Trace、Evidence Ledger 和运行报告记录每次决策及其依据。
+位置：`backend/app/agent_base/core/policy.py`。
 
-## 2. 组件职责
+`ExecutionBudget` 的 token 限制是**单次 LLM 请求**口径，任务累计 token 仅用于观测：
 
-### 2.1 ExecutionBudget
+- `max_tool_calls`：一次 run 的工具调用上限。
+- `max_run_seconds`：一次 run 的时间上限。
+- `max_total_tokens`：当前请求软目标，来自 `agent_context_soft_limit_tokens`。
+- `emergency_max_total_tokens`：当前请求紧急上限，来自 `agent_context_hard_limit_tokens`。
+- `token_finalization_reserve_tokens`：为最终答案保留的空间。
 
-代码位置：`backend/app/agent_base/core/policy.py`
+`from_settings()` 使用 `Settings` 统一构造预算；每次 run 的 `start()` 会重置工具和
+请求计数。`before_llm()` 检查时间，`before_tool()` 检查并消耗工具额度，
+`record_tokens()` 记录最近一次请求 token 和累计观测值。
 
-`ExecutionBudget` 是一次运行（per-run）的资源计量器和硬边界判断器，负责：
+预算达到软目标不会直接强制无工具回答；FC loop 会把上下文软阈值和收敛状态作为
+提示/控制信号。只有收敛控制器进入 finalization 时，循环才切换到工具为空的最终回答阶段。
 
-- 记录运行起始时间；
-- 记录已执行的工具调用数；
-- 记录模型累计 Token 使用量；
-- 在下一次 LLM 调用前检查时间和 Token；
-- 在工具真正执行前检查并消耗工具调用额度；
-- 计算剩余 Token 和是否进入最终总结阶段。
+## 3. `ConvergenceController`
 
-它不负责决定模型下一步应该做什么，也不识别“重复动作”或“无效进展”。
+位置：`backend/app/agent_base/convergence.py`（不是 `core/convergence.py`）。
 
-### 2.2 ConvergenceController
+控制器按工具批次观察结构化 detail。它为动作、失败和结果分别生成稳定 fingerprint：
 
-代码位置：`backend/app/agent_base/convergence.py`
+- 动作键：工具名 + 参数。
+- 失败键：工具名、参数、状态和 error code。
+- 结果键：状态、error code、观察、变更和验证结果。
 
-`ConvergenceController` 只接收工具批次的结构化结果，判断当前行为是否仍然产生有效进展：
+有意义的成功变更、验证结果或新观察会清零 stalled/recovery 计数。否则根据当前计数
+返回：
 
-- 同一语义动作反复执行且没有新证据；
-- 相同输入和错误码反复失败；
-- 连续多个批次没有产生状态变化、变更或验证结果。
-
-它返回三种收敛结果：
-
-| 结果 | 含义 |
+| action | 含义 |
 |---|---|
-| `continue` | 当前仍有有效进展，继续循环 |
-| `recover` | 要求模型改变策略、缩小范围或执行验证 |
-| `finalize` | 已超过恢复机会，停止探索并基于现有证据总结 |
+| `continue` | 有新证据或状态变化，继续主循环 |
+| `recover` | 重复失败/动作或无进展，要求模型改变策略、缩小范围或验证 |
+| `finalize` | 超过恢复机会，停止工具探索并基于已有证据总结 |
 
-收敛控制不是固定步数限制。生产任务可以运行任意多轮，只在行为失去生产力时介入。
+默认构造参数：`max_stalled_rounds=3`、`max_recovery_rounds=2`、
+`repeat_action_threshold=3`。控制器没有全局步数上限；正常有进展的任务可以继续运行。
 
-### 2.3 RunPolicyHook
+## 4. Hook 接入
 
-代码位置：`backend/app/agent_base/core/hooks.py`
+位置：`backend/app/agent_base/core/hooks.py`。
 
-`RunPolicyHook` 是策略组件与通用 Hook 协议之间的适配层：
+`AgentRuntime` 通过 contextvar 保存每次 run 的 `execution_budget`、
+`convergence_controller` 和当前 `HookDecision`，避免策略状态写入全局可变单例。
 
-| Hook 事件 | 处理内容 |
+关键事件：
+
+| 事件 | 处理 |
 |---|---|
-| `RUN_START` | 初始化本次运行的预算计量 |
-| `LLM_BEFORE` | 检查时间、Token 硬上限，必要时返回 `STOP` |
-| `LLM_AFTER` | 记录模型返回的 Token 使用量 |
-| `TOOL_BEFORE` | 检查并消耗工具调用额度，必要时返回 `VETO` |
-| `TOOL_BATCH_AFTER` | 将本批工具结果交给收敛控制器，产生 `RECOVER` 或 `FINALIZE` |
+| `RUN_START` | 初始化运行时预算和控制器 |
+| `LLM_BEFORE` | 检查时间/请求边界 |
+| `LLM_AFTER` | 记录响应 token |
+| `TOOL_BEFORE` | 检查工具额度和权限，必要时 veto |
+| `TOOL_AFTER` | 规范化工具结果或替换喂给模型的内容 |
+| `TOOL_BATCH_AFTER` | 将整批 evidence detail 交给 `ConvergenceController.observe()` |
 
-Hook 返回值使用统一的 `HookDecision`：
+`trigger()` 用于 veto/replace 等短路控制；`emit()` 用于必须通知所有观察者的广播事件。
+Hook 异常默认非致命；标记 `fail_closed` 的 hook 异常会转为 veto。
 
-```python
-HookDecision(
-    action="recover",      # continue / replace / veto / recover / finalize / stop
-    reason="repeated_action",
-    message="Change the strategy and use the existing evidence.",
-)
-```
+## 5. FC loop 的实际顺序
 
-`HookRegistry.trigger()` 用于需要短路的控制点，例如工具拒绝或 LLM 停止；`HookRegistry.emit()` 用于工具批次结束等广播事件，确保所有观察者都能收到事件。
-
-### 2.4 ContextBudgetManager
-
-代码位置：`backend/app/services/context_manager.py`
-
-`ContextBudgetManager` 负责控制单次模型请求的上下文规模：
-
-- 根据消息和工具定义估算当前请求的 Token 占用；
-- 达到 `compaction_trigger_ratio` 后，将旧工具历史折叠为结构化 checkpoint；
-- 以 `max_history_tokens` 作为压缩目标，以 `max_context_tokens` 作为请求硬上限；
-- 保持 Function Calling 的 assistant/tool 消息配对，避免生成非法历史；
-- 完整过程仍由 Trace 和 Evidence Ledger 保存，不依赖压缩后的上下文恢复审计。
-
-该组件不限制 Agent 的执行轮数，压缩触发只由上下文 Token 使用情况决定。
-
-## 3. 运行流程
+`backend/app/agent_base/agents/react_runtime/fc_loop.py` 每次 run 的主要阶段：
 
 ```text
-Settings
-   |
-   v
-create_dev_agent
-   |
-   +--> ExecutionBudget.from_settings()
-   +--> ConvergenceController(...)
-               |
-               v
-        AgentRuntime (per run)
-               |
-               v
-        generic Hook events
-               |
-       +-------+--------+
-       |                |
-  resource policy   progress policy
-  ExecutionBudget   ConvergenceController
-       |                |
-       +-------+--------+
-               v
-        HookDecision
-               |
-               v
-        ReAct loop action
+构造 ExecutionBudget + ConvergenceController
+        ↓
+RUN_START
+        ↓
+ContextBudgetManager 估算/压缩请求
+        ↓
+LLM_BEFORE → LLM 调用 → LLM_AFTER
+        ↓
+TOOL_BEFORE → 工具执行 → TOOL_AFTER
+        ↓
+记录 EvidenceLedger
+        ↓
+TOOL_BATCH_AFTER → ConvergenceController.observe()
+        ↓
+continue / recover（追加策略提示）/ finalize（工具列表置空）
 ```
 
-一次工具批次的关键顺序如下：
+工具输出可以被 `TruncateHook` 截断后再喂给模型，但 Trace/Evidence 保留完整观察。
+收敛事件、软阈值原因、最终化原因和计数都会写入 `last_context_report`。
 
-1. 模型返回工具调用；
-2. 每个工具在 `TOOL_BEFORE` 经过权限和资源策略检查；
-3. 工具执行结果经过 `TOOL_AFTER`，必要时只替换喂给模型的截断内容；
-4. Agent 发布 `TOOL_BATCH_AFTER`；
-5. 收敛控制器观察结构化结果；
-6. 主循环根据 `HookDecision` 继续、追加恢复提示或进入最终总结。
-
-## 4. Settings 统一管理
-
-生产 DevAgent 的资源和收敛参数集中在 `backend/config/settings.py`：
+## 6. 当前 Settings
 
 | 配置 | 默认值 | 作用 |
 |---|---:|---|
-| `agent_max_tool_calls` | `100` | 单次运行最大工具调用数 |
-| `agent_max_run_seconds` | `600` | 单次运行最大时长 |
-| `agent_per_run_execution_budget_tokens` | `200000` | 单次 Run 的执行预算上限 |
-| `agent_subagent_per_run_execution_budget_tokens` | `500000` | 子代理单次 Run 的独立执行预算上限 |
-| `agent_token_finalization_reserve_tokens` | `12000` | 为最终总结保留的 Token 空间 |
-| `agent_convergence_budget_ratio` | `0.8` | 触发预算预警和收敛提示的比例 |
-| `agent_convergence_max_stalled_rounds` | `3` | 无进展批次的最大容忍次数 |
-| `agent_convergence_max_recovery_rounds` | `2` | 恢复动作的最大次数 |
-| `agent_convergence_repeat_action_threshold` | `3` | 相同语义动作无新结果的触发次数 |
-| `agent_context_compaction_trigger_ratio` | `0.75` | 当前请求上下文占用率达到该比例时触发压缩 |
+| `agent_max_tool_calls` | 100 | 单次 run 工具调用上限 |
+| `agent_max_run_seconds` | 600 | 单次 run 时间上限 |
+| `agent_context_hard_limit_tokens` | 256000 | 请求紧急 token 上限 |
+| `agent_context_soft_threshold_ratio` | 0.78125 | 请求软目标比例 |
+| `agent_context_compaction_threshold_ratio` | 0.9 | 上下文压缩触发比例 |
+| `agent_token_finalization_reserve_tokens` | 12000 | 最终答案预留空间 |
+| `agent_convergence_max_stalled_rounds` | 3 | 无进展批次容忍次数 |
+| `agent_convergence_max_recovery_rounds` | 2 | 恢复次数上限 |
+| `agent_convergence_repeat_action_threshold` | 3 | 相同动作无新结果触发次数 |
+| `agent_evidence_max_records` | 128 | Evidence Ledger 记录上限 |
 
-`create_dev_agent()` 在组装阶段创建 `ExecutionBudget`，因此生产入口不会在主循环中散落资源默认值。评测或测试可以通过显式覆盖值构造隔离预算，但默认仍以 Settings 为准。
+`agent_subagent_per_run_execution_budget_tokens=500000` 只用于主 Agent 管理的子代理，
+与主 Agent 的 `ExecutionBudget` 分开。上下文语义压缩的模型和触发参数属于
+`agent_session_compression_*`，详见 `context-management-design.md`。
 
-## 5. 与其他 step 参数的边界
+## 7. 失败与可观测性
 
-- `ContextBudgetManager` 根据当前请求的估算 Token 占用率触发上下文压缩；
-- `max_history_tokens` 作为压缩目标，`max_context_tokens` 作为请求上下文硬上限；
-- 子代理和 Explorer 均使用独立的 Token 上下文管理、执行预算和收敛控制，不再使用步数终止条件。
+- 时间到达时返回 `time_limit`；工具额度耗尽时返回 `tool_call_limit`。
+- 重复失败先进入 recover，超过恢复机会后 finalize，并在最终答案中要求明确报告 blocker。
+- 无进展连续达到 `max_stalled_rounds` 后 finalize。
+- `last_context_report` 保存 token budget、convergence events、stalled/recovery 计数和最终化原因。
+- `EvidenceLedger` 保存工具状态、错误码、变更和验证结果；Trace 保存完整工具观察。
 
-## 6. 可观测性
+## 8. 维护规则
 
-策略决策必须可以被解释和复盘：
-
-- `AgentRuntime` 保存本次运行的预算、收敛控制器和最近控制信号；
-- `last_context_report` 记录 Token 使用、预算停止原因、收敛事件和压缩信息；
-- `EvidenceLedger` 保存工具结果、状态、错误码、验证结果和副作用；
-- Trace 保留完整工具观察，即使喂给模型的内容经过 `TruncateHook` 截断；
-- 最终 `RunOutcome` 将预算停止、收敛终止、验证失败和任务完成状态统一输出。
-
-因此，`finalize` 并不等同于“任务成功”，而是表示 Agent 停止继续探索。最终结果仍需结合工具证据、变更集和验证结果判断完成度。
-
-## 7. 扩展约定
-
-新增运行策略时，优先实现为独立 Hook 或策略组件：
-
-1. 使用 `HookContext.payload` 携带结构化事件数据；
-2. 使用 `HookDecision` 表达控制意图；
-3. 通过 `AgentRuntime` 保存 per-run 状态，避免写入全局可变状态；
-4. 只在确实需要短路时使用 `trigger()`，观察型逻辑使用 `emit()`；
-5. 将策略原因写入运行报告或 Trace，避免只返回无法解释的字符串。
-
-这样可以继续扩展权限、成本、超时、人工审批和质量门禁，而不增加 ReAct 主循环中的策略分支。
+新增运行治理应实现为独立 policy/controller/hook，通过结构化 `HookContext.payload`
+传递证据，通过 `HookDecision` 表达控制意图。不要把重复检测、预算默认值或传输协议
+分支重新塞回 ReAct 主循环；变更 Settings 后同步本文件和上下文管理文档。
