@@ -1,11 +1,12 @@
 # Trace 记录、回放与使用手册
 
-> 本文归档 ArchitectCoder 的 trace（会话结构化日志）回放机制的设计与实现，
-> 作为后续迭代（L3 混合回放、回归测试接入等）的参考基线。
+> 状态：当前实现说明；更新日期：2026-09-11。
+> 本文描述当前 Trace provider、JSONL 格式、查看 API 和三种回放模式。
 
 > 当前路径说明：运行时 Trace 端口位于 `backend/app/trace/tracing.py`；具体写入、读取和回放实现位于
 > `extensions/trace/`。文中 `backend/app/trace/chat_trace.py`、`replay.py` 和 `trace_reader.py`
 > 为旧实现路径。
+> JSONL 事件常量与默认目录由 `extensions/trace/format.py` 独立维护，写入器和读取器都依赖该模块。
 > 回放器按当前 foundation 工具契约工作，不再维护旧工具名兼容层；历史 trace 需先迁移。
 > `list_files`/`apply_changes`/`run_task`/`run_program`/`shell` 契约以
 > [`runtime-command-execution.md`](runtime-command-execution.md) 为准。
@@ -57,6 +58,9 @@ ReActAgent 循环
 | `tool_call` / `tool_result` | 工具调用与返回，按 `span_id` 配对 |
 | `review_request` / `review_response` | 人工审核回路 |
 | `context_compacted` | 会话历史压缩 checkpoint（摘要及淘汰统计） |
+| `session_context_compressed` | 跨轮语义压缩摘要、模型、阈值和 source refs |
+| `task_summary` | 任务级 checkpoint（状态、工具调用数和摘要） |
+| `kg_inject` | 注入给模型的知识图谱上下文长度和查询 |
 | `done` / `error` | 最终答案 / 错误 |
 
 每条事件含 `trace_id / span_id / parent_span_id / ts_ms / monotonic_ns` 因果链。
@@ -66,7 +70,8 @@ ReActAgent 循环
 ### 5.1 M1 — TraceViewer（可视化查看/调试）
 
 - **后端** `extensions/trace/trace_reader.py`：`list_traces()` / `read_trace()`（复用 JSONL adapter 的目录策略，防路径穿越）。
-- **后端** `extensions/trace/api.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`；由插件路由挂载到应用。
+- **后端** `extensions/trace/api.py`：`GET /api/trace/list`、`GET /api/trace/{session_id}`、
+  `/history`、`/summary` 和 `POST /replay`；由插件路由挂载到应用。
 - **前端** `frontend/src/components/TraceViewer/`：Drawer，左会话列表 + 右时间轴；按 `user_message` 分轮次、按 `span_id` 配对 LLM/工具；支持「自动播放」逐条高亮滚动。
 - **入口**：Toolbar「Trace」按钮 → `uiStore.traceVisible`。
 
@@ -77,6 +82,7 @@ ReActAgent 循环
   - `MockToolRegistry` — 假工具注册表，`aexecute_tool_with_params` 顺序 pop 记录的 `tool_result`；`get_openai_specs()` 返回从 trace 提取的真实 schema；`graceful`（rerun 专用）耗尽时返回占位而非抛错。
   - `replay_agent_session(session_id, *, mode="mock", until_turn=None, tool_policy="readonly")` — 整段会话逐轮重放，逐字对比 `final_answer` 与记录 `done.answer`；用 `arun_stream` 采集每轮步级明细（`steps`），并从 trace 还原原始侧（`recorded_steps`）。
 - **端点**：`POST /api/trace/{session_id}/replay?mode=mock|rerun|live&turn=N&tool_policy=readonly|full`（`turn` 为单步执行的累计轮次，1-based；`tool_policy` 仅 live 生效）。
+  读取和回放均通过 provider port 进入扩展，不由 host API 直接实例化 JSONL 类。
 - **前端**：「回放执行」按钮 + `Mock / Rerun(真LLM) / Live(真工具)` Segmented 切换；结果弹窗展示每轮匹配状态、**逐词 diff**（`diff` 库）、步级时间线；每轮「单步执行」只累计跑到第 N 轮，「执行全部」跑完所有轮。
 
 ### 5.3 单步执行 + 步级明细 + 左右对比
