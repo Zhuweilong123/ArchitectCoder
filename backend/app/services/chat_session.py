@@ -274,6 +274,37 @@ def _resume_prompt(checkpoint: dict, supplement: str = "") -> str:
     return prompt[:1800]
 
 
+def _resolve_workspace_paths(
+    message: dict,
+    resume_checkpoint: dict,
+    *,
+    source_dir: str,
+    test_dir: str,
+    project_file: str,
+) -> tuple[tuple[str, str, str] | None, str]:
+    """Resolve and validate the chat request's workspace boundary."""
+    requested_paths = (
+        message.get("source_dir") or resume_checkpoint.get("source_dir") or source_dir,
+        message.get("test_dir") or resume_checkpoint.get("test_dir") or test_dir,
+        message.get("project_file") or resume_checkpoint.get("project_file") or project_file,
+    )
+    validated: list[str] = []
+    errors: list[str] = []
+    for value, kind, label in zip(
+        requested_paths,
+        ("directory", "directory", "file"),
+        ("source_dir", "test_dir", "project_file"),
+    ):
+        normalized, error = validate_agent_workspace_path(value, kind=kind)
+        if error:
+            errors.append(f"{label}: {error}")
+        else:
+            validated.append(normalized)
+    if errors:
+        return None, "Invalid workspace path: " + "; ".join(errors)
+    return (validated[0], validated[1], validated[2]), ""
+
+
 
 
 
@@ -505,41 +536,23 @@ class ChatSessionCoordinator:
                                 "result": "当前会话没有可恢复的未完成任务。",
                             })
                             continue
-                    requested_source = msg.get("source_dir") or (
-                        resume_checkpoint.get("source_dir") or source_dir
-                    )
-                    requested_test = msg.get("test_dir") or (
-                        resume_checkpoint.get("test_dir") or test_dir
-                    )
-                    requested_project = msg.get("project_file") or (
-                        resume_checkpoint.get("project_file") or project_file
-                    )
-
                     if not user_message:
                         await websocket.send_json({"event": "error", "message": "Empty message"})
                         continue
 
-                    validated = []
-                    for value, kind, label in (
-                        (requested_source, "directory", "source_dir"),
-                        (requested_test, "directory", "test_dir"),
-                        (requested_project, "file", "project_file"),
-                    ):
-                        normalized, error = validate_agent_workspace_path(value, kind=kind)
-                        if error:
-                            validated.append(f"{label}: {error}")
-                        else:
-                            validated.append(normalized)
-                    if any(item.startswith(("source_dir:", "test_dir:", "project_file:"))
-                           for item in validated):
+                    workspace_paths, workspace_error = _resolve_workspace_paths(
+                        msg,
+                        resume_checkpoint,
+                        source_dir=source_dir,
+                        test_dir=test_dir,
+                        project_file=project_file,
+                    )
+                    if workspace_error:
                         await websocket.send_json({
-                            "event": "error",
-                            "message": "Invalid workspace path: " + "; ".join(
-                                item for item in validated if ": " in item
-                            ),
+                            "event": "error", "message": workspace_error,
                         })
                         continue
-                    source_dir, test_dir, project_file = validated
+                    source_dir, test_dir, project_file = workspace_paths
                     effective_user_message = (
                         _resume_prompt(resume_checkpoint, resume_supplement)
                         if resume_checkpoint else user_message
