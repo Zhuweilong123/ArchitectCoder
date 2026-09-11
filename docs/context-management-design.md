@@ -3,8 +3,8 @@
 > 本文归档 ArchitectCoder 当前 DevAgent 的上下文预算、会话压缩和恢复机制，
 > 对应 `backend/app/services/context_manager.py` 与 `backend/app/agent_base/agents/react_agent.py`。
 
-> 长期记忆不再由文中旧的 `memory_system` 路径直接管理；当前通过
-> `MemoryPort` 接入 `extensions/memory`。当前总体边界见
+> 长期记忆通过 `MemoryPort` 接入 `extensions/memory`，不由上下文管理器直接管理。
+> 当前总体边界见
 > [`current-architecture.md`](current-architecture.md)。
 
 ## 1. 设计目标
@@ -25,8 +25,8 @@ Project Memory    跨任务长期记忆：偏好、决策、约定、拒绝和�
 ```
 
 Run Context 只在当前 Agent 循环中累积；Session Context 由 Agent history 和 Trace
-checkpoint 管理；Project Memory 由独立的 `memory_system` 管理，不能绕过记忆写入治理直接
-进入会话历史。
+checkpoint 管理；Project Memory 通过 `MemoryPort` 接入 `extensions/memory`，不能绕过
+记忆写入治理直接进入会话历史。
 
 ## 3. 请求构建
 
