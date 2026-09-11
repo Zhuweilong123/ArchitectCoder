@@ -27,7 +27,12 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
 from app.agent_base.tools.registry import ToolRegistry
-from app.runtime import WorkspaceManifest, build_command_executor, build_environment_context
+from app.runtime import (
+    WorkspaceManifest,
+    build_command_executor,
+    build_environment_context,
+    workspace_root_for,
+)
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
