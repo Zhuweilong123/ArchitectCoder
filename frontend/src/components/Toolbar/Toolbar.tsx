@@ -191,6 +191,7 @@ const Toolbar: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: projectFile || '',
+      workspace_root: currentWorkspacePath || '',
     });
     setGlobalOptimizing(false);
     message.info('全局优化请求已发送到 AI 开发助手');

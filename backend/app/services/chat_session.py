@@ -282,20 +282,27 @@ def _resolve_workspace_paths(
     source_dir: str,
     test_dir: str,
     project_file: str,
-) -> tuple[tuple[str, str, str] | None, str]:
+    workspace_root: str = "",
+) -> tuple[tuple[str, str, str, str] | None, str]:
     """Resolve and validate the chat request's workspace boundary."""
     requested_paths = (
         message.get("source_dir") or resume_checkpoint.get("source_dir") or source_dir,
         message.get("test_dir") or resume_checkpoint.get("test_dir") or test_dir,
         message.get("project_file") or resume_checkpoint.get("project_file") or project_file,
+        message.get("workspace_root") or resume_checkpoint.get("workspace_root") or workspace_root,
     )
     validated: list[str] = []
     errors: list[str] = []
     for value, kind, label in zip(
         requested_paths,
-        ("directory", "directory", "file"),
-        ("source_dir", "test_dir", "project_file"),
+        ("directory", "directory", "file", "directory"),
+        ("source_dir", "test_dir", "project_file", "workspace_root"),
     ):
+        # ``project_file`` remains the historical field name, but the
+        # canonical workspace accepts a project directory as well.  Let the
+        # security boundary validate it as a directory before normalization.
+        if label == "project_file" and value and os.path.isdir(value):
+            kind = "directory"
         normalized, error = validate_agent_workspace_path(value, kind=kind)
         if error:
             errors.append(f"{label}: {error}")
@@ -390,6 +397,7 @@ async def _start_agent_chat_run(
     resume_record: Any = None,
     resume_checkpoint: dict | None = None,
     request_id: str = "",
+    workspace_root: str = "",
 ) -> asyncio.Task | None:
     """Create a durable run and start its transport-neutral execution task."""
     lifecycle = RunLifecycle(get_run_store(), agent_runtime)
@@ -404,6 +412,8 @@ async def _start_agent_chat_run(
                 "source_dir": source_dir,
                 "test_dir": test_dir,
                 "project_file": project_file,
+                "workspace_root": workspace_root,
+                "workspace_manifest": getattr(agent, "workspace_manifest", {}),
             },
             idempotency_key=f"{session_id}:{request_id}" if request_id else "",
         )
@@ -432,6 +442,7 @@ async def _start_agent_chat_run(
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
+            workspace_root=workspace_root,
         )
         trace_log.event(
             "agent_model",
@@ -562,6 +573,7 @@ class ChatSessionCoordinator:
         source_dir = ""
         test_dir = ""
         project_file = ""
+        workspace_root = ""
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
         push_trace_hook(trace_hook_handler)
@@ -591,6 +603,7 @@ class ChatSessionCoordinator:
                 source_dir=source_dir,
                 test_dir=test_dir,
                 project_file=project_file,
+                workspace_root=workspace_root,
                 fallback_review_runs=fallback_review_runs,
                 stop_check=_stop_check,
                 disconnect_check=lambda: transport_disconnected,
@@ -663,13 +676,14 @@ class ChatSessionCoordinator:
                         source_dir=source_dir,
                         test_dir=test_dir,
                         project_file=project_file,
+                        workspace_root=workspace_root,
                     )
                     if workspace_error:
                         await websocket.send_json({
                             "event": "error", "message": workspace_error,
                         })
                         continue
-                    source_dir, test_dir, project_file = workspace_paths
+                    source_dir, test_dir, project_file, workspace_root = workspace_paths
                     effective_user_message = (
                         _resume_prompt(resume_checkpoint, resume_supplement)
                         if resume_checkpoint else user_message
@@ -696,6 +710,7 @@ class ChatSessionCoordinator:
                             llm, source_dir, test_dir, project_file, effective_user_message,
                             progress=progress, restore_history=restore_history,
                             task_scope=session_id,
+                            workspace_root=workspace_root,
                         )
                         session.agent, session.review_mgr, session.progress = \
                             dev_agent, review_mgr, progress
