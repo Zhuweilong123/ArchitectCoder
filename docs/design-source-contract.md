@@ -4,6 +4,9 @@
 > 目的：定义设计文件、源码和测试之间的权威关系与可复用校验语义。
 > 范围：项目工作区、UML 设计集合、源码目录、测试目录，以及后续一致性规则引擎。
 
+第二阶段的事实采集由可替换插件 `extensions.design_contract:create` 提供，核心只依赖
+`backend/app/agent_base/core/contracts.py` 中的 `ContractProvider` 契约。
+
 ## 1. 设计目标
 
 一致性检查的目标不是强迫设计和源码逐字相同，而是识别以下三类状态：
