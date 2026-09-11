@@ -35,90 +35,11 @@ import {
   activateDiagramForDiffKey, handleDesignElement, processDesignUpdated,
 } from '../../services/designElementHandler';
 import { useReviewStore } from '../../stores/reviewStore';
+import {
+  clampStepForStorage, formatTs, latestTodoState, normalizeReviewDiagrams,
+  sessionTimeFromId, truncateTitle, type ChatMessage,
+} from './agentChatUtils';
 import './AgentChat.css';
-
-// ── 消息类型 ──────────────────────────────────────────
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'agent' | 'system';
-  content: string;
-  timestamp: number;
-  steps?: AgentProgressEvent[];
-  review?: AgentReviewEvent;
-  // 消息类别标记：'disconnect' 用于断线提示去重（连续断线只保留一条）
-  kind?: string;
-}
-
-// 持久化时裁剪 tool observation，避免撑爆 localStorage（5MB）
-const OBS_LIMIT = 500;
-const clampStepForStorage = (steps: AgentProgressEvent[]): AgentProgressEvent[] =>
-  steps.map((s) => ({
-    ...s,
-    tool_calls_detail: s.tool_calls_detail?.map((td) => ({
-      ...td,
-      observation: String(td.observation).slice(0, OBS_LIMIT),
-    })),
-  }));
-
-function latestTodoState(messages: ChatMessage[]): {
-  todos: AgentTodoItem[];
-  planningMode: boolean;
-  strategyAdvised: boolean;
-} {
-  for (const message of [...messages].reverse()) {
-    for (const step of [...(message.steps || [])].reverse()) {
-      if (Array.isArray(step.todos) && step.todos.length > 0) {
-        return {
-          todos: step.todos,
-          planningMode: Boolean(step.planning_mode),
-          strategyAdvised: Boolean(step.strategy_advised),
-        };
-      }
-    }
-  }
-  return { todos: [], planningMode: false, strategyAdvised: false };
-}
-
-// ── 会话标识 ──────────────────────────────────────────
-
-// 从 session_id（YYYYMMDD_HHMMSS[_suffix]）解析可读时间 "MM-DD HH:MM"
-function sessionTimeFromId(id: string): string {
-  const m = id.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
-  if (!m) return '';
-  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
-}
-
-// 时间戳 → "MM-DD HH:MM"
-function formatTs(ms: number | null | undefined): string {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-// 会话主题：截断到 ~16 字
-function truncateTitle(s: string): string {
-  const clean = s.replace(/\s+/g, ' ').trim();
-  return clean.length > 16 ? clean.slice(0, 16) + '…' : clean;
-}
-
-// 将后端 uml_review 的 diagram 对象归一化为 {type, name, component_id, data}
-// 兼容两种形态：{type,name,data} 包裹式，或原始图对象（diagram_type/classes/... 平铺）。
-function normalizeReviewDiagrams(
-  raw: any[] | null | undefined,
-): Array<{ type: string; name: string; component_id: string; data: any }> {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((d) => {
-    const type = d.type || d.diagram_type || 'class';
-    const name = d.name || '';
-    const component_id = d.component_id || '';
-    const data = (d.data && typeof d.data === 'object' && !Array.isArray(d.data))
-      ? d.data
-      : d;
-    return { type, name, component_id, data };
-  });
-}
 
 // ── 组件 ──────────────────────────────────────────────
 
