@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`c76d553`（`dev-4.0`）
+> 代码基线：`ec68eda`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -53,6 +53,7 @@ WebSocket / Evaluation / future HTTP or CLI
 | AgentChat 事件 | `frontend/src/components/AgentChat/agentChatEventHandler.ts` | WebSocket 事件到消息、进度、审核和终态状态的适配 |
 | Toolbar 路径 | `frontend/src/components/Toolbar/toolbarUtils.ts` | 路径规范化、文件名派生、相对路径和项目图表摘要 |
 | Toolbar 图表控件 | `frontend/src/components/Toolbar/DiagramTypeControls.tsx` | 图表类型切换、新增、删除及撤销/重做控件 |
+| EvaluationCenter 工具 | `frontend/src/components/EvaluationCenter/evaluationUtils.ts` | 评测展示格式化、Trace 会话解析和 Checker 定义/校验 |
 
 ## 3. 当前基础工具契约
 
@@ -131,6 +132,8 @@ extensions.knowledge_graph:create
   直接堆叠协议分支。
 - `Toolbar.tsx` 只组合文件、目录和视图操作；路径/摘要计算位于 `toolbarUtils.ts`，
   图表切换和历史操作控件位于 `DiagramTypeControls.tsx`。
+- `EvaluationCenter.tsx` 负责评测页面状态和交互；格式化、Trace 标识解析以及 Checker
+  配置校验位于 `evaluationUtils.ts`，避免把领域规则重新散落到渲染逻辑中。
 
 下一阶段继续检查前端 `Toolbar`、`EvaluationCenter` 和 Canvas 编辑器的共同行为。
 拆分必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，先使用
