@@ -157,9 +157,11 @@ LLM 返回的设计元素坐标自动计算，仅影响新生成元素，手动�
 
 | 能力 | 关联文档 | 覆盖范围 |
 |---|---|---|
+| 图编辑器与项目管理 | [当前架构总览](docs/current-architecture.md) | 前端边界与工作区路径策略；交互细节以产品内说明为准 |
 | Agent 组合、工具和生命周期 | [当前架构总览](docs/current-architecture.md)、[BaseAgents](docs/baseagents-design.md) | 生产边界与框架 API |
 | 上下文、记忆和收敛 | [上下文管理](docs/context-management-design.md)、[记忆系统](docs/memory-system-design.md)、[收敛与预算](docs/agent-convergence-and-budget.md) | 运行时限制与长任务恢复 |
 | 命令执行与工作区安全 | [运行时命令契约](docs/runtime-command-execution.md) | OS 适配、文件系统和命令策略 |
+| 全局 UML 优化 | [当前架构总览](docs/current-architecture.md) | 共享 DevAgent 对话链路、审核、checkpoint 和 Trace 行为 |
 | Trace 记录与回放 | [Trace 回放设计](docs/trace-replay-design.md) | JSONL 事件、回放和 API |
 | 知识图谱 | [知识图谱设计](docs/knowledge-graph-design.md) | 索引、检索和 Provider 边界 |
 | 评测与 Trace Case Factory | [评测体系](docs/evaluation-system.md)、[Trace Case Factory](docs/trace-to-eval-case-factory-design.md) | 用例、fixture、检查器、批次和发布 |

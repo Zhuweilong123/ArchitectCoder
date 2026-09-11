@@ -159,9 +159,11 @@ LLM-generated element positions auto-computed; manually positioned elements full
 
 | Capability | Related documentation | Scope |
 |---|---|---|
+| Diagram editor and project management | [Current architecture](docs/current-architecture.md) | Frontend boundaries and workspace path policy; detailed interaction remains in-product |
 | Agent composition, tools, lifecycle | [Current architecture](docs/current-architecture.md), [BaseAgents](docs/baseagents-design.md) | Production boundaries and framework APIs |
 | Context, memory, convergence | [Context management](docs/context-management-design.md), [Memory system](docs/memory-system-design.md), [Convergence and budget](docs/agent-convergence-and-budget.md) | Runtime limits and long-task recovery |
 | Command execution and workspace safety | [Runtime command contract](docs/runtime-command-execution.md) | OS adapters, filesystem and command policy |
+| Global UML optimization | [Current architecture](docs/current-architecture.md) | Shared DevAgent chat path, review, checkpoint and trace behavior |
 | Trace recording and replay | [Trace replay design](docs/trace-replay-design.md) | JSONL events, replay and API |
 | Knowledge graph | [Knowledge graph design](docs/knowledge-graph-design.md) | Indexing, retrieval and provider boundary |
 | Evaluation and Trace Case Factory | [Evaluation system](docs/evaluation-system.md), [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) | Cases, fixtures, checkers, batches and publishing |
