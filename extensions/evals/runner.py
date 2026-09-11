@@ -42,6 +42,7 @@ from .models import (
     CheckerResult,
     EvalCase,
     EvalResult,
+    ProjectManifest,
 )
 from .projects import load_projects, resolve_fixture
 
@@ -403,64 +404,20 @@ class EvalRunner:
             prefix=f"{run_id}_", ignore_cleanup_errors=True
         ) as temp_dir:
             workspace = Path(temp_dir).resolve()
-            result.workspace = str(workspace)
-            result.metadata["workspace_ephemeral"] = True
-            if fixture is not None:
-                if not fixture.is_dir():
-                    finished = self._finish(
-                        result,
-                        "error",
-                        f"fixture not found: {fixture}",
-                        started,
-                        "environment_failure",
-                    )
-                    finished.workspace = ""
-                    return self._record_completed_result(finished, started)
-                try:
-                    materialize_fixture(fixture, workspace, manifest)
-                except (OSError, ValueError) as exc:
-                    finished = self._finish(
-                        result,
-                        "error",
-                        f"fixture materialization failed: {exc}",
-                        started,
-                        "environment_failure",
-                    )
-                    finished.workspace = ""
-                    return self._record_completed_result(finished, started)
-
-            layout_errors = _validate_project_layout(workspace, manifest)
-            if layout_errors:
+            try:
+                baseline_hashes = self._prepare_workspace(
+                    case, fixture, manifest, workspace, result,
+                )
+            except ValueError as exc:
                 finished = self._finish(
                     result,
                     "error",
-                    "; ".join(layout_errors),
+                    str(exc),
                     started,
                     "environment_failure",
                 )
                 finished.workspace = ""
                 return self._record_completed_result(finished, started)
-            if manifest is not None:
-                result.metadata["project_manifest"] = {
-                    "id": manifest.id,
-                    "version": manifest.version,
-                    "entry_file": manifest.entry_file,
-                    "source_dir": manifest.source_dir,
-                    "test_dir": manifest.test_dir,
-                }
-
-            baseline_hashes: dict[str, str | None] = {}
-            for config in [*case.hard_checkers, *case.checkers]:
-                if config.get("type") != "paths_unchanged":
-                    continue
-                for relative_path in config.get("paths", []):
-                    candidate = (workspace / relative_path).resolve()
-                    if not candidate.is_relative_to(workspace):
-                        baseline_hashes[relative_path] = None
-                    elif candidate.is_file():
-                        baseline_hashes[relative_path] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-                    else:
-                        baseline_hashes[relative_path] = None
 
             failure_phase = "environment"
             try:
@@ -1178,6 +1135,60 @@ class EvalRunner:
         self._append_result(result)
         get_agent_metrics().record_run(f"eval_{result.status}")
         return result
+
+    @staticmethod
+    def _prepare_workspace(
+        case: EvalCase,
+        fixture: Path | None,
+        manifest: ProjectManifest | None,
+        workspace: Path,
+        result: EvalResult,
+    ) -> dict[str, str | None]:
+        """Materialize and validate a workspace before Agent execution."""
+        result.workspace = str(workspace)
+        result.metadata["workspace_ephemeral"] = True
+        if fixture is not None:
+            if not fixture.is_dir():
+                raise ValueError(f"fixture not found: {fixture}")
+            try:
+                materialize_fixture(fixture, workspace, manifest)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"fixture materialization failed: {exc}") from exc
+
+        layout_errors = _validate_project_layout(workspace, manifest)
+        if layout_errors:
+            raise ValueError("; ".join(layout_errors))
+        if manifest is not None:
+            result.metadata["project_manifest"] = {
+                "id": manifest.id,
+                "version": manifest.version,
+                "entry_file": manifest.entry_file,
+                "source_dir": manifest.source_dir,
+                "test_dir": manifest.test_dir,
+            }
+        return EvalRunner._capture_baseline_hashes(case, workspace)
+
+    @staticmethod
+    def _capture_baseline_hashes(
+        case: EvalCase,
+        workspace: Path,
+    ) -> dict[str, str | None]:
+        """Capture protected file hashes used by paths_unchanged checkers."""
+        baseline_hashes: dict[str, str | None] = {}
+        for config in [*case.hard_checkers, *case.checkers]:
+            if config.get("type") != "paths_unchanged":
+                continue
+            for relative_path in config.get("paths", []):
+                candidate = (workspace / relative_path).resolve()
+                if not candidate.is_relative_to(workspace):
+                    baseline_hashes[relative_path] = None
+                elif candidate.is_file():
+                    baseline_hashes[relative_path] = hashlib.sha256(
+                        candidate.read_bytes()
+                    ).hexdigest()
+                else:
+                    baseline_hashes[relative_path] = None
+        return baseline_hashes
 
     @staticmethod
     async def _run_checkers(
