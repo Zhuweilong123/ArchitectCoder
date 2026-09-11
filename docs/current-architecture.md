@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`bab0ded`（`dev-4.0`）
+> 代码基线：`ae02ff4`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -55,6 +55,7 @@ WebSocket / Evaluation / future HTTP or CLI
 | Toolbar 图表控件 | `frontend/src/components/Toolbar/DiagramTypeControls.tsx` | 图表类型切换、新增、删除及撤销/重做控件 |
 | EvaluationCenter 工具 | `frontend/src/components/EvaluationCenter/evaluationUtils.ts` | 评测展示格式化、Trace 会话解析和 Checker 定义/校验 |
 | UML 类布局 | `frontend/src/components/Canvas/umlClassLayout.ts` | 类节点尺寸估算与重叠消解的纯计算 |
+| 时序图渲染规则 | `frontend/src/components/Canvas/seqRenderUtils.ts` | 生命线 HTML、消息视觉样式和布局常量 |
 
 ## 3. 当前基础工具契约
 
@@ -137,6 +138,8 @@ extensions.knowledge_graph:create
   配置校验位于 `evaluationUtils.ts`，避免把领域规则重新散落到渲染逻辑中。
 - `UMLEditor.tsx` 负责 X6 图形生命周期和交互；类节点尺寸与布局冲突消解位于
   `umlClassLayout.ts`，避免将纯布局算法与图形事件处理混合。
+- `SeqEditor.tsx` 负责时序图 X6 生命周期和交互；生命线展示、消息颜色/箭头和固定
+  布局参数位于 `seqRenderUtils.ts`。
 
 下一阶段继续检查前端 `Toolbar`、`EvaluationCenter` 和 Canvas 编辑器的共同行为。
 拆分必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，先使用
