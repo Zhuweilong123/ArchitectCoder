@@ -2,7 +2,9 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`e1564b6`（`dev-4.0`；文档同步提交另见 Git 历史）
+> 代码基线：`e1564b6`（`dev-4.0` 最新代码提交；后续文档同步提交另见 Git 历史）
+>
+> 文档同步：2026-09-11；当前 HEAD 为文档提交 `89ae5b5`
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -47,6 +49,8 @@ WebSocket / Evaluation / future HTTP or CLI
 | 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
 | 扩展能力 | `extensions/*` + `backend/app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
 | Trace 端口 | `backend/app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
+| 评测端口 | `backend/app/agent_base/core/evals.py` | Case、Runner、批次、性能和 Trace Case Factory 的稳定入口 |
+| 请求上下文压缩 | `backend/app/services/context_manager.py`、`session_compression.py` | 单请求预算裁剪与会话级语义压缩分离 |
 | 图表历史 | `frontend/src/stores/diagramHistory.ts` | 撤销、重做、批处理和快照；`diagramStore` 只负责状态组合 |
 | 图表布局 | `frontend/src/utils/componentLayout.ts` | 组件自动布局的纯计算；画布状态写入仍由 `diagramStore` 完成 |
 | AgentChat 数据 | `frontend/src/components/AgentChat/agentChatUtils.ts` | 消息持久化裁剪、会话格式化和审核图归一化 |
@@ -59,7 +63,7 @@ WebSocket / Evaluation / future HTTP or CLI
 | 组件图渲染规则 | `frontend/src/components/Canvas/compRenderUtils.ts` | 组件主题、HTML 渲染和节点尺寸计算 |
 | Canvas 生命周期 | `frontend/src/components/Canvas/core/canvasLifecycle.ts` | Graph 注册、注销、事件清理和销毁顺序 |
 | Canvas 公共运行时 | `frontend/src/components/Canvas/core/createCanvasGraph.ts`、`canvasCommon.ts`、`canvasEventAdapter.ts`、`useCanvasGraphViewport.ts` | Graph 创建、网格/视口同步和通用事件适配 |
-| 前端请求边界 | `frontend/src/services/toolbarProjectApi.ts`、`evaluationCenterApi.ts` | Toolbar 工程文件请求和评测资源批量加载 |
+| 前端请求边界 | `frontend/src/services/toolbarProjectApi.ts`、`evaluationCenterApi.ts`、`api.ts` | Toolbar 工程文件、评测资源和 Trace Case 请求集中管理 |
 
 ## 3. 当前基础工具契约
 
@@ -90,13 +94,16 @@ extensions.knowledge_graph:create
 ```
 
 应用层只依赖稳定端口：`MemoryPort`、`KnowledgeGraphProvider`、Trace
-端口、评测端口和 orchestration 端口。扩展失效时应回退到对应的 no-op 或安全
+端口、`EvalProvider` 和 orchestration 端口。扩展失效时应回退到对应的 no-op 或安全
 降级实现，不得破坏主 Agent 执行链。
 
 ## 5. 上下文、记忆和 Trace
 
 - 上下文预算由 `backend/app/services/context_manager.py` 管理；它只负责本次请求的
   prompt 预算、历史压缩和恢复，不直接实现长期记忆。
+- 会话级压缩由 `backend/app/services/session_compression.py` 的
+  `SessionContextCompressor` 负责，在会话层调用模型生成带来源引用的摘要；失败时保留
+  原始历史，不把语义压缩逻辑塞进 ReAct 回合循环。
 - 长期记忆通过 `MemoryPort` 访问，具体 SQLite、BM25、生命周期和策略位于
   `extensions/memory`。
 - Trace 的运行时 hook 位于 `backend/app/trace/tracing.py`，JSONL 写入、读取和回放位于
@@ -108,6 +115,7 @@ extensions.knowledge_graph:create
 - 当前架构、工具边界和代码路径：本文。
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
 - 评测运行链路和指标：`evaluation-system.md`。
+- Trace 转评测用例：`trace-to-eval-case-factory-design.md`。
 - memory、knowledge graph、trace 的领域细节：对应子系统设计文档。
 - 旧版本基线和实施过程已从工作树移除；如需复盘，请通过 Git 历史查看对应提交。
 
@@ -119,6 +127,12 @@ extensions.knowledge_graph:create
   写入器都依赖它，但不能互相导入。
 - `extensions/evals/summary.py` 是批次和性能结果的唯一汇总实现；批次管理和性能
   浏览不得相互导入。
+- `extensions/evals/full_api.py` 只负责通用评测目录、运行批次、性能和归档 API；
+  Trace Case Factory 的业务实现位于 `extensions/evals/trace_cases.py`，HTTP 适配位于
+  `extensions/evals/api.py`，两者通过 `EvalProvider` 暴露，不能把 Trace 存储实现直接
+  引入 Evals。
+- `EvalRunner` 必须复用生产 Agent assembly；评测专用预算、Checker 和工作区快照只能
+  作为评测边界的参数与证据，不能复制一套工具或提示词装配链。
 - 知识图谱工具工厂只接受 `KnowledgeGraphProvider`。本地 SQLite Provider 必须由
   组合层创建后注入，工具层不得回退导入具体 Provider。
 - 内置插件 Provider 默认值只在 `config/plugin_defaults.py` 定义，`Settings` 和
