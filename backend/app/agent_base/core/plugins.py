@@ -15,6 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from backend.config.plugin_defaults import (
+    DEFAULT_EVALS_PROVIDER,
+    DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
+    DEFAULT_MEMORY_PROVIDER,
+    DEFAULT_ORCHESTRATION_PROVIDER,
+    DEFAULT_TRACE_PROVIDER,
+)
+
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -55,21 +63,21 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         name="orchestration",
         enabled_setting="agent_orchestration_enabled",
         provider_setting="agent_orchestrator_provider",
-        default_provider="extensions.orchestration:create",
+        default_provider=DEFAULT_ORCHESTRATION_PROVIDER,
         required_methods=("prepare",),
     ),
     PluginSpec(
         name="memory",
         enabled_setting="agent_memory_enabled",
         provider_setting="agent_memory_provider",
-        default_provider="extensions.memory:create",
+        default_provider=DEFAULT_MEMORY_PROVIDER,
         required_methods=("recall", "archive", "reinforce"),
     ),
     PluginSpec(
         name="trace",
         enabled_setting="agent_trace_enabled",
         provider_setting="agent_trace_provider",
-        default_provider="extensions.trace:create",
+        default_provider=DEFAULT_TRACE_PROVIDER,
         required_methods=("create",),
         router_provider="extensions.trace.api:router",
     ),
@@ -77,7 +85,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         name="evals",
         enabled_setting="agent_evals_enabled",
         provider_setting="agent_evals_provider",
-        default_provider="extensions.evals:create",
+        default_provider=DEFAULT_EVALS_PROVIDER,
         required_methods=("list_cases", "get_case", "run_case", "list_results"),
         router_provider="extensions.evals.full_api:router",
     ),
@@ -85,7 +93,7 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
         name="knowledge_graph",
         enabled_setting="agent_knowledge_graph_enabled",
         provider_setting="agent_knowledge_graph_provider",
-        default_provider="extensions.knowledge_graph:create",
+        default_provider=DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
         required_methods=(
             "rebuild_project",
             "search_diagrams",

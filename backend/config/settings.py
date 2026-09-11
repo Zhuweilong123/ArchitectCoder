@@ -13,6 +13,14 @@ from pydantic import Field, ValidationInfo, field_validator
 from functools import lru_cache
 from typing import Literal
 
+from .plugin_defaults import (
+    DEFAULT_EVALS_PROVIDER,
+    DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
+    DEFAULT_MEMORY_PROVIDER,
+    DEFAULT_ORCHESTRATION_PROVIDER,
+    DEFAULT_TRACE_PROVIDER,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,13 +92,13 @@ class Settings(BaseSettings):
     # Keep the optional planner/explorer path disabled until its hand-off and
     # tool-routing behavior is revalidated. The core falls back to NoOp.
     agent_orchestration_enabled: bool = True
-    agent_orchestrator_provider: str = "extensions.orchestration:create"
+    agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
     # concrete SQLite adapter is loaded dynamically so it can be disabled or
     # replaced without changing the Agent main loop.
     agent_memory_enabled: bool = True
-    agent_memory_provider: str = "extensions.memory:create"
+    agent_memory_provider: str = DEFAULT_MEMORY_PROVIDER
     agent_memory_db_path: str = ""
     agent_memory_recall_top_k: int = 3
     agent_memory_recall_max_tokens: int = 500
@@ -99,12 +107,12 @@ class Settings(BaseSettings):
     # Optional trace backend.  The Agent core only depends on the tracing
     # port; the default JSONL provider remains compatible with existing logs.
     agent_trace_enabled: bool = True
-    agent_trace_provider: str = "extensions.trace:create"
+    agent_trace_provider: str = DEFAULT_TRACE_PROVIDER
 
     # Optional evaluation backend.  The local Eval MVP is the default;
     # external CI or hosted evaluation services can implement the same port.
     agent_evals_enabled: bool = True
-    agent_evals_provider: str = "extensions.evals:create"
+    agent_evals_provider: str = DEFAULT_EVALS_PROVIDER
 
     # Optional knowledge-graph backend.  Application services depend on the
     # provider boundary; the default adapter keeps the existing local SQLite
@@ -112,7 +120,7 @@ class Settings(BaseSettings):
     # The same plugin switch controls both graph backend availability and
     # whether graph tools are exposed to the main Agent.
     agent_knowledge_graph_enabled: bool = True
-    agent_knowledge_graph_provider: str = "extensions.knowledge_graph:create"
+    agent_knowledge_graph_provider: str = DEFAULT_KNOWLEDGE_GRAPH_PROVIDER
     agent_knowledge_graph_db_path: str = ""
 
     # Command execution is selected by the runtime.  ``auto`` uses the native
