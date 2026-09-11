@@ -2,7 +2,7 @@
 
 > 文档定位：3.4 评测体系
 >
-> 文档状态：当前实现说明 + 截至 3.3（含 3.3.x）的历史数据指标
+> 文档状态：当前实现说明 + 截至 3.3（含 3.3.x）的历史数据指标（2026-09-11 更新）
 >
 > 适用范围：`extensions/evals`、`backend/evals` 和评测中心前端；API 由 Evals 插件路由提供
 
@@ -89,6 +89,18 @@ Fixture 采用 `design/`、`src/`、`test/` 三类资源边界，可选 `base_fi
 
 Runner 会分别执行两组 Checker，并把结果合并到最终结果中；当前 hard checker 是结果证据和门禁输入，不采用失败即停止的短路执行。发布流程应按 Case 的 `release_gate` 和 Checker 配置解释结果，不能只看自然语言回答或单一平均分。
 
+### 1.5 EvalResult 与 EvalSummary
+
+`EvalResult.status` 当前包括 `running`、`passed`、`failed`、`timeout`、`budget_exceeded`、`budget_finalized` 和 `error`。`budget_finalized` 表示 Agent 在预算边界完成了可交付的最终答案；只有 Checker 通过时才计入 `passed`，否则同时计入 `failed`，不能把预算收敛误报为成功。
+
+`EvalSummary` 是批次和性能视图共用的聚合模型，除总数、通过率、平均分、耗时、Token 和工具调用外，还固定汇总：
+
+- `budget_exceeded`、`budget_finalized`、`errors` 及 `failure_categories`；
+- `prompt_tokens`、`cached_prompt_tokens`、`prompt_cache_requests`、`prompt_cache_hit_rate`；
+- `prompt_prefix_chars`、`reused_prompt_prefix_chars`、`prompt_prefix_requests`、`prompt_prefix_reuse_rate`。
+
+缓存和前缀复用指标来自 Trace 中的实际 usage 事件；没有有效请求或 Token 时返回 `null`，前端应按“无数据”展示，而不是当作 0% 命中。Runner 还在结果元数据中记录评测契约版本、执行路径、预算范围和 Trace 关联，便于跨版本比较时确认口径一致。
+
 ## 2. 运行结果治理
 
 ### 2.1 结果层级
@@ -122,6 +134,9 @@ Runner 会分别执行两组 Checker，并把结果合并到最终结果中；�
 | API | 作用 |
 |---|---|
 | `GET /api/evals/cases` | 获取 Case 目录 |
+| `GET /api/evals/baseline` | 读取受控基线 |
+| `GET /api/evals/repository` | 获取当前分支、commit 和工作区 dirty 状态 |
+| `POST /api/evals/baseline/archive` | 将当前基线生成不可变归档 |
 | `POST /api/evals/run` | 执行单个 Case |
 | `GET /api/evals/results` | 查询单次结果 |
 | `POST /api/evals/runs` | 按 suite 或 Case ID 启动批次 |
@@ -136,8 +151,13 @@ Runner 会分别执行两组 Checker，并把结果合并到最终结果中；�
 | `POST /api/evals/performance/archive` | 归档性能结果 |
 | `POST /api/evals/archives` | 创建批次快照 |
 | `GET /api/evals/archives` | 查询归档摘要 |
+| `GET /api/evals/trace-cases/projects` | 获取 Trace Case Factory 可选项目 |
+| `GET /api/evals/trace-cases/drafts` | 查询 Trace Case 草稿 |
+| `POST/PUT/DELETE /api/evals/trace-cases/drafts...` | 创建、编辑、删除、校验、预览 fixture、捕获 fixture 和发布 Trace Case |
 
 `EvaluationCenter` 对应“运行批次 → 性能结果 → 多版本对比 → 已归档”的流程：启动并轮询批次、查看逐 Case 结果、合并同版本批次、删除本地运行数据、归档可复查快照。当前数据应从这些运行时接口读取，不应把新版本数字硬编码进设计文档。
+
+前端请求边界由 `frontend/src/services/evaluationCenterApi.ts` 统一编排：评测中心一次性加载 Case、基线、仓库版本、趋势、归档和性能结果，Trace Case Factory 单独加载 Trace、项目和草稿；具体 HTTP 请求仍集中在 `frontend/src/services/api.ts`。组件不应直接拼接评测 API 或绕过服务层。
 
 ## 4. 历史数据指标归档（截至 3.3）
 
