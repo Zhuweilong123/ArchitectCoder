@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`ffdac8c`（`dev-4.0`）
+> 代码基线：`c76d553`（`dev-4.0`）
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -51,6 +51,8 @@ WebSocket / Evaluation / future HTTP or CLI
 | 图表布局 | `frontend/src/utils/componentLayout.ts` | 组件自动布局的纯计算；画布状态写入仍由 `diagramStore` 完成 |
 | AgentChat 数据 | `frontend/src/components/AgentChat/agentChatUtils.ts` | 消息持久化裁剪、会话格式化和审核图归一化 |
 | AgentChat 事件 | `frontend/src/components/AgentChat/agentChatEventHandler.ts` | WebSocket 事件到消息、进度、审核和终态状态的适配 |
+| Toolbar 路径 | `frontend/src/components/Toolbar/toolbarUtils.ts` | 路径规范化、文件名派生、相对路径和项目图表摘要 |
+| Toolbar 图表控件 | `frontend/src/components/Toolbar/DiagramTypeControls.tsx` | 图表类型切换、新增、删除及撤销/重做控件 |
 
 ## 3. 当前基础工具契约
 
@@ -127,6 +129,8 @@ extensions.knowledge_graph:create
 - `AgentChat.tsx` 只组合 UI、连接生命周期和用户操作；消息数据转换与 WebSocket
   事件分发分别位于 `agentChatUtils.ts`、`agentChatEventHandler.ts`，避免在组件中
   直接堆叠协议分支。
+- `Toolbar.tsx` 只组合文件、目录和视图操作；路径/摘要计算位于 `toolbarUtils.ts`，
+  图表切换和历史操作控件位于 `DiagramTypeControls.tsx`。
 
 下一阶段继续检查前端 `Toolbar`、`EvaluationCenter` 和 Canvas 编辑器的共同行为。
 拆分必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，先使用
