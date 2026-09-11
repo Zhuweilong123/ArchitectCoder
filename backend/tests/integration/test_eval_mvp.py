@@ -56,7 +56,7 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     fixture.mkdir()
     (fixture / "input.txt").write_text("input", encoding="utf-8")
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     case = EvalCase(
         id="file-change",
@@ -164,7 +164,7 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
 
 def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     class _ProductionAgent:
         def __init__(self, workspace):
@@ -210,7 +210,7 @@ def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeyp
 
 def test_eval_runner_reuses_agent_for_all_natural_language_turns(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     class _MultiAgent:
         def __init__(self, workspace):
@@ -450,7 +450,7 @@ def test_file_not_contains_checker_rejects_stale_text(tmp_path):
 
 def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     class _ProductionLikeAgent:
         def __init__(self, workspace):
@@ -495,7 +495,7 @@ def test_turn_hard_checker_failure_cannot_be_masked_by_later_turns(tmp_path, mon
 
 def test_multiturn_eval_keeps_independent_token_budgets(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
     traced_usage = iter([30, 60, 60])
     monkeypatch.setattr(
         "extensions.evals.runner._trace_total_tokens",
@@ -542,7 +542,7 @@ def test_multiturn_eval_keeps_independent_token_budgets(tmp_path, monkeypatch):
 
 def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     class _BudgetAgent:
         def __init__(self, workspace):
@@ -582,7 +582,7 @@ def test_eval_runner_records_hard_budget_exhaustion_separately(tmp_path, monkeyp
 
 def test_eval_runner_records_budget_finalization_separately(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
 
     class _FinalizingAgent:
         def __init__(self, workspace):
@@ -718,7 +718,7 @@ def test_eval_catalog_fails_closed_for_invalid_case(tmp_path, monkeypatch):
 
 def test_soft_checkers_affect_score_but_not_hard_gate(tmp_path, monkeypatch):
     trace_dir = tmp_path / "traces"
-    monkeypatch.setattr("extensions.trace.chat_trace._chat_log_dir", lambda: str(trace_dir))
+    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(trace_dir))
     case = EvalCase(
         id="hard-gate-soft-score",
         prompt="create result",
