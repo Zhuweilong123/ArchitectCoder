@@ -373,6 +373,72 @@ async def _prepare_orchestration(
     return context, allowed_tools, result.phase
 
 
+async def _request_fallback_uml_review(
+    *,
+    review_manager: Any,
+    uml_review_seen: bool,
+    project_file: str,
+    trace_log: TraceSink | None,
+    send: Callable[[dict], Awaitable[bool]],
+    fallback_review_runs: dict[int, str] | None,
+    run_id: str,
+) -> bool:
+    """Request review when a changed UML project bypassed the review tool."""
+    if (
+        review_manager is None
+        or uml_review_seen
+        or not project_file
+        or not os.path.isfile(project_file)
+        or review_manager.baseline is None
+    ):
+        return False
+    fallback_requested = False
+    try:
+        from app.services.file_service import load_project
+        from app.services.diagram_diff import changed_diagrams
+
+        after = [diagram.model_dump() for diagram in load_project(project_file).diagrams]
+        changed = changed_diagrams(after, review_manager.baseline)
+        if not changed:
+            return False
+        request = review_manager.submit(
+            review_type="uml_diff",
+            title="检测到未审核的设计变更",
+            content="Agent 修改了设计文件但未提交 diff 审核",
+            question="设计文件已被修改但未经审核，请确认是否接受此变更。",
+            metadata={
+                "diagrams": after,
+                "changed_diagrams": changed,
+                "original_diagrams": review_manager.baseline,
+            },
+        )
+        fallback_requested = True
+        if fallback_review_runs is not None:
+            fallback_review_runs[request.id] = run_id
+        if trace_log:
+            trace_log.review_request(
+                review_id=request.id,
+                review_type="uml_diff",
+                title=request.title,
+                question=request.question,
+                content=request.content,
+            )
+        logger.info("[AgentChat] 兜底审核补推: review_id=%d", request.id)
+        await send({
+            "event": "uml_review",
+            "review_id": request.id,
+            "title": request.title,
+            "diagrams": after,
+            "changed_diagrams": changed,
+            "original_diagrams": review_manager.baseline,
+            "auto": True,
+        })
+        return True
+    except Exception:
+        logger.exception("[AgentChat] Fallback review check failed")
+        return fallback_requested
+
+
 def _update_stream_checkpoint(
     agent: ReActAgent,
     step: dict,
@@ -721,58 +787,15 @@ async def handle_agent_execution(
                 return
 
             if d["is_final"]:
-                fallback_review_requested = False
-                # ── 兜底审核：本轮改了 .umlproj 但没调 submit_uml_review ──
-                # 审核靠 prompt 自觉，模型可能漏调；这里对比本轮前后磁盘状态，
-                # 有变更则补推一次 uml_review（接受/拒绝语义与正常审核一致：
-                # accept 刷新 baseline，reject 由主循环开启一轮修订）。
-                if (
-                    review_mgr is not None
-                    and not progress_forwarder.uml_review_seen
-                    and project_file
-                    and os.path.isfile(project_file)
-                    and review_mgr.baseline is not None
-                ):
-                    try:
-                        from app.services.file_service import load_project
-                        from app.services.diagram_diff import changed_diagrams
-                        after = [d.model_dump() for d in load_project(project_file).diagrams]
-                        changed = changed_diagrams(after, review_mgr.baseline)
-                        if changed:
-                            req = review_mgr.submit(
-                                review_type="uml_diff",
-                                title="检测到未审核的设计变更",
-                                content="Agent 修改了设计文件但未提交 diff 审核",
-                                question="设计文件已被修改但未经审核，请确认是否接受此变更。",
-                                metadata={
-                                    "diagrams": after,
-                                    "changed_diagrams": changed,
-                                    "original_diagrams": review_mgr.baseline,
-                                },
-                            )
-                            if fallback_review_runs is not None:
-                                fallback_review_runs[req.id] = run_id
-                            fallback_review_requested = True
-                            if trace_log:
-                                trace_log.review_request(
-                                    review_id=req.id,
-                                    review_type="uml_diff",
-                                    title=req.title,
-                                    question=req.question,
-                                    content=req.content,
-                                )
-                            logger.info("[AgentChat] 兜底审核补推: review_id=%d", req.id)
-                            await send( {
-                                "event": "uml_review",
-                                "review_id": req.id,
-                                "title": req.title,
-                                "diagrams": after,
-                                "changed_diagrams": changed,
-                                "original_diagrams": review_mgr.baseline,
-                                "auto": True,
-                            })
-                    except Exception:
-                        logger.exception("[AgentChat] Fallback review check failed")
+                fallback_review_requested = await _request_fallback_uml_review(
+                    review_manager=review_mgr,
+                    uml_review_seen=progress_forwarder.uml_review_seen,
+                    project_file=project_file,
+                    trace_log=trace_log,
+                    send=send,
+                    fallback_review_runs=fallback_review_runs,
+                    run_id=run_id,
+                )
 
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
