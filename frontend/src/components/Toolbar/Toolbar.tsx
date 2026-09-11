@@ -9,13 +9,12 @@ import {
 } from 'antd';
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
-  UndoOutlined, RedoOutlined, RobotOutlined,
+  RobotOutlined,
   FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
-  PlusSquareOutlined, DownOutlined, TableOutlined,
-  ProjectOutlined, ApartmentOutlined, ClockCircleOutlined,
-  BlockOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
+  DownOutlined, TableOutlined,
+  ProjectOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
   ExportOutlined,
 } from '@ant-design/icons';
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
@@ -34,6 +33,7 @@ import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } fro
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
+import DiagramTypeControls from './DiagramTypeControls';
 import {
   fileStem, normalizePath, pathBaseName, pathDirName, relativePath,
   summarizeProjectDiagrams,
@@ -696,124 +696,17 @@ const Toolbar: React.FC = () => {
 
         {/* Diagram dropdowns — grouped by type */}
         <div className={showTestCaseInCanvas ? 'toolbar-mode-controls is-hidden' : 'toolbar-mode-controls'}>
-        {(() => {
-          const TYPE_SPECS = [
-            { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />, color: '#d48806' },
-            { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />, color: '#1677ff' },
-            { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />, color: '#52c41a' },
-          ] as const;
-
-          const compDiag = project.diagrams.find((dd) => dd.diagram_type === 'component');
-          const activeIdx = project.active_diagram_index;
-
-          const handleDelete = (index: number, name: string) => {
-            Modal.confirm({
-              title: `删除「${name}」`,
-              content: '确认删除此图？此操作不可撤销。',
-              okText: '删除', okType: 'danger', cancelText: '取消',
-              onOk: () => removeDiagram(index),
-            });
-          };
-
-          return TYPE_SPECS.map(spec => {
-            const items = project.diagrams
-              .map((d, i) => ({ d, i }))
-              .filter(({ d }) => (d.diagram_type || 'class') === spec.key);
-
-            if (items.length === 0) return null;
-
-            const activeItem = items.find(({ i }) => i === activeIdx);
-            const displayLabel = activeItem
-              ? (() => {
-                  const d = activeItem.d;
-                  const isAuto = !d.name || d.name === 'Untitled' || /^(class|sequence|component)_\d+$/.test(d.name);
-                  const parentComp = d.component_id
-                    ? (compDiag?.components || []).find((c) => c.id === d.component_id)
-                    : null;
-                  const base = isAuto ? spec.label : d.name;
-                  return parentComp ? `${parentComp.name} › ${base}` : base;
-                })()
-              : `${spec.label} (${items.length})`;
-
-            const menuItems = items.map(({ d, i }) => {
-              const isActive = i === activeIdx;
-              const isAuto = !d.name || d.name === 'Untitled' || /^(class|sequence|component)_\d+$/.test(d.name);
-              const parentComp = d.component_id
-                ? (compDiag?.components || []).find((c) => c.id === d.component_id)
-                : null;
-              const itemLabel = isAuto ? spec.label : d.name;
-              const fullLabel = parentComp ? `${parentComp.name} › ${itemLabel}` : itemLabel;
-              return {
-                key: String(i),
-                icon: isActive ? <span style={{ color: spec.color, fontWeight: 'bold' }}>✔</span> : <span style={{ width: 14, display: 'inline-block' }} />,
-                label: (
-                  <span style={{
-                    display: 'flex', justifyContent: 'space-between',
-                    alignItems: 'center', minWidth: 180, gap: 8,
-                    fontWeight: isActive ? 600 : 400,
-                    color: isActive ? spec.color : 'inherit',
-                  }}>
-                    <span style={{
-                      overflow: 'hidden', textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap', maxWidth: 200,
-                    }}>{fullLabel}</span>
-                    <span
-                      style={{ cursor: 'pointer', color: '#999', fontSize: 12, flexShrink: 0 }}
-                      onClick={(e) => { e.stopPropagation(); handleDelete(i, fullLabel); }}
-                      title="删除此图"
-                    >🗑</span>
-                  </span>
-                ),
-                onClick: () => setActiveDiagram(i),
-              };
-            });
-
-            return (
-              <Dropdown key={spec.key} menu={{ items: menuItems }} trigger={['click']}>
-                <Button
-                  type={activeItem ? 'primary' : 'default'}
-                  icon={spec.icon}
-                  style={{
-                    marginRight: 2, maxWidth: 200,
-                    borderColor: activeItem ? spec.color : undefined,
-                    color: activeItem ? spec.color : undefined,
-                  }}
-                >
-                  <span style={{
-                    overflow: 'hidden', textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap', display: 'inline-block', maxWidth: 150,
-                  }}>{displayLabel}</span>
-                  <DownOutlined style={{ fontSize: 10, marginLeft: 4 }} />
-                </Button>
-              </Dropdown>
-            );
-          });
-        })()}
-
-        <Tooltip title={copy('addDiagram')}>
-          <Dropdown menu={{
-            items: [
-              { key: 'class', label: copy('classDiagram'), icon: <ApartmentOutlined />,
-                onClick: () => addDiagram('class') },
-              { key: 'sequence', label: copy('sequenceDiagram'), icon: <ClockCircleOutlined />,
-                onClick: () => addDiagram('sequence') },
-              { key: 'component', label: copy('componentDiagram'), icon: <BlockOutlined />,
-                onClick: () => addDiagram('component') },
-            ],
-          }} trigger={['click']}>
-            <Button icon={<PlusSquareOutlined />} />
-          </Dropdown>
-        </Tooltip>
-
-        <Divider type="vertical" />
-
-        {/* Undo/Redo */}
-        <Tooltip title={copy('undo') + ' Ctrl+Z'}>
-          <Button icon={<UndoOutlined />} disabled={undoStack.length === 0} onClick={undo} />
-        </Tooltip>
-        <Tooltip title={copy('redo') + ' Ctrl+Y'}>
-          <Button icon={<RedoOutlined />} disabled={redoStack.length === 0} onClick={redo} />
-        </Tooltip>
+        <DiagramTypeControls
+          project={project}
+          copy={copy}
+          setActiveDiagram={setActiveDiagram}
+          addDiagram={addDiagram}
+          removeDiagram={removeDiagram}
+          undoStack={undoStack}
+          redoStack={redoStack}
+          undo={undo}
+          redo={redo}
+        />
         </div>
       </div>
       <div className="toolbar-right"><SettingsPopover /></div>
