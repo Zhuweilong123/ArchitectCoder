@@ -20,7 +20,7 @@ import {
   centerCanvasContent, getParallelEdgeVertices, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
-import { getClassNodeSize, resolveClassLayouts } from './umlClassLayout';
+import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
 import {
   type UmlClass,
   Stereotype, RelationType,
