@@ -6,9 +6,64 @@
 
 [English](README.md) | **中文**
 
+[快速开始](#快速开始) · [产品演示](#产品演示) · [快启案例](examples/quickstart/)
+
 </div>
 
 ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：将架构设计、代码修改、测试、审核和回放串成可追踪的闭环。当前 `dev-4.0` 版本线内置 **DevAgent 开发助手**、**全局 UML 优化**、**一键式 DevAgent 能力基准中心**、**TestHub 测试中心**、**Trace 追踪回放**、**知识图谱**、**记忆系统** 与 **BaseAgents 框架**。
+
+## 产品演示
+
+<table>
+<tr>
+<td width="64%" valign="top">
+
+<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
+  <source src="docs/media/architectcoder-demo.mp4" type="video/mp4">
+  你的浏览器不支持嵌入式视频。[打开产品演示](docs/media/architectcoder-demo.mp4)。
+</video>
+
+<p align="center"><sub>真实浏览器录屏：切换 UML 图 → 查看 Trace 与评测中心 → DevAgent 只读总结项目。</sub></p>
+</td>
+<td width="36%" valign="top">
+
+### 一条可追踪的闭环
+
+1. 用类图、时序图或组件图**建模**系统。
+2. 让 DevAgent 在工作区上下文中**分析**设计。
+3. **审核** UML 变更和范围明确的修改计划。
+4. 在同一处**实现并验证**代码、测试、Trace 和结果。
+
+从设计到交付，每一步都清晰、可审核、可回放。
+</td>
+</tr>
+</table>
+
+### 评测中心演示
+
+<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
+  <source src="docs/media/architectcoder-evaluation-demo.mp4" type="video/mp4">
+  你的浏览器不支持嵌入式视频。[打开评测中心演示](docs/media/architectcoder-evaluation-demo.mp4)。
+</video>
+
+<p align="center"><sub>真实浏览器录屏：性能结果 → 三版本趋势对比 → 用例级 Trace 回放 → 归档中心。</sub></p>
+
+### 看清每个关键界面
+
+<table>
+<tr>
+<td width="48%"><img src="docs/media/workspace-canvas.png" alt="ArchitectCoder 时序图画布" width="100%"></td>
+<td width="26%"><img src="docs/media/workspace-agent.png" alt="ArchitectCoder DevAgent 助手" width="100%"></td>
+<td width="26%"><img src="docs/media/workspace-toolbar.png" alt="ArchitectCoder 项目与图工具栏" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><sub>UML 建模：时序图、类图和组件图</sub></td>
+<td align="center"><sub>在上下文中与 DevAgent 协作</sub></td>
+<td align="center"><sub>从设计进入 Trace、评测和导出</sub></td>
+</tr>
+</table>
+
+> 截图和视频预览统一放在 `docs/media/`，后续更新产品素材时无需调整 README 的展示结构。
 
 ## 为什么选择 ArchitectCoder？
 

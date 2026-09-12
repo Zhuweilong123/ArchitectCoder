@@ -6,11 +6,64 @@
 
 **English** | [中文](README_ZH.md)
 
+[Quick start](#quick-start) · [Product tour](#product-tour) · [Quickstart case](examples/quickstart/)
+
 </div>
 
 ArchitectCoder is an AI-assisted development workbench with UML as its design entry point. It connects architecture design, code changes, testing, review, and replay into one traceable workflow. The current `dev-4.0` line includes the **DevAgent development assistant**, **Global UML Optimization**, **One-click DevAgent Capability Benchmark Center**, **TestHub Test Center**, **Trace Viewer & Replay**, **Knowledge Graph**, **Memory System**, and the **BaseAgents framework**.
 
-![ArchitectCoder workspace](workSpace_en.PNG)
+## Product tour
+
+<table>
+<tr>
+<td width="64%" valign="top">
+
+<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
+  <source src="docs/media/architectcoder-demo.mp4" type="video/mp4">
+  Your browser does not support embedded video. [Open the product demo](docs/media/architectcoder-demo.mp4).
+</video>
+
+<p align="center"><sub>Real browser recording: UML switching → Trace and Evaluation Center → DevAgent read-only project summary.</sub></p>
+</td>
+<td width="36%" valign="top">
+
+### One traceable loop
+
+1. **Model** the system with class, sequence, or component diagrams.
+2. **Ask** DevAgent to inspect the design and workspace.
+3. **Review** the proposed UML and scoped changes.
+4. **Implement and verify** code, tests, traces, and results in one place.
+
+The result is an engineering workflow that is easy to understand, review, and replay.
+</td>
+</tr>
+</table>
+
+### Evaluation Center demo
+
+<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
+  <source src="docs/media/architectcoder-evaluation-demo.mp4" type="video/mp4">
+  Your browser does not support embedded video. [Open the Evaluation Center demo](docs/media/architectcoder-evaluation-demo.mp4).
+</video>
+
+<p align="center"><sub>Real browser recording: performance results → three-version trend comparison → case-level Trace replay → archive center.</sub></p>
+
+### See the workflow up close
+
+<table>
+<tr>
+<td width="48%"><img src="docs/media/workspace-canvas.png" alt="ArchitectCoder sequence diagram canvas" width="100%"></td>
+<td width="26%"><img src="docs/media/workspace-agent.png" alt="ArchitectCoder DevAgent assistant" width="100%"></td>
+<td width="26%"><img src="docs/media/workspace-toolbar.png" alt="ArchitectCoder project and diagram toolbar" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><sub>Design in UML: sequence, class, and component diagrams</sub></td>
+<td align="center"><sub>Collaborate with DevAgent in context</sub></td>
+<td align="center"><sub>Move from design to trace, benchmark, and export</sub></td>
+</tr>
+</table>
+
+> The screenshots and videos are intentionally kept under `docs/media/`, so maintainers can replace them with updated product captures without changing the README layout.
 
 ## Why ArchitectCoder?
 
