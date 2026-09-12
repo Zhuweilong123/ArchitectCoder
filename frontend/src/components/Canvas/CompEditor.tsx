@@ -12,7 +12,7 @@ import { getActiveDiagram, selectActiveDiagram, useDiagramStore } from '../../st
 import { useUiStore, type CanvasTheme } from '../../stores/uiStore';
 import { getCanvasLabels } from './canvasLabels';
 import {
-  buildCompHTML, CHILD_HEIGHT, CHILD_WIDTH, COMP_HEIGHT, COMP_WIDTH,
+  buildCompHTML, CHILD_HEIGHT, CHILD_WIDTH,
   componentThemeVisuals, getCompNodeSize,
 } from './compRenderUtils';
 import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
@@ -21,7 +21,7 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getParallelEdgeVertices, materializeEdgeRouteVertices,
+  centerCanvasContent, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
@@ -158,7 +158,7 @@ const CompEditor: React.FC = () => {
           stroke: '#b7791f', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
-        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+        router: getObstacleAvoidingManhattanRouter(),
         connector: { name: 'rounded' },
       },
     });
@@ -189,7 +189,7 @@ const CompEditor: React.FC = () => {
         }
         graph.getConnectedEdges(node).forEach((edge) => {
           const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
-          if (relation?.vertices === undefined) edge.setVertices([]);
+          if (!Array.isArray(relation?.vertices)) edge.setVertices([]);
         });
         moveComponent(node.id, nextPosition.x, nextPosition.y);
       },
@@ -208,7 +208,7 @@ const CompEditor: React.FC = () => {
       },
       onEdgeMouseEnter: (edge) => {
         const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
-        if (!relation || relation.vertices !== undefined) return;
+        if (!relation || Array.isArray(relation.vertices)) return;
         isInternalUpdate.current = true;
         materializeEdgeRouteVertices(graph, edge);
         isInternalUpdate.current = false;
@@ -219,7 +219,7 @@ const CompEditor: React.FC = () => {
         const source = edge.getSourceCellId();
         const target = edge.getTargetCellId();
         if (!source || !target || source === target) return;
-        if (relation.vertices === undefined) edge.setVertices([]);
+        if (!Array.isArray(relation.vertices)) edge.setVertices([]);
         updateCompRelation(edge.id, { source, target });
       },
       onEdgeVerticesChanged: (edge) => {
@@ -515,13 +515,10 @@ const CompEditor: React.FC = () => {
         }
       });
 
-      const componentRects = comps.map((component) => ({
-        id: component.id,
-        x: component.x,
-        y: component.y,
-        width: component.width || COMP_WIDTH,
-        height: component.height || COMP_HEIGHT,
-      }));
+      const componentRects = comps.map((component) => {
+        const { width, height } = getCompNodeSize(component);
+        return { id: component.id, x: component.x, y: component.y, width, height };
+      });
       rels.forEach((r) => {
         const selected = r.id === selectedCompRelationId;
         const stroke = selected
@@ -546,14 +543,12 @@ const CompEditor: React.FC = () => {
           },
           position: { distance: 0.5, offset: -10 },
         }];
-        // An explicit (including empty) vertices array is a user override.
-        // Only untouched relations fall back to the automatic parallel-edge lane.
-        const existingVertices = (graph.getCellById(r.id) as Edge | null)?.getVertices() || [];
-        const vertices = r.vertices !== undefined
+        // Imported diagrams use `null` for an untouched route; only a real
+        // vertices array is user-owned. Automatic routes must be recalculated
+        // whenever the component layout changes.
+        const vertices = Array.isArray(r.vertices)
           ? r.vertices
-          : existingVertices.length > 0
-            ? existingVertices
-            : getParallelEdgeVertices(r, rels, componentRects);
+          : getObstacleAvoidingEdgeVertices(r, rels, componentRects);
         const interactionAttrs = {
           stroke: 'transparent',
           strokeWidth: 10,
@@ -569,7 +564,7 @@ const CompEditor: React.FC = () => {
               edge.setSource({ cell: r.source });
               edge.setTarget({ cell: r.target });
               edge.setVertices(vertices);
-              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
+              edge.setRouter(getObstacleAvoidingManhattanRouter());
               edge.setConnector({ name: 'rounded' });
               edge.setLabels(labels);
               edge.setAttrByPath('line/stroke', stroke);
@@ -601,7 +596,7 @@ const CompEditor: React.FC = () => {
                 wrap: interactionAttrs,
               },
               labels,
-              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+              router: getObstacleAvoidingManhattanRouter(),
               connector: { name: 'rounded' },
             });
             if (edge) edgeSignatureCache.current.set(r.id, edgeSignature);

@@ -17,7 +17,7 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getParallelEdgeVertices, materializeEdgeRouteVertices,
+  centerCanvasContent, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
@@ -286,7 +286,7 @@ const UMLEditor: React.FC = () => {
           strokeWidth: 2,
           targetMarker: { name: 'block', width: 12, height: 8 },
         },
-        router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+        router: getObstacleAvoidingManhattanRouter(),
         connector: { name: 'rounded' },
       },
     });
@@ -324,7 +324,7 @@ const UMLEditor: React.FC = () => {
         }
         graph.getConnectedEdges(node).forEach((edge) => {
           const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
-          if (relation?.vertices === undefined) edge.setVertices([]);
+          if (!Array.isArray(relation?.vertices)) edge.setVertices([]);
         });
         moveClass(node.id, nextPosition);
       },
@@ -343,7 +343,7 @@ const UMLEditor: React.FC = () => {
       },
       onEdgeMouseEnter: (edge) => {
         const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
-        if (!relation || relation.vertices !== undefined) return;
+        if (!relation || Array.isArray(relation.vertices)) return;
         isInternalUpdate.current = true;
         materializeEdgeRouteVertices(graph, edge);
         isInternalUpdate.current = false;
@@ -354,7 +354,7 @@ const UMLEditor: React.FC = () => {
         const source = edge.getSourceCellId();
         const target = edge.getTargetCellId();
         if (!source || !target || source === target) return;
-        if (relation.vertices === undefined) edge.setVertices([]);
+        if (!Array.isArray(relation.vertices)) edge.setVertices([]);
         updateRelation(edge.id, { source, target });
       },
       onEdgeVerticesChanged: (edge) => {
@@ -685,14 +685,13 @@ const UMLEditor: React.FC = () => {
           },
           position: { distance: 0.5, offset: -10 },
         }] : [];
-        // An explicit (including empty) vertices array is a user override.
-        // Only untouched relations fall back to the automatic parallel-edge lane.
-        const existingVertices = (graph.getCellById(rel.id) as Edge | null)?.getVertices() || [];
-        const vertices = rel.vertices !== undefined
+        // Only an array is a user override. Importers use `null` for an
+        // untouched relation, which must remain eligible for auto-routing.
+        // Recalculate those routes after every layout update instead of
+        // retaining stale X6 vertices from a previous node arrangement.
+        const vertices = Array.isArray(rel.vertices)
           ? rel.vertices
-          : existingVertices.length > 0
-            ? existingVertices
-            : getParallelEdgeVertices(rel, diagram.relations, classRects);
+          : getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects);
         const interactionAttrs = {
           stroke: 'transparent',
           strokeWidth: 10,
@@ -714,7 +713,7 @@ const UMLEditor: React.FC = () => {
               edge.setTarget({ cell: rel.target });
               edge.setLabels(edgeLabels);
               edge.setVertices(vertices);
-              edge.setRouter({ name: 'manhattan', args: { padding: 24, step: 20 } });
+              edge.setRouter(getObstacleAvoidingManhattanRouter());
               edge.setConnector({ name: 'rounded' });
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
@@ -750,7 +749,7 @@ const UMLEditor: React.FC = () => {
               target: { cell: rel.target },
               labels: edgeLabels,
               vertices,
-              router: { name: 'manhattan', args: { padding: 24, step: 20 } },
+              router: getObstacleAvoidingManhattanRouter(),
               connector: { name: 'rounded' },
               attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
