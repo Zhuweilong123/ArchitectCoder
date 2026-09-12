@@ -9,6 +9,7 @@ import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
 import {
+  arrangeSequenceLayout,
   SEQUENCE_MESSAGE_GAP,
   SEQUENCE_MESSAGE_START_Y,
   sequenceMessageY,
@@ -850,52 +851,18 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   arrangeSequence: () => {
     const state = get();
     const diagram = _activeDiagram(state.project);
-    const lifelines = [...(diagram.lifelines || [])]
-      .sort((a, b) => a.x - b.x || a.id.localeCompare(b.id));
-    const messages = [...(diagram.messages || [])]
-      .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id));
-    if (lifelines.length === 0 && messages.length === 0) return;
-
-    const lifelineX = new Map<string, number>();
-    lifelines.forEach((lifeline, index) => lifelineX.set(lifeline.id, 160 + index * 220));
-
-    const oldMessageY = new Map(messages.map((message) => [
-      message.id,
-      sequenceMessageY(message),
-    ]));
-    const messageY = new Map<string, number>();
-    const arrangedMessages = messages.map((message, index) => {
-      const y = SEQUENCE_MESSAGE_START_Y + index * SEQUENCE_MESSAGE_GAP;
-      messageY.set(message.id, y);
-      return { ...message, y, order: index + 1 };
-    });
-
-    const arrangedFragments = (diagram.fragments || []).map((fragment) => {
-      const containedMessages = messages.filter((message) => {
-        const y = oldMessageY.get(message.id) || 0;
-        return y >= fragment.y_start && y <= fragment.y_end;
-      });
-      if (containedMessages.length === 0) return fragment;
-      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
-      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
-      return {
-        ...fragment,
-        // Re-fit the fragment to its original message membership. This is
-        // intentionally done by the explicit arrange command so normal
-        // editing can still preserve a user's manually enlarged region.
-        y_start: Math.max(80, minMessageY - 28),
-        y_end: Math.max(minMessageY + 72, maxMessageY + 36),
-      };
-    });
+    const arranged = arrangeSequenceLayout(
+      diagram.lifelines || [],
+      diagram.messages || [],
+      diagram.fragments || [],
+    );
+    if (arranged.lifelines.length === 0 && arranged.messages.length === 0) return;
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
-      lifelines: (activeDiagram.lifelines || []).map((lifeline) => ({
-        ...lifeline,
-        x: lifelineX.get(lifeline.id) ?? lifeline.x,
-      })),
-      messages: arrangedMessages,
-      fragments: arrangedFragments,
+      lifelines: arranged.lifelines,
+      messages: arranged.messages,
+      fragments: arranged.fragments,
     }));
     get().pushSnapshot('arrange_sequence');
     set({ project, isModified: true });

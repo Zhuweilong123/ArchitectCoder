@@ -3,8 +3,9 @@ import type { InterfaceLanguage } from '../../i18n';
 import type { SeqLifeline, MessageType } from '../../types/sequence';
 import { getCanvasLabels } from './canvasLabels';
 import { escapeHtml } from '../../utils/safeHtml';
+import { SEQUENCE_LIFELINE_WIDTH } from '../../utils/sequenceLayout';
 
-export const LIFELINE_WIDTH = 140;
+export const LIFELINE_WIDTH = SEQUENCE_LIFELINE_WIDTH;
 export const LIFELINE_HEIGHT = 400;
 export const LIFELINE_Y = 120;
 
