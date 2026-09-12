@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -26,6 +27,7 @@ class ContractGateContext:
     test_dir: str = ""
     run_id: str = ""
     settings: Any = None
+    contract_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,30 @@ class DefaultContractGate:
         if change_set is None or not change_set.has_changes:
             return ContractGateDecision(allowed=True)
 
+        if not context.contract_enabled:
+            changed = tuple(
+                str(item.get("path", "")) if isinstance(item, dict) else str(item)
+                for item in change_set.manifest()
+            )
+            result = ContractCheckResult(
+                check_id=f"disabled-{uuid.uuid4().hex[:12]}",
+                status="not_applicable",
+                project_id="",
+                changed_paths=tuple(path for path in changed if path),
+                message="design contract disabled for this run",
+                metadata={
+                    "reason": "disabled_by_request",
+                    "contract_enabled": False,
+                },
+            )
+            await context.emit({
+                "event": "contract_check",
+                **result.to_dict(),
+                "run_id": context.run_id,
+                "contract_enabled": False,
+            })
+            return ContractGateDecision(allowed=True, result=result)
+
         changed = change_set.manifest()
         workspace_values = getattr(context.agent, "workspace_manifest", {}) or {}
         if not workspace_values:
@@ -85,6 +111,7 @@ class DefaultContractGate:
         )
         payload = result.to_dict()
         payload["run_id"] = context.run_id
+        payload["contract_enabled"] = context.contract_enabled
         if not await context.emit({"event": "contract_check", **payload}):
             return ContractGateDecision(
                 allowed=False,
@@ -162,7 +189,7 @@ class DefaultContractGate:
         prior_result: ContractCheckResult | None = None,
     ) -> ContractCheckResult | None:
         """Persist the accepted facts only after the candidate was committed."""
-        if prior_result is None or context.change_set is None:
+        if prior_result is None or context.change_set is None or not context.contract_enabled:
             return None
         changed = context.change_set.manifest()
         workspace_values = getattr(context.agent, "workspace_manifest", {}) or {}
@@ -205,6 +232,18 @@ def load_contract_gate(*, settings=None) -> ContractGatePort:
     return DefaultContractGate()
 
 
+def resolve_contract_enabled(requested: bool | None, settings: Any = None) -> bool:
+    """Resolve a per-run request without mutating process-wide settings.
+
+    The server setting is an upper bound.  Strict production mode deliberately
+    ignores a client-side disable request.
+    """
+    configured = bool(getattr(settings, "agent_design_contract_enabled", True))
+    if not configured or getattr(settings, "strict_production", False):
+        return configured
+    return configured if requested is None else bool(requested)
+
+
 __all__ = [
     "ContractGateContext",
     "ContractGateDecision",
@@ -212,4 +251,5 @@ __all__ = [
     "DefaultContractGate",
     "NoOpContractGate",
     "load_contract_gate",
+    "resolve_contract_enabled",
 ]

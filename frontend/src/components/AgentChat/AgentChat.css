@@ -55,7 +55,23 @@
 
 .agent-chat-header-right {
   display: flex;
+  align-items: center;
   gap: 4px;
+}
+
+.agent-chat-contract-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.agent-chat-contract-toggle .ant-switch {
+  flex: 0 0 auto;
 }
 
 .agent-chat-header-right .ant-btn-text {

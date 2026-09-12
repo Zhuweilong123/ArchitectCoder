@@ -12,7 +12,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse, Dropdown,
+  Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse, Dropdown, Switch,
 } from 'antd';
 import {
   SendOutlined, StopOutlined, RobotOutlined,
@@ -44,6 +44,8 @@ import './AgentChat.css';
 
 // ── 组件 ──────────────────────────────────────────────
 
+const DESIGN_CONTRACT_STORAGE_KEY = 'agentDesignContractEnabled';
+
 const AgentChat: React.FC = () => {
   const {
     agentChatVisible, setAgentChatVisible,
@@ -66,6 +68,13 @@ const AgentChat: React.FC = () => {
   });
   const [inputValue, setInputValue] = useState('');
   const [busy, setBusy] = useState(false);
+  const [designContractEnabled, setDesignContractEnabled] = useState(() => {
+    try {
+      return localStorage.getItem(DESIGN_CONTRACT_STORAGE_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
   const [currentSteps, setCurrentSteps] = useState<AgentProgressEvent[]>([]);
   const [currentTodos, setCurrentTodos] = useState<AgentTodoItem[]>([]);
   const [todoPlanningMode, setTodoPlanningMode] = useState(false);
@@ -198,6 +207,7 @@ const AgentChat: React.FC = () => {
       test_dir: testDir,
       project_file: currentFilepath || '',
       workspace_root: currentWorkspacePath || '',
+      design_contract_enabled: designContractEnabled,
       skipNotify: true,
     });
 
@@ -220,7 +230,14 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath, currentWorkspacePath]);
+  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+
+  const handleDesignContractToggle = useCallback((checked: boolean) => {
+    setDesignContractEnabled(checked);
+    try {
+      localStorage.setItem(DESIGN_CONTRACT_STORAGE_KEY, String(checked));
+    } catch { /* ignore local preference persistence failures */ }
+  }, []);
 
   // ── 中断 ──
   const handleStop = useCallback(() => {
@@ -590,6 +607,21 @@ const AgentChat: React.FC = () => {
               {busy && <LoadingOutlined style={{ marginLeft: 8 }} spin />}
             </div>
             <div className="agent-chat-header-right">
+              <Tooltip title={designContractEnabled ? copy('designContractOn') : copy('designContractOff')}>
+                <div
+                  className="agent-chat-contract-toggle"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <span>{copy('designContract')}</span>
+                  <Switch
+                    size="small"
+                    checked={designContractEnabled}
+                    disabled={busy}
+                    onChange={handleDesignContractToggle}
+                    aria-label={copy('designContract')}
+                  />
+                </div>
+              </Tooltip>
               <Dropdown
                 menu={{
                   items: sessionsLoading && sessions.length === 0

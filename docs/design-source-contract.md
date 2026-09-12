@@ -251,3 +251,11 @@ ContractGate(block)
 “设计契约校验阻止提交”，详细原因由模型分析笔记呈现。分析请求沿用正常交互的完整工具 schema 与
 `tool_choice=auto`，避免因为请求配置差异降低提供商的前缀复用机会。分析器是一次性只读调用，不进入工具执行循环；即使模型返回
 `tool_calls`，也只记录并忽略，不会修改文件或重试任务。分析器可替换而无需改动 Agent 主流程。
+
+## 14. 交互式契约开关
+
+AI 助手聊天框提供“设计契约”开关。开关状态作为当前聊天请求的
+`design_contract_enabled` 字段发送，仅影响该次运行，不修改进程级 Settings。
+服务端配置是上限：服务端关闭时始终关闭；`strict_production=true` 时忽略客户端的关闭请求。
+生效值会写入 run metadata、checkpoint 和 `contract_policy` trace 事件，便于审计与复现。
+开关在任务执行期间不可用，切换只对下一次运行生效。

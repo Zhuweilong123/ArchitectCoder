@@ -16,7 +16,11 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.core.exceptions import AgentInterrupted
-from app.agent_base.core.contract_gate import ContractGateContext, NoOpContractGate
+from app.agent_base.core.contract_gate import (
+    ContractGateContext,
+    NoOpContractGate,
+    resolve_contract_enabled,
+)
 from app.agent_base.core.contract_analysis import (
     ContractFailureAnalysisContext,
     NoOpContractFailureAnalyzer,
@@ -688,6 +692,7 @@ async def handle_agent_execution(
     session_id: str = "",
     resume_checkpoint: dict | None = None,
     disconnect_check: Callable[[], bool] | None = None,
+    design_contract_enabled: bool | None = None,
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -711,6 +716,10 @@ async def handle_agent_execution(
         getattr(agent, "contract_failure_analyzer", None)
         or NoOpContractFailureAnalyzer()
     )
+    contract_enabled = resolve_contract_enabled(
+        design_contract_enabled,
+        get_settings(),
+    )
     resume_checkpoint = dict(resume_checkpoint or {})
     checkpoint_request_summary = str(
         resume_checkpoint.get("request_summary") or user_message
@@ -728,6 +737,7 @@ async def handle_agent_execution(
         "last_error": None,
         "stop_reason": None,
         "resume_available": False,
+        "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
         "project_file": project_file,
         "source_dir": source_dir,
@@ -955,6 +965,7 @@ async def handle_agent_execution(
                     test_dir=test_dir,
                     run_id=run_id,
                     settings=get_settings(),
+                    contract_enabled=contract_enabled,
                 ))
                 contract_ok = gate_decision.allowed
                 contract_result = gate_decision.result
@@ -1043,6 +1054,7 @@ async def handle_agent_execution(
                             test_dir=test_dir,
                             run_id=run_id,
                             settings=get_settings(),
+                            contract_enabled=contract_enabled,
                         ), contract_result) if callable(finalizer) else None
                         agent.last_run_checkpoint["contract_graph_sync"] = {
                             "status": post_commit.status if post_commit else "not_requested",

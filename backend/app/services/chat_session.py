@@ -6,7 +6,7 @@ Agent 对话 WebSocket 端点 — 前端对话框驱动开发的后端服务
 
 WebSocket 协议:
     客户端 → 服务端: JSON
-        {"type": "chat", "message": "创建一个计算器系统"}
+        {"type": "chat", "message": "创建一个计算器系统", "design_contract_enabled": true}
         {"type": "task_status"}                  # 读取当前会话断点
         {"type": "stop"}                          # 中断当前 Agent
         {"type": "review_response", "review_id": 0, "response": "批准"}  # 人工审核回复
@@ -37,6 +37,7 @@ from backend.config import get_settings
 from app.agent_base.assembly import create_dev_agent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
+from app.agent_base.core.contract_gate import resolve_contract_enabled
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
 )
@@ -399,8 +400,14 @@ async def _start_agent_chat_run(
     resume_checkpoint: dict | None = None,
     request_id: str = "",
     workspace_root: str = "",
+    design_contract_enabled: bool | None = None,
 ) -> asyncio.Task | None:
     """Create a durable run and start its transport-neutral execution task."""
+    settings = get_settings()
+    effective_contract_enabled = resolve_contract_enabled(
+        design_contract_enabled,
+        settings,
+    )
     lifecycle = RunLifecycle(get_run_store(), agent_runtime)
     try:
         run = lifecycle.start(
@@ -415,6 +422,8 @@ async def _start_agent_chat_run(
                 "project_file": project_file,
                 "workspace_root": workspace_root,
                 "workspace_manifest": getattr(agent, "workspace_manifest", {}),
+                "design_contract_enabled": effective_contract_enabled,
+                "design_contract_requested": design_contract_enabled,
             },
             idempotency_key=f"{session_id}:{request_id}" if request_id else "",
         )
@@ -447,8 +456,15 @@ async def _start_agent_chat_run(
         )
         trace_log.event(
             "agent_model",
-            model=get_settings().llm_model_id,
+            model=settings.llm_model_id,
             policy="fixed_session_model",
+        )
+        trace_log.event(
+            "contract_policy",
+            requested=design_contract_enabled,
+            server_default=bool(getattr(settings, "agent_design_contract_enabled", True)),
+            effective=effective_contract_enabled,
+            strict_production=bool(getattr(settings, "strict_production", False)),
         )
         _record_audit(
             "run_started",
@@ -504,6 +520,7 @@ async def _start_agent_chat_run(
                     resume_checkpoint=resume_checkpoint,
                     disconnect_check=disconnect_check,
                     session_id=session_id,
+                    design_contract_enabled=design_contract_enabled,
                 )
             finally:
                 agent_runtime.release_run(session_id, connection_owner)
@@ -589,6 +606,7 @@ class ChatSessionCoordinator:
             resume_record=None,
             resume_checkpoint=None,
             request_id: str = "",
+            design_contract_enabled: bool | None = None,
         ) -> None:
             nonlocal run_task
             task = await _start_agent_chat_run(
@@ -612,6 +630,7 @@ class ChatSessionCoordinator:
                 resume_record=resume_record,
                 resume_checkpoint=resume_checkpoint,
                 request_id=request_id,
+                design_contract_enabled=design_contract_enabled,
             )
             if task is not None:
                 run_task = task
@@ -689,6 +708,13 @@ class ChatSessionCoordinator:
                         _resume_prompt(resume_checkpoint, resume_supplement)
                         if resume_checkpoint else user_message
                     )
+                    requested_contract_enabled = msg.get("design_contract_enabled")
+                    if not isinstance(requested_contract_enabled, bool):
+                        requested_contract_enabled = None
+                    if requested_contract_enabled is None and resume_checkpoint:
+                        previous_contract_enabled = resume_checkpoint.get("contract_enabled")
+                        if isinstance(previous_contract_enabled, bool):
+                            requested_contract_enabled = previous_contract_enabled
 
                     # 记录用户消息（trace）
                     # One session uses one configured coding model.  Do not infer
@@ -740,6 +766,7 @@ class ChatSessionCoordinator:
                     await _start_run(
                         effective_user_message, resume_record=resume_record,
                         resume_checkpoint=resume_checkpoint, request_id=msg.get("request_id", ""),
+                        design_contract_enabled=requested_contract_enabled,
                     )
 
                 # ── 停止对话 ──

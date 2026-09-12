@@ -45,6 +45,7 @@ from .core.contract_gate import (
     DefaultContractGate,
     NoOpContractGate,
     load_contract_gate,
+    resolve_contract_enabled,
 )
 from .core.plugins import (
     PluginManager,
@@ -90,6 +91,7 @@ __all__ = [
     "DefaultContractGate",
     "NoOpContractGate",
     "load_contract_gate",
+    "resolve_contract_enabled",
     "PluginManager",
     "PluginSpec",
     "PluginState",
