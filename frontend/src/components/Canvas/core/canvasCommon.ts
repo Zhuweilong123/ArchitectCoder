@@ -40,6 +40,154 @@ export interface CanvasNodeRect {
   height: number;
 }
 
+const ROUTER_CLEARANCE = 32;
+
+/**
+ * Shared Manhattan settings for diagrams whose edges must not cut through
+ * unrelated nodes.  The default search budget is too small for a dense
+ * project diagram and silently falls back to the non-obstacle-aware `orth`
+ * router when exhausted.
+ */
+export function getObstacleAvoidingManhattanRouter() {
+  return {
+    name: 'manhattan' as const,
+    args: {
+      padding: ROUTER_CLEARANCE,
+      step: 16,
+      maxLoopCount: 20_000,
+      // A terminal must be reachable; every other visible node stays an
+      // obstacle in the route map.
+      excludeTerminals: ['source', 'target'],
+    },
+  };
+}
+
+function isInsideExpandedRect(
+  point: { x: number; y: number },
+  node: CanvasNodeRect,
+  clearance: number,
+): boolean {
+  return point.x >= node.x - clearance
+    && point.x <= node.x + node.width + clearance
+    && point.y >= node.y - clearance
+    && point.y <= node.y + node.height + clearance;
+}
+
+interface CanvasPoint {
+  x: number;
+  y: number;
+}
+
+function getNodeCenter(node: CanvasNodeRect): CanvasPoint {
+  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+}
+
+function segmentIntersectsExpandedRect(
+  start: CanvasPoint,
+  end: CanvasPoint,
+  node: CanvasNodeRect,
+  clearance: number,
+): boolean {
+  const minX = node.x - clearance;
+  const maxX = node.x + node.width + clearance;
+  const minY = node.y - clearance;
+  const maxY = node.y + node.height + clearance;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let enter = 0;
+  let exit = 1;
+
+  for (const [origin, delta, minimum, maximum] of [
+    [start.x, dx, minX, maxX],
+    [start.y, dy, minY, maxY],
+  ] as Array<[number, number, number, number]>) {
+    if (Math.abs(delta) < 0.001) {
+      if (origin < minimum || origin > maximum) return false;
+      continue;
+    }
+    const near = (minimum - origin) / delta;
+    const far = (maximum - origin) / delta;
+    enter = Math.max(enter, Math.min(near, far));
+    exit = Math.min(exit, Math.max(near, far));
+    if (enter > exit) return false;
+  }
+  return enter <= 1 && exit >= 0;
+}
+
+function normalizeRouteVertices(points: CanvasPoint[]): CanvasPoint[] {
+  return points.filter((point, index) => (
+    index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y
+  ));
+}
+
+function routeLength(points: CanvasPoint[]): number {
+  return points.slice(1).reduce((total, point, index) => (
+    total + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y)
+  ), 0);
+}
+
+/**
+ * Supply Manhattan with obstacle-safe turning points before it performs its
+ * finer grid search. This keeps a route clear even when X6 needs its `orth`
+ * fallback for a very dense diagram.
+ */
+export function getObstacleAvoidingEdgeVertices(
+  edge: CanvasEdgeEndpoint,
+  edges: CanvasEdgeEndpoint[],
+  nodes: CanvasNodeRect[],
+): CanvasPoint[] {
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  if (!source || !target) return [];
+
+  const sourceCenter = getNodeCenter(source);
+  const targetCenter = getNodeCenter(target);
+  const obstacles = nodes.filter((node) => node.id !== edge.source && node.id !== edge.target);
+  if (obstacles.length === 0) return getParallelEdgeVertices(edge, edges, nodes);
+
+  const left = Math.min(...obstacles.map((node) => node.x)) - ROUTER_CLEARANCE;
+  const right = Math.max(...obstacles.map((node) => node.x + node.width)) + ROUTER_CLEARANCE;
+  const top = Math.min(...obstacles.map((node) => node.y)) - ROUTER_CLEARANCE;
+  const bottom = Math.max(...obstacles.map((node) => node.y + node.height)) + ROUTER_CLEARANCE;
+  // In a layered graph, the globally outer corridor can be needlessly long
+  // (or blocked at the source row). Add a small set of corridors immediately
+  // outside every obstacle so a route can take the nearest clear side.
+  const localClearance = ROUTER_CLEARANCE + 8;
+  const localCorridors = obstacles.flatMap((node) => [
+    [{ x: node.x - localClearance, y: sourceCenter.y }, { x: node.x - localClearance, y: targetCenter.y }],
+    [{ x: node.x + node.width + localClearance, y: sourceCenter.y }, { x: node.x + node.width + localClearance, y: targetCenter.y }],
+    [{ x: sourceCenter.x, y: node.y - localClearance }, { x: targetCenter.x, y: node.y - localClearance }],
+    [{ x: sourceCenter.x, y: node.y + node.height + localClearance }, { x: targetCenter.x, y: node.y + node.height + localClearance }],
+  ]);
+  const candidates: CanvasPoint[][] = [
+    ...(sourceCenter.x === targetCenter.x || sourceCenter.y === targetCenter.y ? [[]] : []),
+    [{ x: targetCenter.x, y: sourceCenter.y }],
+    [{ x: sourceCenter.x, y: targetCenter.y }],
+    [{ x: left, y: sourceCenter.y }, { x: left, y: targetCenter.y }],
+    [{ x: right, y: sourceCenter.y }, { x: right, y: targetCenter.y }],
+    [{ x: sourceCenter.x, y: top }, { x: targetCenter.x, y: top }],
+    [{ x: sourceCenter.x, y: bottom }, { x: targetCenter.x, y: bottom }],
+    ...localCorridors,
+  ];
+
+  const scored = candidates.map((vertices) => {
+    const route = normalizeRouteVertices([sourceCenter, ...vertices, targetCenter]);
+    const collisions = obstacles.reduce((count, node) => (
+      route.slice(1).some((point, index) => segmentIntersectsExpandedRect(
+        route[index], point, node, ROUTER_CLEARANCE,
+      )) ? count + 1 : count
+    ), 0);
+    return {
+      vertices: normalizeRouteVertices(vertices),
+      collisions,
+      // Prefer short paths, while retaining a modest penalty for turns when
+      // paths have the same clearance.
+      score: routeLength(route) + vertices.length * 16,
+    };
+  }).sort((a, b) => a.collisions - b.collisions || a.score - b.score);
+  return scored[0]?.vertices || [];
+}
+
 /** Give parallel edges separate lanes so coincident relationships remain selectable. */
 export function getParallelEdgeVertices(
   edge: CanvasEdgeEndpoint,
@@ -64,10 +212,20 @@ export function getParallelEdgeVertices(
   const dy = targetCenter.y - sourceCenter.y;
   const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const laneOffset = (index - (parallel.length - 1) / 2) * laneGap;
-  return [{
+  const waypoint = {
     x: (sourceCenter.x + targetCenter.x) / 2 - (dy / length) * laneOffset,
     y: (sourceCenter.y + targetCenter.y) / 2 + (dx / length) * laneOffset,
-  }];
+  };
+  // A fixed vertex inside another node forces Manhattan to fail its partial
+  // route and use the `orth` fallback, which is exactly how a line ends up
+  // crossing a component/class.  Let the obstacle-aware router choose the
+  // whole route when a parallel lane would be unsafe.
+  const crossesThirdPartyNode = nodes.some((node) => (
+    node.id !== edge.source
+    && node.id !== edge.target
+    && isInsideExpandedRect(waypoint, node, ROUTER_CLEARANCE)
+  ));
+  return crossesThirdPartyNode ? [] : [waypoint];
 }
 
 /** Promote automatic Manhattan route turns to editable edge vertices. */

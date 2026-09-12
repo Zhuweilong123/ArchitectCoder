@@ -9,6 +9,7 @@ import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
 import {
+  arrangeSequenceLayout,
   SEQUENCE_MESSAGE_GAP,
   SEQUENCE_MESSAGE_START_Y,
   sequenceMessageY,
@@ -25,6 +26,7 @@ import {
   undoHistory,
 } from './diagramHistory';
 import { layoutComponents } from '../utils/componentLayout';
+import { layoutClasses } from '../utils/classLayout';
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -654,114 +656,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const state = get();
     const diagram = _activeDiagram(state.project);
     if (diagram.classes.length < 2) return;
-
-    const classIds = new Set(diagram.classes.map((cls) => cls.id));
-    const hierarchyRelations = diagram.relations.filter((relation) => (
-      (relation.type === RelationType.INHERITANCE || relation.type === RelationType.REALIZATION)
-      && classIds.has(relation.source)
-      && classIds.has(relation.target)
-    ));
-    const relations = hierarchyRelations.length > 0
-      ? hierarchyRelations
-      : diagram.relations.filter((relation) => (
-        classIds.has(relation.source) && classIds.has(relation.target)
-      ));
-    const isHierarchyLayout = hierarchyRelations.length > 0;
-    const outgoing = new Map<string, string[]>();
-    const incoming = new Map<string, string[]>();
-    const indegree = new Map<string, number>();
-    const levels = new Map<string, number>();
-
-    diagram.classes.forEach((cls) => {
-      outgoing.set(cls.id, []);
-      incoming.set(cls.id, []);
-      indegree.set(cls.id, 0);
-      levels.set(cls.id, 0);
-    });
-
-    relations.forEach((relation) => {
-      // UML inheritance is stored child -> parent, while the layout flows
-      // parent -> child so base classes appear above derived classes.
-      const from = isHierarchyLayout ? relation.target : relation.source;
-      const to = isHierarchyLayout ? relation.source : relation.target;
-      const neighbors = outgoing.get(from);
-      if (!neighbors || !indegree.has(to) || neighbors.includes(to)) return;
-      neighbors.push(to);
-      incoming.get(to)?.push(from);
-      indegree.set(to, (indegree.get(to) || 0) + 1);
-    });
-
-    const queue = diagram.classes
-      .filter((cls) => indegree.get(cls.id) === 0)
-      .map((cls) => cls.id);
-    const processed = new Set<string>();
-    for (let index = 0; index < queue.length; index += 1) {
-      const currentId = queue[index];
-      processed.add(currentId);
-      const currentLevel = levels.get(currentId) || 0;
-      outgoing.get(currentId)?.forEach((nextId) => {
-        levels.set(nextId, Math.max(levels.get(nextId) || 0, currentLevel + 1));
-        const nextIndegree = (indegree.get(nextId) || 0) - 1;
-        indegree.set(nextId, nextIndegree);
-        if (nextIndegree === 0) queue.push(nextId);
-      });
-    }
-
-    // Cycles have no meaningful topological level; keep them together below
-    // the resolved hierarchy so the result remains deterministic and usable.
-    if (processed.size < diagram.classes.length) {
-      const maxLevel = Math.max(...Array.from(levels.values()));
-      diagram.classes.forEach((cls) => {
-        if (!processed.has(cls.id)) levels.set(cls.id, maxLevel + 1);
-      });
-    }
-
-    const rows = new Map<number, UmlClass[]>();
-    diagram.classes.forEach((cls) => {
-      const level = levels.get(cls.id) || 0;
-      const row = rows.get(level) || [];
-      row.push(cls);
-      rows.set(level, row);
-    });
-    const startX = 120;
-    const startY = 100;
-    const horizontalGap = 110;
-    const verticalGap = 120;
-    const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
-    const maxRowWidth = Math.max(...orderedLevels.map((level) => (
-      (rows.get(level) || []).reduce((sum, cls) => sum + (cls.size.width || 200), 0)
-      + Math.max(0, (rows.get(level) || []).length - 1) * horizontalGap
-    )));
-    const layoutCenterX = Math.max(680, maxRowWidth / 2 + startX);
-    let nextY = startY;
-    const positions = new Map<string, Position>();
-    const centerById = new Map<string, number>();
-    orderedLevels.forEach((level) => {
-      const row = rows.get(level) || [];
-      row.sort((a, b) => {
-        const averageCenter = (cls: UmlClass) => {
-          const parentCenters = (incoming.get(cls.id) || [])
-            .map((parentId) => centerById.get(parentId))
-            .filter((center): center is number => typeof center === 'number');
-          return parentCenters.length > 0
-            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length
-            : cls.position.x;
-        };
-        return averageCenter(a) - averageCenter(b) || a.position.x - b.position.x || a.id.localeCompare(b.id);
-      });
-      const totalWidth = row.reduce((sum, cls) => sum + (cls.size.width || 200), 0)
-        + Math.max(0, row.length - 1) * horizontalGap;
-      const rowStartX = layoutCenterX - totalWidth / 2;
-      let nextX = rowStartX;
-      row.forEach((cls) => {
-        const width = cls.size.width || 200;
-        positions.set(cls.id, { x: Math.max(startX, nextX), y: nextY });
-        centerById.set(cls.id, nextX + width / 2);
-        nextX += width + horizontalGap;
-      });
-      const rowHeight = Math.max(...row.map((cls) => cls.size.height || 150));
-      nextY += rowHeight + verticalGap;
-    });
+    const positions = layoutClasses(diagram);
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
@@ -956,52 +851,18 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   arrangeSequence: () => {
     const state = get();
     const diagram = _activeDiagram(state.project);
-    const lifelines = [...(diagram.lifelines || [])]
-      .sort((a, b) => a.x - b.x || a.id.localeCompare(b.id));
-    const messages = [...(diagram.messages || [])]
-      .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id));
-    if (lifelines.length === 0 && messages.length === 0) return;
-
-    const lifelineX = new Map<string, number>();
-    lifelines.forEach((lifeline, index) => lifelineX.set(lifeline.id, 160 + index * 220));
-
-    const oldMessageY = new Map(messages.map((message) => [
-      message.id,
-      sequenceMessageY(message),
-    ]));
-    const messageY = new Map<string, number>();
-    const arrangedMessages = messages.map((message, index) => {
-      const y = SEQUENCE_MESSAGE_START_Y + index * SEQUENCE_MESSAGE_GAP;
-      messageY.set(message.id, y);
-      return { ...message, y, order: index + 1 };
-    });
-
-    const arrangedFragments = (diagram.fragments || []).map((fragment) => {
-      const containedMessages = messages.filter((message) => {
-        const y = oldMessageY.get(message.id) || 0;
-        return y >= fragment.y_start && y <= fragment.y_end;
-      });
-      if (containedMessages.length === 0) return fragment;
-      const minMessageY = Math.min(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
-      const maxMessageY = Math.max(...containedMessages.map((message) => messageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
-      return {
-        ...fragment,
-        // Re-fit the fragment to its original message membership. This is
-        // intentionally done by the explicit arrange command so normal
-        // editing can still preserve a user's manually enlarged region.
-        y_start: Math.max(80, minMessageY - 28),
-        y_end: Math.max(minMessageY + 72, maxMessageY + 36),
-      };
-    });
+    const arranged = arrangeSequenceLayout(
+      diagram.lifelines || [],
+      diagram.messages || [],
+      diagram.fragments || [],
+    );
+    if (arranged.lifelines.length === 0 && arranged.messages.length === 0) return;
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
-      lifelines: (activeDiagram.lifelines || []).map((lifeline) => ({
-        ...lifeline,
-        x: lifelineX.get(lifeline.id) ?? lifeline.x,
-      })),
-      messages: arrangedMessages,
-      fragments: arrangedFragments,
+      lifelines: arranged.lifelines,
+      messages: arranged.messages,
+      fragments: arranged.fragments,
     }));
     get().pushSnapshot('arrange_sequence');
     set({ project, isModified: true });

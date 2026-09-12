@@ -116,6 +116,26 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     });
   }
 
+  // Longest-path ranks are useful for a pipeline, but make a typical layered
+  // application diagram unnecessarily wide: a service that depends on another
+  // service can push the database several columns farther right. For a dense
+  // component graph, keep entry points, domain services and terminal adapters
+  // in three readable bands. The edges still express the detailed dependency.
+  const maxLevel = Math.max(...Array.from(levels.values()));
+  const sources = new Set(topLevel
+    .filter((component) => (incoming.get(component.id) || []).length === 0)
+    .map((component) => component.id));
+  const terminals = new Set(topLevel
+    .filter((component) => (outgoing.get(component.id) || []).length === 0)
+    .map((component) => component.id));
+  if (topLevel.length >= 5 && maxLevel >= 3 && sources.size > 0 && terminals.size > 0) {
+    topLevel.forEach((component) => {
+      if (sources.has(component.id)) levels.set(component.id, 0);
+      else if (terminals.has(component.id)) levels.set(component.id, 2);
+      else levels.set(component.id, 1);
+    });
+  }
+
   const positions = new Map<string, { x: number; y: number }>();
   const rows = new Map<number, CompNode[]>();
   topLevel.forEach((component) => {
@@ -124,7 +144,7 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     rows.set(levels.get(component.id) || 0, row);
   });
   const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
-  const columnGap = 180;
+  const columnGap = 160;
   const verticalGap = 70;
   const maxColumnHeight = Math.max(...orderedLevels.map((level) => {
     const row = rows.get(level) || [];
