@@ -49,8 +49,9 @@ class Task:
     owner: Optional[str]
     blockedBy: list[str]
     worktree: Optional[str] = None
-    # Execution result is deliberately independent from board status. A task
-    # can remain in_progress while its run ended partially or by budget stop.
+    # Execution result is deliberately independent from board status. The
+    # board remains in_progress until the task is explicitly completed, while
+    # execution.status records the terminal run result.
     result_status: str = "pending"
     execution: dict[str, Any] = field(default_factory=dict)
 
@@ -209,6 +210,17 @@ class TaskStore:
                     **dict(checkpoint),
                     "status": result_status,
                 }
+                execution["terminal"] = result_status not in {
+                    "pending", "running", "waiting_approval", "paused",
+                }
+                execution["resume_available"] = bool(
+                    checkpoint.get("resume_available", False)
+                )
+            else:
+                execution["terminal"] = result_status not in {
+                    "pending", "running", "waiting_approval", "paused",
+                }
+                execution["resume_available"] = False
             task.execution = execution
             task.result_status = result_status
             if result_status == "completed":

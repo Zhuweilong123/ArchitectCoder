@@ -36,6 +36,8 @@ from app.runtime import (
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
+from app.agent_base.core.contract_gate import load_contract_gate
+from app.agent_base.core.contract_analysis import load_contract_failure_analyzer
 
 
 def enabled_tools_context() -> str:
@@ -313,6 +315,8 @@ async def create_dev_agent(
         )),
     )
     agent.change_set = change_set
+    agent.contract_gate = load_contract_gate(settings=settings)
+    agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings)
     agent.memory_provider = memory_provider
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:

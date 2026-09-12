@@ -46,6 +46,27 @@ export interface AgentReviewEvent {
   step: number;
 }
 
+export interface AgentContractCheckEvent {
+  event: 'contract_check';
+  check_id: string;
+  run_id?: string;
+  status: 'pass' | 'warn' | 'block' | 'inconclusive' | 'not_applicable';
+  project_id: string;
+  changed_paths: string[];
+  violations: Array<{
+    code: string;
+    severity: 'warning' | 'error';
+    message: string;
+    path?: string;
+    design_entity_id?: string;
+    source_entity_id?: string;
+  }>;
+  requires_confirmation: boolean;
+  can_commit: boolean;
+  message: string;
+  graph_status?: string;
+}
+
 export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
@@ -100,6 +121,7 @@ export type AgentEvent =
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
+  | AgentContractCheckEvent
   | AgentUmlReviewEvent
   | AgentReviewTimeoutEvent
   | AgentReviewExpiredEvent

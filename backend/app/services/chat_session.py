@@ -15,6 +15,7 @@ WebSocket 协议:
     服务端 → 客户端: JSON (stream)
         {"event": "progress", "step": 1, "actions": [...], "tool_calls_detail": [...]}
         {"event": "request_review", "review_id": 0, "review_type": "shell_command", "title": "...", "question": "..."}
+        {"event": "contract_check", "status": "pass|warn|block", "violations": [...]}
         {"event": "done", "result": "..."}
         {"event": "stopped", "reason": "..."}
         {"event": "error", "message": "..."}

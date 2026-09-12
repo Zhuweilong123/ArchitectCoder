@@ -29,6 +29,23 @@ from .core.knowledge_graph import (
     load_knowledge_graph,
 )
 from .core.contract_pipeline import ContractAssembly, assemble_contract
+from .core.contract_harness import ContractCheckResult, ContractHarness, ContractViolation
+from .core.contract_analysis import (
+    ContractFailureAnalysisContext,
+    ContractFailureAnalyzerPort,
+    ModelContractFailureAnalyzer,
+    NoOpContractFailureAnalyzer,
+    build_contract_failure_report,
+    load_contract_failure_analyzer,
+)
+from .core.contract_gate import (
+    ContractGateContext,
+    ContractGateDecision,
+    ContractGatePort,
+    DefaultContractGate,
+    NoOpContractGate,
+    load_contract_gate,
+)
 from .core.plugins import (
     PluginManager,
     PluginSpec,
@@ -58,6 +75,21 @@ __all__ = [
     "load_knowledge_graph",
     "ContractAssembly",
     "assemble_contract",
+    "ContractHarness",
+    "ContractCheckResult",
+    "ContractViolation",
+    "ContractFailureAnalysisContext",
+    "ContractFailureAnalyzerPort",
+    "ModelContractFailureAnalyzer",
+    "NoOpContractFailureAnalyzer",
+    "build_contract_failure_report",
+    "load_contract_failure_analyzer",
+    "ContractGateContext",
+    "ContractGateDecision",
+    "ContractGatePort",
+    "DefaultContractGate",
+    "NoOpContractGate",
+    "load_contract_gate",
     "PluginManager",
     "PluginSpec",
     "PluginState",

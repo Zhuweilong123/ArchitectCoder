@@ -208,3 +208,46 @@ file scope     = 一个活动设计文件及其声明的组件/模块
 解析层统一锚点为 `backend/app/agent_base/core/contracts.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
 
 统一编排入口为 `app.agent_base.core.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。
+
+## 12. Harness 契约闸门
+
+契约校验不依赖模型提示词，而由 `app.agent_base.core.contract_harness.ContractHarness` 独立执行。Agent 的文件变更批次完成后，执行层对候选工作区进行只读契约检查，并通过 WebSocket 推送 `contract_check` 事件：
+
+```text
+apply_changes → ContractHarness.check(index_graph=False)
+              → PASS：继续提交
+              → WARN：复用审核通道请求用户确认
+              → BLOCK/INCONCLUSIVE：回滚变更并返回部分完成
+```
+
+只有通过校验或用户确认警告后，才提交 `ChangeSet`，随后使用 `index_graph=True` 将已接受事实增量同步到正式知识图谱。校验结果包含 `check_id`、状态、变更文件、违规项和图谱状态，前端可展示摘要及详情。
+
+当前 Harness 提供基础的设计类实现、方法存在性、测试覆盖和解析诊断检查；复杂项目可通过替换或扩展校验器增加更严格的策略，而不改变 Agent 主循环。
+
+`agent_execution` 只依赖 `ContractGatePort` 的 `evaluate/finalize` 决策接口。默认实现由
+`load_contract_gate()` 注入到 Agent；替换校验引擎、审核策略或图谱后端时，不需要修改执行主流程。
+
+执行状态投影中，Task 的顶层 `status` 继续表示看板状态（只有显式完成任务才变为
+`completed`）；本次运行的终态以 `result_status` 和 `execution.status` 为准。为避免
+消费者混淆，`execution.terminal` 表示本次运行是否已结束，`execution.resume_available`
+表示是否存在可继续的检查点。
+
+## 13. 阻断后的失败分析
+
+当门禁返回 `block` 时，执行层只负责回滚并调用注入的
+`ContractFailureAnalyzerPort.analyze()`。分析器将结构化门禁结果以内部
+`summary` 消息追加到原有交互历史，然后发起一次只读的模型调用，生成失败分析笔记。
+
+```text
+ContractGate(block)
+  → rollback
+  → ContractFailureAnalyzer.analyze(result)
+  → append internal summary
+  → model call (same tool schema, tool_choice=auto, read-only analyzer)
+  → return failure analysis note
+```
+
+门禁状态、是否允许提交和回滚结果始终以 Harness 为准，模型只能解释事实，不能修改门禁结论或执行修复。前端的 `contract_check` 阻断事件只显示固定提示
+“设计契约校验阻止提交”，详细原因由模型分析笔记呈现。分析请求沿用正常交互的完整工具 schema 与
+`tool_choice=auto`，避免因为请求配置差异降低提供商的前缀复用机会。分析器是一次性只读调用，不进入工具执行循环；即使模型返回
+`tool_calls`，也只记录并忽略，不会修改文件或重试任务。分析器可替换而无需改动 Agent 主流程。
