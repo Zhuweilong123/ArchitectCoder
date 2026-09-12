@@ -25,6 +25,9 @@ import './TraceViewer.css';
 
 const { Text } = Typography;
 
+type TraceLanguage = 'en' | 'zh';
+const tx = (language: TraceLanguage, zh: string, en: string) => language === 'en' ? en : zh;
+
 type TraceEvent = Record<string, any>;
 
 interface LlmItem { kind: 'llm'; request: TraceEvent; response?: TraceEvent; }
@@ -46,9 +49,9 @@ type TraceScope = 'chat' | 'evaluation';
 
 // ── 工具函数 ──────────────────────────────────────────
 
-function truncate(s: string, n = 4000): string {
+function truncate(s: string, n = 4000, language: TraceLanguage = 'zh'): string {
   if (!s) return '';
-  return s.length > n ? s.slice(0, n) + ` … (+${s.length - n} 字符)` : s;
+  return s.length > n ? s.slice(0, n) + ` … (+${s.length - n} ${tx(language, '字符', 'characters')})` : s;
 }
 
 function pretty(v: any): string {
@@ -80,14 +83,16 @@ function ExpandablePre({
   text,
   limit = 3000,
   className = 'trace-pre',
+  language = 'zh',
 }: {
   text: string;
   limit?: number;
   className?: string;
+  language?: TraceLanguage;
 }): React.ReactNode {
   const [expanded, setExpanded] = useState(false);
   const isLong = text.length > limit;
-  const displayText = expanded ? text : truncate(text, limit);
+  const displayText = expanded ? text : truncate(text, limit, language);
 
   return (
     <div className="trace-expandable">
@@ -103,7 +108,7 @@ function ExpandablePre({
             setExpanded((value) => !value);
           }}
         >
-          {expanded ? '收起' : `展开完整内容（共 ${text.length.toLocaleString()} 字）`}
+          {expanded ? tx(language, '收起', 'Collapse') : `${tx(language, '展开完整内容', 'Expand full content')} (${text.length.toLocaleString()} ${tx(language, '字', 'characters')})`}
         </Button>
       ) : null}
     </div>
@@ -249,13 +254,13 @@ function groupSubagentItems(items: Item[]): Item[] {
 
 // ── 渲染子组件 ────────────────────────────────────────
 
-function renderMessages(systemPrompt?: string, messages?: any[]): React.ReactNode {
+function renderMessages(systemPrompt?: string, messages?: any[], language: TraceLanguage = 'zh'): React.ReactNode {
   const msgs: Array<{ role: string; content: string }> = [];
   if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
   for (const m of messages || []) {
     if (!m || typeof m !== 'object') continue;
     let role = m.role || '?';
-    if (role === 'tool') role = 'tool（模型收到的返回，可能已截断）';
+    if (role === 'tool') role = tx(language, 'tool（模型收到的返回，可能已截断）', 'tool (truncated response received by the model)');
     let content = m.content;
     if (Array.isArray(content)) {
       content = content.map((p: any) => (typeof p === 'string' ? p : p?.text || p?.type || '')).join('\n');
@@ -265,26 +270,26 @@ function renderMessages(systemPrompt?: string, messages?: any[]): React.ReactNod
     }
     msgs.push({ role, content: typeof content === 'string' ? content : pretty(content) });
   }
-  if (msgs.length === 0) return <Text type="secondary">(无消息)</Text>;
+  if (msgs.length === 0) return <Text type="secondary">{tx(language, '(无消息)', '(No messages)')}</Text>;
   const hasTool = (messages || []).some((m) => m && m.role === 'tool');
   return (
     <div className="trace-msgs">
       {hasTool && (
         <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>
-          提示：tool 消息为模型实际收到的截断版（超过 2000 字被截），完整返回见对应工具卡片。
+          {tx(language, '提示：tool 消息为模型实际收到的截断版（超过 2000 字被截），完整返回见对应工具卡片。', 'Note: tool messages show the truncated version received by the model (over 2,000 characters); see the tool card for the full response.')}
         </div>
       )}
       {msgs.map((m, i) => (
         <div className="trace-msg" key={i}>
           <div className="trace-msg-role">{m.role}</div>
-          <ExpandablePre text={m.content} limit={3000} />
+          <ExpandablePre text={m.content} limit={3000} language={language} />
         </div>
       ))}
     </div>
   );
 }
 
-function renderToolSchema(tools: any[]): React.ReactNode {
+function renderToolSchema(tools: any[], language: TraceLanguage = 'zh'): React.ReactNode {
   return (
     <div>
       <div className="trace-msgs">
@@ -295,12 +300,12 @@ function renderToolSchema(tools: any[]): React.ReactNode {
           </div>
         ))}
       </div>
-      <ExpandablePre text={pretty(tools)} limit={4000} />
+      <ExpandablePre text={pretty(tools)} limit={4000} language={language} />
     </div>
   );
 }
 
-function renderLlm(item: LlmItem): React.ReactNode {
+function renderLlm(item: LlmItem, language: TraceLanguage = 'zh'): React.ReactNode {
   const req = item.request;
   const res = item.response;
   const usage = res?.usage;
@@ -308,13 +313,13 @@ function renderLlm(item: LlmItem): React.ReactNode {
     ? `${usage.prompt_tokens ?? '?'}/${usage.completion_tokens ?? '?'}`
     : '';
   const panels: Array<{ key: string; label: string; children: React.ReactNode }> = [
-    { key: 'prompt', label: 'Prompt', children: renderMessages(req.system_prompt, req.messages) },
+    { key: 'prompt', label: 'Prompt', children: renderMessages(req.system_prompt, req.messages, language) },
   ];
   if (req.tools?.length) {
     panels.unshift({
       key: 'tools',
-      label: `工具 schema (${req.tools.length})`,
-      children: renderToolSchema(req.tools),
+      label: `${tx(language, '工具 schema', 'Tool schema')} (${req.tools.length})`,
+      children: renderToolSchema(req.tools, language),
     });
   }
   if (res) {
@@ -322,14 +327,14 @@ function renderLlm(item: LlmItem): React.ReactNode {
       key: 'response',
       label: `Response${res.error ? ' (error)' : ''}`,
       children: res.error
-        ? <pre className="trace-pre trace-error-text">{truncate(String(res.error))}</pre>
+        ? <pre className="trace-pre trace-error-text">{truncate(String(res.error), 4000, language)}</pre>
         : (
           <div>
             {res.content
-              ? <pre className="trace-pre">{truncate(String(res.content))}</pre>
-              : <Text type="secondary">(空内容)</Text>}
+              ? <pre className="trace-pre">{truncate(String(res.content), 4000, language)}</pre>
+              : <Text type="secondary">{tx(language, '(空内容)', '(Empty content)')}</Text>}
             {res.tool_calls?.length
-              ? <pre className="trace-pre">{truncate(pretty(res.tool_calls))}</pre>
+              ? <pre className="trace-pre">{truncate(pretty(res.tool_calls), 4000, language)}</pre>
               : null}
           </div>
         ),
@@ -354,21 +359,21 @@ function renderLlm(item: LlmItem): React.ReactNode {
   );
 }
 
-function renderTool(item: ToolItem): React.ReactNode {
+function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.ReactNode {
   const call = item.call;
   const res = item.result;
   const obsLabel = res?.fed_truncated
-    ? `返回 · 完整(模型仅看前${res.fed_length}字)`
-    : '返回';
+    ? `${tx(language, '返回', 'Response')} · ${tx(language, `完整(模型仅看前${res.fed_length}字)`, `full (model saw only the first ${res.fed_length} characters)`)}`
+    : tx(language, '返回', 'Response');
   const argsPanel = {
-    key: 'args', label: '参数', children: <pre className="trace-pre">{truncate(pretty(call.arguments))}</pre>,
+    key: 'args', label: tx(language, '参数', 'Arguments'), children: <pre className="trace-pre">{truncate(pretty(call.arguments), 4000, language)}</pre>,
   };
   const resultPanel = res ? {
     key: 'obs',
     label: `${obsLabel}${res.error ? ' (error)' : ''}`,
     children: res.error
-      ? <pre className="trace-pre trace-error-text">{truncate(String(res.error))}</pre>
-      : <pre className="trace-pre">{truncate(String(res.observation ?? ''))}</pre>,
+      ? <pre className="trace-pre trace-error-text">{truncate(String(res.error), 4000, language)}</pre>
+      : <pre className="trace-pre">{truncate(String(res.observation ?? ''), 4000, language)}</pre>,
   } : null;
   const panels: Array<{ key: string; label: string; children: React.ReactNode }> = [argsPanel];
   if (resultPanel) panels.push(resultPanel);
@@ -378,16 +383,16 @@ function renderTool(item: ToolItem): React.ReactNode {
       <div className="trace-card-head">
         <ToolOutlined className="trace-icon tool" />
         <span className="trace-title">{call.tool_name || 'tool'}</span>
-        {call.tool_name === 'spawn_subagent' ? <Tag color="purple">子代理委派</Tag> : null}
+        {call.tool_name === 'spawn_subagent' ? <Tag color="purple">{tx(language, '子代理委派', 'Subagent delegation')}</Tag> : null}
         {res?.fed_truncated ? (
-          <Tag color="orange">模型仅收到前 {res.fed_length} 字</Tag>
+          <Tag color="orange">{tx(language, `模型仅收到前 ${res.fed_length} 字`, `Model received only the first ${res.fed_length} characters`)}</Tag>
         ) : null}
         {res?.duration_ms != null ? <span className="trace-meta">{res.duration_ms}ms</span> : null}
       </div>
       {hasSubagent ? (
         <>
           <Collapse ghost items={[argsPanel]} />
-          {renderSubagent(item.subagent as SubagentItem)}
+          {renderSubagent(item.subagent as SubagentItem, language)}
           {resultPanel ? <Collapse ghost items={[resultPanel]} /> : null}
         </>
       ) : (
@@ -397,7 +402,7 @@ function renderTool(item: ToolItem): React.ReactNode {
   );
 }
 
-function renderSubagent(item: SubagentItem): React.ReactNode {
+function renderSubagent(item: SubagentItem, language: TraceLanguage = 'zh'): React.ReactNode {
   const llmItems = item.items.filter((child): child is LlmItem => child.kind === 'llm');
   const renderedToolCount = item.items.filter((child) => child.kind === 'tool').length;
   const embeddedToolCount = llmItems.reduce(
@@ -416,7 +421,7 @@ function renderSubagent(item: SubagentItem): React.ReactNode {
   const promptTokens = llmItems.reduce((total, child) => total + Number(child.response?.usage?.prompt_tokens || 0), 0);
   const cachedTokens = llmItems.reduce((total, child) => total + Number(child.response?.usage?.cached_tokens || 0), 0);
   const cacheRate = promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null;
-  const statusLabel = hasError ? '存在错误' : safelyStopped ? '安全停止' : '已完成';
+  const statusLabel = hasError ? tx(language, '存在错误', 'Error') : safelyStopped ? tx(language, '安全停止', 'Stopped safely') : tx(language, '已完成', 'Completed');
 
   return (
     <div className={`trace-card trace-subagent${hasError ? ' trace-subagent-error' : ''}`}>
@@ -428,11 +433,11 @@ function renderSubagent(item: SubagentItem): React.ReactNode {
           label: (
             <div className="trace-subagent-head">
               <RobotOutlined className="trace-icon subagent" />
-              <span className="trace-title">子代理过程</span>
+              <span className="trace-title">{tx(language, '子代理过程', 'Subagent')}</span>
               <Tag color={hasError ? 'red' : safelyStopped ? 'orange' : 'purple'}>{statusLabel}</Tag>
-              <Tag>{llmItems.length} 次模型请求</Tag>
-              {toolCount > 0 ? <Tag>{toolCount} 次工具调用</Tag> : null}
-              {cacheRate !== null ? <Tag color="cyan">缓存 {cacheRate}%</Tag> : null}
+              <Tag>{llmItems.length} {tx(language, '次模型请求', 'model requests')}</Tag>
+              {toolCount > 0 ? <Tag>{toolCount} {tx(language, '次工具调用', 'tool calls')}</Tag> : null}
+              {cacheRate !== null ? <Tag color="cyan">{tx(language, '缓存', 'Cache')} {cacheRate}%</Tag> : null}
               {promptTokens > 0 ? <Tag color="blue">{promptTokens.toLocaleString()} prompt tok</Tag> : null}
               {duration > 0 ? <span className="trace-meta">{Math.round(duration)}ms</span> : null}
               <span className="trace-subagent-path">{item.spanPath}</span>
@@ -442,7 +447,7 @@ function renderSubagent(item: SubagentItem): React.ReactNode {
             <div className="trace-subagent-body">
               {item.items.map((child, index) => (
                 <div className="trace-subagent-event" key={`${item.spanPath}-${index}`}>
-                  {renderItem(child)}
+                  {renderItem(child, language)}
                 </div>
               ))}
             </div>
@@ -453,7 +458,7 @@ function renderSubagent(item: SubagentItem): React.ReactNode {
   );
 }
 
-function renderStep(ev: TraceEvent): React.ReactNode {
+function renderStep(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   const actions: string[] = ev.actions || [];
   return (
     <div className="trace-card trace-step">
@@ -461,12 +466,12 @@ function renderStep(ev: TraceEvent): React.ReactNode {
         <span className="trace-step-no">Step {ev.step}</span>
         {actions.length > 0 ? <Tag>{actions.join(', ')}</Tag> : null}
       </div>
-      {ev.thought ? <div className="trace-thought">{truncate(String(ev.thought), 200)}</div> : null}
+      {ev.thought ? <div className="trace-thought">{truncate(String(ev.thought), 200, language)}</div> : null}
     </div>
   );
 }
 
-function renderDone(ev: TraceEvent): React.ReactNode {
+function renderDone(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   const runtime = ev.runtime && typeof ev.runtime === 'object' ? ev.runtime : null;
   const runtimeEntries = runtime
     ? Object.entries(runtime).filter(([, value]) => value !== undefined && value !== null && value !== '')
@@ -475,9 +480,9 @@ function renderDone(ev: TraceEvent): React.ReactNode {
     <div className="trace-card trace-done">
       <div className="trace-card-head">
         <CheckCircleOutlined className="trace-icon done" />
-        <span className="trace-title">完成</span>
+        <span className="trace-title">{tx(language, '完成', 'Completed')}</span>
       </div>
-      <div className="trace-thought">{truncate(String(ev.answer || ''), 2000)}</div>
+      <div className="trace-thought">{truncate(String(ev.answer || ''), 2000, language)}</div>
       {runtime?.token_budget_stop_reason ? (
         <Tag color={String(runtime.token_budget_stop_reason).includes('budget') ? 'orange' : 'blue'}>
           {String(runtime.token_budget_stop_reason)}
@@ -488,8 +493,8 @@ function renderDone(ev: TraceEvent): React.ReactNode {
           ghost
           items={[{
             key: 'runtime',
-            label: '运行信息',
-            children: <pre className="trace-pre">{truncate(pretty(runtime), 5000)}</pre>,
+            label: tx(language, '运行信息', 'Runtime'),
+            children: <pre className="trace-pre">{truncate(pretty(runtime), 5000, language)}</pre>,
           }]}
         />
       ) : null}
@@ -504,22 +509,22 @@ function statusColor(status: string): string {
   return 'blue';
 }
 
-function renderTaskSummary(ev: TraceEvent): React.ReactNode {
+function renderTaskSummary(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   const status = String(ev.status || 'unknown');
   return (
     <div className="trace-card trace-summary">
       <div className="trace-card-head">
         <SyncOutlined className="trace-icon" />
-        <span className="trace-title">任务执行摘要</span>
+        <span className="trace-title">{tx(language, '任务执行摘要', 'Task summary')}</span>
         <Tag color={statusColor(status)}>{status}</Tag>
-        {ev.tool_call_count != null ? <Tag>{ev.tool_call_count} 次工具调用</Tag> : null}
+        {ev.tool_call_count != null ? <Tag>{ev.tool_call_count} {tx(language, '次工具调用', 'tool calls')}</Tag> : null}
       </div>
-      <pre className="trace-pre">{truncate(String(ev.summary || ''), 6000)}</pre>
+      <pre className="trace-pre">{truncate(String(ev.summary || ''), 6000, language)}</pre>
     </div>
   );
 }
 
-function renderReview(ev: TraceEvent): React.ReactNode {
+function renderReview(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   const isResponse = ev.event_type === 'review_response';
   const rawResponse = String(ev.response || '');
   let parsedResponse: Record<string, any> | null = null;
@@ -538,7 +543,7 @@ function renderReview(ev: TraceEvent): React.ReactNode {
         {isResponse
           ? <CheckCircleOutlined className="trace-icon done" />
           : <WarningOutlined className="trace-icon" />}
-        <span className="trace-title">{isResponse ? '审核响应' : '审核请求'}</span>
+        <span className="trace-title">{isResponse ? tx(language, '审核响应', 'Review response') : tx(language, '审核请求', 'Review request')}</span>
         {ev.review_type ? <Tag>{String(ev.review_type)}</Tag> : null}
         {decision ? <Tag color={statusColor(decision)}>{decision}</Tag> : null}
         {ev.review_id != null ? <span className="trace-meta">#{ev.review_id}</span> : null}
@@ -546,41 +551,41 @@ function renderReview(ev: TraceEvent): React.ReactNode {
       {!isResponse ? (
         <div>
           {ev.title ? <div className="trace-thought">{String(ev.title)}</div> : null}
-          {ev.question ? <pre className="trace-pre">{truncate(String(ev.question), 2000)}</pre> : null}
+          {ev.question ? <pre className="trace-pre">{truncate(String(ev.question), 2000, language)}</pre> : null}
           {ev.content ? <Collapse ghost items={[{
-            key: 'review-content', label: '审核内容',
-            children: <pre className="trace-pre">{truncate(String(ev.content), 5000)}</pre>,
+            key: 'review-content', label: tx(language, '审核内容', 'Review content'),
+            children: <pre className="trace-pre">{truncate(String(ev.content), 5000, language)}</pre>,
           }]} /> : null}
         </div>
       ) : (
-        <pre className="trace-pre">{truncate(parsedResponse ? pretty(parsedResponse) : rawResponse, 3000)}</pre>
+        <pre className="trace-pre">{truncate(parsedResponse ? pretty(parsedResponse) : rawResponse, 3000, language)}</pre>
       )}
     </div>
   );
 }
 
-function renderError(ev: TraceEvent): React.ReactNode {
+function renderError(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   return (
     <div className="trace-card trace-error">
       <div className="trace-card-head">
         <WarningOutlined className="trace-icon err" />
-        <span className="trace-title">错误{ev.source ? ` · ${ev.source}` : ''}</span>
+        <span className="trace-title">{tx(language, '错误', 'Error')}{ev.source ? ` · ${ev.source}` : ''}</span>
       </div>
-      <div className="trace-thought">{truncate(String(ev.message || ''), 1000)}</div>
+      <div className="trace-thought">{truncate(String(ev.message || ''), 1000, language)}</div>
     </div>
   );
 }
 
-function renderItem(item: Item): React.ReactNode {
+function renderItem(item: Item, language: TraceLanguage = 'zh'): React.ReactNode {
   switch (item.kind) {
-    case 'llm': return renderLlm(item);
-    case 'tool': return renderTool(item);
-    case 'step': return renderStep(item.event);
-    case 'done': return renderDone(item.event);
-    case 'error': return renderError(item.event);
-    case 'summary': return renderTaskSummary(item.event);
-    case 'review': return renderReview(item.event);
-    case 'subagent': return renderSubagent(item);
+    case 'llm': return renderLlm(item, language);
+    case 'tool': return renderTool(item, language);
+    case 'step': return renderStep(item.event, language);
+    case 'done': return renderDone(item.event, language);
+    case 'error': return renderError(item.event, language);
+    case 'summary': return renderTaskSummary(item.event, language);
+    case 'review': return renderReview(item.event, language);
+    case 'subagent': return renderSubagent(item, language);
   }
 }
 
@@ -614,7 +619,7 @@ function formatArgs(args: Record<string, any> | string): string {
 }
 
 // 渲染单轮的步级执行时间线：每一步的思考 + 工具调用（名称/参数/观察结果）。
-function renderSteps(steps: TraceReplayStep[] | undefined): React.ReactNode {
+function renderSteps(steps: TraceReplayStep[] | undefined, language: TraceLanguage = 'zh'): React.ReactNode {
   if (!steps || steps.length === 0) return null;
   return (
     <Timeline
@@ -629,12 +634,12 @@ function renderSteps(steps: TraceReplayStep[] | undefined): React.ReactNode {
                 <Tag color="blue" style={{ marginLeft: 6, marginRight: 0 }}>{s.actions.join(', ')}</Tag>
               ) : null}
               {s.is_final ? (
-                <Tag color="green" style={{ marginLeft: 6, marginRight: 0 }}>最终回答</Tag>
+                <Tag color="green" style={{ marginLeft: 6, marginRight: 0 }}>{tx(language, '最终回答', 'Final answer')}</Tag>
               ) : null}
             </div>
             {!s.is_final && s.thought ? (
               <div style={{ fontSize: 12, color: '#888', marginBottom: 4, whiteSpace: 'pre-wrap' }}>
-                {truncate(s.thought, 400)}
+                {truncate(s.thought, 400, language)}
               </div>
             ) : null}
             {s.tool_calls.map((tc, j) => (
@@ -642,7 +647,7 @@ function renderSteps(steps: TraceReplayStep[] | undefined): React.ReactNode {
                 <div>
                   <ToolOutlined style={{ color: '#1677ff', marginRight: 4 }} />
                   <code style={{ fontSize: 12 }}>{tc.name}</code>
-                  <span style={{ color: '#666' }}>({truncate(formatArgs(tc.arguments), 200)})</span>
+                  <span style={{ color: '#666' }}>({truncate(formatArgs(tc.arguments), 200, language)})</span>
                 </div>
                 {tc.observation ? (
                   <pre className="trace-pre" style={{ maxHeight: 160, overflow: 'auto', margin: '2px 0 0 0', fontSize: 11 }}>
@@ -662,6 +667,7 @@ function renderSteps(steps: TraceReplayStep[] | undefined): React.ReactNode {
 function renderStepsCompare(
   recordedSteps: TraceReplayStep[] | undefined,
   replaySteps: TraceReplayStep[] | undefined,
+  language: TraceLanguage = 'zh',
 ): React.ReactNode {
   const hasRecorded = !!(recordedSteps && recordedSteps.length > 0);
   const hasReplay = !!(replaySteps && replaySteps.length > 0);
@@ -669,31 +675,31 @@ function renderStepsCompare(
   return (
     <Row gutter={16} style={{ marginTop: 10, marginBottom: 6 }}>
       <Col span={12}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>原始工具调用</div>
-        {hasRecorded ? renderSteps(recordedSteps) : <Text type="secondary">（无记录）</Text>}
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>{tx(language, '原始工具调用', 'Recorded tool calls')}</div>
+        {hasRecorded ? renderSteps(recordedSteps, language) : <Text type="secondary">{tx(language, '（无记录）', '(No recorded calls)')}</Text>}
       </Col>
       <Col span={12}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>回放工具调用</div>
-        {hasReplay ? renderSteps(replaySteps) : <Text type="secondary">（无回放）</Text>}
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: 6 }}>{tx(language, '回放工具调用', 'Replay tool calls')}</div>
+        {hasReplay ? renderSteps(replaySteps, language) : <Text type="secondary">{tx(language, '（无回放）', '(No replay calls)')}</Text>}
       </Col>
     </Row>
   );
 }
 
 // 渲染单轮回放结果（单步执行 / 全量回放共用）。未执行时给出引导文案。
-function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 'mock' | 'rerun' | 'live'): React.ReactNode {
+function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 'mock' | 'rerun' | 'live', language: TraceLanguage = 'zh'): React.ReactNode {
   if (!r) {
-    return <Text type="secondary">尚未执行 — 点击右上角「单步执行」查看该轮效果</Text>;
+    return <Text type="secondary">{tx(language, '尚未执行 — 点击右上角「单步执行」查看该轮效果', 'Not executed yet — click “Run step” above to inspect this turn')}</Text>;
   }
   const stepsNode = mode !== 'mock'
-    ? renderStepsCompare(r.recorded_steps, r.steps)
-    : renderSteps(r.steps);
+    ? renderStepsCompare(r.recorded_steps, r.steps, language)
+    : renderSteps(r.steps, language);
   if (r.error) {
     return (
       <div>
         <Alert type="error" showIcon message={r.error} style={{ marginBottom: 8 }} />
         {stepsNode}
-        <Text type="secondary">回放在第 {turnNo} 轮中断</Text>
+        <Text type="secondary">{tx(language, `回放在第 ${turnNo} 轮中断`, `Replay stopped at turn ${turnNo}`)}</Text>
       </div>
     );
   }
@@ -701,7 +707,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
     return (
       <div>
         {stepsNode}
-        <Text type="secondary">（该轮无记录答案）</Text>
+        <Text type="secondary">{tx(language, '（该轮无记录答案）', '(No recorded answer for this turn)')}</Text>
       </div>
     );
   }
@@ -709,7 +715,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
     return (
       <div>
         {stepsNode}
-        <Tag color="green" style={{ marginBottom: 6 }}>内容一致</Tag>
+        <Tag color="green" style={{ marginBottom: 6 }}>{tx(language, '内容一致', 'Content matches')}</Tag>
         <pre className="trace-pre">{r.final_answer}</pre>
       </div>
     );
@@ -718,16 +724,16 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
     <div>
       {stepsNode}
       <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
-        逐词差异（<span style={{ color: '#cf222e' }}>红=记录</span> / <span style={{ color: '#1a7f37' }}>绿=回放</span>）
+        {tx(language, '逐词差异', 'Word-level diff')}（<span style={{ color: '#cf222e' }}>{tx(language, '红=记录', 'red = recorded')}</span> / <span style={{ color: '#1a7f37' }}>{tx(language, '绿=回放', 'green = replay')}</span>）
       </div>
       {renderWordDiff(r.recorded_answer || '', r.final_answer)}
       <div style={{ marginTop: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#cf222e', marginBottom: 4 }}>
-          记录答案（当时）
+          {tx(language, '记录答案（当时）', 'Recorded answer (then)')}
         </div>
         <pre className="trace-pre">{r.recorded_answer}</pre>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#1a7f37', marginBottom: 4, marginTop: 8 }}>
-          回放结果（现在）
+          {tx(language, '回放结果（现在）', 'Replay result (now)')}
         </div>
         <pre className="trace-pre">{r.final_answer}</pre>
       </div>
@@ -738,7 +744,7 @@ function renderTurnResult(r: TraceReplayTurn | undefined, turnNo: number, mode: 
 // ── 主组件 ────────────────────────────────────────────
 
 const TraceViewer: React.FC = () => {
-  const { requestTraceCaseFactory, traceVisible, traceSessionId, setEvaluationVisible, setTraceVisible, setTraceSessionId } = useUiStore();
+  const { requestTraceCaseFactory, traceVisible, traceSessionId, setEvaluationVisible, setTraceVisible, setTraceSessionId, interfaceLanguage } = useUiStore();
 
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
@@ -870,7 +876,7 @@ const TraceViewer: React.FC = () => {
     const msgs = detail.events
       .filter((e) => e.event_type === 'user_message')
       .map((e) => (e.message || '') as string);
-    return msgs.length ? msgs : ['（无用户输入 / 独立优化）'];
+    return msgs.length ? msgs : [tx(interfaceLanguage, '（无用户输入 / 独立优化）', '(No user input / standalone optimization)')];
   }, [detail]);
 
   // 渲染行：轮次头 + 事件项（事件项带全局播放序号）
@@ -944,7 +950,7 @@ const TraceViewer: React.FC = () => {
       setReplayResult(result);
       fillTurnResults(result);
     } catch (e: any) {
-      message.error('回放失败: ' + (e?.response?.data?.detail || String(e)));
+      message.error(`${tx(interfaceLanguage, '回放失败', 'Replay failed')}: ${e?.response?.data?.detail || String(e)}`);
     } finally {
       setReplaying(false);
     }
@@ -961,7 +967,7 @@ const TraceViewer: React.FC = () => {
       const last = result.turns[result.turns.length - 1];
       if (last) setTurnResults((prev) => ({ ...prev, [n - 1]: last }));
     } catch (e: any) {
-      message.error('单步执行失败: ' + (e?.response?.data?.detail || String(e)));
+      message.error(`${tx(interfaceLanguage, '单步执行失败', 'Step execution failed')}: ${e?.response?.data?.detail || String(e)}`);
     } finally {
       setSingleStepTurn(null);
     }
@@ -976,7 +982,7 @@ const TraceViewer: React.FC = () => {
 
   return (
     <Drawer
-      title={<div className="trace-drawer-title"><span>Trace 回放</span><Tag color={traceScope === 'evaluation' ? 'purple' : 'blue'}>{traceScope === 'evaluation' ? '评测 Trace' : '普通交互'}</Tag></div>}
+      title={<div className="trace-drawer-title"><span>{tx(interfaceLanguage, 'Trace 回放', 'Trace replay')}</span><Tag color={traceScope === 'evaluation' ? 'purple' : 'blue'}>{traceScope === 'evaluation' ? tx(interfaceLanguage, '评测 Trace', 'Evaluation Trace') : tx(interfaceLanguage, '普通交互', 'Chat')}</Tag></div>}
       width={1000}
       open={traceVisible}
       onClose={handleClose}
@@ -986,19 +992,19 @@ const TraceViewer: React.FC = () => {
         <div className="trace-toolbar">
           <div className="trace-toolbar-row">
             <div className="trace-toolbar-source">
-              <span className="trace-toolbar-label">数据来源</span>
+              <span className="trace-toolbar-label">{tx(interfaceLanguage, '数据来源', 'Data source')}</span>
               <Segmented
                 value={traceScope}
                 onChange={switchTraceScope}
                 options={[
-                  { label: `普通交互 (${traceCounts.chat})`, value: 'chat' },
-                  { label: `评测 Trace (${traceCounts.evaluation})`, value: 'evaluation' },
+                  { label: `${tx(interfaceLanguage, '普通交互', 'Chat')} (${traceCounts.chat})`, value: 'chat' },
+                  { label: `${tx(interfaceLanguage, '评测 Trace', 'Evaluation Trace')} (${traceCounts.evaluation})`, value: 'evaluation' },
                 ]}
               />
             </div>
             <div className="trace-toolbar-actions">
               <Button icon={<ReloadOutlined />} onClick={refreshList} loading={loadingList}>
-                刷新列表
+                {tx(interfaceLanguage, '刷新列表', 'Refresh')}
               </Button>
               <Button
                 icon={<FileAddOutlined />}
@@ -1012,46 +1018,46 @@ const TraceViewer: React.FC = () => {
                 }}
                 disabled={!selected}
               >
-                从 Trace 创建用例
+                {tx(interfaceLanguage, '从 Trace 创建用例', 'Create case from Trace')}
               </Button>
             </div>
           </div>
           <div className="trace-toolbar-row trace-toolbar-playback">
             <div className="trace-toolbar-group">
-              <span className="trace-toolbar-label">回放模式</span>
+              <span className="trace-toolbar-label">{tx(interfaceLanguage, '回放模式', 'Replay mode')}</span>
               <Segmented
                 size="small"
                 value={replayMode}
                 onChange={(v) => { setReplayMode(v as 'mock' | 'rerun' | 'live'); clearReplay(); }}
                 options={[
                   { label: 'Mock', value: 'mock' },
-                  { label: 'Rerun（真 LLM）', value: 'rerun' },
-                  { label: 'Live（真工具）', value: 'live' },
+                  { label: tx(interfaceLanguage, 'Rerun（真 LLM）', 'Rerun (real LLM)'), value: 'rerun' },
+                  { label: tx(interfaceLanguage, 'Live（真工具）', 'Live (real tools)'), value: 'live' },
                 ]}
               />
             </div>
             <div className="trace-toolbar-actions">
               <Button icon={<SyncOutlined />} onClick={openReplay} disabled={!selected}>
-                回放执行
+                {tx(interfaceLanguage, '回放执行', 'Run replay')}
               </Button>
               {!playing ? (
                 <Button type="primary" icon={<CaretRightOutlined />} onClick={startPlay} disabled={totalItems === 0}>
-                  自动播放
+                  {tx(interfaceLanguage, '自动播放', 'Auto-play')}
                 </Button>
               ) : (
                 <Button icon={<PauseOutlined />} onClick={() => setPlaying(false)}>
-                  暂停
+                  {tx(interfaceLanguage, '暂停', 'Pause')}
                 </Button>
               )}
               <Button icon={<StepBackwardOutlined />} onClick={() => { setPlaying(false); setPlayIndex(-1); }} disabled={playIndex < 0}>
-                重置播放
+                {tx(interfaceLanguage, '重置播放', 'Reset playback')}
               </Button>
             </div>
           </div>
         </div>
 
         <div className="trace-viewer-body">
-        {/* 左侧：会话列表 */}
+        {/* Left: session list */}
         <div className="trace-session-list">
           <div className="trace-session-toolbar">
             <Input.Search
@@ -1059,15 +1065,15 @@ const TraceViewer: React.FC = () => {
               size="small"
               value={traceQuery}
               onChange={(event) => setTraceQuery(event.target.value)}
-              placeholder="搜索当前来源的会话"
+              placeholder={tx(interfaceLanguage, '搜索当前来源的会话', 'Search sessions in this source')}
             />
-            <Typography.Text type="secondary">{filteredTraces.length} / {scopedTraces.length} 个会话</Typography.Text>
+            <Typography.Text type="secondary">{filteredTraces.length} / {scopedTraces.length} {tx(interfaceLanguage, '个会话', 'sessions')}</Typography.Text>
           </div>
           {loadingList && traces.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
           ) : scopedTraces.length === 0 ? (
             <Empty
-              description={traceScope === 'evaluation' ? '暂无评测 Trace' : '暂无普通交互 Trace'}
+              description={traceScope === 'evaluation' ? tx(interfaceLanguage, '暂无评测 Trace', 'No evaluation traces') : tx(interfaceLanguage, '暂无普通交互 Trace', 'No chat traces')}
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               style={{ marginTop: 24 }}
             />
@@ -1085,13 +1091,13 @@ const TraceViewer: React.FC = () => {
                       <div className="trace-session-title">
                         <span>{t.session_id}</span>
                         <Tag color={t.trace_type === 'evaluation' ? 'purple' : 'blue'}>
-                          {t.trace_type === 'evaluation' ? '评测' : '交互'}
+                          {t.trace_type === 'evaluation' ? tx(interfaceLanguage, '评测', 'Evaluation') : tx(interfaceLanguage, '交互', 'Chat')}
                         </Tag>
                       </div>
                     }
                     description={
                       <span style={{ fontSize: 11, color: '#999' }}>
-                        {t.title ? `${truncate(t.title, 36)} · ` : ''}{t.events} 事件 · {fmtSize(t.size)}
+                        {t.title ? `${truncate(t.title, 36, interfaceLanguage)} · ` : ''}{t.events} {tx(interfaceLanguage, '事件', 'events')} · {fmtSize(t.size)}
                         {t.first_ts_ms ? ` · ${fmtTime(t.first_ts_ms)}` : ''}
                       </span>
                     }
@@ -1102,12 +1108,12 @@ const TraceViewer: React.FC = () => {
           )}
         </div>
 
-        {/* 右侧：时间轴 */}
+        {/* Right: timeline */}
         <div className="trace-timeline">
           {loadingDetail ? (
             <div style={{ padding: 48, textAlign: 'center' }}><Spin /></div>
           ) : !detail ? (
-            <Empty description="选择一个会话查看" style={{ marginTop: 48 }} />
+            <Empty description={tx(interfaceLanguage, '选择一个会话查看', 'Select a session to view')} style={{ marginTop: 48 }} />
           ) : (
             rows.map((row, i) => {
               if (row.kind === 'turn') {
@@ -1115,8 +1121,8 @@ const TraceViewer: React.FC = () => {
                   <div className="trace-turn-header" key={`turn-${row.turn.id}`}>
                     <UserOutlined style={{ marginRight: 6 }} />
                     {row.turn.userMessage
-                      ? truncate(row.turn.userMessage, 120)
-                      : '（会话开始 / 独立优化）'}
+                      ? truncate(row.turn.userMessage, 120, interfaceLanguage)
+                      : tx(interfaceLanguage, '（会话开始 / 独立优化）', '(Session start / standalone optimization)')}
                     {row.turn.projectFile
                       ? <Tag style={{ marginLeft: 8 }}>{baseName(row.turn.projectFile)}</Tag>
                       : null}
@@ -1130,7 +1136,7 @@ const TraceViewer: React.FC = () => {
                   key={`item-${row.playIndex}`}
                   className={active ? 'trace-item trace-item-active' : 'trace-item'}
                 >
-                  {renderItem(row.item)}
+                  {renderItem(row.item, interfaceLanguage)}
                 </div>
               );
             })
@@ -1141,7 +1147,7 @@ const TraceViewer: React.FC = () => {
 
       {/* 回放执行弹窗 */}
       <Modal
-        title="回放执行"
+        title={tx(interfaceLanguage, '回放执行', 'Replay execution')}
         open={replayModalOpen}
         onCancel={() => setReplayModalOpen(false)}
         footer={[
@@ -1151,10 +1157,10 @@ const TraceViewer: React.FC = () => {
             loading={replaying}
             onClick={runAll}
           >
-            执行全部
+            {tx(interfaceLanguage, '执行全部', 'Run all')}
           </Button>,
           <Button key="close" type="primary" onClick={() => setReplayModalOpen(false)}>
-            关闭
+            {tx(interfaceLanguage, '关闭', 'Close')}
           </Button>,
         ]}
         width={760}
@@ -1166,8 +1172,8 @@ const TraceViewer: React.FC = () => {
               showIcon
               message={
                 replayResult.all_matched
-                  ? '回放完全一致：所有轮次最终答案与记录逐字匹配。'
-                  : '回放存在不一致，请查看下方各轮明细。'
+                  ? tx(interfaceLanguage, '回放完全一致：所有轮次最终答案与记录逐字匹配。', 'Replay fully matched: every final answer matches the recording word for word.')
+                  : tx(interfaceLanguage, '回放存在不一致，请查看下方各轮明细。', 'Replay differs from the recording; inspect the turn details below.')
               }
               style={{ marginBottom: 12 }}
             />
@@ -1175,24 +1181,24 @@ const TraceViewer: React.FC = () => {
             <Alert
               type="info"
               showIcon
-              message={`单步执行：已执行前 ${replayResult.executed_turns}/${replayResult.total_turns} 轮，查看第 ${replayResult.executed_turns} 轮效果。`}
+              message={tx(interfaceLanguage, `单步执行：已执行前 ${replayResult.executed_turns}/${replayResult.total_turns} 轮，查看第 ${replayResult.executed_turns} 轮效果。`, `Step execution: ${replayResult.executed_turns}/${replayResult.total_turns} turns executed; inspect turn ${replayResult.executed_turns}.`)}
               style={{ marginBottom: 12 }}
             />
           ) : null}
           {replayResult ? (
             <div style={{ marginBottom: 12, fontSize: 13, color: '#666' }}>
-              模式 {replayResult.mode === 'mock' ? 'Mock（全模拟）' : replayResult.mode === 'rerun' ? 'Rerun（真 LLM）' : 'Live（真工具）'} ·
-              已执行 {replayResult.executed_turns}/{replayResult.total_turns} 轮 ·
-              LLM {replayResult.llm_calls ?? '?'}/{replayResult.llm_total} · 工具 {replayResult.tool_calls}/{replayResult.tool_total}
-              {replayFromCache ? <Tag color="default" style={{ marginLeft: 8 }}>上次结果</Tag> : null}
+              {tx(interfaceLanguage, '模式', 'Mode')} {replayResult.mode === 'mock' ? tx(interfaceLanguage, 'Mock（全模拟）', 'Mock (fully simulated)') : replayResult.mode === 'rerun' ? tx(interfaceLanguage, 'Rerun（真 LLM）', 'Rerun (real LLM)') : tx(interfaceLanguage, 'Live（真工具）', 'Live (real tools)')} ·
+              {tx(interfaceLanguage, '已执行', 'Executed')} {replayResult.executed_turns}/{replayResult.total_turns} {tx(interfaceLanguage, '轮', 'turns')} ·
+              LLM {replayResult.llm_calls ?? '?'}/{replayResult.llm_total} · {tx(interfaceLanguage, '工具', 'Tools')} {replayResult.tool_calls}/{replayResult.tool_total}
+              {replayFromCache ? <Tag color="default" style={{ marginLeft: 8 }}>{tx(interfaceLanguage, '上次结果', 'Cached result')}</Tag> : null}
             </div>
           ) : (
             <div style={{ marginBottom: 12, fontSize: 13, color: '#888' }}>
-              点击每轮右侧的「单步执行」查看该轮效果，或点击下方「执行全部」一次跑完所有轮次。
+              {tx(interfaceLanguage, '点击每轮右侧的「单步执行」查看该轮效果，或点击下方「执行全部」一次跑完所有轮次。', 'Click “Run step” beside a turn to inspect it, or click “Run all” below to execute every turn.')}
             </div>
           )}
           {userTurns.length === 0 ? (
-            <Empty description="该会话无 trace 事件" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 24 }} />
+            <Empty description={tx(interfaceLanguage, '该会话无 trace 事件', 'This session has no trace events')} image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 24 }} />
           ) : (
             <Collapse
               ghost
@@ -1207,7 +1213,7 @@ const TraceViewer: React.FC = () => {
                         : r && !r.error
                           ? <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />
                           : null}
-                      第 {i + 1} 轮 — {truncate(msg, 40) || '（空输入）'}
+                      {tx(interfaceLanguage, `第 ${i + 1} 轮`, `Turn ${i + 1}`)} — {truncate(msg, 40, interfaceLanguage) || tx(interfaceLanguage, '（空输入）', '(Empty input)')}
                     </span>
                   ),
                   extra: (
@@ -1216,10 +1222,10 @@ const TraceViewer: React.FC = () => {
                       loading={singleStepTurn === i + 1}
                       onClick={(e) => { e.stopPropagation(); runTurn(i + 1); }}
                     >
-                      单步执行
+                      {tx(interfaceLanguage, '单步执行', 'Run step')}
                     </Button>
                   ),
-                  children: renderTurnResult(r, i + 1, replayMode),
+                  children: renderTurnResult(r, i + 1, replayMode, interfaceLanguage),
                 };
               })}
             />

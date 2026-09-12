@@ -11,16 +11,16 @@ export function fmtDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
-export function fmtPromptCacheRate(value: number | null | undefined): string {
+export function fmtPromptCacheRate(value: number | null | undefined, emptyValue = '暂无数据'): string {
   return typeof value === 'number' && Number.isFinite(value)
     ? `${(value * 100).toFixed(1)}%`
-    : '暂无数据';
+    : emptyValue;
 }
 
-export function fmtPromptPrefixReuseRate(value: number | null | undefined): string {
+export function fmtPromptPrefixReuseRate(value: number | null | undefined, emptyValue = '暂无数据'): string {
   return typeof value === 'number' && Number.isFinite(value)
     ? `${(value * 100).toFixed(1)}%`
-    : '暂无数据';
+    : emptyValue;
 }
 
 export function fmtTime(value: string): string {
@@ -55,6 +55,46 @@ export type CheckerFieldSpec = {
   placeholder?: string;
 };
 export type CheckerDefinition = { type: string; label: string; fields: CheckerFieldSpec[] };
+
+const CHECKER_ENGLISH_LABELS: Record<string, { label: string; fields: Record<string, string> }> = {
+  file_exists: { label: 'File exists', fields: { path: 'Path' } },
+  file_absent: { label: 'File does not exist', fields: { path: 'Path' } },
+  file_contains: { label: 'File contains text', fields: { path: 'Path', text: 'Text' } },
+  file_not_contains: { label: 'File does not contain text', fields: { path: 'Path', text: 'Text' } },
+  json_field: { label: 'JSON field', fields: { path: 'Path', field: 'Field path', expected: 'Expected value' } },
+  pytest: { label: 'pytest', fields: { path: 'Test path', args: 'Arguments', timeout: 'Timeout (seconds)' } },
+  hidden_pytest: { label: 'Hidden pytest', fields: { path: 'Test path', args: 'Arguments', timeout: 'Timeout (seconds)' } },
+  answer_contains_all: { label: 'Answer contains all', fields: { texts: 'Required content' } },
+  answer_ordered_contains: { label: 'Answer contains in order', fields: { texts: 'Ordered content' } },
+  trace_policy: { label: 'Trace tool policy', fields: { max_tool_calls: 'Max tool calls', required_tools: 'Required tools', forbidden_tools: 'Forbidden tools' } },
+  paths_unchanged: { label: 'Paths unchanged', fields: { paths: 'Paths' } },
+  uml_valid: { label: 'Valid UML', fields: { path: 'Path', diagram: 'Diagram name' } },
+  uml_contains: { label: 'UML contains element', fields: { path: 'Path', kind: 'Element type', name: 'Element name', diagram: 'Diagram name' } },
+  uml_absent: { label: 'UML excludes element', fields: { path: 'Path', kind: 'Element type', name: 'Element name', diagram: 'Diagram name', class_name: 'Class name', method: 'Method name' } },
+  uml_component_names: { label: 'UML component names', fields: { path: 'Path', names: 'Component names', diagram: 'Diagram name' } },
+  uml_relation: { label: 'UML relation', fields: { path: 'Path', source: 'Source element', target: 'Target element', relation_type: 'Relation type', diagram: 'Diagram name' } },
+  uml_method: { label: 'UML method', fields: { path: 'Path', class_name: 'Class name', method: 'Method name', diagram: 'Diagram name' } },
+  uml_method_signature: { label: 'UML method signature', fields: { path: 'Path', class_name: 'Class name', method: 'Method name', params: 'Parameters', return_type: 'Return type', diagram: 'Diagram name' } },
+  uml_sequence: { label: 'UML sequence contains', fields: { path: 'Path', labels: 'Sequence labels', diagram: 'Diagram name' } },
+  uml_sequence_exact: { label: 'Exact UML sequence match', fields: { path: 'Path', labels: 'Exact labels', diagram: 'Diagram name' } },
+};
+
+export function getCheckerDefinitions(language: 'en' | 'zh'): CheckerDefinition[] {
+  if (language === 'zh') return TRACE_CHECKER_DEFINITIONS;
+  return TRACE_CHECKER_DEFINITIONS.map((definition) => {
+    const translated = CHECKER_ENGLISH_LABELS[definition.type];
+    if (!translated) return definition;
+    return {
+      ...definition,
+      label: translated.label,
+      fields: definition.fields.map((field) => ({
+        ...field,
+        label: translated.fields[field.key] || field.label,
+        placeholder: field.placeholder === '测试路径' ? '.' : field.placeholder,
+      })),
+    };
+  });
+}
 
 export const TRACE_CHECKER_DEFINITIONS: CheckerDefinition[] = [
   { type: 'file_exists', label: '文件存在', fields: [{ key: 'path', label: '路径', required: true }] },
