@@ -18,10 +18,9 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 <tr>
 <td width="64%" valign="top">
 
-<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
-  <source src="docs/media/architectcoder-demo.mp4" type="video/mp4">
-  Your browser does not support embedded video. [Open the product demo](docs/media/architectcoder-demo.mp4).
-</video>
+<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4"><img src="docs/media/architectcoder-demo-preview.gif" alt="ArchitectCoder product demo preview" width="100%"></a>
+
+<p align="center"><sub>Animated browser preview. <a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4">Open the full MP4 demo</a>.</sub></p>
 
 <p align="center"><sub>Real browser recording: UML switching → Trace and Evaluation Center → DevAgent read-only project summary.</sub></p>
 </td>
@@ -41,10 +40,9 @@ The result is an engineering workflow that is easy to understand, review, and re
 
 ### Evaluation Center demo
 
-<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
-  <source src="docs/media/architectcoder-evaluation-demo.mp4" type="video/mp4">
-  Your browser does not support embedded video. [Open the Evaluation Center demo](docs/media/architectcoder-evaluation-demo.mp4).
-</video>
+<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4"><img src="docs/media/architectcoder-evaluation-demo-preview.gif" alt="ArchitectCoder Evaluation Center demo preview" width="100%"></a>
+
+<p align="center"><sub>Animated browser preview. <a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">Open the full MP4 demo</a>.</sub></p>
 
 <p align="center"><sub>Real browser recording: performance results → three-version trend comparison → case-level Trace replay → archive center.</sub></p>
 

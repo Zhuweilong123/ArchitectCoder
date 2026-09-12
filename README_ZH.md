@@ -18,10 +18,9 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 <tr>
 <td width="64%" valign="top">
 
-<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
-  <source src="docs/media/architectcoder-demo.mp4" type="video/mp4">
-  你的浏览器不支持嵌入式视频。[打开产品演示](docs/media/architectcoder-demo.mp4)。
-</video>
+<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4"><img src="docs/media/architectcoder-demo-preview.gif" alt="ArchitectCoder 产品演示预览" width="100%"></a>
+
+<p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
 
 <p align="center"><sub>真实浏览器录屏：切换 UML 图 → 查看 Trace 与评测中心 → DevAgent 只读总结项目。</sub></p>
 </td>
@@ -41,10 +40,9 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 ### 评测中心演示
 
-<video controls muted loop playsinline poster="docs/media/workspace-canvas.png" width="100%">
-  <source src="docs/media/architectcoder-evaluation-demo.mp4" type="video/mp4">
-  你的浏览器不支持嵌入式视频。[打开评测中心演示](docs/media/architectcoder-evaluation-demo.mp4)。
-</video>
+<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4"><img src="docs/media/architectcoder-evaluation-demo-preview.gif" alt="ArchitectCoder 评测中心演示预览" width="100%"></a>
+
+<p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
 
 <p align="center"><sub>真实浏览器录屏：性能结果 → 三版本趋势对比 → 用例级 Trace 回放 → 归档中心。</sub></p>
 
