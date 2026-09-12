@@ -179,6 +179,41 @@ class KGService:
             },
         }
 
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+        """Export bounded graph facts for read-side contract integrations.
+
+        The contract layer consumes this neutral representation rather than
+        reaching into the SQLite implementation.  ``content_text`` and
+        embeddings are deliberately omitted: they are retrieval details, not
+        contract facts.
+        """
+        if not project_id:
+            return {"available": False, "nodes": [], "edges": [], "error": "project_id is required"}
+        bound = max(1, min(int(max_items or 1), 10000))
+        db = self.ctx.db
+        stats = db.stats(project_id)
+        if stats.get("total_nodes", 0) == 0:
+            return {
+                "available": False,
+                "project_id": project_id,
+                "nodes": [],
+                "edges": [],
+                "stats": stats,
+            }
+        nodes = db.find_nodes(project_id, limit=bound)
+        edges = db.find_project_edges(project_id, limit=bound)
+        return {
+            "available": True,
+            "project_id": project_id,
+            "nodes": [node.to_summary() for node in nodes],
+            "edges": [edge.to_dict() for edge in edges],
+            "stats": stats,
+            "truncated": {
+                "nodes": stats.get("total_nodes", 0) > len(nodes),
+                "edges": stats.get("total_edges", 0) > len(edges),
+            },
+        }
+
     # ── locate: 精确检索 ────────────────────────────────────
 
     def locate(self, project_id: str, pattern: str,

@@ -11,6 +11,7 @@
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | 插件加载、provider 和扩展所有权 |
 | [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
+| [`design-source-contract.md`](design-source-contract.md) | 设计、源码与测试的一致性契约、实体映射和规则分级 |
 
 ## 子系统设计
 

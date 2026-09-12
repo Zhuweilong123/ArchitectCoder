@@ -108,6 +108,43 @@ export function createAgentChatEventHandler({
         break;
       }
 
+      case 'contract_check': {
+        if (event.status === 'block') {
+          appendSystemMessage(setMessages, {
+            id: `contract_check_${Date.now()}`,
+            content: '设计契约校验阻止提交',
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        const statusText: Record<string, string> = {
+          pass: '通过',
+          warn: '发现警告',
+          block: '阻止提交',
+          inconclusive: '无法确定',
+          not_applicable: '不适用',
+        };
+        const lines = [
+          `设计契约校验：${statusText[event.status] || event.status}`,
+          event.message,
+        ];
+        if (event.violations.length > 0) {
+          lines.push(...event.violations.slice(0, 8).map((item) => {
+            const location = item.path ? ` [${item.path}]` : '';
+            return `- ${item.message}${location}`;
+          }));
+          if (event.violations.length > 8) {
+            lines.push(`- 其余 ${event.violations.length - 8} 项请查看后端校验详情`);
+          }
+        }
+        appendSystemMessage(setMessages, {
+          id: `contract_check_${Date.now()}`,
+          content: lines.join('\n'),
+          timestamp: Date.now(),
+        });
+        break;
+      }
+
       case 'uml_review': {
         const diagrams = normalizeReviewDiagrams(event.diagrams);
         const changedDiagrams = event.changed_diagrams === undefined

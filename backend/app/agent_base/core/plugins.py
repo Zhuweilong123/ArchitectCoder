@@ -18,6 +18,7 @@ from typing import Any, Mapping
 from backend.config.plugin_defaults import (
     DEFAULT_EVALS_PROVIDER,
     DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
+    DEFAULT_DESIGN_CONTRACT_PROVIDER,
     DEFAULT_MEMORY_PROVIDER,
     DEFAULT_ORCHESTRATION_PROVIDER,
     DEFAULT_TRACE_PROVIDER,
@@ -103,6 +104,13 @@ DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
             "impact",
             "diff",
         ),
+    ),
+    PluginSpec(
+        name="design_contract",
+        enabled_setting="agent_design_contract_enabled",
+        provider_setting="agent_design_contract_provider",
+        default_provider=DEFAULT_DESIGN_CONTRACT_PROVIDER,
+        required_methods=("collect",),
     ),
 )
 

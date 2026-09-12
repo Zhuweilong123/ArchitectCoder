@@ -46,6 +46,28 @@ export interface AgentReviewEvent {
   step: number;
 }
 
+export interface AgentContractCheckEvent {
+  event: 'contract_check';
+  check_id: string;
+  run_id?: string;
+  status: 'pass' | 'warn' | 'block' | 'inconclusive' | 'not_applicable';
+  project_id: string;
+  changed_paths: string[];
+  violations: Array<{
+    code: string;
+    severity: 'warning' | 'error';
+    message: string;
+    path?: string;
+    design_entity_id?: string;
+    source_entity_id?: string;
+  }>;
+  requires_confirmation: boolean;
+  can_commit: boolean;
+  message: string;
+  graph_status?: string;
+  contract_enabled?: boolean;
+}
+
 export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
@@ -100,6 +122,7 @@ export type AgentEvent =
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
+  | AgentContractCheckEvent
   | AgentUmlReviewEvent
   | AgentReviewTimeoutEvent
   | AgentReviewExpiredEvent
@@ -126,6 +149,16 @@ const HEARTBEAT_TIMEOUT_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let _pingTimer: ReturnType<typeof setInterval> | null = null;
 let _lastPongAt = 0;
+const DESIGN_CONTRACT_STORAGE_KEY = 'agentDesignContractEnabled';
+
+function _storedDesignContractEnabled(): boolean | undefined {
+  try {
+    const value = localStorage.getItem(DESIGN_CONTRACT_STORAGE_KEY);
+    return value === null ? undefined : value !== 'false';
+  } catch {
+    return undefined;
+  }
+}
 
 export function connectAgentChat(
   onEvent: AgentEventCallback,
@@ -212,6 +245,8 @@ export function sendAgentMessage(message: string, opts?: {
   test_dir?: string;
   project_file?: string;
   workspace_root?: string;
+  /** Per-run override; the server-side setting remains the upper bound. */
+  design_contract_enabled?: boolean;
   stream_mode?: boolean;
   /** 跳过监听器通知 — 调用方已自行添加用户消息到 UI 时设为 true */
   skipNotify?: boolean;
@@ -223,6 +258,9 @@ export function sendAgentMessage(message: string, opts?: {
     test_dir: opts?.test_dir || '',
     project_file: opts?.project_file || '',
     workspace_root: opts?.workspace_root || '',
+    design_contract_enabled: typeof opts?.design_contract_enabled === 'boolean'
+      ? opts.design_contract_enabled
+      : _storedDesignContractEnabled(),
     stream_mode: opts?.stream_mode ? true : undefined,
   };
 

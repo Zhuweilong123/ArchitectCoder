@@ -94,6 +94,21 @@ CREATE TABLE IF NOT EXISTS kg_edges (
     created_at TEXT NOT NULL
 );
 
+-- 椤圭洰鏂囦欢绾у璞?鐢ㄤ簬澧為噺鍚屾
+CREATE TABLE IF NOT EXISTS kg_artifacts (
+    rowid          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     TEXT NOT NULL,
+    artifact_id    TEXT NOT NULL,
+    artifact_type  TEXT NOT NULL,
+    path           TEXT NOT NULL,
+    fingerprint    TEXT NOT NULL,
+    parser_version TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'ready',
+    updated_at     TEXT NOT NULL,
+    properties     TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(project_id, artifact_id)
+);
+
 -- FTS5 虚拟表 (content-sync: 触发器自动同步 kg_nodes.content_text)
 CREATE VIRTUAL TABLE IF NOT EXISTS kg_node_fts USING fts5(
     content_text,
@@ -112,6 +127,7 @@ CREATE INDEX IF NOT EXISTS idx_kg_nodes_project   ON kg_nodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_type      ON kg_nodes(project_id, node_type);
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_source    ON kg_nodes(project_id, source);
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_name      ON kg_nodes(project_id, name);
+CREATE INDEX IF NOT EXISTS idx_kg_artifacts_project ON kg_artifacts(project_id);
 
 -- 边: 查询加速
 CREATE INDEX IF NOT EXISTS idx_kg_edges_source    ON kg_edges(source_id);
@@ -296,6 +312,105 @@ class KnowledgeGraphDB:
         )
         self.conn.commit()
         return cur.rowcount
+
+    def list_artifacts(self, project_id: str) -> dict[str, dict[str, Any]]:
+        """Return the last synchronized artifact records for one project."""
+        rows = self.conn.execute(
+            "SELECT artifact_id, artifact_type, path, fingerprint, "
+            "parser_version, status, updated_at, properties "
+            "FROM kg_artifacts WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                properties = json.loads(row["properties"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                properties = {}
+            result[row["artifact_id"]] = {
+                "artifact_id": row["artifact_id"],
+                "artifact_type": row["artifact_type"],
+                "path": row["path"],
+                "fingerprint": row["fingerprint"],
+                "parser_version": row["parser_version"],
+                "status": row["status"],
+                "updated_at": row["updated_at"],
+                "properties": properties,
+            }
+        return result
+
+    def upsert_artifact(self, project_id: str, artifact: dict[str, Any]) -> None:
+        """Persist one bounded artifact fingerprint record."""
+        self.conn.execute(
+            "INSERT INTO kg_artifacts "
+            "(project_id, artifact_id, artifact_type, path, fingerprint, "
+            "parser_version, status, updated_at, properties) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(project_id, artifact_id) DO UPDATE SET "
+            "artifact_type=excluded.artifact_type, path=excluded.path, "
+            "fingerprint=excluded.fingerprint, parser_version=excluded.parser_version, "
+            "status=excluded.status, updated_at=excluded.updated_at, "
+            "properties=excluded.properties",
+            (
+                project_id,
+                str(artifact.get("artifact_id", "")),
+                str(artifact.get("artifact_type", "")),
+                str(artifact.get("path", "")),
+                str(artifact.get("fingerprint", "")),
+                str(artifact.get("parser_version", "")),
+                str(artifact.get("status", "ready")),
+                _utc_now(),
+                json.dumps(artifact.get("properties", {}), ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    def delete_artifact(self, project_id: str, artifact_id: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM kg_artifacts WHERE project_id = ? AND artifact_id = ?",
+            (project_id, artifact_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_nodes_by_artifact(self, project_id: str, artifact_id: str) -> int:
+        """Delete only nodes previously tagged by the facts projection."""
+        rows = self.conn.execute(
+            "SELECT id, properties FROM kg_nodes WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        ids: list[str] = []
+        for row in rows:
+            try:
+                properties = json.loads(row["properties"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if properties.get("artifact_id") == artifact_id:
+                ids.append(row["id"])
+        return self.delete_nodes_by_ids(ids)
+
+    def tag_node_artifact(
+        self, node_id: str, artifact_id: str, fact_id: str = "",
+    ) -> bool:
+        """Attach facts provenance to an existing richer graph node."""
+        row = self.conn.execute(
+            "SELECT properties FROM kg_nodes WHERE id = ?", (node_id,)
+        ).fetchone()
+        if row is None or not artifact_id:
+            return False
+        try:
+            properties = json.loads(row["properties"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            properties = {}
+        properties["artifact_id"] = artifact_id
+        if fact_id:
+            properties.setdefault("artifact_fact_id", fact_id)
+        self.conn.execute(
+            "UPDATE kg_nodes SET properties = ? WHERE id = ?",
+            (json.dumps(properties, ensure_ascii=False), node_id),
+        )
+        self.conn.commit()
+        return True
 
     def get_descendant_ids(self, node_id: str,
                            edge_type: str = "contains") -> list[str]:
@@ -486,6 +601,26 @@ class KnowledgeGraphDB:
                 params + [limit],
             ).fetchall()
         return [self._row_to_edge(r) for r in rows]
+
+    def find_project_edges(self, project_id: str, limit: int = 500) -> list[GraphEdge]:
+        """Return edges whose endpoints belong to one project.
+
+        ``find_edges`` intentionally has no project argument because edges are
+        keyed by node ids.  Read-side integrations that export a complete
+        project graph need a bounded, project-scoped query instead of scanning
+        the first global rows and filtering them in memory.
+        """
+        if not project_id:
+            return []
+        rows = self.conn.execute(
+            "SELECT e.* FROM kg_edges e "
+            "JOIN kg_nodes source_node ON source_node.id = e.source_id "
+            "JOIN kg_nodes target_node ON target_node.id = e.target_id "
+            "WHERE source_node.project_id = ? AND target_node.project_id = ? "
+            "LIMIT ?",
+            (project_id, project_id, limit),
+        ).fetchall()
+        return [self._row_to_edge(row) for row in rows]
 
     # ── BM25 search ────────────────────────────────────────
 

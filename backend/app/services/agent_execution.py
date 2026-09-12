@@ -16,6 +16,15 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.core.contract_gate import (
+    ContractGateContext,
+    NoOpContractGate,
+    resolve_contract_enabled,
+)
+from app.agent_base.core.contract_analysis import (
+    ContractFailureAnalysisContext,
+    NoOpContractFailureAnalyzer,
+)
 from app.agent_base.core.hooks import (
     AgentRuntime,
     get_runtime,
@@ -172,6 +181,33 @@ def _terminal_checkpoint_status(
     return "completed", None
 
 
+def _sync_checkpoint_outcome(
+    checkpoint: dict,
+    *,
+    status: str,
+    stop_reason: str | None,
+    final_answer: str | None = None,
+    preserve_as: str | None = None,
+) -> None:
+    """Keep the durable outcome aligned with the terminal checkpoint.
+
+    The streamed Agent can report a successful model turn before a later
+    verification or contract gate changes the run's terminal state. Store the
+    pre-gate outcome separately, then expose one canonical terminal outcome.
+    """
+    previous = checkpoint.get("outcome")
+    if isinstance(previous, dict) and preserve_as and previous.get("stop_reason") != stop_reason:
+        checkpoint[preserve_as] = dict(previous)
+    outcome = dict(previous) if isinstance(previous, dict) else {}
+    outcome["status"] = status
+    if stop_reason:
+        outcome["stop_reason"] = stop_reason
+    if final_answer is not None:
+        outcome["final_answer"] = final_answer
+    outcome.setdefault("total_tokens", 0)
+    checkpoint["outcome"] = outcome
+
+
 def _finalize_terminal_checkpoint(
     agent: ReActAgent,
     *,
@@ -209,6 +245,11 @@ def _finalize_terminal_checkpoint(
     }
     if outcome is not None:
         agent.last_run_checkpoint["outcome"] = outcome.to_dict()
+    _sync_checkpoint_outcome(
+        agent.last_run_checkpoint,
+        status=terminal_status,
+        stop_reason=stop_reason,
+    )
     if fallback_review_requested:
         agent.last_run_checkpoint.update({
             "review_status": "pending",
@@ -651,6 +692,7 @@ async def handle_agent_execution(
     session_id: str = "",
     resume_checkpoint: dict | None = None,
     disconnect_check: Callable[[], bool] | None = None,
+    design_contract_enabled: bool | None = None,
 ):
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
@@ -669,6 +711,15 @@ async def handle_agent_execution(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     progress_forwarder = _ExecutionProgressForwarder(send, trace_log)
+    contract_gate = getattr(agent, "contract_gate", None) or NoOpContractGate()
+    contract_failure_analyzer = (
+        getattr(agent, "contract_failure_analyzer", None)
+        or NoOpContractFailureAnalyzer()
+    )
+    contract_enabled = resolve_contract_enabled(
+        design_contract_enabled,
+        get_settings(),
+    )
     resume_checkpoint = dict(resume_checkpoint or {})
     checkpoint_request_summary = str(
         resume_checkpoint.get("request_summary") or user_message
@@ -686,6 +737,7 @@ async def handle_agent_execution(
         "last_error": None,
         "stop_reason": None,
         "resume_available": False,
+        "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
         "project_file": project_file,
         "source_dir": source_dir,
@@ -902,9 +954,114 @@ async def handle_agent_execution(
                     run_id=run_id,
                 )
 
+                gate_decision = await contract_gate.evaluate(ContractGateContext(
+                    agent=agent,
+                    change_set=change_set,
+                    review_manager=review_mgr,
+                    emit=send,
+                    emit_review=progress_forwarder,
+                    project_file=project_file,
+                    source_dir=source_dir,
+                    test_dir=test_dir,
+                    run_id=run_id,
+                    settings=get_settings(),
+                    contract_enabled=contract_enabled,
+                ))
+                contract_ok = gate_decision.allowed
+                contract_result = gate_decision.result
+                contract_message = gate_decision.message
+                if contract_result is not None:
+                    agent.last_run_checkpoint["contract_check"] = contract_result.to_dict()
+                    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                if not contract_ok:
+                    rollback_completed = False
+                    if change_set is not None and change_set.has_changes:
+                        change_set.rollback()
+                        rollback_completed = True
+                    if contract_result is not None:
+                        failure_analysis = await contract_failure_analyzer.analyze(
+                            ContractFailureAnalysisContext(
+                                agent=agent,
+                                result=contract_result,
+                                message=contract_message,
+                                run_id=run_id,
+                                rollback_completed=rollback_completed,
+                                allowed_tools=(
+                                    tuple(main_allowed_tools)
+                                    if main_allowed_tools is not None else None
+                                ),
+                            )
+                        )
+                    else:
+                        failure_analysis = contract_message or "设计契约校验阻止提交，变更已回滚。"
+                    terminal_status, todos = _finalize_terminal_checkpoint(
+                        agent,
+                        outcome=step_progress.outcome,
+                        run_id=run_id,
+                        task_id=task_binding.task_id if task_binding else "",
+                        request_summary=checkpoint_request_summary,
+                        fallback_review_requested=False,
+                        review_manager=review_mgr,
+                    )
+                    terminal_status = "partial"
+                    agent.last_run_checkpoint.update({
+                        "status": terminal_status,
+                        "stop_reason": "contract_check_failed",
+                        "contract_failure_analysis": failure_analysis,
+                    })
+                    _sync_checkpoint_outcome(
+                        agent.last_run_checkpoint,
+                        status=terminal_status,
+                        stop_reason="contract_check_failed",
+                        final_answer=failure_analysis,
+                        preserve_as="pre_gate_outcome",
+                    )
+                    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                    await _publish_terminal_execution(
+                        agent=agent,
+                        terminal_status=terminal_status,
+                        fallback_review_requested=False,
+                        task_tool_calls=task_tool_calls,
+                        user_message=user_message,
+                        final_answer=failure_analysis,
+                        project_file=project_file,
+                        run_id=run_id,
+                        run_owner=run_owner,
+                        session_id=session_id,
+                        trace_log=trace_log,
+                        send=send,
+                        write_task_summary=_write_task_summary,
+                    )
+                    return
+
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                    # Persist the accepted candidate facts only after the
+                    # contract gate has passed.  The pre-commit check uses a
+                    # read-only graph projection to avoid poisoning the
+                    # canonical graph on rejection.
+                    if contract_result is not None:
+                        finalizer = getattr(contract_gate, "finalize", None)
+                        post_commit = await finalizer(ContractGateContext(
+                            agent=agent,
+                            change_set=change_set,
+                            review_manager=review_mgr,
+                            emit=send,
+                            emit_review=progress_forwarder,
+                            project_file=project_file,
+                            source_dir=source_dir,
+                            test_dir=test_dir,
+                            run_id=run_id,
+                            settings=get_settings(),
+                            contract_enabled=contract_enabled,
+                        ), contract_result) if callable(finalizer) else None
+                        agent.last_run_checkpoint["contract_graph_sync"] = {
+                            "status": post_commit.status if post_commit else "not_requested",
+                            "graph_status": post_commit.graph_status if post_commit else "not_requested",
+                            "check_id": post_commit.check_id if post_commit else "",
+                        }
+                        _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 else:
                     manifest = []
                 terminal_status, todos = _finalize_terminal_checkpoint(

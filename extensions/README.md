@@ -14,6 +14,7 @@ The built-in entry points are:
 - `extensions.trace:create`
 - `extensions.evals:create`
 - `extensions.knowledge_graph:create`
+- `extensions.design_contract:create`
 
 The complete built-in implementations live in the corresponding extension
 package:
@@ -23,6 +24,8 @@ package:
 - `trace/`: trace writer, reader, replay engine and provider adapter
 - `evals/`: evaluation models, catalog, runner, checkers, batches, provider and plugin-owned API routers
 - `knowledge_graph/`: graph models, SQLite database, builder, retriever, v2 tools and provider
+- `design_contract/`: read-only UML, Python AST and test fact collectors, normalized mappings,
+  and optional knowledge-graph relationship enrichment through the stable provider port
 
 Only stable application-facing ports, generic tool/runtime infrastructure and
 the central `PluginManager` remain in `backend/`. The old paths under

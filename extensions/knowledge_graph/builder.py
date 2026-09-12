@@ -36,6 +36,48 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+_FACT_NODE_TYPES: dict[str, tuple[NodeType, str]] = {
+    "diagram": (NodeType.DIAGRAM, "design"),
+    "class": (NodeType.CLASS, "design"),
+    "component": (NodeType.COMPONENT, "design"),
+    "lifeline": (NodeType.LIFELINE, "design"),
+    "method": (NodeType.METHOD, "design"),
+    "source_module": (NodeType.SOURCE_FILE, "code"),
+    "source_class": (NodeType.CLASS, "code"),
+    "source_method": (NodeType.METHOD, "code"),
+    "source_attribute": (NodeType.ATTRIBUTE, "code"),
+}
+
+
+def _fact_node_projection(entity: Any) -> tuple[Optional[NodeType], str]:
+    """Map a contract entity to an existing graph node vocabulary."""
+    return _FACT_NODE_TYPES.get(str(getattr(entity, "entity_type", "")), (None, ""))
+
+
+def _fact_graph_name(entity: Any) -> str:
+    """Align fact names with the graph builder's natural-key conventions."""
+    entity_type = str(getattr(entity, "entity_type", "") or "")
+    name = str(getattr(entity, "name", "") or "")
+    if entity_type == "source_module":
+        path = str(getattr(entity, "path", "") or "").replace("\\", "/")
+        return path.rsplit("/", 1)[-1] or name
+    if entity_type == "source_method":
+        return name.rsplit(".", 1)[-1]
+    return name
+
+
+def _fact_artifact_id(entity: Any) -> str:
+    entity_type = str(getattr(entity, "entity_type", "") or "")
+    if entity_type.startswith("source_"):
+        kind = "source"
+    elif entity_type.startswith("test_"):
+        kind = "test"
+    else:
+        kind = "design"
+    path = str(getattr(entity, "path", "") or "").replace("\\", "/").strip("./")
+    return f"{kind}:{path}" if path else ""
+
+
 # ── Content text synthesis (for FTS) ───────────────────────────
 
 def _build_content_text(node_type: NodeType, name: str,
@@ -147,6 +189,162 @@ class GraphBuilder:
         if self._db is not None:
             self._db.close()
             self._db = None
+
+    def index_facts(self, facts: Any) -> BuildStats:
+        """Add shared parser facts without replacing richer graph projections.
+
+        Existing design/code/test nodes remain authoritative for the graph
+        builder.  This method only fills missing nodes and relationships, so a
+        caller can migrate to one parse pass incrementally and safely.
+        """
+        t0 = time.monotonic()
+        project_id = str(getattr(facts, "project_id", "") or "")
+        if not project_id:
+            return BuildStats(
+                source="artifact_facts",
+                elapsed_ms=(time.monotonic() - t0) * 1000,
+            )
+        stats = BuildStats(source="artifact_facts")
+        entities = tuple(getattr(facts, "entities", ()) or ())
+        node_ids: dict[str, str] = {}
+        for entity in entities:
+            node_type, source = _fact_node_projection(entity)
+            if node_type is None:
+                continue
+            graph_name = _fact_graph_name(entity)
+            if not graph_name:
+                continue
+            existing = self.db.find_nodes(
+                project_id,
+                node_type=node_type.value,
+                name=graph_name,
+                source=source,
+                limit=1,
+            )
+            if existing:
+                node_ids[str(entity.entity_id)] = existing[0].id
+                artifact_id = _fact_artifact_id(entity)
+                if artifact_id:
+                    self.db.tag_node_artifact(
+                        existing[0].id, artifact_id, str(entity.entity_id),
+                    )
+                continue
+            properties = dict(getattr(entity, "attributes", {}) or {})
+            if entity.path:
+                properties.setdefault("path", entity.path)
+            if entity.line is not None:
+                properties.setdefault("lineno", entity.line)
+            properties["artifact_fact_id"] = entity.entity_id
+            artifact_id = _fact_artifact_id(entity)
+            if artifact_id:
+                properties["artifact_id"] = artifact_id
+            node = GraphNode(
+                id=self._make_id("fact", project_id, entity.entity_id, source),
+                node_type=node_type,
+                name=graph_name,
+                project_id=project_id,
+                source=source,
+                properties=properties,
+            )
+            node.content_text = _build_content_text(node_type, graph_name, properties)
+            self.db.upsert_node(node)
+            node_ids[str(entity.entity_id)] = node.id
+            stats.nodes_added += 1
+
+        for entity in entities:
+            child_id = node_ids.get(str(getattr(entity, "entity_id", "")))
+            parent_id = node_ids.get(str(getattr(entity, "parent_id", "")))
+            if child_id and parent_id and self._ensure_fact_edge(parent_id, child_id, EdgeType.CONTAINS):
+                stats.edges_added += 1
+
+        for mapping in tuple(getattr(facts, "mappings", ()) or ()):
+            source_id = node_ids.get(str(mapping.source_entity_id))
+            design_id = node_ids.get(str(mapping.design_entity_id))
+            if source_id and design_id and self._ensure_fact_edge(
+                source_id, design_id, EdgeType.IMPLEMENTS,
+                {"origin": "artifact_facts", "mapping_id": mapping.mapping_id},
+            ):
+                stats.edges_added += 1
+        stats.elapsed_ms = (time.monotonic() - t0) * 1000
+        return stats
+
+    def sync_facts(self, facts: Any) -> BuildStats:
+        """Synchronize only changed artifacts from a shared fact bundle.
+
+        The first invocation seeds the artifact manifest.  Subsequent calls
+        compare fingerprints and remove only nodes created by this facts
+        projection.  Parse errors keep the previous graph projection and are
+        recorded as ``error`` in the artifact manifest.
+        """
+        t0 = time.monotonic()
+        project_id = str(getattr(facts, "project_id", "") or "")
+        stats = BuildStats(source="artifact_facts_incremental")
+        if not project_id:
+            stats.elapsed_ms = (time.monotonic() - t0) * 1000
+            return stats
+        metadata = getattr(facts, "metadata", {}) or {}
+        records = metadata.get("artifacts") if isinstance(metadata, dict) else None
+        if not isinstance(records, (list, tuple)):
+            projected = self.index_facts(facts)
+            projected.source = "artifact_facts_incremental"
+            return projected
+
+        previous = self.db.list_artifacts(project_id)
+        current = {
+            str(item.get("artifact_id")): item
+            for item in records
+            if isinstance(item, dict) and item.get("artifact_id")
+        }
+        deleted = set(previous) - set(current)
+        changed_ready: set[str] = set()
+        has_errors = False
+        for artifact_id, item in current.items():
+            old = previous.get(artifact_id)
+            changed = old is None or any(
+                old.get(key) != item.get(key)
+                for key in ("fingerprint", "parser_version", "status")
+            )
+            if item.get("status") == "error":
+                has_errors = True
+            elif changed:
+                changed_ready.add(artifact_id)
+
+        if has_errors:
+            changed_ready.clear()
+
+        for artifact_id in (*deleted, *changed_ready):
+            stats.nodes_removed += self.db.delete_nodes_by_artifact(project_id, artifact_id)
+            self.db.delete_artifact(project_id, artifact_id)
+
+        if not has_errors and (deleted or changed_ready or not previous):
+            projected = self.index_facts(facts)
+            stats.nodes_added += projected.nodes_added
+            stats.nodes_updated += projected.nodes_updated
+            stats.edges_added += projected.edges_added
+
+        for item in current.values():
+            self.db.upsert_artifact(project_id, item)
+        stats.elapsed_ms = (time.monotonic() - t0) * 1000
+        return stats
+
+    def _ensure_fact_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        edge_type: EdgeType,
+        properties: Optional[dict] = None,
+    ) -> bool:
+        if self.db.find_edges(source_id=source_id, target_id=target_id,
+                              edge_type=edge_type.value, limit=1):
+            return False
+        self.db.upsert_edge(GraphEdge(
+            id=self._make_id("fact_edge", source_id, target_id, edge_type.value),
+            source_id=source_id,
+            target_id=target_id,
+            edge_type=edge_type,
+            properties=properties or {"origin": "artifact_facts"},
+        ))
+        return True
 
     # ── Public API: Design layer ──────────────────────────
 

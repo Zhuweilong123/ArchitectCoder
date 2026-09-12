@@ -16,6 +16,7 @@ from typing import Literal
 from .plugin_defaults import (
     DEFAULT_EVALS_PROVIDER,
     DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
+    DEFAULT_DESIGN_CONTRACT_PROVIDER,
     DEFAULT_MEMORY_PROVIDER,
     DEFAULT_ORCHESTRATION_PROVIDER,
     DEFAULT_TRACE_PROVIDER,
@@ -122,6 +123,11 @@ class Settings(BaseSettings):
     agent_knowledge_graph_enabled: bool = True
     agent_knowledge_graph_provider: str = DEFAULT_KNOWLEDGE_GRAPH_PROVIDER
     agent_knowledge_graph_db_path: str = ""
+
+    # Optional design/source/test contract collector.  The core only depends
+    # on the ContractProvider port so alternative analyzers can be installed.
+    agent_design_contract_enabled: bool = True
+    agent_design_contract_provider: str = DEFAULT_DESIGN_CONTRACT_PROVIDER
 
     # Command execution is selected by the runtime.  ``auto`` uses the native
     # host environment; WSL is an explicit compatibility option for projects

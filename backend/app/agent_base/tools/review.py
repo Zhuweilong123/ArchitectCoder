@@ -138,7 +138,9 @@ class ReviewManager:
         # the reviewable operations so the real agent loop remains continuous;
         # high-risk shell commands are still rejected by ShellTool before this
         # manager is consulted.
-        if self.auto_approve_reviews and review_type in {"uml_diff", "shell_command"}:
+        if self.auto_approve_reviews and review_type in {
+            "uml_diff", "shell_command", "design_contract",
+        }:
             response = json.dumps({
                 "decision": "accept",
                 "feedback": "Automatically accepted by evaluation approval stub.",

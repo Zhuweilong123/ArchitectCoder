@@ -24,6 +24,12 @@ class KnowledgeGraphProvider(Protocol):
 
     def map_project(self, project_id: str, top_classes: int = 15) -> dict: ...
 
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict: ...
+
+    def index_facts(self, facts: Any) -> Any: ...
+
+    def sync_facts(self, facts: Any) -> Any: ...
+
     def locate(
         self,
         project_id: str,
@@ -78,6 +84,15 @@ class NoOpKnowledgeGraphProvider:
 
     def map_project(self, project_id: str, top_classes: int = 15) -> dict:
         return self._disabled()
+
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+        return {"available": False, "nodes": [], "edges": [], "error": self._disabled()["error"]}
+
+    def index_facts(self, facts: Any) -> None:
+        return None
+
+    def sync_facts(self, facts: Any) -> None:
+        return None
 
     def locate(self, project_id: str, pattern: str, node_types=None,
                source=None, top_k: int = 10) -> dict:

@@ -101,6 +101,8 @@ def test_execution_binding_persists_todos_and_distinguishes_budget_stop(store):
     assert current.result_status == "budget_exceeded"
     assert current.execution["status"] == "budget_exceeded"
     assert current.execution["checkpoint"]["status"] == "budget_exceeded"
+    assert current.execution["terminal"] is True
+    assert current.execution["resume_available"] is False
 
 
 def test_execution_binding_rejects_stale_run(store):
