@@ -204,6 +204,7 @@ class TaskResolver:
             argv=TaskResolver._target_args(argv, target),
             cwd=cwd,
             toolchain_id=toolchain.toolchain_id,
+            toolchain_version=toolchain.version,
             network=network,
             approval=approval,
             resources=resources or ResourceLimits(),

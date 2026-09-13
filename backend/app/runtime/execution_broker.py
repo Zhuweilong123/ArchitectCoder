@@ -76,6 +76,7 @@ class LocalExecutionBroker:
         base = dict(
             task_id=task.task_id,
             toolchain_id=task.toolchain_id,
+            toolchain_version=task.toolchain_version,
             command=task.argv,
             cwd=cwd,
             sandbox=effective.sandbox,

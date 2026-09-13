@@ -21,6 +21,7 @@ def test_task_spec_is_language_neutral_and_serializable():
         argv=("cmake", "--build", "build", "--config", "Debug"),
         cwd="workspace",
         toolchain_id="cpp-clang-18",
+        toolchain_version="18.1.8",
         network=NetworkPolicy.DENY,
         expected_outputs=("build/bin/radar_tests.exe",),
     )
@@ -31,6 +32,7 @@ def test_task_spec_is_language_neutral_and_serializable():
         "argv": ["cmake", "--build", "build", "--config", "Debug"],
         "cwd": "workspace",
         "toolchain_id": "cpp-clang-18",
+        "toolchain_version": "18.1.8",
         "network": "deny",
         "approval": "sandbox_auto",
         "resources": {

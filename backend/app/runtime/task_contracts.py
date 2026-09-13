@@ -98,6 +98,7 @@ class TaskSpec:
     argv: tuple[str, ...]
     cwd: str = "workspace"
     toolchain_id: str = "host"
+    toolchain_version: str = "unknown"
     network: NetworkPolicy = NetworkPolicy.DENY
     approval: ApprovalClass = ApprovalClass.SANDBOX_AUTO
     resources: ResourceLimits = field(default_factory=ResourceLimits)
@@ -108,6 +109,7 @@ class TaskSpec:
         object.__setattr__(self, "task_id", _clean_text(self.task_id, "task_id"))
         object.__setattr__(self, "cwd", _clean_text(self.cwd, "cwd"))
         object.__setattr__(self, "toolchain_id", _clean_text(self.toolchain_id, "toolchain_id"))
+        object.__setattr__(self, "toolchain_version", _clean_text(self.toolchain_version, "toolchain_version"))
         object.__setattr__(self, "source", _clean_text(self.source, "source"))
         object.__setattr__(self, "argv", _literal_argv(tuple(self.argv)))
         object.__setattr__(
@@ -185,6 +187,7 @@ class ExecutionEvidence:
     toolchain_id: str
     command: tuple[str, ...]
     cwd: str
+    toolchain_version: str = "unknown"
     exit_code: int | None = None
     duration_ms: float | None = None
     timeout_reason: str | None = None
@@ -197,6 +200,7 @@ class ExecutionEvidence:
         object.__setattr__(self, "task_id", _clean_text(self.task_id, "task_id"))
         object.__setattr__(self, "status", _clean_text(self.status, "status"))
         object.__setattr__(self, "toolchain_id", _clean_text(self.toolchain_id, "toolchain_id"))
+        object.__setattr__(self, "toolchain_version", _clean_text(self.toolchain_version, "toolchain_version"))
         object.__setattr__(self, "cwd", _clean_text(self.cwd, "cwd"))
         object.__setattr__(self, "command", _literal_argv(tuple(self.command), "command"))
         if self.duration_ms is not None and self.duration_ms < 0:

@@ -87,6 +87,7 @@ def test_explicit_manifest_controls_task_policy_and_toolchain(tmp_path):
     assert result.resolved
     assert result.toolchain.toolchain_id == "cpp-clang"
     assert result.toolchain.version == "18"
+    assert result.task.toolchain_version == "18"
     assert result.task.network is NetworkPolicy.DENY
     assert result.task.approval is ApprovalClass.SANDBOX_AUTO
     assert result.task.resources.timeout_seconds == 120
