@@ -40,6 +40,18 @@ export interface CanvasNodeRect {
   height: number;
 }
 
+/** Avoid triggering X6 route work when a store sync already has these points. */
+export function edgeVerticesEqual(
+  current: Array<{ x: number; y: number }> | undefined,
+  next: Array<{ x: number; y: number }> | undefined,
+): boolean {
+  if (current === next) return true;
+  if (!current || !next || current.length !== next.length) return false;
+  return current.every((point, index) => (
+    point.x === next[index].x && point.y === next[index].y
+  ));
+}
+
 const ROUTER_CLEARANCE = 32;
 
 /**

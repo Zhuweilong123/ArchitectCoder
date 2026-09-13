@@ -21,7 +21,7 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
+  centerCanvasContent, edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
@@ -416,6 +416,10 @@ const CompEditor: React.FC = () => {
   const renderCache = useRef<Map<string, { entity: CompNode; selected: boolean; theme: CanvasTheme; html: string }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
+  const autoRouteCache = useRef<Map<string, {
+    key: string;
+    vertices: Array<{ x: number; y: number }>;
+  }>>(new Map());
   const _didFirstSync = useRef(false);
   const renderedTheme = useRef<CanvasTheme | null>(null);
 
@@ -519,6 +523,10 @@ const CompEditor: React.FC = () => {
         const { width, height } = getCompNodeSize(component);
         return { id: component.id, x: component.x, y: component.y, width, height };
       });
+      const autoRouteCacheKey = JSON.stringify([
+        componentRects,
+        rels.map(({ id, source, target }) => [id, source, target]),
+      ]);
       rels.forEach((r) => {
         const selected = r.id === selectedCompRelationId;
         const stroke = selected
@@ -536,7 +544,11 @@ const CompEditor: React.FC = () => {
           stroke, strokeWidth: selected ? 2.5 : 2, strokeDasharray: dash,
           targetMarker: { name: 'block', width: 10, height: 6, fill: stroke, stroke },
         };
-        const labels = [{
+        // A dashed orange arrow already conveys a UML dependency. Repeating
+        // “dependency” on every long route obscures the diagram, especially
+        // when several dependencies share a corridor. Keep labels for the
+        // less self-evident relation kinds.
+        const labels = r.type === 'dependency' ? [] : [{
           attrs: {
             text: { text: r.type, fontSize: 10, fontWeight: 600, fill: labelColor },
             rect: { fill: labelBackground, stroke: labelBorder, strokeWidth: 0.8, rx: 4, ry: 4 },
@@ -546,9 +558,15 @@ const CompEditor: React.FC = () => {
         // Imported diagrams use `null` for an untouched route; only a real
         // vertices array is user-owned. Automatic routes must be recalculated
         // whenever the component layout changes.
+        const cachedAutoRoute = autoRouteCache.current.get(r.id);
         const vertices = Array.isArray(r.vertices)
           ? r.vertices
-          : getObstacleAvoidingEdgeVertices(r, rels, componentRects);
+          : cachedAutoRoute?.key === autoRouteCacheKey
+            ? cachedAutoRoute.vertices
+            : getObstacleAvoidingEdgeVertices(r, rels, componentRects);
+        if (!Array.isArray(r.vertices) && cachedAutoRoute?.key !== autoRouteCacheKey) {
+          autoRouteCache.current.set(r.id, { key: autoRouteCacheKey, vertices });
+        }
         const interactionAttrs = {
           stroke: 'transparent',
           strokeWidth: 10,
@@ -561,11 +579,9 @@ const CompEditor: React.FC = () => {
             if (edgeSignatureCache.current.get(r.id) === edgeSignature) return;
             const edge = graph.getCellById(r.id) as any;
             if (edge) {
-              edge.setSource({ cell: r.source });
-              edge.setTarget({ cell: r.target });
-              edge.setVertices(vertices);
-              edge.setRouter(getObstacleAvoidingManhattanRouter());
-              edge.setConnector({ name: 'rounded' });
+              if (edge.getSourceCellId() !== r.source) edge.setSource({ cell: r.source });
+              if (edge.getTargetCellId() !== r.target) edge.setTarget({ cell: r.target });
+              if (!edgeVerticesEqual(edge.getVertices(), vertices)) edge.setVertices(vertices);
               edge.setLabels(labels);
               edge.setAttrByPath('line/stroke', stroke);
               edge.setAttrByPath('line/strokeWidth', selected ? 2.5 : 2);

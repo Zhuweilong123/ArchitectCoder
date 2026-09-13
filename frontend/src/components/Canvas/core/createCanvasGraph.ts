@@ -1,5 +1,4 @@
 import { Graph, Edge } from '@antv/x6';
-import { History } from '@antv/x6-plugin-history';
 import { Transform } from '@antv/x6-plugin-transform';
 import { Selection } from '@antv/x6-plugin-selection';
 import { Snapline } from '@antv/x6-plugin-snapline';
@@ -83,7 +82,9 @@ export function createCanvasGraph(options: CanvasGraphOptions): Graph {
     panning: { enabled: true },
   } as any);
 
-  graph.use(new History({ enabled: true }));
+  // Diagram edits are recorded by diagramStore, which is what Ctrl/Cmd+Z
+  // uses. Keeping a second X6 history records every intermediate drag point
+  // and noticeably slows dense diagrams without providing user-visible undo.
   graph.use(new Transform({ resizing: true, rotating: false }));
   graph.use(new Selection({
     enabled: true,
