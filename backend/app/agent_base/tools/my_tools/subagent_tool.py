@@ -25,6 +25,7 @@ from app.agent_base.tools.my_tools.foundation_tools import (
 )
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 from app.runtime import build_command_executor, workspace_root_for
+from app.runtime import TaskKind
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,15 @@ SUBAGENT_TRACE_SPAN = "child_agent"
 
 
 class VerificationRunTaskTool(RunTaskTool):
-    """Run only fixed, non-formatting project checks inside a subagent."""
+    """Run project-declared, non-formatting checks inside a subagent.
 
+    The resolver and broker remain the source of truth for supported project
+    tasks.  Verification only applies its semantic safety policy and does not
+    maintain a second language/task allowlist.
+    """
+
+    # Compatibility fallback/schema hint only. Resolved project tasks do not
+    # need to be added here; the resolver handles those dynamically.
     TASKS = {
         name: RunTaskTool.TASKS[name]
         for name in ("test", "build", "lint", "typecheck", "validate")
@@ -69,25 +77,39 @@ class VerificationRunTaskTool(RunTaskTool):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.description = (
-            "Run one fixed project verification task without source editing: test, "
-            "build, lint, typecheck, or validate. Formatting, arbitrary programs, "
-            "and shell commands are not available in this toolkit. Build/test "
-            "caches or generated artifacts may be produced."
+            "Run one project-declared verification task without source editing. "
+            "The task must resolve from the project's build metadata; formatting, "
+            "arbitrary programs, and shell commands are not available in this "
+            "toolkit. Build/test caches or generated artifacts may be produced."
         )
 
     async def _execute_result(self, params: dict):
-        # The verification toolkit is intentionally narrower than the main
-        # project-task tool: custom manifest tasks are not exposed to a
-        # read-only subagent.
         task = str(params.get("task", "")).lower().strip()
-        if task not in self.TASKS:
+        if not task:
+            return "Error: task must be a non-empty string"
+        if task == "format":
             return (
-                f"Error: unsupported verification task '{task}'. "
-                f"Choose one of: {', '.join(self.TASKS)}."
+                "Error: formatting tasks are not available in the verification toolkit."
             )
+        # Classify resolved tasks by their contract rather than by a language
+        # or task-name list.  A custom task declared by any supported project
+        # adapter is valid unless it resolves to the formatting kind.
+        resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
+        if not cwd_error and resolved_cwd:
+            resolution = self._task_resolver.resolve(
+                task, resolved_cwd, target=params.get("target"),
+            )
+            if resolution.resolved and resolution.task.kind is TaskKind.FORMAT:
+                return (
+                    "Error: formatting tasks are not available in the verification toolkit."
+                )
         return await super()._execute_result(params)
 
     def to_openai_schema(self) -> dict:
+        # Keep the legacy built-in enum as a compatibility hint for clients
+        # that cache this schema.  Runtime validation above still accepts any
+        # project-declared task resolved by TaskResolver; the enum is not the
+        # execution policy.
         schema = super().to_openai_schema()
         schema["function"]["parameters"]["properties"]["task"]["enum"] = list(self.TASKS)
         return schema
