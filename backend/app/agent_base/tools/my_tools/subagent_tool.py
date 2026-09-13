@@ -98,6 +98,7 @@ class VerificationRunTaskTool(RunTaskTool):
         if not cwd_error and resolved_cwd:
             resolution = self._task_resolver.resolve(
                 task, resolved_cwd, target=params.get("target"),
+                profile=params.get("profile"),
             )
             if resolution.resolved and resolution.task.kind is TaskKind.FORMAT:
                 return (

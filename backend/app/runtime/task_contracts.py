@@ -129,6 +129,42 @@ class TaskSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskPlan:
+    """A deterministic plan for one semantic task.
+
+    ``steps`` are ordered and literal; the final step is the requested task
+    and preceding steps are runtime-managed prerequisites.  Keeping the plan
+    in the language-neutral contract lets the model preview and reason about
+    execution without receiving shell-specific instructions in its prompt.
+    """
+
+    requested_task: str
+    steps: tuple[TaskSpec, ...]
+    profile: str = ""
+    rationale: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "requested_task", _clean_text(self.requested_task, "requested_task"))
+        if not self.steps:
+            raise ValueError("steps must not be empty")
+        object.__setattr__(self, "steps", tuple(self.steps))
+        object.__setattr__(self, "profile", str(self.profile or "").strip())
+        object.__setattr__(self, "rationale", str(self.rationale or "").strip())
+
+    @property
+    def final_task(self) -> TaskSpec:
+        return self.steps[-1]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested_task": self.requested_task,
+            "profile": self.profile,
+            "rationale": self.rationale,
+            "steps": [step.to_dict() for step in self.steps],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ToolchainProfile:
     """A managed language/build environment selected by a resolver."""
 
@@ -227,6 +263,7 @@ __all__ = [
     "NetworkPolicy",
     "ResourceLimits",
     "TaskKind",
+    "TaskPlan",
     "TaskSpec",
     "ToolchainProfile",
 ]

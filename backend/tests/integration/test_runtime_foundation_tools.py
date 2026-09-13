@@ -582,6 +582,85 @@ def test_resolved_task_uses_execution_broker_and_preserves_evidence(tmp_path):
     assert result.verification.passed
 
 
+def test_resolved_task_executes_cmake_prerequisites_and_aggregates_evidence(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [{"name": "default", "displayName": "Debug", "binaryDir": "${sourceDir}/build"}],
+        "buildPresets": [{"name": "default", "configurePreset": "default"}],
+        "testPresets": [{"name": "default", "configurePreset": "default", "configuration": "Debug"}],
+    }), encoding="utf-8")
+    commands = []
+
+    class Broker:
+        sandbox_name = "workspace"
+
+        async def execute(self, task, cwd, *, policy=None):
+            commands.append(task.argv)
+            return ExecutionEvidence(
+                task_id=task.task_id,
+                status="success",
+                toolchain_id=task.toolchain_id,
+                command=task.argv,
+                cwd=cwd,
+                exit_code=0,
+                output=task.kind.value,
+            )
+
+    tool = _tool(
+        create_foundation_tools(
+            str(tmp_path / "src"), str(tmp_path / "test"), str(tmp_path / "design"),
+            workspace_root=str(tmp_path), execution_broker=Broker(),
+        ),
+        "run_task",
+    )
+    result = __import__("asyncio").run(tool.run_result({"task": "test"}))
+
+    assert result.status == "success"
+    assert commands == [
+        ("cmake", "--preset", "default"),
+        ("cmake", "--build", "--preset", "default"),
+        ("ctest", "--preset", "default"),
+    ]
+    assert [step["status"] for step in result.execution_evidence["steps"]] == [
+        "success", "success", "success",
+    ]
+    assert result.verification.passed
+
+
+def test_run_task_dry_run_returns_plan_without_starting_processes(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [{"name": "default", "displayName": "Debug", "binaryDir": "${sourceDir}/build"}],
+        "buildPresets": [{"name": "default", "configurePreset": "default"}],
+        "testPresets": [{"name": "default", "configurePreset": "default"}],
+    }), encoding="utf-8")
+    tools = create_foundation_tools(
+        str(tmp_path / "src"), str(tmp_path / "test"), str(tmp_path / "design"),
+        workspace_root=str(tmp_path),
+    )
+    tool = _tool(tools, "run_task")
+
+    result = __import__("asyncio").run(tool.run_result({
+        "task": "test", "profile": "debug", "dry_run": True,
+    }))
+
+    assert result.status == "success"
+    assert result.execution_evidence["status"] == "planned"
+    assert result.execution_evidence["plan"]["profile"] == "debug"
+    assert [step["kind"] for step in result.data["steps"]] == ["configure", "build", "test"]
+    assert not (tmp_path / "build").exists()
+
+
+def test_run_task_schema_exposes_profile_and_dry_run():
+    tool = _tool(create_foundation_tools(), "run_task")
+    properties = tool.to_openai_schema()["function"]["parameters"]["properties"]
+
+    assert properties["profile"]["type"] == "string"
+    assert properties["dry_run"]["type"] == "boolean"
+
+
 def test_manifest_task_cwd_is_resolved_relative_to_project_root(tmp_path):
     import asyncio
 

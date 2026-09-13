@@ -22,6 +22,7 @@ from app.runtime.task_contracts import (
     NetworkPolicy,
     ResourceLimits,
     TaskKind,
+    TaskPlan,
     TaskSpec,
     ToolchainProfile,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "NetworkPolicy",
     "ResourceLimits",
     "TaskKind",
+    "TaskPlan",
     "TaskSpec",
     "ToolchainProfile",
     "TaskResolution",

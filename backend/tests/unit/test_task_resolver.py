@@ -119,6 +119,69 @@ def test_cpp_vertical_fixture_exposes_cmake_build_and_test_tasks():
     assert test.resolved and test.task.argv[0] == "ctest"
 
 
+def test_cmake_presets_resolve_configuration_and_prerequisite_plan(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.20)\n", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [{
+            "name": "default", "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+        }],
+        "buildPresets": [{"name": "default", "configurePreset": "default"}],
+        "testPresets": [{"name": "default", "configurePreset": "default", "configuration": "Debug"}],
+    }), encoding="utf-8")
+
+    build = TaskResolver().resolve("build", str(tmp_path))
+    test = TaskResolver().resolve("test", str(tmp_path))
+
+    assert build.task.argv == ("cmake", "--build", "--preset", "default")
+    assert [item.kind for item in build.prerequisites] == [TaskKind.CONFIGURE]
+    assert test.task.argv == ("ctest", "--preset", "default")
+    assert [item.kind for item in test.prerequisites] == [TaskKind.CONFIGURE, TaskKind.BUILD]
+
+
+def test_cmake_preset_build_skips_configure_when_cache_exists(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [{"name": "default", "binaryDir": "${sourceDir}/build"}],
+        "buildPresets": [{"name": "default", "configurePreset": "default"}],
+    }), encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "CMakeCache.txt").write_text("", encoding="utf-8")
+
+    result = TaskResolver().resolve("build", str(tmp_path))
+
+    assert result.resolved
+    assert result.prerequisites == ()
+
+
+def test_cmake_preset_profile_selects_linked_release_variant(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [
+            {"name": "default", "displayName": "Default (Debug)", "binaryDir": "${sourceDir}/build"},
+            {"name": "release", "displayName": "Release", "binaryDir": "${sourceDir}/build-release"},
+        ],
+        "buildPresets": [
+            {"name": "default", "configurePreset": "default"},
+            {"name": "release", "configurePreset": "release"},
+        ],
+        "testPresets": [
+            {"name": "default", "configurePreset": "default", "configuration": "Debug"},
+            {"name": "release", "configurePreset": "release", "configuration": "Release"},
+        ],
+    }), encoding="utf-8")
+
+    result = TaskResolver().resolve("test", str(tmp_path), profile="release")
+
+    assert result.resolved
+    assert result.task.argv == ("ctest", "--preset", "release")
+    assert result.plan.profile == "release"
+    assert result.prerequisites[0].argv == ("cmake", "--preset", "release")
+
+
 def test_custom_project_adapter_can_be_registered_without_core_changes(tmp_path):
     marker = tmp_path / "custom.build"
     marker.write_text("", encoding="utf-8")
