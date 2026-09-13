@@ -353,7 +353,14 @@ def _validate_resolved_program(
             "declare the underlying tool as a literal argv"
         )
     if os.path.isabs(program) or any(separator in program for separator in ("/", "\\")):
-        return "resolver task executable must be a command name discoverable on the worker PATH"
+        # Project wrappers are intentionally relative to the already bounded
+        # task cwd (for example ``./gradlew``).  Absolute paths and parent
+        # traversal remain forbidden; ordinary tool names still resolve on the
+        # worker PATH.
+        normalized = program.replace("\\", "/")
+        parts = tuple(part for part in normalized.split("/") if part)
+        if not normalized.startswith("./") or ".." in parts:
+            return "resolver task executable must be a command name or a safe relative wrapper"
     # Native workers can attest PATH availability before starting.  Isolated
     # workers perform the equivalent lookup inside their own boundary.
     if resolve_on_host and shutil.which(program) is None:
@@ -418,6 +425,14 @@ class WslBashExecutor:
     def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
         # The command is resolved inside WSL, never against the Windows PATH.
         return _validate_resolved_program(program, args, resolve_on_host=False)
+
+    def normalize_resolved_program(
+        self, program: str, args: list[str], cwd: str,
+    ) -> tuple[str, list[str]]:
+        """Translate a Windows Gradle wrapper selected by host discovery."""
+        if program.lower() == "gradlew.bat" and (Path(cwd) / "gradlew").is_file():
+            return "./gradlew", args
+        return program, args
 
     def _prefix(self, *, cwd: str | None = None) -> list[str]:
         command = [self.executable]

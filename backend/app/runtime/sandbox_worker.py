@@ -218,6 +218,16 @@ class DockerCommandExecutor:
             return "container shell command must be a single line"
         return None
 
+    def normalize_resolved_program(
+        self, program: str, args: list[str], cwd: str,
+    ) -> tuple[str, list[str]]:
+        """Translate host-selected Windows wrappers to the Linux container."""
+        if program.lower() == "gradlew.bat":
+            candidate = Path(cwd) / "gradlew"
+            if candidate.is_file():
+                return "./gradlew", args
+        return program, args
+
     def _container_cwd(self, cwd: str | None) -> str:
         candidate = Path(cwd or self.workspace_root).expanduser().resolve()
         try:

@@ -79,6 +79,24 @@ def test_local_broker_runs_literal_task_and_returns_evidence(tmp_path):
     assert executor.started == ("cmake", ["--build", "build"], str(tmp_path))
 
 
+def test_local_broker_uses_worker_wrapper_normalizer(tmp_path):
+    class Executor(_Executor):
+        def normalize_resolved_program(self, program, args, cwd):
+            return "./gradlew", [*args]
+
+    executor = Executor()
+    broker = LocalExecutionBroker(executor, [str(tmp_path)])
+
+    evidence = asyncio.run(broker.execute(
+        TaskSpec(task_id="java.test", kind=TaskKind.TEST, argv=("gradlew.bat", "test")),
+        str(tmp_path),
+    ))
+
+    assert evidence.status == "success"
+    assert evidence.command == ("./gradlew", "test")
+    assert executor.started == ("./gradlew", ["test"], str(tmp_path))
+
+
 def test_local_broker_blocks_network_and_user_approval(tmp_path):
     executor = _Executor()
     broker = LocalExecutionBroker(executor, [str(tmp_path)])

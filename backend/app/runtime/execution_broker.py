@@ -102,6 +102,8 @@ class LocalExecutionBroker:
                 status="blocked", output="cwd is outside the broker workspace roots",
                 diagnostics={"category": "path_policy"}, **base,
             )
+        task = self._normalize_task(task, resolved_cwd)
+        base["command"] = task.argv
         validation_error = self._validate_program(task)
         if validation_error:
             category = (
@@ -177,6 +179,26 @@ class LocalExecutionBroker:
             diagnostics={"category": "process_exit"}, cwd=resolved_cwd,
             **{key: value for key, value in base.items() if key != "cwd"},
         )
+
+    def _normalize_task(self, task: TaskSpec, cwd: str) -> TaskSpec:
+        """Let an execution environment adapt platform-specific wrappers.
+
+        Resolver output remains platform-neutral.  An executor may provide a
+        small argv normalizer for cases such as a Windows host selecting a
+        POSIX worker; environments that do not need adaptation keep the
+        original task unchanged.
+        """
+        normalizer = getattr(self.executor, "normalize_resolved_program", None)
+        if not callable(normalizer):
+            return task
+        normalized = normalizer(task.argv[0], list(task.argv[1:]), cwd)
+        if not isinstance(normalized, tuple) or len(normalized) != 2:
+            return task
+        program, args = normalized
+        if not isinstance(program, str) or not isinstance(args, (list, tuple)):
+            return task
+        argv = (program, *(str(value) for value in args))
+        return replace(task, argv=argv)
 
     def _resolve_cwd(self, cwd: str) -> str | None:
         candidate = Path(cwd).expanduser().resolve()
