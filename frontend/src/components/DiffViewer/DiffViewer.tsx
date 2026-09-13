@@ -44,6 +44,7 @@ const DiffViewer: React.FC = () => {
     setRightPanelTab,
     setGlobalOptimizationResult, setActiveDiffDiagramType,
     optimizeInstructions,
+    designDir, sourceDir, testDir,
   } = useUiStore();
 
   // Check if we're in multi-diagram mode (pipeline global optimize)
@@ -276,7 +277,13 @@ const DiffViewer: React.FC = () => {
         //  此处若 connectAgentChat(() => {}) 反而会用空回调覆盖掉常驻 handler）
         sendAgentMessage(
           `请对当前项目进行全局UML交叉验证和优化: ${rejectInstructions}`,
-          { project_file: currentFilepath || '', workspace_root: currentWorkspacePath || '' },
+          {
+            design_dir: designDir,
+            source_dir: sourceDir,
+            test_dir: testDir,
+            project_file: currentFilepath || '',
+            workspace_root: currentWorkspacePath || '',
+          },
         );
         // 优化结果通过 Agent WebSocket 的 design_updated 事件异步返回
         await saveReview({

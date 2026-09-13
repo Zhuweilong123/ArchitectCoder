@@ -51,7 +51,7 @@ const AgentChat: React.FC = () => {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
     agentChatPosition, setAgentChatPosition,
-    sourceDir, testDir, interfaceLanguage,
+    designDir, sourceDir, testDir, interfaceLanguage,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -203,6 +203,7 @@ const AgentChat: React.FC = () => {
     connect();
     useDiagramStore.getState().beginBatch();
     sendAgentMessage(text, {
+      design_dir: designDir,
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
@@ -230,7 +231,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, connect, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+  }, [inputValue, busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
 
   const handleDesignContractToggle = useCallback((checked: boolean) => {
     setDesignContractEnabled(checked);
