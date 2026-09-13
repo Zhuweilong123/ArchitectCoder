@@ -34,6 +34,7 @@ class TaskResolution:
     project_root: str = ""
     reason: str = ""
     plan: TaskPlan | None = None
+    available_profiles: tuple[str, ...] = ()
 
     @property
     def prerequisites(self) -> tuple[TaskSpec, ...]:
@@ -181,6 +182,7 @@ class TaskResolver:
             project_root=str(root),
             reason=result.reason,
             plan=result.plan,
+            available_profiles=result.available_profiles,
         )
 
     def _find_project_root(self, path: str) -> Path | None:
@@ -222,6 +224,7 @@ class TaskResolver:
         prerequisites: tuple[TaskSpec, ...] = (),
         profile: str = "",
         rationale: str = "",
+        available_profiles: tuple[str, ...] = (),
     ) -> TaskResolution:
         if target and any(char in str(target) for char in "\r\n;|><`$"):
             return TaskResolution(project_root=str(root), reason="target contains shell control characters")
@@ -245,6 +248,7 @@ class TaskResolver:
                 steps=(*prerequisites, task),
                 profile=profile,
                 rationale=rationale,
+                available_profiles=available_profiles,
             ),
         )
 
@@ -340,6 +344,7 @@ class TaskResolver:
             return TaskResolution(project_root=str(root), reason="invalid CMakePresets.json: root must be an object")
 
         profile = self._active_profile
+        available_profiles = self._cmake_profile_names(data.get("configurePresets"))
         configure = self._select_cmake_preset(data.get("configurePresets"), "default", profile=profile)
         configure_name = str((configure or {}).get("name", "")).strip()
         build = self._select_cmake_preset(
@@ -356,6 +361,7 @@ class TaskResolver:
             return TaskResolution(
                 project_root=str(root),
                 reason=f"CMake presets have no profile '{profile}'",
+                available_profiles=available_profiles,
             )
         selected = {"configure": configure, "build": build, "test": test}.get(task)
         if selected is None:
@@ -405,7 +411,21 @@ class TaskResolver:
                 f"selected CMake preset '{preset_name}'"
                 + (f" for profile '{profile}'" if profile else "")
             ),
+            available_profiles=available_profiles,
         )
+
+    @staticmethod
+    def _cmake_profile_names(raw: Any) -> tuple[str, ...]:
+        if not isinstance(raw, list):
+            return ()
+        names: list[str] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name and name not in names:
+                names.append(name)
+        return tuple(names)
 
     @staticmethod
     def _select_cmake_preset(

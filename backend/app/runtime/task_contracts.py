@@ -142,6 +142,7 @@ class TaskPlan:
     steps: tuple[TaskSpec, ...]
     profile: str = ""
     rationale: str = ""
+    available_profiles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "requested_task", _clean_text(self.requested_task, "requested_task"))
@@ -150,6 +151,9 @@ class TaskPlan:
         object.__setattr__(self, "steps", tuple(self.steps))
         object.__setattr__(self, "profile", str(self.profile or "").strip())
         object.__setattr__(self, "rationale", str(self.rationale or "").strip())
+        object.__setattr__(self, "available_profiles", tuple(
+            _clean_text(profile, "available_profiles") for profile in self.available_profiles
+        ))
 
     @property
     def final_task(self) -> TaskSpec:
@@ -159,6 +163,7 @@ class TaskPlan:
         return {
             "requested_task": self.requested_task,
             "profile": self.profile,
+            "available_profiles": list(self.available_profiles),
             "rationale": self.rationale,
             "steps": [step.to_dict() for step in self.steps],
         }

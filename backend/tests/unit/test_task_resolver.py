@@ -138,6 +138,7 @@ def test_cmake_presets_resolve_configuration_and_prerequisite_plan(tmp_path):
     assert [item.kind for item in build.prerequisites] == [TaskKind.CONFIGURE]
     assert test.task.argv == ("ctest", "--preset", "default")
     assert [item.kind for item in test.prerequisites] == [TaskKind.CONFIGURE, TaskKind.BUILD]
+    assert test.plan.available_profiles == ("default",)
 
 
 def test_cmake_preset_build_skips_configure_when_cache_exists(tmp_path):
@@ -179,7 +180,24 @@ def test_cmake_preset_profile_selects_linked_release_variant(tmp_path):
     assert result.resolved
     assert result.task.argv == ("ctest", "--preset", "release")
     assert result.plan.profile == "release"
+    assert result.plan.available_profiles == ("default", "release")
     assert result.prerequisites[0].argv == ("cmake", "--preset", "release")
+
+
+def test_cmake_unknown_profile_reports_available_profiles(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "CMakePresets.json").write_text(json.dumps({
+        "version": 2,
+        "configurePresets": [
+            {"name": "default", "displayName": "Debug"},
+            {"name": "release", "displayName": "Release"},
+        ],
+    }), encoding="utf-8")
+
+    result = TaskResolver().resolve("configure", str(tmp_path), profile="asan")
+
+    assert not result.resolved
+    assert result.available_profiles == ("default", "release")
 
 
 def test_custom_project_adapter_can_be_registered_without_core_changes(tmp_path):

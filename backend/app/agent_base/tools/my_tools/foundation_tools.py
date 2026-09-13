@@ -822,6 +822,16 @@ class RunTaskTool(RunProgramTool):
             profile=profile,
         )
         if resolution.project_root and not resolution.resolved:
+            if profile and resolution.available_profiles:
+                return ToolResult(
+                    status="error",
+                    data={
+                        "error": resolution.reason,
+                        "requested_profile": profile,
+                        "available_profiles": list(resolution.available_profiles),
+                    },
+                    error_code="PROFILE_NOT_FOUND",
+                )
             return (
                 f"Error: unable to resolve task '{task}' for project "
                 f"{resolution.project_root}: {resolution.reason}"
