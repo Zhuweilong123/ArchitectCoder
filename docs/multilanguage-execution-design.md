@@ -240,3 +240,99 @@ back only when a resolver has explicitly reported `legacy_compatibility`; an
 unknown task must never silently run `npm`, `pytest`, or another unrelated
 default. Existing `run_program` remains a restricted compatibility tool until
 the broker is the default execution path.
+
+## 当前已落地的多语言特性（中文说明）
+
+本节以当前代码和测试为准，说明多语言支持已经具备的能力。这里的“多语言”分为两层：
+
+1. **工具链任务执行**：不同语言的构建、测试、检查和运行任务，都通过统一任务契约执行。
+2. **源码结构分析**：不同语言的源码由各自的语言适配器解析，再归一化为统一事实模型。
+
+### 1. 语言无关的任务契约
+
+`TaskSpec`、`ToolchainProfile`、`ExecutionPolicy` 和 `ExecutionEvidence` 位于
+`backend/app/runtime/task_contracts.py`，是 Agent、解析器和执行器之间的稳定边界。
+
+- Agent 请求的是 `build`、`test`、`lint`、`format`、`typecheck`、`run` 或 `custom` 等语义任务，而不是 shell 命令。
+- 任务携带 literal argv、工作目录、工具链标识、网络/审批策略、资源限制和预期输出。
+- 执行结果统一记录状态、退出码、耗时、超时原因、沙箱、网络策略和诊断信息。
+- 契约本身不启动进程、不读取宿主机 PATH，也不决定某个可执行文件是否全局可信。
+
+### 2. 基于项目元数据的任务发现
+
+`TaskResolver` 通过可注册的 `ProjectTaskAdapter` 发现项目根目录并解析任务。目前已覆盖：
+
+- Node：`package.json`
+- Python：`pyproject.toml`
+- C/C++：`CMakeLists.txt`
+- Rust：`Cargo.toml`
+- Go：`go.mod`
+- Java：Maven `pom.xml`、Gradle 构建文件
+- .NET：`.sln`、`.csproj`
+- 任意项目：`.architectcoder/tasks.json` 显式任务清单
+
+解析器输出 `TaskSpec + ToolchainProfile`，不会直接执行命令。新增项目类型通过注册适配器完成，避免继续扩展中央语言分支。
+
+`.architectcoder/tasks.json` 支持声明自定义任务、literal argv、工作目录、网络和审批策略、资源限制、工具链版本及预期输出。项目可以因此接入 Zig、Swift、Kotlin 或内部构建系统，而不需要修改 Agent 核心代码。
+
+### 3. 去除宿主机语言/工具白名单依赖
+
+解析器产生的任务不再要求预先加入 `python`、`cmake`、`cargo` 等全局可执行文件白名单。执行时由选定 worker 在自己的 PATH 中解析 argv 首元素，同时仍强制执行：
+
+- literal argv 和 shell 控制字符校验；
+- 禁止调用 `bash`、`sh`、`cmd`、`powershell` 等嵌套 shell；
+- 工作目录必须位于受控 workspace roots；
+- 网络、审批和资源限制策略；
+- 工具链缺失时返回 `toolchain_unavailable`，不静默回退到 Python 或 Node 命令。
+
+因此，增加新的编译器或包管理器通常只需要项目任务声明或工具链环境准备，不需要修改全局白名单。
+
+### 4. 统一执行边界与 Worker 能力证明
+
+`ExecutionBroker` 负责所有解析任务的实际执行，当前提供本地受限执行、WSL Worker 和 Container Worker：
+
+- 本地 Broker 负责路径校验、进程启动、取消、超时、输出上限和证据生成。
+- Worker 负责预检、隔离能力和资源限制能力证明。
+- Worker 不满足网络、文件系统或资源限制要求时直接阻断（fail-closed）。
+- Container Worker 使用限定 workspace 挂载、`--network none` 和 `--pull never`，避免隐式联网或宿主机回退。
+- Worker 的 ID、能力和容器镜像信息会写入执行证据，便于 Trace 和审计。
+
+`WorkerExecutionBroker` 与本地 Broker 采用组合关系：Worker 策略与进程生命周期职责分离，后续替换容器、远程执行或其他沙箱实现时不需要改变任务解析层。
+
+### 5. 语言源码分析适配器
+
+`LanguageAdapterRegistry` 为源码结构分析提供插件式入口，统一接口为“是否支持文件 + 提取 `ArtifactFacts`”。
+
+- Python 适配器使用标准库 `ast`，提取模块、类、函数、方法和导入关系。
+- C/C++ 适配器读取匹配的 `compile_commands.json`，通过 Clang JSON AST 提取命名空间、类、枚举、函数、方法和字段。
+- C++ 的 Clang 调用通过 Broker-backed runner 执行，不直接启动宿主机子进程。
+- 解析失败、编译数据库缺失、Clang 不可用或 runner 未注入，都会转为结构化诊断。
+- 上层契约检查和知识图谱只消费归一化后的 `ArtifactFacts`，不依赖具体语言 AST 类型。
+
+当前内置源码 AST 适配器是 Python 和 C/C++；其他语言可沿用同一注册接口增加解析器，而无需修改 ContractHarness 主流程。
+
+### 6. 契约检查、验证与证据闭环
+
+设计契约检查通过注册的语言适配器判断变更是否涉及源代码，并通过显式注入的语言 runner 执行编译器分析。ContractGate 不再深入访问 Agent 工具的私有字段。
+
+验证子 Agent 的运行时判断也改为依据解析后的任务类型：项目声明的自定义验证任务可以执行，格式化任务按策略阻止；旧版 schema 和 fallback 仍保持兼容。
+
+所有执行结果都会进入 `ExecutionEvidence`、`ToolResult`、verification checkpoint 和 Trace，能够区分成功、失败、策略阻断、工具链缺失、取消和超时。
+
+### 7. 新增语言/工具链的接入方式
+
+新增一种语言时，推荐按以下顺序接入：
+
+1. 为项目构建系统提供 `ProjectTaskAdapter`，或增加 `.architectcoder/tasks.json`。
+2. 确认任务输出的 argv、工具链身份和资源/网络策略符合任务契约。
+3. 如需源码结构理解，实现并注册对应 `LanguageAdapter`。
+4. 通过 Broker-backed runner 接入编译器或 AST 工具，禁止绕过执行边界直接调用 subprocess。
+5. 增加该语言的任务、AST、工具链缺失、超时和隔离能力测试。
+
+接入完成后，Agent 的任务接口、执行安全策略、契约检查和 Trace 记录均可复用现有实现。
+
+### 8. 当前边界与后续工作
+
+- 多语言任务执行已经是语言无关的；真正的“源码理解”仍取决于是否提供对应语言适配器。
+- 目前需要继续补充 Java、Go、Rust、.NET 等语言的源码事实提取适配器和垂直切片测试。
+- 仍需完善跨平台 wrapper 处理、磁盘配额、工具链版本证明、环境清理和 CI 中的真实容器验证。
