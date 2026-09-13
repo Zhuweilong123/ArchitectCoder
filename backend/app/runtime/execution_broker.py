@@ -31,12 +31,14 @@ from app.runtime.sandbox_worker import ContainerWorker, SandboxWorker, WslWorker
 _VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){0,3}")
 
 
-def _version_matches(declared: str, actual: str) -> bool:
+def _version_matches(declared: str, actual: str, mode: str = "compatible") -> bool:
     """Compare a declared version with a runtime banner conservatively."""
     declared_token = _VERSION_TOKEN.search(str(declared))
     actual_token = _VERSION_TOKEN.search(str(actual))
     if not declared_token or not actual_token:
         return str(declared).strip().lower() == str(actual).strip().lower()
+    if str(mode).lower() == "exact":
+        return actual_token.group(0) == declared_token.group(0)
     return actual_token.group(0) == declared_token.group(0) or actual_token.group(0).startswith(
         declared_token.group(0) + "."
     )
@@ -70,12 +72,24 @@ class LocalExecutionBroker:
         *,
         output_cap: int = 1_000_000,
         stop_check: Callable[[], bool] | None = None,
+        toolchain_version_policy: str = "observe",
+        toolchain_version_match_mode: str = "compatible",
     ) -> None:
         self.executor = executor
         self.sandbox_name = "workspace"
         self.roots = tuple(Path(root).resolve() for root in roots if root)
         self.output_cap = max(1024, min(int(output_cap), 1_000_000))
         self.stop_check = stop_check or (lambda: False)
+        self.toolchain_version_policy = (
+            str(toolchain_version_policy or "observe").strip().lower()
+            if str(toolchain_version_policy or "observe").strip().lower()
+            in {"off", "observe", "warn", "block"} else "observe"
+        )
+        self.toolchain_version_match_mode = (
+            str(toolchain_version_match_mode or "compatible").strip().lower()
+            if str(toolchain_version_match_mode or "compatible").strip().lower()
+            in {"compatible", "exact"} else "compatible"
+        )
 
     async def execute(
         self,
@@ -142,6 +156,17 @@ class LocalExecutionBroker:
                 base["toolchain_probe"] = probe
                 base["toolchain_actual_version"] = str(probe.get("actual_version", ""))
                 base["toolchain_version_match"] = probe.get("version_match")
+                if probe.get("policy_action") == "block":
+                    return ExecutionEvidence(
+                        status="blocked",
+                        output="toolchain version policy rejected this execution",
+                        diagnostics={
+                            "category": "toolchain_version_policy",
+                            "toolchain": probe,
+                        },
+                        cwd=resolved_cwd,
+                        **{key: value for key, value in base.items() if key != "cwd"},
+                    )
             limited_launcher = getattr(self.executor, "start_program_with_limits", None)
             if callable(limited_launcher):
                 proc = await asyncio.to_thread(
@@ -233,24 +258,30 @@ class LocalExecutionBroker:
         """
         if task.toolchain_version == "unknown":
             return None
+        if self.toolchain_version_policy == "off":
+            return None
         probe = getattr(self.executor, "probe_toolchain", None)
         if not callable(probe):
-            return {
+            details = {
                 "status": "unsupported",
                 "declared_version": task.toolchain_version,
                 "actual_version": "",
                 "version_match": None,
             }
+            details["policy_action"] = self._toolchain_policy_action(details)
+            return details
         try:
             result = probe(task.argv[0], cwd, timeout=min(task.resources.timeout_seconds, 10.0))
         except Exception as exc:  # probing must not break the task execution path
-            return {
+            details = {
                 "status": "error",
                 "declared_version": task.toolchain_version,
                 "actual_version": "",
                 "version_match": None,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+            details["policy_action"] = self._toolchain_policy_action(details)
+            return details
         details = dict(result) if isinstance(result, dict) else {
             "status": "invalid_result",
             "actual_version": "",
@@ -260,9 +291,21 @@ class LocalExecutionBroker:
         details["declared_version"] = task.toolchain_version
         details["actual_version"] = actual
         details["version_match"] = (
-            _version_matches(task.toolchain_version, actual) if actual else None
+            _version_matches(
+                task.toolchain_version, actual, self.toolchain_version_match_mode,
+            ) if actual else None
         )
+        details["policy_action"] = self._toolchain_policy_action(details)
         return details
+
+    def _toolchain_policy_action(self, details: dict[str, object]) -> str:
+        """Return the action for one probe result without changing execution."""
+        status = str(details.get("status", "unknown"))
+        match = details.get("version_match")
+        violation = status != "available" or match is not True
+        if not violation or self.toolchain_version_policy in {"off", "observe"}:
+            return "observe"
+        return self.toolchain_version_policy
 
     def _resolve_cwd(self, cwd: str) -> str | None:
         candidate = Path(cwd).expanduser().resolve()
@@ -308,6 +351,8 @@ class WorkerExecutionBroker:
         worker: SandboxWorker,
         output_cap: int = 1_000_000,
         stop_check: Callable[[], bool] | None = None,
+        toolchain_version_policy: str = "observe",
+        toolchain_version_match_mode: str = "compatible",
     ) -> None:
         self.worker = worker
         # The worker owns the process boundary.  A worker that exposes a
@@ -321,6 +366,8 @@ class WorkerExecutionBroker:
             roots,
             output_cap=output_cap,
             stop_check=stop_check,
+            toolchain_version_policy=toolchain_version_policy,
+            toolchain_version_match_mode=toolchain_version_match_mode,
         )
 
     async def execute(
@@ -338,6 +385,7 @@ class WorkerExecutionBroker:
         base = dict(
             task_id=task.task_id,
             toolchain_id=task.toolchain_id,
+            toolchain_version=task.toolchain_version,
             command=task.argv,
             cwd=cwd,
             sandbox=effective.sandbox,
@@ -421,6 +469,8 @@ def build_execution_broker(
         )
         return WorkerExecutionBroker(
             worker.executor, roots, worker=worker, stop_check=stop_check,
+            toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
+            toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
         )
     if mode == "wsl":
         worker = WslWorker(
@@ -434,10 +484,16 @@ def build_execution_broker(
         )
         return WorkerExecutionBroker(
             worker.executor, roots, worker=worker, stop_check=stop_check,
+            toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
+            toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
         )
     if mode != "local":
         raise ValueError(f"unsupported execution worker: {mode}")
-    return LocalExecutionBroker(executor, roots, stop_check=stop_check)
+    return LocalExecutionBroker(
+        executor, roots, stop_check=stop_check,
+        toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
+        toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
+    )
 
 
 __all__ = [

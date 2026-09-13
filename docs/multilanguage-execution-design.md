@@ -286,6 +286,17 @@ the broker is the default execution path.
 - 工具链缺失时返回 `toolchain_unavailable`，不静默回退到 Python 或 Node 命令。
 - 当项目声明工具链版本时，Broker 会在目标 Worker 内执行受控的 `--version` 探测，并把声明版本、实际版本、匹配结果和探测状态写入执行证据；探测失败会记录诊断，但不会掩盖任务本身的执行结果。
 
+版本校验策略通过配置项控制：
+
+```dotenv
+# off | observe | warn | block
+AGENT_TOOLCHAIN_VERSION_POLICY=observe
+# compatible（默认允许 18 匹配 18.1.8）| exact
+AGENT_TOOLCHAIN_VERSION_MATCH_MODE=compatible
+```
+
+`observe` 只记录证据，`warn` 在证据中标记告警但继续执行，`block` 在启动任务前阻断版本缺失或不匹配的任务。建议开发环境使用 `observe`，CI 使用 `warn`，发布环境再启用 `block`。
+
 因此，增加新的编译器或包管理器通常只需要项目任务声明或工具链环境准备，不需要修改全局白名单。
 
 ### 4. 统一执行边界与 Worker 能力证明

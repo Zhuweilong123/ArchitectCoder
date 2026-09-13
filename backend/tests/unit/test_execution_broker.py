@@ -120,6 +120,50 @@ def test_local_broker_records_runtime_toolchain_version_probe(tmp_path):
     assert evidence.toolchain_probe["status"] == "available"
 
 
+def test_toolchain_version_block_policy_fails_closed_before_start(tmp_path):
+    class Executor(_Executor):
+        def probe_toolchain(self, program, cwd, *, timeout):
+            return {"status": "available", "version": "17.0.0"}
+
+    executor = Executor()
+    broker = LocalExecutionBroker(
+        executor, [str(tmp_path)],
+        toolchain_version_policy="block", toolchain_version_match_mode="exact",
+    )
+    task = TaskSpec(
+        task_id="cpp.test", kind=TaskKind.TEST, argv=("clang++", "--version"),
+        toolchain_id="cpp-clang", toolchain_version="18",
+    )
+
+    evidence = asyncio.run(broker.execute(task, str(tmp_path)))
+
+    assert evidence.status == "blocked"
+    assert evidence.diagnostics["category"] == "toolchain_version_policy"
+    assert evidence.toolchain_version_match is False
+    assert executor.started is None
+
+
+def test_toolchain_version_warn_policy_keeps_task_result(tmp_path):
+    class Executor(_Executor):
+        def probe_toolchain(self, program, cwd, *, timeout):
+            return {"status": "available", "version": "17.0.0"}
+
+    executor = Executor()
+    broker = LocalExecutionBroker(
+        executor, [str(tmp_path)], toolchain_version_policy="warn",
+    )
+    task = TaskSpec(
+        task_id="cpp.test", kind=TaskKind.TEST, argv=("clang++", "--version"),
+        toolchain_id="cpp-clang", toolchain_version="18",
+    )
+
+    evidence = asyncio.run(broker.execute(task, str(tmp_path)))
+
+    assert evidence.status == "success"
+    assert evidence.toolchain_probe["policy_action"] == "warn"
+    assert executor.started is not None
+
+
 def test_local_broker_blocks_network_and_user_approval(tmp_path):
     executor = _Executor()
     broker = LocalExecutionBroker(executor, [str(tmp_path)])

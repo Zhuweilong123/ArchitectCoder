@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     agent_container_executable: str = "docker"
     agent_container_preflight_timeout_seconds: float = 10.0
     agent_container_require_digest: bool = False
+    # Toolchain version attestation is observational by default.  Production
+    # deployments can promote mismatches to warnings or hard blocks.
+    agent_toolchain_version_policy: Literal["off", "observe", "warn", "block"] = "observe"
+    agent_toolchain_version_match_mode: Literal["compatible", "exact"] = "compatible"
 
     strict_production: bool = False
 
