@@ -19,6 +19,33 @@ from typing import Protocol
 from app.runtime.encoding import decode_process_output
 
 
+_VERSION_RE = re.compile(r"\b\d+(?:\.\d+){0,3}(?:[-+._][A-Za-z0-9.-]+)?\b")
+
+
+def _probe_version_process(start, terminate, timeout: float) -> dict[str, object]:
+    """Collect a best-effort ``--version`` banner from an executor process."""
+    process = start()
+    try:
+        stdout, stderr = process.communicate(timeout=max(0.1, float(timeout)))
+    except subprocess.TimeoutExpired:
+        terminate(process)
+        return {"status": "timeout", "version": ""}
+    output = (decode_process_output(stdout) + decode_process_output(stderr)).strip()
+    if process.returncode != 0:
+        return {
+            "status": "unavailable",
+            "version": "",
+            "output": output[:200],
+        }
+    banner = next((line.strip() for line in output.splitlines() if line.strip()), "")
+    match = _VERSION_RE.search(banner)
+    return {
+        "status": "available",
+        "version": match.group(0) if match else banner[:120],
+        "output": banner[:200],
+    }
+
+
 class ExecutionEnvironmentError(RuntimeError):
     """The configured command environment cannot safely execute a command."""
 
@@ -143,6 +170,13 @@ class NativeLinuxBashExecutor:
 
     def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
         return _validate_resolved_program(program, args, resolve_on_host=True)
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def preflight(self) -> None:
         if not shutil.which("bash"):
@@ -285,6 +319,13 @@ class NativePowerShellExecutor:
         time to the global allowlist.
         """
         return _validate_resolved_program(program, args, resolve_on_host=True)
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def start(self, command: str, cwd: str | None) -> subprocess.Popen:
         self.preflight()
@@ -433,6 +474,13 @@ class WslBashExecutor:
         if program.lower() == "gradlew.bat" and (Path(cwd) / "gradlew").is_file():
             return "./gradlew", args
         return program, args
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def _prefix(self, *, cwd: str | None = None) -> list[str]:
         command = [self.executable]

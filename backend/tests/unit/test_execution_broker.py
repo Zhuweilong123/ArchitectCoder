@@ -97,6 +97,29 @@ def test_local_broker_uses_worker_wrapper_normalizer(tmp_path):
     assert executor.started == ("./gradlew", ["test"], str(tmp_path))
 
 
+def test_local_broker_records_runtime_toolchain_version_probe(tmp_path):
+    class Executor(_Executor):
+        def probe_toolchain(self, program, cwd, *, timeout):
+            assert program == "clang++"
+            assert cwd == str(tmp_path)
+            assert timeout == 10.0
+            return {"status": "available", "version": "18.1.8", "output": "clang version 18.1.8"}
+
+    executor = Executor()
+    broker = LocalExecutionBroker(executor, [str(tmp_path)])
+    task = TaskSpec(
+        task_id="cpp.test", kind=TaskKind.TEST, argv=("clang++", "--version"),
+        toolchain_id="cpp-clang", toolchain_version="18",
+    )
+
+    evidence = asyncio.run(broker.execute(task, str(tmp_path)))
+
+    assert evidence.status == "success"
+    assert evidence.toolchain_actual_version == "18.1.8"
+    assert evidence.toolchain_version_match is True
+    assert evidence.toolchain_probe["status"] == "available"
+
+
 def test_local_broker_blocks_network_and_user_approval(tmp_path):
     executor = _Executor()
     broker = LocalExecutionBroker(executor, [str(tmp_path)])

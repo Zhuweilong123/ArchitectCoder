@@ -284,6 +284,7 @@ the broker is the default execution path.
 - 工作目录必须位于受控 workspace roots；
 - 网络、审批和资源限制策略；
 - 工具链缺失时返回 `toolchain_unavailable`，不静默回退到 Python 或 Node 命令。
+- 当项目声明工具链版本时，Broker 会在目标 Worker 内执行受控的 `--version` 探测，并把声明版本、实际版本、匹配结果和探测状态写入执行证据；探测失败会记录诊断，但不会掩盖任务本身的执行结果。
 
 因此，增加新的编译器或包管理器通常只需要项目任务声明或工具链环境准备，不需要修改全局白名单。
 

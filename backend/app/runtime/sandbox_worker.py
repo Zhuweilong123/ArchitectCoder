@@ -20,6 +20,7 @@ from app.runtime.command import (
     ExecutionEnvironmentError,
     LinuxExecutionProfile,
     WslBashExecutor,
+    _probe_version_process,
 )
 from app.runtime.task_contracts import ExecutionPolicy, NetworkPolicy
 
@@ -227,6 +228,13 @@ class DockerCommandExecutor:
             if candidate.is_file():
                 return "./gradlew", args
         return program, args
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def _container_cwd(self, cwd: str | None) -> str:
         candidate = Path(cwd or self.workspace_root).expanduser().resolve()

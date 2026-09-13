@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,20 @@ from app.runtime.task_contracts import (
     TaskSpec,
 )
 from app.runtime.sandbox_worker import ContainerWorker, SandboxWorker, WslWorker
+
+
+_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){0,3}")
+
+
+def _version_matches(declared: str, actual: str) -> bool:
+    """Compare a declared version with a runtime banner conservatively."""
+    declared_token = _VERSION_TOKEN.search(str(declared))
+    actual_token = _VERSION_TOKEN.search(str(actual))
+    if not declared_token or not actual_token:
+        return str(declared).strip().lower() == str(actual).strip().lower()
+    return actual_token.group(0) == declared_token.group(0) or actual_token.group(0).startswith(
+        declared_token.group(0) + "."
+    )
 
 
 class ExecutionBroker(Protocol):
@@ -77,6 +92,9 @@ class LocalExecutionBroker:
             task_id=task.task_id,
             toolchain_id=task.toolchain_id,
             toolchain_version=task.toolchain_version,
+            toolchain_actual_version="",
+            toolchain_version_match=None,
+            toolchain_probe={},
             command=task.argv,
             cwd=cwd,
             sandbox=effective.sandbox,
@@ -119,6 +137,11 @@ class LocalExecutionBroker:
             )
         try:
             self.executor.preflight()
+            probe = self._probe_toolchain(task, resolved_cwd)
+            if probe:
+                base["toolchain_probe"] = probe
+                base["toolchain_actual_version"] = str(probe.get("actual_version", ""))
+                base["toolchain_version_match"] = probe.get("version_match")
             limited_launcher = getattr(self.executor, "start_program_with_limits", None)
             if callable(limited_launcher):
                 proc = await asyncio.to_thread(
@@ -200,6 +223,46 @@ class LocalExecutionBroker:
             return task
         argv = (program, *(str(value) for value in args))
         return replace(task, argv=argv)
+
+    def _probe_toolchain(self, task: TaskSpec, cwd: str) -> dict[str, object] | None:
+        """Probe a declared toolchain version inside the selected worker.
+
+        Probing is opt-in for tasks with a declared version and is explicitly
+        best-effort: an unsupported or failed probe is recorded but never
+        replaces the task's normal execution result.
+        """
+        if task.toolchain_version == "unknown":
+            return None
+        probe = getattr(self.executor, "probe_toolchain", None)
+        if not callable(probe):
+            return {
+                "status": "unsupported",
+                "declared_version": task.toolchain_version,
+                "actual_version": "",
+                "version_match": None,
+            }
+        try:
+            result = probe(task.argv[0], cwd, timeout=min(task.resources.timeout_seconds, 10.0))
+        except Exception as exc:  # probing must not break the task execution path
+            return {
+                "status": "error",
+                "declared_version": task.toolchain_version,
+                "actual_version": "",
+                "version_match": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        details = dict(result) if isinstance(result, dict) else {
+            "status": "invalid_result",
+            "actual_version": "",
+        }
+        actual = str(details.get("version", details.get("actual_version", "")) or "").strip()
+        details["status"] = str(details.get("status", "unknown"))
+        details["declared_version"] = task.toolchain_version
+        details["actual_version"] = actual
+        details["version_match"] = (
+            _version_matches(task.toolchain_version, actual) if actual else None
+        )
+        return details
 
     def _resolve_cwd(self, cwd: str) -> str | None:
         candidate = Path(cwd).expanduser().resolve()

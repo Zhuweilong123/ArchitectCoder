@@ -188,6 +188,9 @@ class ExecutionEvidence:
     command: tuple[str, ...]
     cwd: str
     toolchain_version: str = "unknown"
+    toolchain_actual_version: str = ""
+    toolchain_version_match: bool | None = None
+    toolchain_probe: Mapping[str, Any] = field(default_factory=dict)
     exit_code: int | None = None
     duration_ms: float | None = None
     timeout_reason: str | None = None
@@ -201,6 +204,7 @@ class ExecutionEvidence:
         object.__setattr__(self, "status", _clean_text(self.status, "status"))
         object.__setattr__(self, "toolchain_id", _clean_text(self.toolchain_id, "toolchain_id"))
         object.__setattr__(self, "toolchain_version", _clean_text(self.toolchain_version, "toolchain_version"))
+        object.__setattr__(self, "toolchain_actual_version", str(self.toolchain_actual_version or "").strip())
         object.__setattr__(self, "cwd", _clean_text(self.cwd, "cwd"))
         object.__setattr__(self, "command", _literal_argv(tuple(self.command), "command"))
         if self.duration_ms is not None and self.duration_ms < 0:
