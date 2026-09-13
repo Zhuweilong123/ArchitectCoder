@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from app.runtime.workspace import WorkspaceManifest
 
 from .contract_harness import ContractCheckResult, ContractHarness
+from .language_adapters import broker_command_runner
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,7 @@ class DefaultContractGate:
             project_id="",
             changed_paths=changed,
             settings=context.settings,
+            language_runner=_language_runner_for_agent(context.agent),
             index_graph=False,
         )
         payload = result.to_dict()
@@ -205,8 +207,18 @@ class DefaultContractGate:
             project_id="",
             changed_paths=changed,
             settings=context.settings,
+            language_runner=_language_runner_for_agent(context.agent),
             index_graph=True,
         )
+
+
+def _language_runner_for_agent(agent: Any) -> Callable[..., Any] | None:
+    """Reuse the run_task Broker for compiler-backed source analysis."""
+    registry = getattr(agent, "tool_registry", None)
+    getter = getattr(registry, "get_tool", None)
+    tool = getter("run_task") if callable(getter) else None
+    broker = getattr(tool, "_execution_broker", None)
+    return broker_command_runner(broker) if broker is not None else None
 
 
 def _review_content(result: ContractCheckResult) -> str:

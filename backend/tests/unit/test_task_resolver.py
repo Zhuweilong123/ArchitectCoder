@@ -1,0 +1,149 @@
+import json
+from pathlib import Path
+
+from app.runtime.task_contracts import ApprovalClass, NetworkPolicy, TaskKind
+from app.runtime.task_resolver import TaskResolver
+
+
+def test_resolves_cpp_cmake_tasks_without_language_allowlist(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.20)\n", encoding="utf-8")
+
+    result = TaskResolver().resolve("build", str(tmp_path))
+
+    assert result.resolved
+    assert result.toolchain.family == "cpp"
+    assert result.task.kind is TaskKind.BUILD
+    assert result.task.argv == ("cmake", "--build", "build")
+    assert result.task.toolchain_id == "cpp-cmake"
+
+
+def test_resolves_node_script_from_package_json(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"build": "vite build", "test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    result = TaskResolver().resolve("test", str(tmp_path), target="src")
+
+    assert result.resolved
+    assert result.task.argv == ("npm", "run", "test", "src")
+    assert result.toolchain.family == "node"
+
+
+def test_resolves_python_tasks_and_build_metadata(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['setuptools']\n[tool.pytest.ini_options]\n", encoding="utf-8",
+    )
+
+    test_result = TaskResolver().resolve("test", str(tmp_path))
+    build_result = TaskResolver().resolve("build", str(tmp_path))
+
+    assert test_result.task.argv == ("python", "-m", "pytest")
+    assert build_result.task.argv == ("python", "-m", "build")
+
+
+def test_unknown_task_does_not_fall_back_to_unrelated_command(tmp_path):
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+
+    result = TaskResolver().resolve("typecheck", str(tmp_path))
+
+    assert not result.resolved
+    assert "no 'typecheck' task" in result.reason
+
+
+def test_rejects_shell_control_characters_in_manifest_target(tmp_path):
+    (tmp_path / "Cargo.toml").write_text("[package]\nname='x'\nversion='0.1.0'\n", encoding="utf-8")
+
+    result = TaskResolver().resolve("build", str(tmp_path), target="x; rm -rf .")
+
+    assert not result.resolved
+    assert "shell control" in result.reason
+
+
+def test_explicit_manifest_controls_task_policy_and_toolchain(tmp_path):
+    marker = tmp_path / ".architectcoder"
+    marker.mkdir()
+    (marker / "tasks.json").write_text(
+        json.dumps({
+            "language": "cpp",
+            "toolchain": {"id": "cpp-clang", "version": "18"},
+            "tasks": {
+                "build": {
+                    "argv": ["cmake", "--build", "build"],
+                    "cwd": "workspace",
+                    "network": "deny",
+                    "approval": "sandbox_auto",
+                    "resources": {"timeout_seconds": 120, "memory_mb": 2048},
+                    "expected_outputs": ["build/bin/app"],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    result = TaskResolver().resolve("build", str(tmp_path))
+
+    assert result.resolved
+    assert result.toolchain.toolchain_id == "cpp-clang"
+    assert result.toolchain.version == "18"
+    assert result.task.network is NetworkPolicy.DENY
+    assert result.task.approval is ApprovalClass.SANDBOX_AUTO
+    assert result.task.resources.timeout_seconds == 120
+    assert result.task.resources.memory_mb == 2048
+    assert result.task.expected_outputs == ("build/bin/app",)
+
+
+def test_invalid_manifest_is_a_typed_resolution_failure(tmp_path):
+    marker = tmp_path / ".architectcoder"
+    marker.mkdir()
+    (marker / "tasks.json").write_text(
+        '{"tasks": {"build": {"argv": ["cmake"], "network": "maybe"}}}',
+        encoding="utf-8",
+    )
+
+    result = TaskResolver().resolve("build", str(tmp_path))
+
+    assert not result.resolved
+    assert "invalid task" in result.reason
+
+
+def test_cpp_vertical_fixture_exposes_cmake_build_and_test_tasks():
+    fixture = Path(__file__).parents[1] / "fixtures" / "cpp_vertical_slice"
+
+    build = TaskResolver().resolve("build", str(fixture))
+    test = TaskResolver().resolve("test", str(fixture))
+
+    assert build.resolved and build.task.argv[:2] == ("cmake", "--build")
+    assert test.resolved and test.task.argv[0] == "ctest"
+
+
+def test_resolves_go_module_tasks(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.test\n\ngo 1.22\n", encoding="utf-8")
+
+    result = TaskResolver().resolve("test", str(tmp_path))
+
+    assert result.resolved
+    assert result.toolchain.family == "go"
+    assert result.task.argv == ("go", "test", "./...")
+
+
+def test_resolves_maven_and_gradle_tasks(tmp_path):
+    (tmp_path / "pom.xml").write_text("<project></project>", encoding="utf-8")
+    maven = TaskResolver().resolve("build", str(tmp_path))
+    assert maven.task.argv == ("mvn", "-B", "package", "-DskipTests")
+
+    (tmp_path / "pom.xml").unlink()
+    (tmp_path / "build.gradle").write_text("plugins {}", encoding="utf-8")
+    gradle = TaskResolver().resolve("test", str(tmp_path))
+    assert gradle.toolchain.family == "java"
+    assert gradle.task.argv == ("gradle", "test")
+
+
+def test_resolves_dotnet_project_tasks(tmp_path):
+    (tmp_path / "sample.csproj").write_text("<Project />", encoding="utf-8")
+
+    result = TaskResolver().resolve("test", str(tmp_path))
+
+    assert result.resolved
+    assert result.toolchain.family == "dotnet"
+    assert result.task.argv == ("dotnet", "test", "sample.csproj")

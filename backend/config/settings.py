@@ -139,6 +139,17 @@ class Settings(BaseSettings):
     # this separate from the much longer per-command timeout used by ShellTool.
     agent_wsl_preflight_timeout_seconds: float = 20.0
 
+    # Resolved project tasks use the local broker by default.  ``container``
+    # opts into the Docker worker only when the deployment has pre-pulled an
+    # image containing the project's toolchain.  ``wsl`` remains conservative
+    # and fails closed unless isolation capabilities are explicitly provided
+    # by a future worker implementation.
+    agent_execution_worker: Literal["local", "wsl", "container"] = "local"
+    agent_container_image: str = "ubuntu:24.04"
+    agent_container_executable: str = "docker"
+    agent_container_preflight_timeout_seconds: float = 10.0
+    agent_container_require_digest: bool = False
+
     strict_production: bool = False
 
     @field_validator("llm_api_key")

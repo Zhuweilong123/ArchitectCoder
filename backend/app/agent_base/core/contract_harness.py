@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .contract_pipeline import assemble_contract
+from .contracts import load_contracts
+from .language_adapters import default_language_adapters
 
 
 CheckStatus = Literal["pass", "warn", "block", "inconclusive", "not_applicable"]
@@ -71,6 +73,9 @@ class ContractHarness:
         changed_paths: list[str] | tuple[str, ...] = (),
         settings: Any = None,
         index_graph: bool = False,
+        contract_provider: Any = None,
+        knowledge_graph_provider: Any = None,
+        language_runner: Any = None,
     ) -> ContractCheckResult:
         normalized = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
         changed = tuple(
@@ -80,8 +85,10 @@ class ContractHarness:
         changed = tuple(path for path in changed if path)
         source_root = str(normalized.get("source_root", "") or "")
         workspace_root = str(normalized.get("workspace_root", "") or "")
+        language_adapters = default_language_adapters()
         relevant_source_change = any(
-            self._is_under(path, source_root) and Path(path).suffix.lower() == ".py"
+            self._is_under(path, source_root)
+            and language_adapters.adapter_for(path) is not None
             for path in changed
         )
         if changed and not relevant_source_change:
@@ -90,11 +97,18 @@ class ContractHarness:
                 message="no source artifact changed in this run",
             )
 
+        if contract_provider is None and language_runner is not None:
+            contract_provider = load_contracts(
+                settings=settings,
+                language_runner=language_runner,
+            )
         try:
             assembly = assemble_contract(
                 normalized,
                 project_id=project_id,
                 settings=settings,
+                contract_provider=contract_provider,
+                knowledge_graph_provider=knowledge_graph_provider,
                 index_graph=index_graph,
             )
         except Exception as exc:

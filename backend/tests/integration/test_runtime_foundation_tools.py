@@ -13,6 +13,7 @@ from app.agent_base.tools.result import ToolResult
 from app.services.change_set import ChangeSet
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.runtime import (
+    ExecutionEvidence,
     NativePowerShellExecutor,
     build_environment_context,
     resolve_command_environment,
@@ -139,7 +140,7 @@ def test_execution_tools_advertise_disjoint_routing_contract(tmp_path):
     tools = create_foundation_tools(str(tmp_path))
     descriptions = {tool.name: tool.description for tool in tools}
 
-    assert "fixed project task" in descriptions["run_task"]
+    assert "project task" in descriptions["run_task"]
     assert "literal argv" in descriptions["run_program"]
     assert "shell" in descriptions["run_program"]
     assert "last resort" in descriptions["shell"]
@@ -507,8 +508,224 @@ def test_run_task_does_not_duplicate_test_alias_as_target(tmp_path):
     assert captured["cwd"] == str(test)
 
 
+def test_run_task_prefers_project_task_resolver(tmp_path):
+    source = tmp_path / "src"
+    test = tmp_path / "test"
+    design = tmp_path / "design"
+    source.mkdir()
+    test.mkdir()
+    design.mkdir()
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {"build": "vite build"}}', encoding="utf-8",
+    )
+    tool = _tool(
+        create_foundation_tools(
+            str(source), str(test), str(design), workspace_root=str(tmp_path),
+        ),
+        "run_task",
+    )
+    captured = {}
+
+    async def fake_run(program, args, cwd):
+        captured.update(program=program, args=args, cwd=cwd)
+        return "resolved"
+
+    tool._run_program_cancellable = fake_run
+    import asyncio
+
+    result = asyncio.run(tool._execute({"task": "build", "cwd": "workspace"}))
+
+    assert result == "resolved"
+    assert captured == {
+        "program": "npm",
+        "args": ["run", "build"],
+        "cwd": str(tmp_path),
+    }
+
+
+def test_resolved_task_uses_execution_broker_and_preserves_evidence(tmp_path):
+    source = tmp_path / "src"
+    test = tmp_path / "test"
+    design = tmp_path / "design"
+    source.mkdir()
+    test.mkdir()
+    design.mkdir()
+    (tmp_path / "CMakeLists.txt").write_text("", encoding="utf-8")
+
+    class Broker:
+        async def execute(self, task, cwd, *, policy=None):
+            return ExecutionEvidence(
+                task_id=task.task_id,
+                status="success",
+                toolchain_id=task.toolchain_id,
+                command=task.argv,
+                cwd=cwd,
+                exit_code=0,
+                output="built",
+                diagnostics={"category": "process_exit"},
+            )
+
+    tool = _tool(
+        create_foundation_tools(
+            str(source), str(test), str(design), workspace_root=str(tmp_path),
+            execution_broker=Broker(),
+        ),
+        "run_task",
+    )
+
+    import asyncio
+    result = asyncio.run(tool.run_result({"task": "build", "cwd": "workspace"}))
+
+    assert result.status == "success"
+    assert result.text == "built"
+    assert result.execution_evidence["toolchain_id"] == "cpp-cmake"
+    assert result.verification.passed
+
+
+def test_manifest_task_cwd_is_resolved_relative_to_project_root(tmp_path):
+    import asyncio
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    marker = tmp_path / ".architectcoder"
+    marker.mkdir()
+    (marker / "tasks.json").write_text(
+        json.dumps({
+            "language": "cpp",
+            "toolchain": "cpp-clang",
+            "tasks": {
+                "build": {
+                    "argv": ["cmake", "--build", "."],
+                    "cwd": "build",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class Broker:
+        async def execute(self, task, cwd, *, policy=None):
+            captured["cwd"] = cwd
+            return ExecutionEvidence(
+                task_id=task.task_id,
+                status="success",
+                toolchain_id=task.toolchain_id,
+                command=task.argv,
+                cwd=cwd,
+                exit_code=0,
+                output="built",
+            )
+
+    tool = _tool(
+        create_foundation_tools(
+            str(tmp_path / "src"), str(tmp_path / "test"), str(tmp_path / "design"),
+            workspace_root=str(tmp_path), execution_broker=Broker(),
+        ),
+        "run_task",
+    )
+    result = asyncio.run(tool.run_result({"task": "build"}))
+
+    assert result.status == "success"
+    assert captured["cwd"] == str(build_dir)
+
+
+def test_manifest_task_cwd_cannot_escape_project_root(tmp_path):
+    import asyncio
+
+    marker = tmp_path / ".architectcoder"
+    marker.mkdir()
+    (marker / "tasks.json").write_text(
+        json.dumps({
+            "tasks": {
+                "build": {"argv": ["cmake"], "cwd": "../outside"},
+            },
+        }),
+        encoding="utf-8",
+    )
+    tool = _tool(
+        create_foundation_tools(
+            str(tmp_path), workspace_root=str(tmp_path), execution_broker=object(),
+        ),
+        "run_task",
+    )
+    result = asyncio.run(tool.run_result({"task": "build"}))
+
+    assert result.status == "blocked"
+    assert result.error_code == "TASK_PATH_POLICY"
+
+
+def test_manifest_custom_task_name_is_not_blocked_by_language_or_task_allowlist(tmp_path):
+    import asyncio
+
+    marker = tmp_path / ".architectcoder"
+    marker.mkdir()
+    (marker / "tasks.json").write_text(
+        json.dumps({
+            "language": "zig",
+            "toolchain": {"id": "zig", "version": "0.13"},
+            "tasks": {
+                "coverage": {
+                    "argv": ["zig", "build", "test"],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class Broker:
+        sandbox_name = "workspace"
+
+        async def execute(self, task, cwd, *, policy=None):
+            captured.update(task=task, cwd=cwd)
+            return ExecutionEvidence(
+                task_id=task.task_id,
+                status="success",
+                toolchain_id=task.toolchain_id,
+                command=task.argv,
+                cwd=cwd,
+                exit_code=0,
+                output="coverage complete",
+            )
+
+    tool = _tool(
+        create_foundation_tools(
+            str(tmp_path), workspace_root=str(tmp_path), execution_broker=Broker(),
+        ),
+        "run_task",
+    )
+    result = asyncio.run(tool.run_result({"task": "coverage"}))
+
+    assert result.status == "success"
+    assert captured["task"].toolchain_id == "zig"
+    assert captured["task"].argv == ("zig", "build", "test")
+
+
 def test_power_shell_adapter_owns_shell_syntax_validation():
     executor = NativePowerShellExecutor()
     assert executor.validate_shell_command("Get-ChildItem -Force") is None
     assert executor.validate_shell_command(r"(Get-Content .\main.py).Count") is None
     assert "nested shell" in executor.validate_shell_command("bash -c ls")
+
+
+def test_power_shell_resolved_tasks_use_worker_path_not_global_allowlist(monkeypatch):
+    executor = NativePowerShellExecutor()
+    monkeypatch.setattr(
+        "app.runtime.command.shutil.which",
+        lambda program: "C:\\toolchains\\bin\\" + program + ".exe",
+    )
+
+    # CMake is deliberately not an interactive run_program allowlist entry,
+    # but a resolver-owned task may use whatever tool the worker advertises.
+    assert executor.validate_program("cmake", ["--build", "build"]) is not None
+    assert executor.validate_resolved_program("cmake", ["--build", "build"]) is None
+
+
+def test_missing_resolved_tool_is_reported_as_toolchain_unavailable(monkeypatch):
+    executor = NativePowerShellExecutor()
+    monkeypatch.setattr("app.runtime.command.shutil.which", lambda program: None)
+
+    error = executor.validate_resolved_program("unknown-compiler", [])
+
+    assert error.startswith("toolchain executable 'unknown-compiler'")

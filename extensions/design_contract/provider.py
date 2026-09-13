@@ -16,6 +16,12 @@ from app.agent_base.core.contracts import (
     ContractMapping,
     ContractSnapshot,
 )
+from app.agent_base.core.language_adapters import (
+    ClangAstAdapter,
+    LanguageAdapterRegistry,
+    PythonAstAdapter,
+    default_language_adapters,
+)
 
 from .kg_adapter import KnowledgeGraphContractAdapter
 
@@ -26,6 +32,16 @@ class DesignContractProvider:
     def __init__(self, *, settings=None, **kwargs):
         self.settings = settings
         self._kg = KnowledgeGraphContractAdapter(settings=settings)
+        configured_adapters = kwargs.get("language_adapters")
+        language_runner = kwargs.get("language_runner")
+        if configured_adapters is not None:
+            self._language_adapters = configured_adapters
+        elif language_runner is not None:
+            self._language_adapters = LanguageAdapterRegistry((
+                PythonAstAdapter(), ClangAstAdapter(runner=language_runner),
+            ))
+        else:
+            self._language_adapters = default_language_adapters()
 
     def collect(
         self,
@@ -85,7 +101,13 @@ class DesignContractProvider:
         for filepath in project_files:
             self._collect_design(filepath, workspace, entities, errors)
         self._collect_source(source_root, workspace, entities, errors)
+        self._collect_language_source(
+            source_root, workspace, entities, errors, self._language_adapters,
+        )
         self._collect_tests(test_root, workspace, entities, errors)
+        self._collect_language_tests(
+            test_root, workspace, entities, errors, self._language_adapters,
+        )
         mappings = _infer_mappings(entities)
         resolved_project_id = project_id or _project_id(values, workspace)
         status = "collected" if entities else "blocked"
@@ -211,6 +233,39 @@ class DesignContractProvider:
                             ))
 
     @staticmethod
+    def _collect_language_source(
+        source_root: str,
+        workspace: str,
+        entities: list[ContractEntity],
+        errors: list[dict[str, str]],
+        adapters: LanguageAdapterRegistry,
+    ) -> None:
+        """Collect non-Python language facts through the extensible registry."""
+        if not source_root or not Path(source_root).is_dir():
+            return
+        for path in sorted(Path(source_root).rglob("*")):
+            if not path.is_file() or path.suffix.lower() in {".py", ".pyi"}:
+                continue
+            adapter = adapters.adapter_for(path)
+            if adapter is None:
+                continue
+            facts = adapters.extract(
+                path,
+                project_id="",
+                scope="source",
+                project_root=workspace,
+            )
+            relative = _relative(path, workspace)
+            for entity in facts.entities:
+                entities.append(replace(entity, path=relative))
+            for diagnostic in facts.diagnostics:
+                errors.append({
+                    "path": relative,
+                    "error": str(diagnostic.get("message") or diagnostic),
+                    "code": str(diagnostic.get("code") or "language_adapter_error"),
+                })
+
+    @staticmethod
     def _collect_tests(
         test_root: str,
         workspace: str,
@@ -239,6 +294,46 @@ class DesignContractProvider:
                                 f"test_case:{relative}:{node.name}.{child.name}", "test_case",
                                 f"{node.name}.{child.name}", relative, child.lineno,
                             ))
+
+    @staticmethod
+    def _collect_language_tests(
+        test_root: str,
+        workspace: str,
+        entities: list[ContractEntity],
+        errors: list[dict[str, str]],
+        adapters: LanguageAdapterRegistry,
+    ) -> None:
+        """Normalize conventional non-Python test functions as test cases."""
+        if not test_root or not Path(test_root).is_dir():
+            return
+        for path in sorted(Path(test_root).rglob("*")):
+            if not path.is_file() or path.suffix.lower() in {".py", ".pyi"}:
+                continue
+            adapter = adapters.adapter_for(path)
+            if adapter is None:
+                continue
+            facts = adapters.extract(
+                path, project_id="", scope="test", project_root=workspace,
+            )
+            relative = _relative(path, workspace)
+            for entity in facts.entities:
+                if entity.entity_type not in {"source_function", "source_method"}:
+                    continue
+                if not entity.name.lower().startswith(("test_", "test")):
+                    continue
+                entities.append(ContractEntity(
+                    f"test_case:{relative}:{entity.name}",
+                    "test_case",
+                    entity.name,
+                    relative,
+                    entity.line,
+                ))
+            for diagnostic in facts.diagnostics:
+                errors.append({
+                    "path": relative,
+                    "error": str(diagnostic.get("message") or diagnostic),
+                    "code": str(diagnostic.get("code") or "language_adapter_error"),
+                })
 
 
 def _source_method(node: ast.FunctionDef | ast.AsyncFunctionDef, path: str, parent: str, owner: str) -> ContractEntity:

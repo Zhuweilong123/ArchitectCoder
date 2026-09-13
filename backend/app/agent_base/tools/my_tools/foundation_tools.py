@@ -11,13 +11,20 @@ import hashlib
 import json
 import os
 import shlex
+from dataclasses import replace
 from typing import Any
 from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
 from app.runtime.command import ExecutionEnvironmentError
 from app.agent_base.tools.base import Tool
-from app.agent_base.tools.result import ToolResult, FileChange, VerificationEvidence, command_result
+from app.agent_base.tools.result import (
+    CommandEvidence,
+    ToolResult,
+    FileChange,
+    VerificationEvidence,
+    command_result,
+)
 from app.agent_base.tools.my_tools.foundation_runtime import (
     ShellTool,
     ListFilesTool as FoundationListFilesRuntime,
@@ -28,7 +35,13 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
     _resolve_roots,
     safe_path,
 )
-from app.runtime import FileSystemOperationError, NativeFileSystem
+from app.runtime import (
+    ApprovalClass,
+    ExecutionPolicy,
+    FileSystemOperationError,
+    NativeFileSystem,
+    TaskResolver,
+)
 
 
 class _ApplyChangesError(ValueError):
@@ -748,24 +761,25 @@ class RunTaskTool(RunProgramTool):
         "validate": ("python", ["-m", "pytest"]),
     }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, execution_broker=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "run_task"
         self.description = (
-            "Run one fixed project task: test, build, lint, format, typecheck, or validate. "
-            "Prefer this for project verification/build work instead of composing commands. "
+            "Run a semantic project task such as test, build, lint, format, typecheck, or validate; "
+            "custom task names declared by the project manifest are also accepted. "
+            "Tasks are resolved from the project's build metadata when available; "
+            "use this for project verification/build work instead of composing commands. "
             "validate checks UML project files directly for .umlproj/.uml/.json targets. "
             "target is relative to cwd; cwd accepts source, test, design, or workspace. "
             "For the full test suite use cwd=\"test\" with no target or target=\".\"."
         )
+        self._task_resolver = TaskResolver()
+        self._execution_broker = execution_broker
 
     async def _execute_result(self, params: dict):
         task = str(params.get("task", "")).lower().strip()
-        if task not in self.TASKS:
-            return (
-                f"Error: unsupported task '{task}'. "
-                f"Choose one of: {', '.join(self.TASKS)}."
-            )
+        if not task:
+            return "Error: task must be a non-empty string"
         if task == "validate" and params.get("target"):
             target = str(params["target"]).strip()
             if target.lower().endswith((".umlproj", ".uml", ".json")):
@@ -775,12 +789,35 @@ class RunTaskTool(RunProgramTool):
                     result.status == "success",
                 )
                 return result
-        program, base_args = self.TASKS[task]
         target = params.get("target")
-        args = list(base_args)
         if target:
             if not isinstance(target, str):
                 return "Error: target must be a string"
+        resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
+        if cwd_error:
+            return f"Error: {cwd_error}"
+        resolution = self._task_resolver.resolve(
+            task, resolved_cwd or self._cwd, target=target,
+        )
+        if resolution.project_root and not resolution.resolved:
+            return (
+                f"Error: unable to resolve task '{task}' for project "
+                f"{resolution.project_root}: {resolution.reason}"
+            )
+        if resolution.resolved:
+            if self._execution_broker is not None:
+                return await self._execute_resolved_task(resolution, target)
+            program, args = resolution.task.argv[0], list(resolution.task.argv[1:])
+            execution_cwd = resolution.project_root
+        else:
+            if task not in self.TASKS:
+                return (
+                    f"Error: unable to resolve project task '{task}'. "
+                    "Declare it in .architectcoder/tasks.json or use a supported project manifest."
+                )
+            program, base_args = self.TASKS[task]
+            args = list(base_args)
+            execution_cwd = resolved_cwd
             # A model may carry the cwd alias into target as well. Treat
             # ``target=test, cwd=test`` as the intended full-suite command
             # instead of executing pytest against the non-existent test/test.
@@ -792,7 +829,7 @@ class RunTaskTool(RunProgramTool):
             ):
                 args.append(target)
         result = ToolResult.from_value(await RunProgramTool._execute_result(self, {
-            "program": program, "args": args, "cwd": params.get("cwd"),
+            "program": program, "args": args, "cwd": execution_cwd,
         }))
         if task != "format" and result.execution is not None:
             result.verification = VerificationEvidence(
@@ -800,6 +837,90 @@ class RunTaskTool(RunProgramTool):
                 result.execution.exit_code == 0, result.execution.exit_code,
             )
         return result
+
+    async def _execute_resolved_task(self, resolution, target: str | None) -> ToolResult:
+        """Run a resolved task through the broker and preserve rich evidence."""
+        task = resolution.task
+        execution_cwd, cwd_error = self._resolve_task_cwd(task.cwd, resolution.project_root)
+        if cwd_error:
+            return ToolResult(
+                status="blocked",
+                data=f"Error: task cwd policy violation: {cwd_error}",
+                error_code="TASK_PATH_POLICY",
+            )
+        display_command = _quote_program(task.argv[0], list(task.argv[1:]), self._command_executor)
+        risk = self._risk_policy.evaluate("shell", {"command": display_command})
+        if risk.action == "deny":
+            return ToolResult(
+                status="blocked", data=f"Error: task denied (high-risk, matches {risk.pattern})",
+                error_code="TASK_DENIED",
+            )
+        if risk.action == "ask":
+            verdict = await self._request_approval(
+                display_command, risk,
+                self._risk_policy.approval_scope("shell", {"command": display_command}),
+            )
+            if verdict is not None:
+                return ToolResult.from_value(verdict)
+        execution_task = task
+        if task.approval is ApprovalClass.USER_APPROVAL:
+            verdict = await self._request_approval(display_command, "task approval required")
+            if verdict is not None:
+                return ToolResult.from_value(verdict)
+            execution_task = replace(task, approval=ApprovalClass.SANDBOX_AUTO)
+        policy = ExecutionPolicy(
+            sandbox=str(getattr(self._execution_broker, "sandbox_name", "workspace")),
+            network=execution_task.network,
+            approval=execution_task.approval,
+            environment=getattr(self._command_executor.profile, "name", "unknown"),
+        )
+        evidence = await self._execution_broker.execute(
+            execution_task, execution_cwd, policy=policy,
+        )
+        status = "success" if evidence.status == "success" else (
+            "blocked" if evidence.status == "blocked" else "error"
+        )
+        result = ToolResult(
+            status=status,
+            data=evidence.output,
+            error_code="" if status == "success" else f"TASK_{evidence.status.upper()}",
+            execution=(
+                CommandEvidence(display_command, evidence.cwd, evidence.exit_code)
+                if evidence.exit_code is not None else None
+            ),
+            execution_evidence=evidence.to_dict(),
+        )
+        if task.kind.value not in {"format", "custom"} and evidence.exit_code is not None:
+            result.verification = VerificationEvidence(
+                task.kind.value, display_command, evidence.status == "success", evidence.exit_code,
+            )
+        return result
+
+    @staticmethod
+    def _resolve_task_cwd(raw_cwd: str, project_root: str) -> tuple[str | None, str | None]:
+        """Resolve a manifest cwd relative to its detected project root.
+
+        ``TaskSpec.cwd`` is intentionally project-relative for declarative
+        manifests.  Keeping this check at the tool/broker boundary prevents a
+        manifest from escaping the project root while still allowing build
+        directories such as ``build`` or ``out``.
+        """
+        root = Path(project_root).expanduser().resolve()
+        value = str(raw_cwd or "workspace").strip()
+        if not value or value in {".", "workspace"}:
+            candidate = root
+        else:
+            path = Path(value).expanduser()
+            candidate = path.resolve() if path.is_absolute() else (root / path).resolve()
+        try:
+            inside = candidate == root or candidate.is_relative_to(root)
+        except ValueError:
+            inside = False
+        if not inside:
+            return None, "cwd is outside the project root"
+        if not candidate.is_dir():
+            return None, f"cwd directory does not exist: {value}"
+        return str(candidate), None
 
     def _validate_project_file(self, target: str, raw_cwd) -> str:
         candidates: list[Path] = []
@@ -849,7 +970,13 @@ class RunTaskTool(RunProgramTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "enum": list(self.TASKS)},
+                        "task": {
+                            "type": "string",
+                            "description": (
+                                "Semantic task name such as build/test/lint, or a custom task "
+                                "declared by the project's task manifest."
+                            ),
+                        },
                         "target": {"type": "string"},
                         "cwd": {"type": "string"},
                     },
@@ -862,7 +989,7 @@ class RunTaskTool(RunProgramTool):
 def create_foundation_tools(
     source_dir: str = "", test_dir: str = "", design_dir: str = "",
     review_manager=None, progress=None, change_set=None, command_executor=None,
-    workspace_root: str = "",
+    workspace_root: str = "", execution_broker=None,
 ) -> list[Tool]:
     common = dict(
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
@@ -882,7 +1009,7 @@ def create_foundation_tools(
             change_set=change_set, workspace_root=workspace_root,
         ),
         RunProgramTool(**common),
-        RunTaskTool(**common),
+        RunTaskTool(**common, execution_broker=execution_broker),
         ShellTool(**common),
     ]
 

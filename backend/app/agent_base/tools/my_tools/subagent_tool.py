@@ -75,6 +75,23 @@ class VerificationRunTaskTool(RunTaskTool):
             "caches or generated artifacts may be produced."
         )
 
+    async def _execute_result(self, params: dict):
+        # The verification toolkit is intentionally narrower than the main
+        # project-task tool: custom manifest tasks are not exposed to a
+        # read-only subagent.
+        task = str(params.get("task", "")).lower().strip()
+        if task not in self.TASKS:
+            return (
+                f"Error: unsupported verification task '{task}'. "
+                f"Choose one of: {', '.join(self.TASKS)}."
+            )
+        return await super()._execute_result(params)
+
+    def to_openai_schema(self) -> dict:
+        schema = super().to_openai_schema()
+        schema["function"]["parameters"]["properties"]["task"]["enum"] = list(self.TASKS)
+        return schema
+
 
 def _build_toolkit_tools(
     kind: str,

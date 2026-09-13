@@ -141,6 +141,9 @@ class NativeLinuxBashExecutor:
     def validate_command(self, command: str) -> str | None:
         return None
 
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        return _validate_resolved_program(program, args, resolve_on_host=True)
+
     def preflight(self) -> None:
         if not shutil.which("bash"):
             raise ExecutionEnvironmentError("bash is not available on the Linux host")
@@ -269,6 +272,20 @@ class NativePowerShellExecutor:
             return f"executable '{executable}' is not allowed"
         return None
 
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        """Validate a resolver-owned task without a host executable allowlist.
+
+        ``run_program`` is intentionally a tightly restricted compatibility
+        escape hatch and continues to use :meth:`validate_program`.  A
+        ``run_task`` command, however, has already been resolved from a
+        project manifest and is executed by the broker.  For that path we
+        only require literal argv, a command available on the selected
+        worker's PATH, and no nested shell interpreter.  This keeps support
+        open to new languages/toolchains without adding one executable at a
+        time to the global allowlist.
+        """
+        return _validate_resolved_program(program, args, resolve_on_host=True)
+
     def start(self, command: str, cwd: str | None) -> subprocess.Popen:
         self.preflight()
         return subprocess.Popen(
@@ -313,6 +330,35 @@ _SAFE_READONLY_EXPRESSION = re.compile(
     r"^\s*\(\s*(Get-Content|gc)\s+.+?\s*\)\s*\.\s*(Count|Length)\s*$",
     re.IGNORECASE,
 )
+
+
+def _validate_resolved_program(
+    program: str,
+    args: list[str],
+    *,
+    resolve_on_host: bool,
+) -> str | None:
+    """Validate resolver-owned argv independently of any language/tool list."""
+    if not program or any(
+        any(char in value for char in ("\n", "\r", ";", "|", ">", "<"))
+        for value in [program, *args]
+    ):
+        return "program and args must be literal values without shell control characters"
+    executable = os.path.basename(program).lower()
+    if executable.endswith((".exe", ".cmd", ".bat")):
+        executable = executable.rsplit(".", 1)[0]
+    if executable in {"powershell", "pwsh", "cmd", "bash", "sh", "wsl"}:
+        return (
+            f"resolver task cannot invoke shell interpreter '{executable}'; "
+            "declare the underlying tool as a literal argv"
+        )
+    if os.path.isabs(program) or any(separator in program for separator in ("/", "\\")):
+        return "resolver task executable must be a command name discoverable on the worker PATH"
+    # Native workers can attest PATH availability before starting.  Isolated
+    # workers perform the equivalent lookup inside their own boundary.
+    if resolve_on_host and shutil.which(program) is None:
+        return f"toolchain executable '{program}' is unavailable on the worker"
+    return None
 
 
 def windows_path_to_wsl(path: str) -> str:
@@ -368,6 +414,10 @@ class WslBashExecutor:
                 "or a workspace-relative POSIX path"
             )
         return None
+
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        # The command is resolved inside WSL, never against the Windows PATH.
+        return _validate_resolved_program(program, args, resolve_on_host=False)
 
     def _prefix(self, *, cwd: str | None = None) -> list[str]:
         command = [self.executable]

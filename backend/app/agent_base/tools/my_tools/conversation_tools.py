@@ -121,12 +121,20 @@ def create_conversation_tools(
     )
     if not workspace_root:
         workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
+    from app.runtime import build_execution_broker
+    from app.agent_base.core.hooks import get_runtime
+    execution_broker = build_execution_broker(
+        get_settings(), command_executor,
+        [workspace_root, source_dir, test_dir, design_dir],
+        stop_check=lambda: get_runtime().stop_check(),
+    )
     tools.extend(create_foundation_tools(
         source_dir, test_dir, design_dir,
         review_manager=review_mgr, progress=progress,
         change_set=change_set,
         command_executor=command_executor,
         workspace_root=workspace_root,
+        execution_broker=execution_broker,
     ))
 
     # todo_write：会话任务列表
