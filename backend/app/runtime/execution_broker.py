@@ -205,19 +205,37 @@ class LocalExecutionBroker:
         return validator(task.argv[0], list(task.argv[1:]))
 
 
-class WorkerExecutionBroker(LocalExecutionBroker):
-    """Run tasks only when a worker proves it satisfies the requested policy."""
+class WorkerExecutionBroker:
+    """Run tasks only when a worker proves it satisfies the requested policy.
 
-    def __init__(self, *args, worker: SandboxWorker, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    Worker policy checks and local process orchestration are separate
+    responsibilities.  Composition keeps the worker boundary independent of
+    the migration-era local broker while preserving the same execution
+    protocol and public diagnostics.
+    """
+
+    def __init__(
+        self,
+        executor: CommandExecutor,
+        roots: list[str] | tuple[str, ...],
+        *,
+        worker: SandboxWorker,
+        output_cap: int = 1_000_000,
+        stop_check: Callable[[], bool] | None = None,
+    ) -> None:
         self.worker = worker
         # The worker owns the process boundary.  A worker that exposes a
         # dedicated executor must never be checked for capabilities and then
         # silently fall back to the host executor.
-        worker_executor = getattr(worker, "executor", None)
-        if worker_executor is not None:
-            self.executor = worker_executor
+        worker_executor = getattr(worker, "executor", None) or executor
+        self.executor = worker_executor
         self.sandbox_name = worker.capabilities.worker_id
+        self._local_broker = LocalExecutionBroker(
+            worker_executor,
+            roots,
+            output_cap=output_cap,
+            stop_check=stop_check,
+        )
 
     async def execute(
         self,
@@ -277,7 +295,7 @@ class WorkerExecutionBroker(LocalExecutionBroker):
                 },
                 **base,
             )
-        evidence = await super().execute(task, cwd, policy=effective)
+        evidence = await self._local_broker.execute(task, cwd, policy=effective)
         return replace(
             evidence,
             diagnostics={
