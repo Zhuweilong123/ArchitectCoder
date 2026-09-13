@@ -11,7 +11,6 @@ from typing import Any, Awaitable, Callable, Protocol
 from app.runtime.workspace import WorkspaceManifest
 
 from .contract_harness import ContractCheckResult, ContractHarness
-from .language_adapters import broker_command_runner
 
 
 @dataclass(frozen=True)
@@ -65,6 +64,11 @@ class DefaultContractGate:
 
     review_timeout_seconds = 300.0
 
+    def __init__(self, language_runner: Callable[..., Any] | None = None) -> None:
+        # Inject the compiler/AST boundary at composition time.  The gate
+        # should not inspect Agent tools or their implementation details.
+        self._language_runner = language_runner
+
     async def evaluate(self, context: ContractGateContext) -> ContractGateDecision:
         change_set = context.change_set
         if change_set is None or not change_set.has_changes:
@@ -108,7 +112,7 @@ class DefaultContractGate:
             project_id="",
             changed_paths=changed,
             settings=context.settings,
-            language_runner=_language_runner_for_agent(context.agent),
+            language_runner=self._language_runner,
             index_graph=False,
         )
         payload = result.to_dict()
@@ -207,18 +211,9 @@ class DefaultContractGate:
             project_id="",
             changed_paths=changed,
             settings=context.settings,
-            language_runner=_language_runner_for_agent(context.agent),
+            language_runner=self._language_runner,
             index_graph=True,
         )
-
-
-def _language_runner_for_agent(agent: Any) -> Callable[..., Any] | None:
-    """Reuse the run_task Broker for compiler-backed source analysis."""
-    registry = getattr(agent, "tool_registry", None)
-    getter = getattr(registry, "get_tool", None)
-    tool = getter("run_task") if callable(getter) else None
-    broker = getattr(tool, "_execution_broker", None)
-    return broker_command_runner(broker) if broker is not None else None
 
 
 def _review_content(result: ContractCheckResult) -> str:
@@ -237,11 +232,13 @@ def _review_content(result: ContractCheckResult) -> str:
     return "\n".join(lines)
 
 
-def load_contract_gate(*, settings=None) -> ContractGatePort:
+def load_contract_gate(
+    *, settings=None, language_runner: Callable[..., Any] | None = None,
+) -> ContractGatePort:
     """Load the configured gate without exposing implementation details."""
     if settings is not None and not getattr(settings, "agent_design_contract_enabled", True):
         return NoOpContractGate()
-    return DefaultContractGate()
+    return DefaultContractGate(language_runner=language_runner)
 
 
 def resolve_contract_enabled(requested: bool | None, settings: Any = None) -> bool:

@@ -776,6 +776,11 @@ class RunTaskTool(RunProgramTool):
         self._task_resolver = TaskResolver()
         self._execution_broker = execution_broker
 
+    @property
+    def execution_broker(self):
+        """Expose the execution capability for composition-root wiring."""
+        return self._execution_broker
+
     async def _execute_result(self, params: dict):
         task = str(params.get("task", "")).lower().strip()
         if not task:

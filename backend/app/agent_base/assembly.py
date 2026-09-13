@@ -38,6 +38,7 @@ from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
 from app.agent_base.core.contract_gate import load_contract_gate
 from app.agent_base.core.contract_analysis import load_contract_failure_analyzer
+from app.agent_base.core.language_adapters import broker_command_runner
 
 
 def enabled_tools_context() -> str:
@@ -315,7 +316,21 @@ async def create_dev_agent(
         )),
     )
     agent.change_set = change_set
-    agent.contract_gate = load_contract_gate(settings=settings)
+    # The composition root owns the wiring between execution and contract
+    # analysis.  ContractGate receives a capability, not a reference to the
+    # Agent's tool registry or a tool's private implementation fields.
+    run_task_tool = next(
+        (tool for tool in tools if getattr(tool, "name", "") == "run_task"),
+        None,
+    )
+    execution_broker = getattr(run_task_tool, "execution_broker", None)
+    language_runner = (
+        broker_command_runner(execution_broker)
+        if execution_broker is not None else None
+    )
+    agent.contract_gate = load_contract_gate(
+        settings=settings, language_runner=language_runner,
+    )
     agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings)
     agent.memory_provider = memory_provider
     agent.workspace_manifest = manifest.to_dict()
