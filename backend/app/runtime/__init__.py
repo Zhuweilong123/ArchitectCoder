@@ -25,7 +25,12 @@ from app.runtime.task_contracts import (
     TaskSpec,
     ToolchainProfile,
 )
-from app.runtime.task_resolver import TaskResolution, TaskResolver
+from app.runtime.task_resolver import (
+    CallableTaskAdapter,
+    ProjectTaskAdapter,
+    TaskResolution,
+    TaskResolver,
+)
 from app.runtime.execution_broker import (
     ExecutionBroker,
     LocalExecutionBroker,
@@ -83,6 +88,8 @@ __all__ = [
     "ToolchainProfile",
     "TaskResolution",
     "TaskResolver",
+    "ProjectTaskAdapter",
+    "CallableTaskAdapter",
     "ExecutionBroker",
     "LocalExecutionBroker",
     "WorkerExecutionBroker",

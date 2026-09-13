@@ -239,6 +239,39 @@ def test_contract_harness_considers_cpp_changes_relevant(tmp_path):
     assert result.status != "not_applicable"
 
 
+def test_contract_harness_accepts_injected_language_registry(tmp_path):
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    changed = source_root / "service.zig"
+    changed.write_text("", encoding="utf-8")
+
+    class ZigAdapter:
+        language = "zig"
+
+        def supports(self, path):
+            return Path(path).suffix == ".zig"
+
+        def extract(self, path, **kwargs):
+            return ArtifactFacts("zig", kwargs.get("scope", "source"), "success")
+
+    class Provider:
+        def collect(self, manifest, project_id="", scope="project"):
+            return ContractSnapshot(project_id, scope, "collected")
+
+    result = ContractHarness().check(
+        {
+            "workspace_root": str(tmp_path),
+            "source_root": str(source_root),
+        },
+        project_id="zig",
+        changed_paths=[str(changed)],
+        contract_provider=Provider(),
+        language_adapters=LanguageAdapterRegistry((ZigAdapter(),)),
+    )
+
+    assert result.status != "not_applicable"
+
+
 def test_cpp_fixture_can_pass_existing_uml_source_test_contract_rules(tmp_path):
     from extensions.design_contract.provider import DesignContractProvider
 

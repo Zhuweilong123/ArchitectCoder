@@ -12,7 +12,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Protocol
 
 from app.runtime.task_contracts import (
     ApprovalClass,
@@ -21,20 +21,6 @@ from app.runtime.task_contracts import (
     TaskKind,
     TaskSpec,
     ToolchainProfile,
-)
-
-
-_MARKERS = (
-    (".architectcoder", "manifest"),
-    ("package.json", "node"),
-    ("pyproject.toml", "python"),
-    ("CMakeLists.txt", "cpp-cmake"),
-    ("Cargo.toml", "rust-cargo"),
-    ("go.mod", "go"),
-    ("pom.xml", "maven"),
-    ("build.gradle", "gradle"),
-    ("build.gradle.kts", "gradle"),
-    ("gradlew", "gradle"),
 )
 
 
@@ -52,8 +38,99 @@ class TaskResolution:
         return self.task is not None and self.toolchain is not None
 
 
+class ProjectTaskAdapter(Protocol):
+    """Plugin boundary for one project/build metadata format."""
+
+    name: str
+
+    def detect(self, root: Path) -> bool: ...
+
+    def resolve(
+        self, resolver: "TaskResolver", root: Path, task: str, target: str | None,
+    ) -> TaskResolution: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CallableTaskAdapter:
+    """Small adapter bridge used by built-in and third-party resolvers."""
+
+    name: str
+    detector: Callable[[Path], bool]
+    handler: Callable[["TaskResolver", Path, str, str | None], TaskResolution]
+
+    def detect(self, root: Path) -> bool:
+        return bool(self.detector(root))
+
+    def resolve(
+        self, resolver: "TaskResolver", root: Path, task: str, target: str | None,
+    ) -> TaskResolution:
+        return self.handler(resolver, root, task, target)
+
+
 class TaskResolver:
-    """Detect common project manifests and resolve standard task names."""
+    """Resolve tasks through an injectable project-adapter registry."""
+
+    def __init__(self, adapters: tuple[ProjectTaskAdapter, ...] | None = None) -> None:
+        self._adapters = tuple(adapters or self._built_in_adapters())
+
+    def register(self, adapter: ProjectTaskAdapter) -> None:
+        """Register an adapter for callers that own a resolver instance.
+
+        Registration is intentionally instance-local: a plugin cannot mutate
+        another conversation's task policy or the process-wide defaults.
+        """
+        self._adapters = (*self._adapters, adapter)
+
+    def _built_in_adapters(self) -> tuple[ProjectTaskAdapter, ...]:
+        return (
+            CallableTaskAdapter(
+                "architectcoder-manifest",
+                lambda root: (root / ".architectcoder").exists(),
+                lambda owner, root, task, target: owner._from_architectcoder_manifest(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "node-package",
+                lambda root: (root / "package.json").is_file(),
+                lambda owner, root, task, target: owner._from_package_json(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "python-project",
+                lambda root: (root / "pyproject.toml").is_file(),
+                lambda owner, root, task, target: owner._from_pyproject(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "cpp-cmake",
+                lambda root: (root / "CMakeLists.txt").is_file(),
+                lambda owner, root, task, target: owner._from_cmake(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "rust-cargo",
+                lambda root: (root / "Cargo.toml").is_file(),
+                lambda owner, root, task, target: owner._from_cargo(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "go-module",
+                lambda root: (root / "go.mod").is_file(),
+                lambda owner, root, task, target: owner._from_go(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "maven",
+                lambda root: (root / "pom.xml").is_file(),
+                lambda owner, root, task, target: owner._from_maven(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "gradle",
+                lambda root: any((root / marker).is_file() for marker in (
+                    "build.gradle", "build.gradle.kts", "gradlew", "gradlew.bat",
+                )),
+                lambda owner, root, task, target: owner._from_gradle(root, task, target),
+            ),
+            CallableTaskAdapter(
+                "dotnet",
+                lambda root: bool(tuple(root.glob("*.sln")) or tuple(root.glob("*.csproj"))),
+                lambda owner, root, task, target: owner._from_dotnet(root, task, target),
+            ),
+        )
 
     def resolve(
         self,
@@ -69,27 +146,10 @@ class TaskResolver:
         if root is None:
             return TaskResolution(reason="no supported project manifest found")
 
-        marker = self._marker_kind(root)
-        if marker == "manifest":
-            result = self._from_architectcoder_manifest(root, task_name, target)
-        elif marker == "node":
-            result = self._from_package_json(root, task_name, target)
-        elif marker == "python":
-            result = self._from_pyproject(root, task_name, target)
-        elif marker == "cpp-cmake":
-            result = self._from_cmake(root, task_name, target)
-        elif marker == "rust-cargo":
-            result = self._from_cargo(root, task_name, target)
-        elif marker == "go":
-            result = self._from_go(root, task_name, target)
-        elif marker == "maven":
-            result = self._from_maven(root, task_name, target)
-        elif marker == "gradle":
-            result = self._from_gradle(root, task_name, target)
-        elif marker == "dotnet":
-            result = self._from_dotnet(root, task_name, target)
-        else:  # pragma: no cover - marker_kind is exhaustive
-            result = TaskResolution(reason=f"unsupported project marker: {marker}")
+        adapter = next((item for item in self._adapters if item.detect(root)), None)
+        if adapter is None:  # pragma: no cover - _find_project_root is exhaustive
+            return TaskResolution(project_root=str(root), reason="no supported project manifest found")
+        result = adapter.resolve(self, root, task_name, target)
         if result.project_root:
             return result
         return TaskResolution(
@@ -107,17 +167,8 @@ class TaskResolver:
             candidate = candidate.parent
         candidate = candidate.resolve()
         for directory in (candidate, *candidate.parents):
-            if self._marker_kind(directory):
+            if any(adapter.detect(directory) for adapter in self._adapters):
                 return directory
-        return None
-
-    @staticmethod
-    def _marker_kind(root: Path) -> str | None:
-        for marker, kind in _MARKERS:
-            if (root / marker).exists():
-                return kind
-        if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
-            return "dotnet"
         return None
 
     @staticmethod
@@ -411,4 +462,4 @@ class TaskResolver:
             return TaskResolution(project_root=str(root), reason=f"invalid task '{task}': {exc}")
 
 
-__all__ = ["TaskResolution", "TaskResolver"]
+__all__ = ["CallableTaskAdapter", "ProjectTaskAdapter", "TaskResolution", "TaskResolver"]

@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from app.runtime.task_contracts import ApprovalClass, NetworkPolicy, TaskKind
-from app.runtime.task_resolver import TaskResolver
+from app.runtime.task_contracts import TaskKind, TaskSpec, ToolchainProfile
+from app.runtime.task_resolver import CallableTaskAdapter, TaskResolution, TaskResolver
 
 
 def test_resolves_cpp_cmake_tasks_without_language_allowlist(tmp_path):
@@ -115,6 +116,35 @@ def test_cpp_vertical_fixture_exposes_cmake_build_and_test_tasks():
 
     assert build.resolved and build.task.argv[:2] == ("cmake", "--build")
     assert test.resolved and test.task.argv[0] == "ctest"
+
+
+def test_custom_project_adapter_can_be_registered_without_core_changes(tmp_path):
+    marker = tmp_path / "custom.build"
+    marker.write_text("", encoding="utf-8")
+
+    def resolve(_resolver, root, task, target):
+        if task != "assemble":
+            return TaskResolution(project_root=str(root), reason="custom task missing")
+        return TaskResolution(
+            task=TaskSpec(
+                task_id="custom.assemble", kind=TaskKind.CUSTOM,
+                argv=("custom-builder", "assemble"),
+            ),
+            toolchain=ToolchainProfile(
+                toolchain_id="custom-builder", family="custom",
+            ),
+            project_root=str(root),
+        )
+
+    # Detection/registration is intentionally exercised independently of the
+    # built-in language adapters; a real plugin can return its own TaskSpec.
+    adapter = CallableTaskAdapter("custom", lambda root: (root / "custom.build").is_file(), resolve)
+    resolver = TaskResolver((adapter,))
+    result = resolver.resolve("assemble", str(tmp_path))
+
+    assert result.project_root == str(tmp_path)
+    assert result.resolved
+    assert result.task.argv == ("custom-builder", "assemble")
 
 
 def test_resolves_go_module_tasks(tmp_path):
