@@ -258,6 +258,29 @@ the broker is the default execution path.
 - 执行结果统一记录状态、退出码、耗时、超时原因、沙箱、网络策略和诊断信息。
 - 契约本身不启动进程、不读取宿主机 PATH，也不决定某个可执行文件是否全局可信。
 
+### 1.1 任务计划与透明编排（已落地）
+
+`TaskPlan` 是运行时生成的结构化执行计划，位于
+`backend/app/runtime/task_contracts.py`。它把一次语义任务表达为有序的
+`TaskSpec` 步骤，并记录当前 profile、可用 profile 和选择理由。模型只需请求
+`build` 或 `test`，不需要自行拼接 configure/build/test 命令。
+
+`run_task` 支持两个运行参数：
+
+- `profile`：选择构建变体，例如 `debug`、`release`。CMake preset 优先按名称、
+  displayName 或 configurePreset 关联选择；未指定时使用 `default` preset。
+- `dry_run`：只解析并返回 `TaskPlan`，不启动进程、不执行构建或测试，适合模型
+  探索和人工审批。
+
+当任务存在前置步骤时，运行时在一次 `run_task` 调用内按顺序执行。当前 CMake
+规则为：构建前在缺少 `CMakeCache.txt` 时自动 configure；测试任务确保先执行
+build，再执行 ctest。无 `CMakePresets.json` 的项目继续使用传统命令回退路径。
+
+执行完成后，`ToolResult.execution_evidence` 返回计划级证据，包括整体状态、profile、
+失败步骤、计划和每一步的命令、工作目录、退出码、输出及 broker 证据。该结果作为
+工具结果进入当前 Agent 上下文；系统提示词只描述 `run_task` 的稳定契约，不承载
+具体构建命令或编排决策。
+
 ### 2. 基于项目元数据的任务发现
 
 `TaskResolver` 通过可注册的 `ProjectTaskAdapter` 发现项目根目录并解析任务。目前已覆盖：
@@ -360,3 +383,17 @@ AGENT_TOOLCHAIN_VERSION_MATCH_MODE=compatible
 已增加环境感知的运行时矩阵测试。测试对当前 Worker 中实际存在的工具执行真实 `--version` 探测，并验证 Broker 产生的工具链证据；未安装工具按环境能力跳过，不把部署差异误判为代码失败。
 
 容器化 CI 仍需提供完整工具链镜像，届时应将跳过项转换为强制执行项，并增加真实构建/测试任务，而不仅是版本探测。
+
+### M6.3 任务计划与透明执行（已落地）
+
+已完成 `TaskPlan`、`dry_run`、profile 选择和总体执行证据：
+
+- `TaskPlan` 统一表达请求任务、前置步骤、profile、可用 profile 和选择理由；
+- CMake preset 项目支持 configure → build → test 的运行时自动编排；
+- `dry_run=true` 只返回计划，不启动进程；
+- `run_task` 返回计划级和步骤级执行证据，能够明确定位失败步骤；
+- profile 不存在时返回可用 profile 列表，避免静默选择错误配置；
+- 418 个后端测试通过，6 个环境相关测试按部署能力跳过。
+
+后续工作转入工程化加固：构建缓存失效检测、计划级总超时/取消传播、preset
+候选详情展示和跨平台真实构建验证。
