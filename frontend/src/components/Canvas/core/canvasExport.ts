@@ -3,6 +3,7 @@ import type { Graph } from '@antv/x6';
 export type CanvasExportFormat = 'png' | 'svg';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const SVG_EXPORT_PADDING = 64;
 
 interface ExportPalette {
   body: string;
@@ -295,6 +296,52 @@ function downloadDataUri(dataUri: string, filename: string): void {
   anchor.click();
 }
 
+/**
+ * X6 only applies padding while rasterizing an image. SVG export instead
+ * uses its viewBox verbatim, so derive one from both the model and the
+ * currently rendered stage. The latter contains Manhattan's actual detours,
+ * which are not always represented by an edge's persisted vertices.
+ */
+function getSvgExportViewBox(
+  graph: Graph,
+  padding = SVG_EXPORT_PADDING,
+): { x: number; y: number; width: number; height: number } {
+  const modelBounds = graph.graphToLocal(graph.getContentBBox());
+  const bounds = [{
+    x: modelBounds.x,
+    y: modelBounds.y,
+    width: modelBounds.width,
+    height: modelBounds.height,
+  }];
+  const stage = graph.view.svg.querySelector('.x6-graph-svg-stage') as SVGGraphicsElement | null;
+  try {
+    const renderedBounds = stage?.getBBox();
+    if (
+      renderedBounds
+      && Number.isFinite(renderedBounds.x)
+      && Number.isFinite(renderedBounds.y)
+      && renderedBounds.width > 0
+      && renderedBounds.height > 0
+    ) {
+      bounds.push(renderedBounds);
+    }
+  } catch {
+    // SVG getBBox can fail for a hidden/disposed canvas. The model bounds
+    // remain a safe fallback for export.
+  }
+
+  const left = Math.min(...bounds.map((bound) => bound.x));
+  const top = Math.min(...bounds.map((bound) => bound.y));
+  const right = Math.max(...bounds.map((bound) => bound.x + bound.width));
+  const bottom = Math.max(...bounds.map((bound) => bound.y + bound.height));
+  return {
+    x: left - padding,
+    y: top - padding,
+    width: Math.max(1, right - left + padding * 2),
+    height: Math.max(1, bottom - top + padding * 2),
+  };
+}
+
 /** Export the visible graph content with a small margin around its bounds. */
 export function exportCanvasGraph(
   graph: Graph,
@@ -308,11 +355,9 @@ export function exportCanvasGraph(
       // coordinates to the exported SVG coordinates; supplying a second
       // manually converted viewBox shifts diagrams when the canvas is panned.
       const options = {
-        padding: 32,
         preserveDimensions: true,
         copyStyles: true,
         serializeImages: true,
-        backgroundColor,
         beforeSerialize(this: Graph, svg: SVGSVGElement) {
           flattenHtmlDiagramNodes(this, svg);
           normalizeExportEdgeLabels(svg, backgroundColor);
@@ -337,7 +382,12 @@ export function exportCanvasGraph(
           }
           downloadDataUri(dataUri, filename);
           resolve();
-        }, options);
+        }, {
+          ...options,
+          // X6 honours padding only in its raster export path.
+          padding: SVG_EXPORT_PADDING,
+          backgroundColor,
+        });
         return;
       }
 
@@ -348,7 +398,12 @@ export function exportCanvasGraph(
         }
         downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
         resolve();
-      }, options);
+      }, {
+        ...options,
+        // SVG ignores padding; its viewBox must include markers, labels and
+        // the rendered Manhattan path explicitly.
+        viewBox: getSvgExportViewBox(graph),
+      });
     } catch (error) {
       reject(error);
     }

@@ -60,6 +60,29 @@ const LANGUAGES = [
   { value: 'php', label: 'PHP' },
 ];
 
+interface ProjectSaveConflictDetail {
+  expected_revision?: number;
+  actual_revision?: number;
+}
+
+function showProjectSaveError(error: unknown): void {
+  const response = (error as {
+    response?: { status?: number; data?: { detail?: ProjectSaveConflictDetail } };
+  })?.response;
+  if (response?.status === 409) {
+    const detail = response.data?.detail;
+    const expected = detail?.expected_revision ?? '?';
+    const actual = detail?.actual_revision ?? '?';
+    message.error(
+      '保存冲突：设计文件已被其他会话更新（本地版本 ' + expected
+      + '，文件版本 ' + actual + '）。请先“另存为”保留当前改动，或重新加载设计文件后再保存。',
+      8,
+    );
+    return;
+  }
+  message.error('保存失败');
+}
+
 const Toolbar: React.FC = () => {
   const {
     diagram, project, isModified, undoStack, redoStack,
@@ -535,8 +558,8 @@ const Toolbar: React.FC = () => {
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
-    } catch {
-      message.error('保存失败');
+    } catch (error) {
+      showProjectSaveError(error);
     }
   };
 
@@ -579,8 +602,8 @@ const Toolbar: React.FC = () => {
       setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);
-    } catch {
-      message.error('保存失败');
+    } catch (error) {
+      showProjectSaveError(error);
     }
     setSaving(false);
   };
