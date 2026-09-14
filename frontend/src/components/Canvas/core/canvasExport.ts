@@ -280,6 +280,16 @@ function normalizeExportEdgeLabels(svg: SVGSVGElement, backgroundColor: string):
   });
 }
 
+/**
+ * X6 serializes the current camera transform on the SVG viewport. That
+ * transform is useful for the editor, but it shifts the exported graph away
+ * from the design-coordinate viewBox and can clip nodes at the top or left.
+ */
+function resetSvgViewportTransform(svg: SVGSVGElement): void {
+  const viewport = svg.querySelector('.x6-graph-svg-viewport');
+  viewport?.removeAttribute('transform');
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
@@ -300,7 +310,9 @@ function downloadDataUri(dataUri: string, filename: string): void {
  * X6 only applies padding while rasterizing an image. SVG export instead
  * uses its viewBox verbatim, so derive one from both the model and the
  * currently rendered stage. The latter contains Manhattan's actual detours,
- * which are not always represented by an edge's persisted vertices.
+ * which are not always represented by an edge's persisted vertices. The
+ * viewport transform is removed during serialization, so these bounds stay in
+ * the same design coordinate system as the exported SVG.
  */
 function getSvgExportViewBox(
   graph: Graph,
@@ -359,6 +371,7 @@ export function exportCanvasGraph(
         copyStyles: true,
         serializeImages: true,
         beforeSerialize(this: Graph, svg: SVGSVGElement) {
+          resetSvgViewportTransform(svg);
           flattenHtmlDiagramNodes(this, svg);
           normalizeExportEdgeLabels(svg, backgroundColor);
           const bounds = svg.viewBox.baseVal;
