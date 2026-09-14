@@ -285,20 +285,22 @@ def _resolve_workspace_paths(
     test_dir: str,
     project_file: str,
     workspace_root: str = "",
-) -> tuple[tuple[str, str, str, str] | None, str]:
+    design_dir: str = "",
+) -> tuple[tuple[str, str, str, str, str] | None, str]:
     """Resolve and validate the chat request's workspace boundary."""
     requested_paths = (
         message.get("source_dir") or resume_checkpoint.get("source_dir") or source_dir,
         message.get("test_dir") or resume_checkpoint.get("test_dir") or test_dir,
         message.get("project_file") or resume_checkpoint.get("project_file") or project_file,
         message.get("workspace_root") or resume_checkpoint.get("workspace_root") or workspace_root,
+        message.get("design_dir") or resume_checkpoint.get("design_dir") or design_dir,
     )
     validated: list[str] = []
     errors: list[str] = []
     for value, kind, label in zip(
         requested_paths,
-        ("directory", "directory", "file", "directory"),
-        ("source_dir", "test_dir", "project_file", "workspace_root"),
+        ("directory", "directory", "file", "directory", "directory"),
+        ("source_dir", "test_dir", "project_file", "workspace_root", "design_dir"),
     ):
         # ``project_file`` remains the historical field name, but the
         # canonical workspace accepts a project directory as well.  Let the
@@ -312,7 +314,7 @@ def _resolve_workspace_paths(
             validated.append(normalized)
     if errors:
         return None, "Invalid workspace path: " + "; ".join(errors)
-    return (validated[0], validated[1], validated[2], validated[3]), ""
+    return (validated[0], validated[1], validated[2], validated[3], validated[4]), ""
 
 
 async def _compress_session_context(
@@ -392,6 +394,7 @@ async def _start_agent_chat_run(
     source_dir: str,
     test_dir: str,
     project_file: str,
+    design_dir: str,
     fallback_review_runs: dict[int, str],
     stop_check: Callable[[], bool],
     disconnect_check: Callable[[], bool],
@@ -421,6 +424,7 @@ async def _start_agent_chat_run(
                 "test_dir": test_dir,
                 "project_file": project_file,
                 "workspace_root": workspace_root,
+                "design_dir": design_dir,
                 "workspace_manifest": getattr(agent, "workspace_manifest", {}),
                 "design_contract_enabled": effective_contract_enabled,
                 "design_contract_requested": design_contract_enabled,
@@ -453,6 +457,7 @@ async def _start_agent_chat_run(
             source_dir=source_dir,
             test_dir=test_dir,
             workspace_root=workspace_root,
+            design_dir=design_dir,
         )
         trace_log.event(
             "agent_model",
@@ -512,6 +517,7 @@ async def _start_agent_chat_run(
                     project_file=project_file,
                     source_dir=source_dir,
                     test_dir=test_dir,
+                    design_dir=design_dir,
                     progress=progress,
                     context=context,
                     fallback_review_runs=fallback_review_runs,
@@ -592,6 +598,7 @@ class ChatSessionCoordinator:
         test_dir = ""
         project_file = ""
         workspace_root = ""
+        design_dir = ""
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
         push_trace_hook(trace_hook_handler)
@@ -623,6 +630,7 @@ class ChatSessionCoordinator:
                 test_dir=test_dir,
                 project_file=project_file,
                 workspace_root=workspace_root,
+                design_dir=design_dir,
                 fallback_review_runs=fallback_review_runs,
                 stop_check=_stop_check,
                 disconnect_check=lambda: transport_disconnected,
@@ -697,13 +705,14 @@ class ChatSessionCoordinator:
                         test_dir=test_dir,
                         project_file=project_file,
                         workspace_root=workspace_root,
+                        design_dir=design_dir,
                     )
                     if workspace_error:
                         await websocket.send_json({
                             "event": "error", "message": workspace_error,
                         })
                         continue
-                    source_dir, test_dir, project_file, workspace_root = workspace_paths
+                    source_dir, test_dir, project_file, workspace_root, design_dir = workspace_paths
                     effective_user_message = (
                         _resume_prompt(resume_checkpoint, resume_supplement)
                         if resume_checkpoint else user_message
@@ -739,6 +748,7 @@ class ChatSessionCoordinator:
                                 progress=progress, restore_history=restore_history,
                                 task_scope=session_id,
                                 workspace_root=workspace_root,
+                                design_dir=design_dir,
                             )
                         except ValueError as exc:
                             await websocket.send_json({

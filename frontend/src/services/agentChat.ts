@@ -241,6 +241,7 @@ export function getCurrentSessionId(): string {
 let _pendingMessages: Array<{ message: string; opts: Record<string, unknown>; skipNotify?: boolean }> = [];
 
 export function sendAgentMessage(message: string, opts?: {
+  design_dir?: string;
   source_dir?: string;
   test_dir?: string;
   project_file?: string;
@@ -254,6 +255,7 @@ export function sendAgentMessage(message: string, opts?: {
   const payload = {
     type: 'chat',
     message,
+    design_dir: opts?.design_dir || '',
     source_dir: opts?.source_dir || '',
     test_dir: opts?.test_dir || '',
     project_file: opts?.project_file || '',

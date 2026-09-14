@@ -11,13 +11,20 @@ import hashlib
 import json
 import os
 import shlex
+from dataclasses import replace
 from typing import Any
 from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
 from app.runtime.command import ExecutionEnvironmentError
 from app.agent_base.tools.base import Tool
-from app.agent_base.tools.result import ToolResult, FileChange, VerificationEvidence, command_result
+from app.agent_base.tools.result import (
+    CommandEvidence,
+    ToolResult,
+    FileChange,
+    VerificationEvidence,
+    command_result,
+)
 from app.agent_base.tools.my_tools.foundation_runtime import (
     ShellTool,
     ListFilesTool as FoundationListFilesRuntime,
@@ -28,7 +35,17 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
     _resolve_roots,
     safe_path,
 )
-from app.runtime import FileSystemOperationError, NativeFileSystem
+from app.runtime import (
+    ApprovalClass,
+    ExecutionPolicy,
+    FileSystemOperationError,
+    NativeFileSystem,
+    TaskKind,
+    TaskPlan,
+    TaskSpec,
+    TaskResolver,
+    ToolchainProfile,
+)
 
 
 class _ApplyChangesError(ValueError):
@@ -748,24 +765,42 @@ class RunTaskTool(RunProgramTool):
         "validate": ("python", ["-m", "pytest"]),
     }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, execution_broker=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "run_task"
         self.description = (
-            "Run one fixed project task: test, build, lint, format, typecheck, or validate. "
-            "Prefer this for project verification/build work instead of composing commands. "
+            "Run a semantic project task such as test, build, lint, format, typecheck, or validate; "
+            "custom task names declared by the project manifest are also accepted. "
+            "Tasks are resolved from the project's build metadata when available; "
+            "use this for project verification/build work instead of composing commands. "
+            "The runtime may execute required prerequisite tasks automatically and returns "
+            "step-level execution evidence. Use profile to select a build variant and "
+            "dry_run=true to preview the plan without executing it. "
             "validate checks UML project files directly for .umlproj/.uml/.json targets. "
             "target is relative to cwd; cwd accepts source, test, design, or workspace. "
             "For the full test suite use cwd=\"test\" with no target or target=\".\"."
         )
+        self._task_resolver = TaskResolver()
+        self._execution_broker = execution_broker
+
+    @property
+    def execution_broker(self):
+        """Expose the execution capability for composition-root wiring."""
+        return self._execution_broker
 
     async def _execute_result(self, params: dict):
         task = str(params.get("task", "")).lower().strip()
-        if task not in self.TASKS:
-            return (
-                f"Error: unsupported task '{task}'. "
-                f"Choose one of: {', '.join(self.TASKS)}."
-            )
+        if not task:
+            return "Error: task must be a non-empty string"
+        profile = params.get("profile", "")
+        if profile is None:
+            profile = ""
+        if not isinstance(profile, str):
+            return "Error: profile must be a string"
+        profile = profile.strip().lower()
+        dry_run = params.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            return "Error: dry_run must be a boolean"
         if task == "validate" and params.get("target"):
             target = str(params["target"]).strip()
             if target.lower().endswith((".umlproj", ".uml", ".json")):
@@ -775,12 +810,48 @@ class RunTaskTool(RunProgramTool):
                     result.status == "success",
                 )
                 return result
-        program, base_args = self.TASKS[task]
         target = params.get("target")
-        args = list(base_args)
         if target:
             if not isinstance(target, str):
                 return "Error: target must be a string"
+        resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
+        if cwd_error:
+            return f"Error: {cwd_error}"
+        resolution = self._task_resolver.resolve(
+            task, resolved_cwd or self._cwd, target=target,
+            profile=profile,
+        )
+        if resolution.project_root and not resolution.resolved:
+            if profile and resolution.available_profiles:
+                return ToolResult(
+                    status="error",
+                    data={
+                        "error": resolution.reason,
+                        "requested_profile": profile,
+                        "available_profiles": list(resolution.available_profiles),
+                    },
+                    error_code="PROFILE_NOT_FOUND",
+                )
+            return (
+                f"Error: unable to resolve task '{task}' for project "
+                f"{resolution.project_root}: {resolution.reason}"
+            )
+        if resolution.resolved:
+            if dry_run:
+                return self._plan_result(resolution)
+            if self._execution_broker is not None:
+                return await self._execute_resolved_task(resolution, target)
+            program, args = resolution.task.argv[0], list(resolution.task.argv[1:])
+            execution_cwd = resolution.project_root
+        else:
+            if task not in self.TASKS:
+                return (
+                    f"Error: unable to resolve project task '{task}'. "
+                    "Declare it in .architectcoder/tasks.json or use a supported project manifest."
+                )
+            program, base_args = self.TASKS[task]
+            args = list(base_args)
+            execution_cwd = resolved_cwd
             # A model may carry the cwd alias into target as well. Treat
             # ``target=test, cwd=test`` as the intended full-suite command
             # instead of executing pytest against the non-existent test/test.
@@ -791,8 +862,24 @@ class RunTaskTool(RunProgramTool):
                 and target.strip().lower() == raw_cwd.strip().lower()
             ):
                 args.append(target)
+        if dry_run:
+            try:
+                kind = TaskKind(task) if task in TaskKind._value2member_map_ else TaskKind.CUSTOM
+                legacy_task = TaskSpec(
+                    task_id=f"compatibility.{task}", kind=kind,
+                    argv=(program, *args), toolchain_id="compatibility",
+                    source="run_task-fallback",
+                )
+            except ValueError as exc:
+                return f"Error: unable to create task plan: {exc}"
+            return self._plan_result(
+                TaskPlan(
+                    requested_task=task, steps=(legacy_task,), profile=profile,
+                    rationale="compatibility task fallback",
+                )
+            )
         result = ToolResult.from_value(await RunProgramTool._execute_result(self, {
-            "program": program, "args": args, "cwd": params.get("cwd"),
+            "program": program, "args": args, "cwd": execution_cwd,
         }))
         if task != "format" and result.execution is not None:
             result.verification = VerificationEvidence(
@@ -800,6 +887,181 @@ class RunTaskTool(RunProgramTool):
                 result.execution.exit_code == 0, result.execution.exit_code,
             )
         return result
+
+    @staticmethod
+    def _plan_result(resolution) -> ToolResult:
+        """Return a non-mutating, model-visible execution plan."""
+        plan = resolution if isinstance(resolution, TaskPlan) else resolution.plan
+        if plan is None:
+            return ToolResult.error("Error: resolved task has no execution plan", "TASK_PLAN_INVALID")
+        payload = plan.to_dict()
+        return ToolResult(
+            status="success",
+            data=payload,
+            execution_evidence={
+                "kind": "task_plan",
+                "status": "planned",
+                "plan": payload,
+            },
+        )
+
+    async def _execute_resolved_task(self, resolution, target: str | None) -> ToolResult:
+        """Run a resolved task plan through the broker and preserve evidence.
+
+        Adapters may attach prerequisite tasks (for example CMake configure
+        before build, or build before test).  The model still makes one
+        semantic ``run_task`` call; orchestration remains deterministic and
+        inside the runtime rather than being delegated to prompt wording.
+        """
+        plan = (*getattr(resolution, "prerequisites", ()), resolution.task)
+        steps: list[tuple[TaskSpec, ToolResult]] = []
+        for planned_task in plan:
+            step_result = await self._execute_task_spec(planned_task, resolution.project_root)
+            steps.append((planned_task, step_result))
+            if step_result.status != "success":
+                break
+
+        if len(steps) == 1:
+            return steps[0][1]
+
+        final_task = resolution.task
+        final_result = steps[-1][1]
+        failed = next(((task, result) for task, result in steps if result.status != "success"), None)
+        overall_status = "success" if failed is None else failed[1].status
+        execution_plan = getattr(resolution, "plan", None)
+        step_payload = []
+        for planned_task, result in steps:
+            step_payload.append({
+                "task_id": planned_task.task_id,
+                "kind": planned_task.kind.value,
+                "status": result.status,
+                "command": list(planned_task.argv),
+                "cwd": result.execution.cwd if result.execution else resolution.project_root,
+                "output": result.text,
+                "error_code": result.error_code,
+                "execution_evidence": result.execution_evidence,
+            })
+        evidence = {
+            "task_id": final_task.task_id,
+            "status": overall_status,
+            "profile": execution_plan.profile if execution_plan is not None else "",
+            "failed_step": failed[0].task_id if failed is not None else None,
+            "plan": (
+                execution_plan.to_dict()
+                if execution_plan is not None
+                else {"requested_task": final_task.kind.value, "steps": [task.to_dict() for task in plan]}
+            ),
+            "steps": step_payload,
+        }
+        last_execution = next(
+            (result.execution for _task, result in reversed(steps) if result.execution is not None),
+            None,
+        )
+        verification = final_result.verification
+        if verification is None and overall_status != "success":
+            verification = VerificationEvidence(
+                final_task.kind.value, final_task.task_id, False,
+                last_execution.exit_code if last_execution else None,
+            )
+        return ToolResult(
+            status="success" if overall_status == "success" else overall_status,
+            data={
+                "task": final_task.task_id,
+                "status": overall_status,
+                "steps": step_payload,
+                "output": final_result.text,
+            },
+            error_code="" if overall_status == "success" else (
+                "TASK_PREREQUISITE_FAILED" if failed and failed[0] is not final_task
+                else final_result.error_code
+            ),
+            execution=last_execution,
+            verification=verification,
+            execution_evidence=evidence,
+        )
+
+    async def _execute_task_spec(self, task: TaskSpec, project_root: str) -> ToolResult:
+        """Execute one task spec; kept separate so plans share one policy path."""
+        execution_cwd, cwd_error = self._resolve_task_cwd(task.cwd, project_root)
+        if cwd_error:
+            return ToolResult(
+                status="blocked",
+                data=f"Error: task cwd policy violation: {cwd_error}",
+                error_code="TASK_PATH_POLICY",
+            )
+        display_command = _quote_program(task.argv[0], list(task.argv[1:]), self._command_executor)
+        risk = self._risk_policy.evaluate("shell", {"command": display_command})
+        if risk.action == "deny":
+            return ToolResult(
+                status="blocked", data=f"Error: task denied (high-risk, matches {risk.pattern})",
+                error_code="TASK_DENIED",
+            )
+        if risk.action == "ask":
+            verdict = await self._request_approval(
+                display_command, risk,
+                self._risk_policy.approval_scope("shell", {"command": display_command}),
+            )
+            if verdict is not None:
+                return ToolResult.from_value(verdict)
+        execution_task = task
+        if task.approval is ApprovalClass.USER_APPROVAL:
+            verdict = await self._request_approval(display_command, "task approval required")
+            if verdict is not None:
+                return ToolResult.from_value(verdict)
+            execution_task = replace(task, approval=ApprovalClass.SANDBOX_AUTO)
+        policy = ExecutionPolicy(
+            sandbox=str(getattr(self._execution_broker, "sandbox_name", "workspace")),
+            network=execution_task.network,
+            approval=execution_task.approval,
+            environment=getattr(self._command_executor.profile, "name", "unknown"),
+        )
+        evidence = await self._execution_broker.execute(
+            execution_task, execution_cwd, policy=policy,
+        )
+        status = "success" if evidence.status == "success" else (
+            "blocked" if evidence.status == "blocked" else "error"
+        )
+        result = ToolResult(
+            status=status,
+            data=evidence.output,
+            error_code="" if status == "success" else f"TASK_{evidence.status.upper()}",
+            execution=(
+                CommandEvidence(display_command, evidence.cwd, evidence.exit_code)
+                if evidence.exit_code is not None else None
+            ),
+            execution_evidence=evidence.to_dict(),
+        )
+        if task.kind.value not in {"format", "custom"} and evidence.exit_code is not None:
+            result.verification = VerificationEvidence(
+                task.kind.value, display_command, evidence.status == "success", evidence.exit_code,
+            )
+        return result
+
+    @staticmethod
+    def _resolve_task_cwd(raw_cwd: str, project_root: str) -> tuple[str | None, str | None]:
+        """Resolve a manifest cwd relative to its detected project root.
+
+        ``TaskSpec.cwd`` is intentionally project-relative for declarative
+        manifests.  Keeping this check at the tool/broker boundary prevents a
+        manifest from escaping the project root while still allowing build
+        directories such as ``build`` or ``out``.
+        """
+        root = Path(project_root).expanduser().resolve()
+        value = str(raw_cwd or "workspace").strip()
+        if not value or value in {".", "workspace"}:
+            candidate = root
+        else:
+            path = Path(value).expanduser()
+            candidate = path.resolve() if path.is_absolute() else (root / path).resolve()
+        try:
+            inside = candidate == root or candidate.is_relative_to(root)
+        except ValueError:
+            inside = False
+        if not inside:
+            return None, "cwd is outside the project root"
+        if not candidate.is_dir():
+            return None, f"cwd directory does not exist: {value}"
+        return str(candidate), None
 
     def _validate_project_file(self, target: str, raw_cwd) -> str:
         candidates: list[Path] = []
@@ -849,9 +1111,23 @@ class RunTaskTool(RunProgramTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "enum": list(self.TASKS)},
+                        "task": {
+                            "type": "string",
+                            "description": (
+                                "Semantic task name such as build/test/lint, or a custom task "
+                                "declared by the project's task manifest."
+                            ),
+                        },
                         "target": {"type": "string"},
                         "cwd": {"type": "string"},
+                        "profile": {
+                            "type": "string",
+                            "description": "Optional build profile such as debug, release, asan, or coverage.",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "If true, return the resolved execution plan without starting processes.",
+                        },
                     },
                     "required": ["task"], "additionalProperties": False,
                 },
@@ -862,7 +1138,7 @@ class RunTaskTool(RunProgramTool):
 def create_foundation_tools(
     source_dir: str = "", test_dir: str = "", design_dir: str = "",
     review_manager=None, progress=None, change_set=None, command_executor=None,
-    workspace_root: str = "",
+    workspace_root: str = "", execution_broker=None,
 ) -> list[Tool]:
     common = dict(
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
@@ -882,7 +1158,7 @@ def create_foundation_tools(
             change_set=change_set, workspace_root=workspace_root,
         ),
         RunProgramTool(**common),
-        RunTaskTool(**common),
+        RunTaskTool(**common, execution_broker=execution_broker),
         ShellTool(**common),
     ]
 

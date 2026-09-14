@@ -684,6 +684,7 @@ async def handle_agent_execution(
     project_file: str = "",
     source_dir: str = "",
     test_dir: str = "",
+    design_dir: str = "",
     progress: ProgressRelay | None = None,
     context: str = "",
     fallback_review_runs: dict[int, str] | None = None,
@@ -742,6 +743,7 @@ async def handle_agent_execution(
         "project_file": project_file,
         "source_dir": source_dir,
         "test_dir": test_dir,
+        "design_dir": design_dir,
     }
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
     logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)

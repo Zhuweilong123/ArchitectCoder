@@ -17,7 +17,7 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
+  centerCanvasContent, edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
@@ -498,6 +498,10 @@ const UMLEditor: React.FC = () => {
   }>>(new Map());
   const nodeSignatureCache = useRef<Map<string, string>>(new Map());
   const edgeSignatureCache = useRef<Map<string, string>>(new Map());
+  const autoRouteCache = useRef<Map<string, {
+    key: string;
+    vertices: Array<{ x: number; y: number }>;
+  }>>(new Map());
   const _didFirstSync = useRef(false);
   const renderedTheme = useRef<CanvasTheme | null>(null);
 
@@ -613,6 +617,10 @@ const UMLEditor: React.FC = () => {
           ...getClassNodeSize(cls),
         }),
       }));
+      const autoRouteCacheKey = JSON.stringify([
+        classRects,
+        diagram.relations.map(({ id, source, target }) => [id, source, target]),
+      ]);
       diagram.relations.forEach((rel) => {
         const isSelected = rel.id === selectedRelationId;
         const isComposition = rel.type === RelationType.COMPOSITION;
@@ -689,9 +697,15 @@ const UMLEditor: React.FC = () => {
         // untouched relation, which must remain eligible for auto-routing.
         // Recalculate those routes after every layout update instead of
         // retaining stale X6 vertices from a previous node arrangement.
+        const cachedAutoRoute = autoRouteCache.current.get(rel.id);
         const vertices = Array.isArray(rel.vertices)
           ? rel.vertices
-          : getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects);
+          : cachedAutoRoute?.key === autoRouteCacheKey
+            ? cachedAutoRoute.vertices
+            : getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects);
+        if (!Array.isArray(rel.vertices) && cachedAutoRoute?.key !== autoRouteCacheKey) {
+          autoRouteCache.current.set(rel.id, { key: autoRouteCacheKey, vertices });
+        }
         const interactionAttrs = {
           stroke: 'transparent',
           strokeWidth: 10,
@@ -709,12 +723,10 @@ const UMLEditor: React.FC = () => {
             // Update existing edge
             const edge = graph.getCellById(rel.id) as Edge;
             if (edge) {
-              edge.setSource({ cell: rel.source });
-              edge.setTarget({ cell: rel.target });
+              if (edge.getSourceCellId() !== rel.source) edge.setSource({ cell: rel.source });
+              if (edge.getTargetCellId() !== rel.target) edge.setTarget({ cell: rel.target });
               edge.setLabels(edgeLabels);
-              edge.setVertices(vertices);
-              edge.setRouter(getObstacleAvoidingManhattanRouter());
-              edge.setConnector({ name: 'rounded' });
+              if (!edgeVerticesEqual(edge.getVertices(), vertices)) edge.setVertices(vertices);
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');

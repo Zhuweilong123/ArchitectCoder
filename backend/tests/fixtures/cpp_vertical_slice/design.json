@@ -1,0 +1,7 @@
+{
+  "language": "cpp",
+  "entities": [
+    {"id": "Service", "type": "class", "name": "Service"},
+    {"id": "Service.run", "type": "method", "name": "run", "parent": "Service"}
+  ]
+}

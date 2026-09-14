@@ -37,7 +37,7 @@ const App: React.FC = () => {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
     showTestCaseInCanvas, agentChatVisible, interfaceLanguage,
-    projectRoot, sourceDir, testDir, setProjectRoot, setSourceDir, setTestDir,
+    projectRoot, designDir, sourceDir, testDir, setProjectRoot, setDesignDir, setSourceDir, setTestDir,
   } = useUiStore();
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
   const setCurrentFilepath = useDiagramStore((s) => s.setCurrentFilepath);
@@ -64,16 +64,22 @@ const App: React.FC = () => {
     const clearStaleWorkspacePaths = async () => {
       const checks = await Promise.all([
         checkPath(projectRoot, 'directory'),
+        checkPath(designDir, 'directory'),
         checkPath(sourceDir, 'directory'),
         checkPath(testDir, 'directory'),
         checkPath(currentFilepath || '', 'file'),
       ]);
       if (!active) return;
 
-      const [projectValid, sourceValid, testValid, fileValid] = checks;
+      const [projectValid, designValid, sourceValid, testValid, fileValid] = checks;
       let cleared = false;
       if (!projectValid) {
-        setProjectRoot('project');
+        setProjectRoot('');
+        setCurrentWorkspacePath(null);
+        cleared = true;
+      }
+      if (!designValid) {
+        setDesignDir('');
         cleared = true;
       }
       if (!sourceValid) {

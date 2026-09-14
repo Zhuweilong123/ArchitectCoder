@@ -38,6 +38,13 @@ def test_settings_default_subagent_budget_is_500k():
     assert settings.agent_subagent_per_run_execution_budget_tokens == 500000
 
 
+def test_settings_default_toolchain_version_policy_is_observational():
+    settings = _settings()
+
+    assert settings.agent_toolchain_version_policy == "observe"
+    assert settings.agent_toolchain_version_match_mode == "compatible"
+
+
 def test_settings_enables_main_agent_subagent_by_default():
     settings = _settings()
 

@@ -49,6 +49,27 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     edgeTools,
   } = options;
 
+  // X6 keeps an edge responsive while its segment handle is being dragged.
+  // Persisting each pointer movement, however, causes the React store to
+  // re-sync every edge in the diagram. Coalesce those writes while retaining
+  // a short idle fallback for keyboard and touch interactions.
+  const pendingVertexEdges = new Map<string, Edge>();
+  let vertexCommitTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushPendingVertexChanges = () => {
+    if (vertexCommitTimer) {
+      clearTimeout(vertexCommitTimer);
+      vertexCommitTimer = undefined;
+    }
+    const pending = Array.from(pendingVertexEdges.values());
+    pendingVertexEdges.clear();
+    pending.forEach((edge) => onEdgeVerticesChanged?.(edge));
+  };
+  const scheduleVertexChange = (edge: Edge) => {
+    pendingVertexEdges.set(edge.id, edge);
+    if (vertexCommitTimer) clearTimeout(vertexCommitTimer);
+    vertexCommitTimer = setTimeout(flushPendingVertexChanges, 120);
+  };
+
   const handleNodeClick = ({ node }: { node: Node }) => onNodeClick?.(node);
   const handleSelectionChanged = ({ selected }: { selected: Cell[] }) => {
     onSelectionChanged?.(selected || []);
@@ -74,6 +95,9 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     const targetId = edge.getTargetCellId();
     if (sourceId && targetId) onNewEdge?.(edge, sourceId, targetId);
   };
+  const handleEdgeMouseUp = () => {
+    if (!isInternalUpdate.current) flushPendingVertexChanges();
+  };
   const decorateVertexTools = (tools: CanvasEventAdapterOptions['edgeTools']) => {
     if (!tools || !onEdgeVerticesChanged) return tools;
     const decorate = (tool: any) => {
@@ -87,7 +111,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
           ...originalArgs,
           onChanged: (payload: { edge: Edge }) => {
             originalArgs.onChanged?.(payload);
-            if (!isInternalUpdate.current) onEdgeVerticesChanged(payload.edge);
+            if (!isInternalUpdate.current) scheduleVertexChange(payload.edge);
           },
         },
       };
@@ -110,6 +134,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     try { edge.removeTools(); } catch { /* ignore disposed cells */ }
   };
   const handleEdgeRemoved = ({ edge }: { edge: Edge }) => {
+    pendingVertexEdges.delete(edge.id);
     if (!isInternalUpdate.current) onEdgeRemoved?.(edge);
   };
 
@@ -122,6 +147,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   graph.on('edge:change:source', handleEdgeEndpointChanged);
   graph.on('edge:change:target', handleEdgeEndpointChanged);
   graph.on('edge:connected', handleEdgeConnected);
+  graph.on('edge:mouseup', handleEdgeMouseUp);
   if (edgeTools) {
     graph.on('edge:mouseenter', handleEdgeMouseEnter);
     graph.on('edge:mouseleave', handleEdgeMouseLeave);
@@ -138,10 +164,13 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
     graph.off('edge:change:source', handleEdgeEndpointChanged);
     graph.off('edge:change:target', handleEdgeEndpointChanged);
     graph.off('edge:connected', handleEdgeConnected);
+    graph.off('edge:mouseup', handleEdgeMouseUp);
     if (edgeTools) {
       graph.off('edge:mouseenter', handleEdgeMouseEnter);
       graph.off('edge:mouseleave', handleEdgeMouseLeave);
     }
     graph.off('edge:removed', handleEdgeRemoved);
+    if (vertexCommitTimer) clearTimeout(vertexCommitTimer);
+    pendingVertexEdges.clear();
   };
 }

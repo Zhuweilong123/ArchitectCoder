@@ -15,6 +15,37 @@ from app.runtime.command import (
 from app.runtime.environment import EnvironmentContext, build_environment_context
 from app.runtime.filesystem import FileSystemOperationError, NativeFileSystem, workspace_root_for
 from app.runtime.workspace import WorkspaceManifest
+from app.runtime.task_contracts import (
+    ApprovalClass,
+    ExecutionEvidence,
+    ExecutionPolicy,
+    NetworkPolicy,
+    ResourceLimits,
+    TaskKind,
+    TaskPlan,
+    TaskSpec,
+    ToolchainProfile,
+)
+from app.runtime.task_resolver import (
+    CallableTaskAdapter,
+    ProjectTaskAdapter,
+    TaskResolution,
+    TaskResolver,
+)
+from app.runtime.execution_broker import (
+    ExecutionBroker,
+    LocalExecutionBroker,
+    WorkerExecutionBroker,
+    build_execution_broker,
+)
+from app.runtime.sandbox_worker import (
+    ContainerCommandExecutor,
+    ContainerWorker,
+    SandboxWorker,
+    WorkerCapabilities,
+    WorkerStatus,
+    WslWorker,
+)
 
 from app.runtime.agent_runtime import (
     AgentRuntime,
@@ -48,6 +79,29 @@ __all__ = [
     "NativeFileSystem",
     "workspace_root_for",
     "WorkspaceManifest",
+    "ApprovalClass",
+    "ExecutionEvidence",
+    "ExecutionPolicy",
+    "NetworkPolicy",
+    "ResourceLimits",
+    "TaskKind",
+    "TaskPlan",
+    "TaskSpec",
+    "ToolchainProfile",
+    "TaskResolution",
+    "TaskResolver",
+    "ProjectTaskAdapter",
+    "CallableTaskAdapter",
+    "ExecutionBroker",
+    "LocalExecutionBroker",
+    "WorkerExecutionBroker",
+    "build_execution_broker",
+    "SandboxWorker",
+    "ContainerCommandExecutor",
+    "ContainerWorker",
+    "WorkerCapabilities",
+    "WorkerStatus",
+    "WslWorker",
     "ExecutionEnvironmentError",
     "CommandExecutor",
     "HostShellExecutor",

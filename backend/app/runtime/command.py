@@ -19,6 +19,33 @@ from typing import Protocol
 from app.runtime.encoding import decode_process_output
 
 
+_VERSION_RE = re.compile(r"\b\d+(?:\.\d+){0,3}(?:[-+._][A-Za-z0-9.-]+)?\b")
+
+
+def _probe_version_process(start, terminate, timeout: float) -> dict[str, object]:
+    """Collect a best-effort ``--version`` banner from an executor process."""
+    process = start()
+    try:
+        stdout, stderr = process.communicate(timeout=max(0.1, float(timeout)))
+    except subprocess.TimeoutExpired:
+        terminate(process)
+        return {"status": "timeout", "version": ""}
+    output = (decode_process_output(stdout) + decode_process_output(stderr)).strip()
+    if process.returncode != 0:
+        return {
+            "status": "unavailable",
+            "version": "",
+            "output": output[:200],
+        }
+    banner = next((line.strip() for line in output.splitlines() if line.strip()), "")
+    match = _VERSION_RE.search(banner)
+    return {
+        "status": "available",
+        "version": match.group(0) if match else banner[:120],
+        "output": banner[:200],
+    }
+
+
 class ExecutionEnvironmentError(RuntimeError):
     """The configured command environment cannot safely execute a command."""
 
@@ -140,6 +167,16 @@ class NativeLinuxBashExecutor:
 
     def validate_command(self, command: str) -> str | None:
         return None
+
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        return _validate_resolved_program(program, args, resolve_on_host=True)
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def preflight(self) -> None:
         if not shutil.which("bash"):
@@ -269,6 +306,27 @@ class NativePowerShellExecutor:
             return f"executable '{executable}' is not allowed"
         return None
 
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        """Validate a resolver-owned task without a host executable allowlist.
+
+        ``run_program`` is intentionally a tightly restricted compatibility
+        escape hatch and continues to use :meth:`validate_program`.  A
+        ``run_task`` command, however, has already been resolved from a
+        project manifest and is executed by the broker.  For that path we
+        only require literal argv, a command available on the selected
+        worker's PATH, and no nested shell interpreter.  This keeps support
+        open to new languages/toolchains without adding one executable at a
+        time to the global allowlist.
+        """
+        return _validate_resolved_program(program, args, resolve_on_host=True)
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
+
     def start(self, command: str, cwd: str | None) -> subprocess.Popen:
         self.preflight()
         return subprocess.Popen(
@@ -313,6 +371,42 @@ _SAFE_READONLY_EXPRESSION = re.compile(
     r"^\s*\(\s*(Get-Content|gc)\s+.+?\s*\)\s*\.\s*(Count|Length)\s*$",
     re.IGNORECASE,
 )
+
+
+def _validate_resolved_program(
+    program: str,
+    args: list[str],
+    *,
+    resolve_on_host: bool,
+) -> str | None:
+    """Validate resolver-owned argv independently of any language/tool list."""
+    if not program or any(
+        any(char in value for char in ("\n", "\r", ";", "|", ">", "<"))
+        for value in [program, *args]
+    ):
+        return "program and args must be literal values without shell control characters"
+    executable = os.path.basename(program).lower()
+    if executable.endswith((".exe", ".cmd", ".bat")):
+        executable = executable.rsplit(".", 1)[0]
+    if executable in {"powershell", "pwsh", "cmd", "bash", "sh", "wsl"}:
+        return (
+            f"resolver task cannot invoke shell interpreter '{executable}'; "
+            "declare the underlying tool as a literal argv"
+        )
+    if os.path.isabs(program) or any(separator in program for separator in ("/", "\\")):
+        # Project wrappers are intentionally relative to the already bounded
+        # task cwd (for example ``./gradlew``).  Absolute paths and parent
+        # traversal remain forbidden; ordinary tool names still resolve on the
+        # worker PATH.
+        normalized = program.replace("\\", "/")
+        parts = tuple(part for part in normalized.split("/") if part)
+        if not normalized.startswith("./") or ".." in parts:
+            return "resolver task executable must be a command name or a safe relative wrapper"
+    # Native workers can attest PATH availability before starting.  Isolated
+    # workers perform the equivalent lookup inside their own boundary.
+    if resolve_on_host and shutil.which(program) is None:
+        return f"toolchain executable '{program}' is unavailable on the worker"
+    return None
 
 
 def windows_path_to_wsl(path: str) -> str:
@@ -368,6 +462,25 @@ class WslBashExecutor:
                 "or a workspace-relative POSIX path"
             )
         return None
+
+    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
+        # The command is resolved inside WSL, never against the Windows PATH.
+        return _validate_resolved_program(program, args, resolve_on_host=False)
+
+    def normalize_resolved_program(
+        self, program: str, args: list[str], cwd: str,
+    ) -> tuple[str, list[str]]:
+        """Translate a Windows Gradle wrapper selected by host discovery."""
+        if program.lower() == "gradlew.bat" and (Path(cwd) / "gradlew").is_file():
+            return "./gradlew", args
+        return program, args
+
+    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
+        return _probe_version_process(
+            lambda: self.start_program(program, ["--version"], cwd),
+            self.terminate,
+            timeout,
+        )
 
     def _prefix(self, *, cwd: str | None = None) -> list[str]:
         command = [self.executable]

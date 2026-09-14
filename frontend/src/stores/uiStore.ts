@@ -47,6 +47,7 @@ interface UiState {
 
   // Project directories (shared by Agent chat, etc.)
   projectRoot: string;
+  designDir: string;
   sourceDir: string;
   testDir: string;
 
@@ -98,6 +99,7 @@ interface UiState {
   setTestCaseData: (data: string) => void;
 
   setProjectRoot: (dir: string) => void;
+  setDesignDir: (dir: string) => void;
   setSourceDir: (dir: string) => void;
   setTestDir: (dir: string) => void;
 
@@ -146,7 +148,12 @@ export const useUiStore = create<UiState>((set, get) => ({
   optimizationConsistencyReport: [],
   showTestCaseInCanvas: false,
   testCaseData: '',
-  projectRoot: localStorage.getItem('projectRoot') || 'project',
+  projectRoot: (() => {
+    const stored = localStorage.getItem('projectRoot') || '';
+    // `project` was the old implicit default, not a user-selected root.
+    return stored === 'project' ? '' : stored;
+  })(),
+  designDir: localStorage.getItem('designDir') || '',
   sourceDir: localStorage.getItem('sourceDir') || '',
   testDir: localStorage.getItem('testDir') || '',
   fileDialogVisible: false,
@@ -249,6 +256,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   setProjectRoot: (dir) => {
     localStorage.setItem('projectRoot', dir);
     set({ projectRoot: dir });
+  },
+  setDesignDir: (dir) => {
+    localStorage.setItem('designDir', dir);
+    set({ designDir: dir });
   },
   setSourceDir: (dir) => {
     localStorage.setItem('sourceDir', dir);

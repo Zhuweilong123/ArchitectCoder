@@ -69,12 +69,14 @@ class ToolResult:
     changes: list[FileChange] = field(default_factory=list)
     execution: CommandEvidence | None = None
     verification: VerificationEvidence | None = None
+    execution_evidence: dict[str, Any] | None = None
 
     def effects(self) -> dict:
         return {
             "changes": [asdict(change) for change in self.changes],
             "execution": asdict(self.execution) if self.execution else None,
             "verification": asdict(self.verification) if self.verification else None,
+            "execution_evidence": self.execution_evidence,
         }
 
     @classmethod

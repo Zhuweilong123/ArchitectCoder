@@ -60,6 +60,29 @@ const LANGUAGES = [
   { value: 'php', label: 'PHP' },
 ];
 
+interface ProjectSaveConflictDetail {
+  expected_revision?: number;
+  actual_revision?: number;
+}
+
+function showProjectSaveError(error: unknown): void {
+  const response = (error as {
+    response?: { status?: number; data?: { detail?: ProjectSaveConflictDetail } };
+  })?.response;
+  if (response?.status === 409) {
+    const detail = response.data?.detail;
+    const expected = detail?.expected_revision ?? '?';
+    const actual = detail?.actual_revision ?? '?';
+    message.error(
+      '保存冲突：设计文件已被其他会话更新（本地版本 ' + expected
+      + '，文件版本 ' + actual + '）。请先“另存为”保留当前改动，或重新加载设计文件后再保存。',
+      8,
+    );
+    return;
+  }
+  message.error('保存失败');
+}
+
 const Toolbar: React.FC = () => {
   const {
     diagram, project, isModified, undoStack, redoStack,
@@ -101,8 +124,8 @@ const Toolbar: React.FC = () => {
     fileDialogVisible, setFileDialogVisible,
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
-    projectRoot, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
-    setProjectRoot, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
+    projectRoot, designDir, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
+    setProjectRoot, setDesignDir, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -188,6 +211,7 @@ const Toolbar: React.FC = () => {
       : `${scope}\n${defaultRequest}`;
     setAgentChatVisible(true);
     sendAgentMessage(prompt, {
+      design_dir: designDir,
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: projectFile || '',
@@ -237,20 +261,22 @@ const Toolbar: React.FC = () => {
 
   // ── Project directory selection (for AI Agent) ──
   const [projDirBrowseVisible, setProjDirBrowseVisible] = useState(false);
-  const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'project' | 'source' | 'test'>('project');
+  const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'project' | 'design' | 'source' | 'test'>('project');
   const [projDirBrowseResult, setProjDirBrowseResult] = useState<BrowseResult | null>(null);
   const [projDirBrowsePath, setProjDirBrowsePath] = useState('');
 
-  const handleBrowseDirFor = useCallback(async (target: 'project' | 'source' | 'test', path?: string) => {
+  const handleBrowseDirFor = useCallback(async (target: 'project' | 'design' | 'source' | 'test', path?: string) => {
     setProjDirBrowseTarget(target);
     try {
       // 默认从当前设置的值开始浏览，无设置则用当前工作目录
       const initialPath = path || (
         target === 'project'
-          ? (projectRoot || 'project')
-          : target === 'source'
-            ? (sourceDir || '.')
-            : (testDir || '.')
+          ? (projectRoot || currentWorkspacePath || '.')
+          : target === 'design'
+            ? (designDir || (projectRoot ? `${normalizePath(projectRoot)}/design` : '.'))
+            : target === 'source'
+              ? (sourceDir || '.')
+              : (testDir || '.')
       );
       const result = await browseDirectory(initialPath, false);
       setProjDirBrowseResult(result);
@@ -259,21 +285,29 @@ const Toolbar: React.FC = () => {
     } catch {
       message.error('加载目录失败');
     }
-  }, [projectRoot, sourceDir, testDir]);
+  }, [projectRoot, designDir, sourceDir, testDir, currentWorkspacePath]);
 
   const handleProjDirSelect = useCallback((dirPath: string) => {
     if (projDirBrowseTarget === 'project') {
       void handleProjectFolderSelect(dirPath);
       return;
     }
-    if (projDirBrowseTarget === 'source') {
+    // A role-specific selection is an explicit layout. Do not keep a stale
+    // project root that could reject a source/design/test directory outside it.
+    setProjectRoot('');
+    setCurrentWorkspacePath(null, true);
+    if (projDirBrowseTarget === 'design') {
+      setDesignDir(dirPath);
+      setCurrentFilepath(null);
+    } else if (projDirBrowseTarget === 'source') {
       setSourceDir(dirPath);
     } else {
       setTestDir(dirPath);
     }
     setProjDirBrowseVisible(false);
-    message.success(`已设置${projDirBrowseTarget === 'source' ? '源码' : '测试'}目录: ${dirPath}`);
-  }, [projDirBrowseTarget, setSourceDir, setTestDir]);
+    const labels = { design: '设计', source: '源码', test: '测试' };
+    message.success(`已设置${labels[projDirBrowseTarget]}目录: ${dirPath}`);
+  }, [projDirBrowseTarget, setProjectRoot, setDesignDir, setSourceDir, setTestDir, setCurrentFilepath, setCurrentWorkspacePath]);
 
   const handleProjDirNav = useCallback((dirPath: string) => {
     handleBrowseDirFor(projDirBrowseTarget, dirPath);
@@ -299,9 +333,14 @@ const Toolbar: React.FC = () => {
   };
 
   const handleBrowseDesign = () => {
-    const designPath = projectRoot
-      ? `${normalizePath(projectRoot)}/design`
-      : (currentFilepath ? pathDirName(currentFilepath) : '');
+    const designPath = designDir
+      || (projectRoot
+        ? `${normalizePath(projectRoot)}/design`
+        : (currentFilepath ? pathDirName(currentFilepath) : ''));
+    // The unified design picker may target an explicitly configured external
+    // directory, so files opened from it must use the same unrestricted flag
+    // as the directory browse request.
+    browseUnsafe.current = true;
     void handleOpen(designPath || undefined, true);
   };
 
@@ -324,11 +363,6 @@ const Toolbar: React.FC = () => {
   const handleSelectCurrentFolder = async () => {
     const folder = browseData?.current;
     if (!folder) return;
-    const childDirNames = new Set((browseData?.dirs || []).map((item) => item.name.toLowerCase()));
-    if (['design', 'src', 'test'].some((name) => childDirNames.has(name))) {
-      await handleProjectFolderSelect(folder);
-      return;
-    }
     const safe = !browseUnsafe.current;
     const projectFiles = (browseData.files || []).filter((item) => item.type === 'project');
     const diagramFiles = (browseData.files || []).filter((item) =>
@@ -336,9 +370,19 @@ const Toolbar: React.FC = () => {
     );
     const designFiles = [...projectFiles, ...diagramFiles];
 
-    // Selecting a folder changes the save target.  An existing open file is
-    // therefore detached until the folder's design is loaded below.
-    setCurrentWorkspacePath(folder, safe);
+    // This dialog is the unified design selector. Selecting a folder updates
+    // only the design directory; the workspace root remains independent.
+    setDesignDir(folder);
+    const normalizedFolder = normalizePath(folder).toLowerCase();
+    const normalizedRoot = normalizePath(projectRoot).toLowerCase();
+    const staysInWorkspaceRoot = Boolean(
+      normalizedRoot
+      && (normalizedFolder === normalizedRoot || normalizedFolder.startsWith(`${normalizedRoot}/`)),
+    );
+    if (projectRoot && !staysInWorkspaceRoot) {
+      setProjectRoot('');
+    }
+    setCurrentWorkspacePath(staysInWorkspaceRoot ? projectRoot : null, staysInWorkspaceRoot);
     currentFileSafe.current = safe;
     setCurrentFilepath(null);
 
@@ -347,8 +391,8 @@ const Toolbar: React.FC = () => {
       // first one deterministically; any additional project files remain
       // available from the folder browser.
       await handleOpenFile(projectFiles[0].path, true);
-      if (projectFiles.length > 1) {
-        message.info(`\u5df2\u81ea\u52a8\u6253\u5f00 ${projectFiles[0].name}\uff0c\u76ee\u5f55\u4e2d\u8fd8\u6709 ${projectFiles.length - 1} \u4e2a\u9879\u76ee\u6587\u4ef6`);
+      if (designFiles.length > 1) {
+        message.info(`\u5df2\u9ed8\u8ba4\u52a0\u8f7d ${projectFiles[0].name}\uff0c\u76ee\u5f55\u4e2d\u8fd8\u6709 ${designFiles.length - 1} \u4e2a\u8bbe\u8ba1\u6587\u4ef6`);
       }
       return;
     }
@@ -359,34 +403,18 @@ const Toolbar: React.FC = () => {
     }
 
     if (diagramFiles.length > 1) {
-      try {
-        const diagrams = await Promise.all(
-          diagramFiles.map((item) => openToolbarDiagram(item.path, safe)),
-        );
-        setProject({
-          version: '1.0',
-          name: pathBaseName(folder) || 'Untitled',
-          diagrams,
-          active_diagram_index: 0,
-        });
-        // There is no single source file for an aggregated project; save it as
-        // a new .umlproj in the selected folder on the next save.
-        setCurrentFilepath(null);
-        setCurrentWorkspacePath(folder, safe);
-        setFileDialogVisible(false);
-        message.success(`\u5df2\u81ea\u52a8\u52a0\u8f7d ${diagrams.length} \u4e2a UML \u6587\u4ef6`);
-      } catch {
-        message.error('\u52a0\u8f7d\u6587\u4ef6\u5939\u4e2d\u7684 UML \u6587\u4ef6\u5931\u8d25');
-      }
+      // Keep the selected file as the canonical project_file. The remaining
+      // files stay available in the same browser for an explicit switch.
+      await handleOpenFile(diagramFiles[0].path, false);
+      message.info(`\u5df2\u9ed8\u8ba4\u52a0\u8f7d ${diagramFiles[0].name}\uff0c\u76ee\u5f55\u4e2d\u8fd8\u6709 ${diagramFiles.length - 1} \u4e2a\u8bbe\u8ba1\u6587\u4ef6`);
       return;
     }
 
     // An empty directory is a valid new-design workspace.
     if (designFiles.length === 0) {
       newProject(pathBaseName(folder) || 'Untitled');
-      setCurrentWorkspacePath(folder, safe);
       setFileDialogVisible(false);
-      message.success(`\u5df2\u6253\u5f00\u7a7a\u8bbe\u8ba1\u6587\u4ef6\u5939: ${relativePath(folder, pathDirName(folder))}`);
+      message.success(`\u5df2\u9009\u62e9\u7a7a\u8bbe\u8ba1\u76ee\u5f55: ${relativePath(folder, pathDirName(folder))}`);
       return;
     }
 
@@ -399,7 +427,8 @@ const Toolbar: React.FC = () => {
         const proj = await openToolbarProject(path, safe);
         setProject(proj);
         setCurrentFilepath(path);
-        setCurrentWorkspacePath(pathDirName(path), safe);
+        setDesignDir(pathDirName(path));
+        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
@@ -416,7 +445,8 @@ const Toolbar: React.FC = () => {
         };
         setProject(proj);
         setCurrentFilepath(path);
-        setCurrentWorkspacePath(pathDirName(path), safe);
+        setDesignDir(pathDirName(path));
+        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success('文件已打开');
@@ -462,6 +492,7 @@ const Toolbar: React.FC = () => {
       const designDir = childDirs.get('design') || '';
       const sourcePath = childDirs.get('src') || '';
       const testPath = childDirs.get('test') || '';
+      setDesignDir(designDir);
       setSourceDir(sourcePath);
       setTestDir(testPath);
 
@@ -494,6 +525,7 @@ const Toolbar: React.FC = () => {
         }
       }
     } catch {
+      setDesignDir('');
       setSourceDir('');
       setTestDir('');
       newProject(pathBaseName(root) || 'Untitled');
@@ -526,8 +558,8 @@ const Toolbar: React.FC = () => {
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
-    } catch {
-      message.error('保存失败');
+    } catch (error) {
+      showProjectSaveError(error);
     }
   };
 
@@ -570,8 +602,8 @@ const Toolbar: React.FC = () => {
       setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);
-    } catch {
-      message.error('保存失败');
+    } catch (error) {
+      showProjectSaveError(error);
     }
     setSaving(false);
   };
@@ -668,24 +700,21 @@ const Toolbar: React.FC = () => {
           <Button icon={<FileAddOutlined />} onClick={handleNew} />
         </Tooltip>
         <Tooltip title={interfaceLanguage === 'en'
-          ? 'Load a project folder and sync its design/src/test subdirectories.'
-          : '\u52a0\u8f7d\u9879\u76ee\u6839\u76ee\u5f55\uff0c\u5e76\u81ea\u52a8\u540c\u6b65 design/src/test \u5b50\u76ee\u5f55\u3002'}>
+          ? 'Select a workspace root; design/src/test are derived from it.'
+          : '\u9009\u62e9\u5de5\u4f5c\u76ee\u5f55\u4f5c\u4e3a\u6839\u76ee\u5f55\uff0c\u5e76\u540c\u6b65 design/src/test \u5b50\u76ee\u5f55\u3002'}>
           <Tag
             icon={<FolderOpenOutlined />}
             color={projectRoot ? 'purple' : 'default'}
             style={{ cursor: 'pointer', margin: 0, fontSize: 12, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}
             onClick={() => handleBrowseDirFor('project')}
           >
-            {interfaceLanguage === 'en' ? 'Project folder' : '\u9879\u76ee\u76ee\u5f55'}{projectRoot ? ': ' + projectRoot.split(/[/\\]/).slice(-2).join('/') : ''}
+            {interfaceLanguage === 'en' ? 'Workspace root' : '\u5de5\u4f5c\u76ee\u5f55'}{projectRoot ? ': ' + projectRoot.split(/[/\\]/).slice(-2).join('/') : ''}
           </Tag>
         </Tooltip>
         {projectRoot && (
-          <Tooltip title={interfaceLanguage === 'en' ? 'Clear project folder' : '\u6e05\u9664\u9879\u76ee\u76ee\u5f55'}>
+          <Tooltip title={interfaceLanguage === 'en' ? 'Clear workspace root' : '\u6e05\u9664\u5de5\u4f5c\u76ee\u5f55'}>
             <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => {
               setProjectRoot('');
-              setSourceDir('');
-              setTestDir('');
-              setCurrentFilepath(null);
               setCurrentWorkspacePath(null, true);
             }} style={{ padding: 0, minWidth: 18, height: 18 }} />
           </Tooltip>
@@ -720,15 +749,19 @@ const Toolbar: React.FC = () => {
       <div className="toolbar-row" style={{ padding: '2px 0' }}>
         <div className="toolbar-left" style={{ gap: 10, flexWrap: 'wrap', width: '100%' }}>
           <Tooltip title={interfaceLanguage === 'en'
-            ? 'Choose a design project from the project design folder.'
-            : '\u9009\u62e9 design \u76ee\u5f55\u4e2d\u7684\u8bbe\u8ba1\u6587\u4ef6\u3002'}>
+            ? 'Open a design file or use a folder as the design directory.'
+            : '\u53ef\u9009\u62e9\u8bbe\u8ba1\u6587\u4ef6\uff0c\u4e5f\u53ef\u5c06\u5f53\u524d\u76ee\u5f55\u4f5c\u4e3a\u8bbe\u8ba1\u76ee\u5f55\u3002'}>
             <Tag
               icon={<ProjectOutlined />}
-              color={currentFilepath ? 'purple' : 'default'}
+              color={currentFilepath || designDir ? 'purple' : 'default'}
               style={{ cursor: 'pointer', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               onClick={handleBrowseDesign}
             >
-              {interfaceLanguage === 'en' ? 'Design' : '\u8bbe\u8ba1'}{currentFilepath ? ': ' + pathBaseName(currentFilepath) : ''}
+              {currentFilepath
+                ? `${interfaceLanguage === 'en' ? 'Design' : '\u8bbe\u8ba1'}: ${pathBaseName(currentFilepath)}`
+                : designDir
+                  ? `${interfaceLanguage === 'en' ? 'Design directory' : '\u8bbe\u8ba1\u76ee\u5f55'}: ${designDir.split(/[/\\\\]/).slice(-2).join('/')}`
+                  : (interfaceLanguage === 'en' ? 'Design' : '\u8bbe\u8ba1')}
             </Tag>
           </Tooltip>
           {currentFilepath && (
@@ -887,7 +920,7 @@ const Toolbar: React.FC = () => {
 
       {/* ── File Open Dialog with folder browsing ────── */}
       <Modal
-        title={interfaceLanguage === 'en' ? 'Open UML file' : '打开 UML 文件'}
+        title={interfaceLanguage === 'en' ? 'Open design file or folder' : '打开设计文件或目录'}
         open={fileDialogVisible}
         onCancel={() => { setFileDialogVisible(false); browseUnsafe.current = false; }}
         footer={null}
@@ -910,7 +943,7 @@ const Toolbar: React.FC = () => {
             icon={<FolderOpenOutlined />}
             onClick={handleSelectCurrentFolder}
           >
-            {interfaceLanguage === 'en' ? 'Use this folder as workspace' : '在此文件夹中工作'}
+            {interfaceLanguage === 'en' ? 'Use this folder as design directory' : '将当前目录作为设计目录'}
           </Button>
         </div>
 
@@ -1146,7 +1179,7 @@ const Toolbar: React.FC = () => {
 
       {/* ── Project Directory Browse Modal ─────────── */}
       <Modal
-        title={`选择${projDirBrowseTarget === 'project' ? '项目' : projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
+        title={`选择${projDirBrowseTarget === 'project' ? '工作' : projDirBrowseTarget === 'design' ? '设计' : projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
         open={projDirBrowseVisible}
         onCancel={() => setProjDirBrowseVisible(false)}
         footer={null}
