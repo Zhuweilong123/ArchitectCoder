@@ -77,6 +77,28 @@ def test_trace_sources_are_labeled_and_readable_independently(tmp_path, monkeypa
     assert read_trace("shared-session", trace_type="evaluation")["events"][1]["message"] == "evaluation"
 
 
+def test_trace_user_message_accepts_design_dir_and_preserves_workspace_metadata(tmp_path):
+    tracer = ChatTraceLogger("design-dir-message", log_dir=str(tmp_path))
+    tracer.start(design_dir=str(tmp_path / "design"))
+    tracer.user_message(
+        "inspect the project",
+        source_dir=str(tmp_path / "src"),
+        test_dir=str(tmp_path / "test"),
+        workspace_root=str(tmp_path),
+        design_dir=str(tmp_path / "design"),
+    )
+    tracer.close()
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "trace_design-dir-message.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[0]["design_dir"] == str(tmp_path / "design")
+    user_event = next(event for event in events if event["event_type"] == "user_message")
+    assert user_event["message"] == "inspect the project"
+    assert user_event["design_dir"] == str(tmp_path / "design")
+
+
 def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
     monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     tracer = ChatTraceLogger("strict-json-test")
