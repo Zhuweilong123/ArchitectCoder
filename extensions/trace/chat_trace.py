@@ -228,13 +228,15 @@ class ChatTraceLogger:
 
     def start(self, *, user_message: str = "",
               project_file: str = "", source_dir: str = "",
-              test_dir: str = "", env_snapshot: dict | None = None) -> None:
+              test_dir: str = "", design_dir: str = "",
+              env_snapshot: dict | None = None) -> None:
         """会话开始事件 — 记录环境快照便于复现。"""
         payload = {
             "user_message": user_message,
             "project_file": project_file,
             "source_dir": source_dir,
             "test_dir": test_dir,
+            "design_dir": design_dir,
         }
         if env_snapshot:
             payload["env_snapshot"] = env_snapshot
@@ -257,7 +259,7 @@ class ChatTraceLogger:
 
     def user_message(self, message: str, project_file: str = "",
                      source_dir: str = "", test_dir: str = "",
-                     workspace_root: str = "") -> None:
+                     workspace_root: str = "", design_dir: str = "") -> None:
         """记录用户消息及当时的工作区目录。
 
         source_dir / test_dir 供 live 回放（真实工具执行）重建 safe_path 守卫的
@@ -270,6 +272,7 @@ class ChatTraceLogger:
             source_dir=source_dir,
             test_dir=test_dir,
             workspace_root=workspace_root,
+            design_dir=design_dir,
         )
 
     def kg_inject(self, context: str, query: str = "") -> None:
