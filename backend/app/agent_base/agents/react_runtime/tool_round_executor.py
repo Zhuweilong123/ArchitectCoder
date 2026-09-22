@@ -21,6 +21,7 @@ from ...core.hooks import (
 from ...evidence import EvidenceLedger
 from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
+from app.trace.tracing import emit_trace
 
 
 @dataclass
@@ -72,11 +73,24 @@ class ToolRoundExecutor:
         parsed_calls = self._parse_calls(tool_calls)
 
         async def execute_one(
+            tool_call: dict,
             tool_name: str,
             tool_args: dict | str,
             blocked: str | None,
         ):
-            return await self._execute_one(tool_name, tool_args, blocked)
+            # Record the call at the point the tool actually starts.  The
+            # previous implementation waited for ReActProgress and recorded
+            # tool_call/tool_result afterwards, which made a blocking review
+            # appear before its submit_uml_review tool_call in the trace.
+            span_id = emit_trace(
+                "tool_call",
+                step=step,
+                tool_name=tool_name,
+                arguments=tool_args if isinstance(tool_args, dict) else {},
+                tool_call_id=str(tool_call.get("id") or ""),
+            ) or ""
+            execution = await self._execute_one(tool_name, tool_args, blocked)
+            return execution, span_id
 
         executable = [item for item in parsed_calls if item[3] is None]
         parallel = len(executable) > 1 and all(
@@ -84,16 +98,17 @@ class ToolRoundExecutor:
         )
         if parallel:
             executions = await asyncio.gather(*(
-                execute_one(item[1], item[2], item[3]) for item in parsed_calls
+                execute_one(item[0], item[1], item[2], item[3]) for item in parsed_calls
             ))
         else:
             executions = []
             for item in parsed_calls:
-                executions.append(await execute_one(item[1], item[2], item[3]))
+                executions.append(await execute_one(item[0], item[1], item[2], item[3]))
 
         result = ToolRoundResult()
-        for item, execution in zip(parsed_calls, executions):
+        for item, execution_with_span in zip(parsed_calls, executions):
             tc, tool_name, tool_args, blocked = item
+            execution, tool_span = execution_with_span
             if blocked is not None and isinstance(tool_args, str):
                 observation_full = observation_fed = blocked
                 tool_result = ToolResult(
@@ -120,6 +135,21 @@ class ToolRoundExecutor:
             )
             self.evidence_summary.append(evidence.to_dict())
             del self.evidence_summary[:-32]
+            emit_trace(
+                "tool_result",
+                span_id=tool_span,
+                tool_name=tool_name,
+                observation=observation_full,
+                duration_ms=float(duration_ms or 0.0),
+                error=(
+                    str(tool_result.error_code)
+                    if tool_result.status not in {"", "success", "completed"}
+                    else ""
+                ),
+                fed_truncated=observation_full != observation_fed,
+                fed_length=len(observation_fed),
+                evidence=evidence.to_dict(),
+            )
             self._update_edit_recovery_state(tool_name, tool_args, tool_result)
             self.current_history.append(
                 f"Step {step}: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})"

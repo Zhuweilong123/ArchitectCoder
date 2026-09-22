@@ -233,6 +233,40 @@ const AgentChat: React.FC = () => {
     todoSeenInTaskRef.current = false;
   }, [inputValue, busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
 
+  const handleMessageAction = useCallback((message: string) => {
+    const text = message.trim();
+    if (!text || busy) return;
+    connect();
+    useDiagramStore.getState().beginBatch();
+    sendAgentMessage(text, {
+      design_dir: designDir,
+      source_dir: sourceDir,
+      test_dir: testDir,
+      project_file: currentFilepath || '',
+      workspace_root: currentWorkspacePath || '',
+      design_contract_enabled: designContractEnabled,
+      skipNotify: true,
+    });
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `user_${Date.now()}`,
+        role: 'user' as const,
+        content: text,
+        timestamp: Date.now(),
+      },
+    ]);
+    setBusy(true);
+    liveStepsRef.current = [];
+    setCurrentSteps([]);
+    liveTodosRef.current = [];
+    setCurrentTodos([]);
+    setTodoPlanningMode(false);
+    setStrategyAdvised(false);
+    setTodoExpanded(false);
+    todoSeenInTaskRef.current = false;
+  }, [busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+
   const handleDesignContractToggle = useCallback((checked: boolean) => {
     setDesignContractEnabled(checked);
     try {
@@ -719,6 +753,16 @@ const AgentChat: React.FC = () => {
                       <span key={i}>{line}<br /></span>
                     ))}
                   </div>
+                  {msg.action && (
+                    <Button
+                      type="primary"
+                      size="small"
+                      style={{ marginTop: 8 }}
+                      onClick={() => handleMessageAction(msg.action!.message)}
+                    >
+                      {msg.action.label}
+                    </Button>
+                  )}
                   {msg.steps && renderSteps(msg.steps, true)}
                 </div>
               </div>

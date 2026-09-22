@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import app.services.agent_execution as agent_execution
-from app.services.agent_execution import _sync_checkpoint_outcome
+from app.services.agent_execution import _record_contract_check, _sync_checkpoint_outcome
 from app.agent_base.agents.react_agent import ReActProgress
 from app.agent_base.core.contract_harness import ContractCheckResult, ContractViolation
 from app.agent_base.core.contract_analysis import (
@@ -198,3 +198,35 @@ def test_agent_execution_injects_enabled_tools_context(monkeypatch):
     assert sent[-1]["event"] == "done"
     assert sent[-1]["result"] == "hello"
     assert sent[-1]["checkpoint"]["status"] == "completed"
+
+
+def test_contract_check_is_persisted_in_trace_with_authoritative_decision():
+    class _Trace:
+        def __init__(self):
+            self.events = []
+
+        def event(self, event_type, **payload):
+            self.events.append((event_type, payload))
+
+    trace = _Trace()
+    result = ContractCheckResult(
+        check_id="check-trace",
+        status="pass",
+        project_id="demo",
+        changed_paths=("src/demo.py",),
+        message="contract passed",
+    )
+
+    _record_contract_check(
+        trace,
+        result=result,
+        allowed=True,
+        phase="pre_commit",
+    )
+
+    assert trace.events == [("contract_check", {
+        **result.to_dict(),
+        "phase": "pre_commit",
+        "allowed": True,
+        "decision_message": "",
+    })]

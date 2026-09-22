@@ -199,7 +199,9 @@ def _latest_persisted_checkpoint(session_id: str, *, store_factory=None) -> dict
 
 
 _RESUME_REQUESTS = frozenset({
-    "\u7ee7\u7eed", "\u7ee7\u7eed\u6267\u884c", "\u6062\u590d", "\u6062\u590d\u4efb\u52a1", "continue", "resume",
+    "\u7ee7\u7eed", "\u7ee7\u7eed\u6267\u884c", "\u6062\u590d", "\u6062\u590d\u4efb\u52a1",
+    "\u4fee\u590d\u8bbe\u8ba1\u5951\u7ea6\u5e76\u7ee7\u7eed", "\u4fee\u590d\u8bbe\u8ba1\u5951\u7ea6",
+    "continue", "resume", "repair design contract and continue", "repair design contract",
 })
 
 
@@ -241,10 +243,13 @@ def _latest_resumable_run(session_id: str, *, store_factory=None):
     }
     try:
         for record in store_factory().list(limit=50, session_id=session_id):
-            if record.status not in resumable_statuses:
-                continue
             checkpoint = record.metadata.get("checkpoint")
             if not isinstance(checkpoint, dict) or not checkpoint:
+                continue
+            contract_recovery = bool(checkpoint.get("candidate_artifact"))
+            if record.status not in resumable_statuses and not (
+                record.status == RunStatus.PARTIAL.value and contract_recovery
+            ):
                 continue
             if record.status == RunStatus.RUNNING.value and not checkpoint.get("resume_available"):
                 continue
@@ -263,6 +268,20 @@ def _resume_prompt(checkpoint: dict, supplement: str = "") -> str:
     pending = checkpoint.get("pending_items") or []
     verification = checkpoint.get("verification") or []
     last_step = checkpoint.get("last_step") or ""
+    if checkpoint.get("candidate_artifact"):
+        prompt = (
+            "continue the previous design-contract recovery. Original request: " + original
+            + ". The previous source candidate was saved and rolled back. Do not modify or "
+            + "restore source files before the design is reviewed and accepted. First inspect "
+            + "the contract violations and update only the design, then call submit_uml_review. "
+            + "If the user rejects the design, revise the design and submit it again. After the "
+            + "design is accepted, the framework restores the previous source/test candidate. "
+            + "Then evaluate that candidate against the accepted design, rewrite only what is "
+            + "needed, run tests, and let the authoritative contract gate decide."
+        )
+        if supplement:
+            prompt += " User supplement for this continuation: " + str(supplement)[:500] + "."
+        return prompt[:1800]
     prompt = (
         "continue the previous unfinished task. Original request: " + original
         + ". Read the current files and existing changes first, skip completed steps, "
@@ -518,6 +537,7 @@ async def _start_agent_chat_run(
                     source_dir=source_dir,
                     test_dir=test_dir,
                     design_dir=design_dir,
+                    workspace_root=workspace_root,
                     progress=progress,
                     context=context,
                     fallback_review_runs=fallback_review_runs,
@@ -836,6 +856,27 @@ class ChatSessionCoordinator:
                         else:
                             decision = "reject"
                     if review_mgr:
+                        review_request = review_mgr.get_request(review_id)
+                        candidate_recovery = (
+                            review_request.metadata.get("candidate_recovery")
+                            if review_request is not None and isinstance(review_request.metadata, dict)
+                            else None
+                        )
+                        if decision == "accept" and candidate_recovery and callable(
+                            getattr(review_mgr, "candidate_restore_callback", None)
+                        ):
+                            try:
+                                review_mgr.candidate_restore_callback(candidate_recovery)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[Candidate] restore after design review failed",
+                                    exc_info=True,
+                                )
+                                await _ws_send(websocket, {
+                                    "event": "error",
+                                    "message": f"设计已通过，但候选源码恢复失败：{exc}",
+                                })
+                                continue
                         reviewed_checkpoint = None
                         if review_id in fallback_review_runs:
                             if decision not in {"accept", "reject"}:
@@ -876,7 +917,14 @@ class ChatSessionCoordinator:
                                 review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
                             except Exception:
                                 pass
-                        trace_log.review_response(review_id=review_id, response=response)
+                        trace_log.review_response(
+                            review_id=review_id,
+                            response=response,
+                            review_type=(review_request.review_type if review_request else ""),
+                            decision=decision,
+                            feedback=msg.get("feedback", "") or "",
+                            candidate_recovery=bool(candidate_recovery),
+                        )
                         logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
 
                         # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──

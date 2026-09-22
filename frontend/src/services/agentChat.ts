@@ -68,6 +68,13 @@ export interface AgentContractCheckEvent {
   contract_enabled?: boolean;
 }
 
+export interface AgentContractRecoveryEvent {
+  event: 'contract_recovery_available';
+  run_id?: string;
+  action: string;
+  file_count?: number;
+}
+
 export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
@@ -123,6 +130,7 @@ export type AgentEvent =
   | AgentChatChunkEvent
   | AgentReviewEvent
   | AgentContractCheckEvent
+  | AgentContractRecoveryEvent
   | AgentUmlReviewEvent
   | AgentReviewTimeoutEvent
   | AgentReviewExpiredEvent

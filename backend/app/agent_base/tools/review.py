@@ -107,6 +107,11 @@ class ReviewManager:
         self.project_id = project_id
         self.auto_approve_reviews = auto_approve_reviews
         self.approval_events: list[dict] = []
+        # Set by a contract-recovery run.  The value is copied into the UML
+        # review request so the transport layer can restore the source
+        # candidate only after the user accepts the repaired design.
+        self.candidate_recovery: dict | None = None
+        self.candidate_restore_callback = None
         # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
         # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
         self.baseline: list | None = None
@@ -184,6 +189,10 @@ class ReviewManager:
             if request_id == req.id or request_id == req.token:
                 return req
         return None
+
+    def get_request(self, request_id) -> ReviewRequest | None:
+        """Return a live request for orchestration-side recovery hooks."""
+        return self._find(request_id)
 
     def resolve(self, request_index: int | str, response: str, session_id: str = "") -> bool:
         """按稳定请求 ID/token 完成审核。"""
@@ -374,6 +383,9 @@ class SubmitUmlReviewTool(Tool):
                 "original_diagrams": original,
             }
 
+        if self.manager.candidate_recovery:
+            metadata["candidate_recovery"] = dict(self.manager.candidate_recovery)
+
         req = self.manager.submit(
             review_type="uml_diff",
             title=title,
@@ -413,4 +425,22 @@ class SubmitUmlReviewTool(Tool):
                     "title": title,
                     "timeout": self.timeout,
                 })
+        try:
+            parsed_result = _json.loads(result)
+        except (TypeError, ValueError):
+            parsed_result = {}
+        if (
+            isinstance(parsed_result, dict)
+            and parsed_result.get("decision") == "accept"
+            and req.metadata.get("candidate_recovery")
+            and callable(self.manager.candidate_restore_callback)
+        ):
+            try:
+                self.manager.candidate_restore_callback(req.metadata["candidate_recovery"])
+            except Exception as exc:
+                logger.warning("[Candidate] restore after design approval failed", exc_info=True)
+                result = _json.dumps({
+                    "decision": "reject",
+                    "feedback": f"候选源码恢复失败，请检查工作区冲突后重试：{exc}",
+                }, ensure_ascii=False)
         return result

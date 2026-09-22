@@ -110,6 +110,38 @@ class ChangeSet:
         with self._lock:
             return [asdict(record) for record in self._records.values()]
 
+    def candidate_entries(self) -> list[dict]:
+        """Return the current after-state needed to persist a rejected candidate.
+
+        The normal manifest intentionally contains hashes only.  A rejected
+        candidate needs one additional, durable representation so a later
+        design-approved continuation can inspect and reuse the exact source
+        that the model produced.  Validate the after hash while exporting so
+        an external edit can never be mistaken for the model candidate.
+        """
+        with self._lock:
+            records = list(self._records.values())
+            before = dict(self._before)
+        entries: list[dict] = []
+        for record in records:
+            path = Path(record.path)
+            after_exists = path.is_file()
+            after = _read_text_preserving_newlines(path) if after_exists else ""
+            if _sha256(after) != record.after_sha256:
+                raise RuntimeError(
+                    f"candidate changed externally before export: {record.path}"
+                )
+            before_exists, _ = before.get(record.path, (False, ""))
+            entries.append({
+                "path": record.path,
+                "before_exists": before_exists,
+                "before_sha256": record.before_sha256,
+                "after_exists": after_exists,
+                "after_sha256": record.after_sha256,
+                "content": after,
+            })
+        return entries
+
     def commit(self) -> list[dict]:
         with self._lock:
             if self.status != "open":

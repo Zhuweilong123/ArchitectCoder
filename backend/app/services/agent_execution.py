@@ -44,6 +44,7 @@ from app.agent_base.outcome import RunOutcome
 from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 from app.services.audit_log import record_audit as _record_audit
+from app.services.candidate_artifact import CandidateArtifactError, CandidateArtifactStore
 from app.services.run_state import (
     RunStateError,
     RunStatus,
@@ -93,6 +94,7 @@ class _ExecutionProgressForwarder:
                     title=event.get("title", ""),
                     question=event.get("question", ""),
                     content=event.get("content", ""),
+                    metadata=event.get("metadata", {}) or {},
                 )
             if review_type == "uml_diff":
                 metadata = event.get("metadata", {}) or {}
@@ -626,32 +628,53 @@ def _update_stream_checkpoint(
 
 
 def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -> None:
-    """Write the complete, untruncated stream step to the optional trace sink."""
+    """Write the stream step to the optional trace sink.
+
+    Tool spans are emitted by ``ToolRoundExecutor`` at the actual execution
+    boundary.  They must not be reconstructed here: a blocking tool (for
+    example ``submit_uml_review``) can suspend the loop before this progress
+    snapshot is produced, and reconstructing spans here reverses the real
+    review/tool ordering.
+    """
     if trace_log is None:
         return
     trace_log.agent_step(
         step=step["step"], thought=thought or "",
         actions=step["actions"], is_final=step["is_final"],
     )
-    for detail in step.get("tool_calls_detail", []):
-        tool_span = trace_log.tool_call(
-            step=step["step"], tool_name=detail.get("name", ""),
-            arguments=detail.get("arguments", {}),
-        )
-        trace_log.tool_result(
-            span_id=tool_span,
-            tool_name=detail.get("name", ""),
-            observation=str(detail.get("observation", "")),
-            error=(
-                str(detail.get("error_code", ""))
-                if detail.get("status") not in {"", "success", "completed"}
-                else ""
-            ),
-            fed_truncated=bool(detail.get("fed_truncated", False)),
-            fed_length=int(detail.get("fed_length") or 0),
-            duration_ms=float(detail.get("duration_ms") or 0.0),
-            evidence=detail.get("evidence") if isinstance(detail.get("evidence"), dict) else None,
-        )
+
+
+def _record_contract_check(
+    trace_log: TraceSink | None,
+    *,
+    result: Any = None,
+    allowed: bool,
+    message: str = "",
+    phase: str,
+) -> None:
+    """Persist the authoritative contract decision in the execution trace.
+
+    The contract gate already emits a transport event for the UI.  That event
+    is not automatically persisted by the trace sink, so a trace previously
+    lost the most important decision in the run.  Keep the trace payload
+    structured and include the post-review decision (`allowed`) separately
+    from the harness status.
+    """
+    if trace_log is None:
+        return
+    payload = result.to_dict() if result is not None else {
+        "status": "skipped",
+        "changed_paths": [],
+        "violations": [],
+        "can_commit": bool(allowed),
+        "requires_confirmation": False,
+    }
+    payload.update({
+        "phase": phase,
+        "allowed": bool(allowed),
+        "decision_message": message or "",
+    })
+    trace_log.event("contract_check", **payload)
 
 
 def _stream_progress_event(step: dict, todo_state: dict) -> dict:
@@ -685,6 +708,7 @@ async def handle_agent_execution(
     source_dir: str = "",
     test_dir: str = "",
     design_dir: str = "",
+    workspace_root: str = "",
     progress: ProgressRelay | None = None,
     context: str = "",
     fallback_review_runs: dict[int, str] | None = None,
@@ -740,6 +764,8 @@ async def handle_agent_execution(
         "resume_available": False,
         "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
+        "candidate_artifact": resume_checkpoint.get("candidate_artifact"),
+        "candidate_recovery": bool(resume_checkpoint.get("candidate_artifact")),
         "project_file": project_file,
         "source_dir": source_dir,
         "test_dir": test_dir,
@@ -747,6 +773,15 @@ async def handle_agent_execution(
     }
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
     logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)
+    if review_mgr is not None:
+        # The UML review must happen while the source candidate is still
+        # rolled back.  The chat transport restores the candidate only after
+        # this review is accepted.
+        review_mgr.candidate_recovery = (
+            dict(resume_checkpoint.get("candidate_artifact"))
+            if isinstance(resume_checkpoint.get("candidate_artifact"), dict)
+            else None
+        )
 
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
@@ -880,6 +915,40 @@ async def handle_agent_execution(
         if change_set is not None:
             change_set.project_file = project_file or change_set.project_file
             change_set.begin()
+        if review_mgr is not None:
+            review_mgr.candidate_restore_callback = None
+            candidate_reference = resume_checkpoint.get("candidate_artifact")
+            if change_set is not None and isinstance(candidate_reference, dict):
+                allowed_roots = tuple(
+                    value for value in (workspace_root, source_dir, test_dir, design_dir, project_file)
+                    if value
+                )
+
+                def _restore_candidate_after_design(reference: dict):
+                    if getattr(agent, "candidate_recovery_applied", False):
+                        return agent.last_run_checkpoint.get("candidate_restore", {})
+                    restored = CandidateArtifactStore(get_settings()).restore(
+                        reference,
+                        change_set,
+                        allowed_roots=allowed_roots,
+                        # The accepted design is already in the active ChangeSet;
+                        # restore only source/test candidate files.
+                        exclude_paths=(design_dir, project_file),
+                    )
+                    agent.candidate_recovery_applied = True
+                    agent.last_run_checkpoint["candidate_restore"] = restored
+                    agent.last_run_checkpoint["candidate_recovery_phase"] = "candidate_restored"
+                    if trace_log:
+                        trace_log.event(
+                            "candidate_restore",
+                            phase="after_design_review",
+                            artifact_id=reference.get("artifact_id", ""),
+                            restored_count=restored.get("restored_count", 0),
+                            skipped_count=restored.get("skipped_count", 0),
+                        )
+                    return restored
+
+                review_mgr.candidate_restore_callback = _restore_candidate_after_design
         task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
         agent.tool_registry.set_allowed_tools(None)
         context = "\n\n".join(filter(None, [
@@ -972,14 +1041,54 @@ async def handle_agent_execution(
                 contract_ok = gate_decision.allowed
                 contract_result = gate_decision.result
                 contract_message = gate_decision.message
+                _record_contract_check(
+                    trace_log,
+                    result=contract_result,
+                    allowed=contract_ok,
+                    message=contract_message,
+                    phase="pre_commit",
+                )
                 if contract_result is not None:
                     agent.last_run_checkpoint["contract_check"] = contract_result.to_dict()
                     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 if not contract_ok:
                     rollback_completed = False
+                    candidate_artifact = None
                     if change_set is not None and change_set.has_changes:
+                        try:
+                            candidate_artifact = CandidateArtifactStore(
+                                get_settings()
+                            ).capture(change_set, run_id)
+                        except CandidateArtifactError as exc:
+                            logger.warning(
+                                "[Candidate] Could not persist rejected candidate run=%s: %s",
+                                run_id, exc,
+                            )
+                            agent.last_run_checkpoint["candidate_artifact_error"] = str(exc)
+                        if candidate_artifact:
+                            agent.last_run_checkpoint["candidate_artifact"] = candidate_artifact
+                            agent.last_run_checkpoint["candidate_recovery"] = True
+                            if trace_log:
+                                trace_log.event(
+                                    "candidate_artifact",
+                                    phase="contract_rejected",
+                                    artifact_id=candidate_artifact.get("artifact_id", ""),
+                                    file_count=candidate_artifact.get("file_count", 0),
+                                )
+                            await send({
+                                "event": "contract_recovery_available",
+                                "run_id": run_id,
+                                "action": "修复设计契约并继续",
+                                "file_count": candidate_artifact.get("file_count", 0),
+                            })
                         change_set.rollback()
                         rollback_completed = True
+                        if trace_log:
+                            trace_log.event(
+                                "candidate_rollback",
+                                phase="contract_rejected",
+                                candidate_saved=bool(candidate_artifact),
+                            )
                     if contract_result is not None:
                         failure_analysis = await contract_failure_analyzer.analyze(
                             ContractFailureAnalysisContext(
@@ -1039,6 +1148,17 @@ async def handle_agent_execution(
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                    if trace_log:
+                        trace_log.event(
+                            "changes_committed",
+                            phase="post_contract_check",
+                            file_count=len(manifest),
+                            paths=[
+                                str(item.get("path", ""))
+                                for item in manifest
+                                if isinstance(item, dict) and item.get("path")
+                            ],
+                        )
                     # Persist the accepted candidate facts only after the
                     # contract gate has passed.  The pre-commit check uses a
                     # read-only graph projection to avoid poisoning the
@@ -1063,6 +1183,12 @@ async def handle_agent_execution(
                             "graph_status": post_commit.graph_status if post_commit else "not_requested",
                             "check_id": post_commit.check_id if post_commit else "",
                         }
+                        if trace_log:
+                            trace_log.event(
+                                "contract_graph_sync",
+                                phase="post_commit",
+                                **agent.last_run_checkpoint["contract_graph_sync"],
+                            )
                         _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 else:
                     manifest = []
