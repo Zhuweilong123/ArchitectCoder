@@ -811,9 +811,10 @@ class RunTaskTool(RunProgramTool):
                 )
                 return result
         target = params.get("target")
-        if target:
-            if not isinstance(target, str):
-                return "Error: target must be a string"
+        if target is not None and not isinstance(target, str):
+            return "Error: target must be a string"
+        if isinstance(target, str):
+            target = target.strip() or None
         resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
         if cwd_error:
             return f"Error: {cwd_error}"
@@ -856,7 +857,7 @@ class RunTaskTool(RunProgramTool):
             # ``target=test, cwd=test`` as the intended full-suite command
             # instead of executing pytest against the non-existent test/test.
             raw_cwd = params.get("cwd")
-            if not (
+            if target and not (
                 task == "test"
                 and isinstance(raw_cwd, str)
                 and target.strip().lower() == raw_cwd.strip().lower()

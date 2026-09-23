@@ -327,8 +327,45 @@ class EvidenceLedger:
                 record.facts.append("verified")
 
 
+def is_full_test_suite(tool_name: str, arguments: object) -> bool:
+    """Recognize an unfiltered pytest run, not a focused or selected test."""
+    if not isinstance(arguments, dict):
+        return False
+    if tool_name == "run_task":
+        return (
+            arguments.get("task") == "test"
+            and arguments.get("target") in (None, "", ".")
+        )
+    if tool_name != "run_program":
+        return False
+    program = str(arguments.get("program") or "").replace("\\", "/").rsplit("/", 1)[-1]
+    program = program.lower().removesuffix(".exe")
+    argv = arguments.get("args")
+    if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+        return False
+    if program in {"python", "python3"} and argv[:2] == ["-m", "pytest"]:
+        argv = argv[2:]
+    elif program != "pytest":
+        return False
+    return all(arg in {"-q", "-qq", "--quiet", "-v", "-vv", "--verbose"} for arg in argv)
+
+
+def record_runtime_verification(
+    verifications: dict[tuple[str, str], bool],
+    check: Any,
+    tool_name: str,
+    arguments: object,
+) -> None:
+    """A passing full suite supersedes earlier focused test failures."""
+    if check.kind == "test" and check.passed and is_full_test_suite(tool_name, arguments):
+        for key in tuple(verifications):
+            if key[0] == "test":
+                del verifications[key]
+    verifications[(check.kind, check.scope)] = check.passed
+
+
 def update_checkpoint_evidence(checkpoint: dict, details: list[dict]) -> None:
-    """Accumulate actual effects across steps and resumptions, preserving failed checks."""
+    """Accumulate effects across steps and resumptions, retaining unresolved failures."""
     files = list(checkpoint.get("changed_files") or [])
     mutations = dict(checkpoint.get("mutation_evidence") or {})
     checks = list(checkpoint.get("verification_results") or [])
@@ -340,9 +377,16 @@ def update_checkpoint_evidence(checkpoint: dict, details: list[dict]) -> None:
                     files.append(change["path"])
         verification = detail.get("verification")
         if verification:
-            # A retry replaces only the same check; unrelated failures remain visible.
-            checks = [item for item in checks if (item["kind"], item["scope"]) != (
-                verification["kind"], verification["scope"],
+            full_suite_passed = (
+                verification["kind"] == "test"
+                and verification["passed"]
+                and is_full_test_suite(detail.get("name", ""), detail.get("arguments"))
+            )
+            checks = [item for item in checks if not (
+                (full_suite_passed and item["kind"] == "test")
+                or (item["kind"], item["scope"]) == (
+                    verification["kind"], verification["scope"],
+                )
             )]
             checks.append(dict(verification))
     checkpoint["changed_files"] = files

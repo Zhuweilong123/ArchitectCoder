@@ -18,7 +18,7 @@ from ...core.hooks import (
     get_hooks,
     get_runtime,
 )
-from ...evidence import EvidenceLedger
+from ...evidence import EvidenceLedger, record_runtime_verification
 from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
 from app.trace.tracing import emit_trace
@@ -122,7 +122,9 @@ class ToolRoundExecutor:
 
             if tool_result.verification is not None:
                 check = tool_result.verification
-                self.verifications[(check.kind, check.scope)] = check.passed
+                record_runtime_verification(
+                    self.verifications, check, tool_name, tool_args,
+                )
 
             evidence = self.evidence_ledger.record(
                 call_id=str(tc.get("id") or ""),

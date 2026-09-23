@@ -1,15 +1,23 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.evidence import EvidenceLedger, update_checkpoint_evidence
+from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
+from app.agent_base.evidence import (
+    EvidenceLedger, record_runtime_verification, update_checkpoint_evidence,
+)
 from app.agent_base.outcome import RunOutcome
-from app.agent_base.tools.my_tools.foundation_tools import ApplyChangesTool, RunTaskTool
+from app.agent_base.tools.my_tools.foundation_tools import (
+    ApplyChangesTool, RunProgramTool, RunTaskTool,
+)
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import command_result
-from app.services.agent_execution import _should_archive_task_memory
+from app.services.agent_execution import (
+    _finalize_terminal_checkpoint, _should_archive_task_memory,
+)
 
 
 def test_actual_mutations_drive_evidence_and_memory(tmp_path):
@@ -65,6 +73,120 @@ def test_verification_accumulates_and_retries_replace_only_same_scope():
     update_checkpoint_evidence(checkpoint, [retry.to_dict()])
     assert len(checkpoint["verification_results"]) == 2
     assert all(item["passed"] for item in checkpoint["verification_results"])
+
+
+def test_passing_full_suite_supersedes_prior_test_failures_only():
+    focused = command_result("python -m pytest test/a.py", "test", 1, "failed")
+    lint = command_result("ruff check", "src", 1, "failed")
+    other = command_result("python -m pytest test/b.py", "test", 0, "passed")
+    full = command_result("python -m pytest -q", "test", 0, "all passed")
+    checks = {}
+    checkpoint = {}
+    for tool, args, result in (
+        ("run_program", {"program": "python", "args": ["-m", "pytest", "test/a.py"]}, focused),
+        ("run_program", {"program": "ruff", "args": ["check"]}, lint),
+        ("run_program", {"program": "python", "args": ["-m", "pytest", "test/b.py"]}, other),
+    ):
+        record_runtime_verification(checks, result.verification, tool, args)
+        update_checkpoint_evidence(checkpoint, [{
+            "name": tool, "arguments": args, **result.to_dict(),
+        }])
+    assert checks[("test", focused.verification.scope)] is False
+    assert any(not item["passed"] and item["kind"] == "test"
+               for item in checkpoint["verification_results"])
+
+    args = {"program": "python", "args": ["-m", "pytest", "-q"]}
+    record_runtime_verification(checks, full.verification, "run_program", args)
+    update_checkpoint_evidence(checkpoint, [{
+        "name": "run_program", "arguments": args, **full.to_dict(),
+    }])
+    assert checks == {
+        ("lint", lint.verification.scope): False,
+        ("test", full.verification.scope): True,
+    }
+    assert [(item["kind"], item["passed"])
+            for item in checkpoint["verification_results"]] == [
+        ("lint", False), ("test", True),
+    ]
+
+
+def test_full_suite_success_allows_completed_outcome_after_focused_failure():
+    focused = command_result("python -m pytest test/a.py", "test", 1, "failed")
+    full = command_result("python -m pytest -q", "test", 0, "passed")
+    checks = {}
+    checkpoint = {}
+    for args, result in (
+        ({"program": "python", "args": ["-m", "pytest", "test/a.py"]}, focused),
+        ({"program": "python", "args": ["-m", "pytest", "-q"]}, full),
+    ):
+        record_runtime_verification(checks, result.verification, "run_program", args)
+        update_checkpoint_evidence(checkpoint, [{
+            "name": "run_program", "arguments": args, **result.to_dict(),
+        }])
+    outcome = RunOutcome.from_stop(
+        "model_answer", "done", verification_failed=any(not value for value in checks.values()),
+    )
+    assert outcome.status == "completed"
+    assert all(item["passed"] for item in checkpoint["verification_results"])
+    agent = SimpleNamespace(last_run_checkpoint=checkpoint)
+    runtime_token = set_runtime(AgentRuntime(todos=[]))
+    try:
+        status, _ = _finalize_terminal_checkpoint(
+            agent, outcome=outcome, run_id="run-1", task_id="task-1",
+            request_summary="run tests", fallback_review_requested=False,
+            review_manager=None,
+        )
+    finally:
+        reset_runtime(runtime_token)
+    assert status == "completed"
+    assert agent.last_run_checkpoint["status"] == "completed"
+
+
+def test_selected_test_run_does_not_hide_another_failure():
+    failed = command_result("python -m pytest test/a.py", "test", 1, "failed")
+    selected = command_result("python -m pytest -k other", "test", 0, "passed")
+    checks = {}
+    record_runtime_verification(
+        checks, failed.verification, "run_program",
+        {"program": "python", "args": ["-m", "pytest", "test/a.py"]},
+    )
+    record_runtime_verification(
+        checks, selected.verification, "run_program",
+        {"program": "python", "args": ["-m", "pytest", "-k", "other"]},
+    )
+    assert checks[("test", failed.verification.scope)] is False
+
+
+def test_run_task_full_suite_replaces_focused_failure():
+    failed = command_result("python -m pytest test/a.py", "test", 1, "failed")
+    passed = command_result("python -m pytest", "test", 0, "passed")
+    checks = {}
+    record_runtime_verification(
+        checks, failed.verification, "run_task",
+        {"task": "test", "target": "test/a.py"},
+    )
+    record_runtime_verification(
+        checks, passed.verification, "run_task", {"task": "test", "cwd": "test"},
+    )
+    assert checks == {("test", passed.verification.scope): True}
+
+
+def test_run_task_without_target_runs_full_suite(tmp_path, monkeypatch):
+    seen = {}
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+
+    async def fake_execute(self, params):
+        seen.update(params)
+        return command_result("python -m pytest", str(test_dir), 0, "1 passed")
+
+    monkeypatch.setattr(RunProgramTool, "_execute_result", fake_execute)
+    tool = RunTaskTool(str(tmp_path), test_dir=str(test_dir), workspace_root=str(tmp_path))
+    result = asyncio.run(tool.run_result({"task": "test", "cwd": "test"}))
+    assert result.status == "success"
+    assert seen["args"] == ["-m", "pytest"]
+    assert seen["cwd"] == str(test_dir)
+    assert result.verification.passed
 
 
 def test_validate_tool_returns_structured_verdict(tmp_path):
