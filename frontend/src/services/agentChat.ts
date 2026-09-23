@@ -104,6 +104,8 @@ export interface AgentDoneEvent {
   history?: string[];
   checkpoint?: {
     status?: string;
+    stop_reason?: string;
+    candidate_artifact?: { artifact_id?: string; file_count?: number };
     completed_items?: string[];
     pending_items?: string[];
   };

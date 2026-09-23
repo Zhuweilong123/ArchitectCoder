@@ -1229,9 +1229,9 @@ async def handle_agent_execution(
             "status": "paused" if is_paused else "stopped",
             "resume_available": is_paused,
             "stop_reason": (
-                "websocket disconnected; send continue to resume"
+                "websocket disconnected; next message can resume"
                 if disconnected else (
-                    "user requested stop; send continue to resume"
+                    "user requested stop; next message can resume"
                     if user_stopped else "agent task was canceled"
                 )
             ),

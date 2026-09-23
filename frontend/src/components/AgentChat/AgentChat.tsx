@@ -740,7 +740,7 @@ const AgentChat: React.FC = () => {
               </div>
             )}
 
-            {messages.map((msg) => (
+            {messages.map((msg, index) => (
               <div key={msg.id} className={`agent-message agent-message-${msg.role}${msg.id.startsWith('stream_') ? ' agent-message-streaming' : ''}`}>
                 <div className="agent-message-avatar-wrap">
                   <div className="agent-message-avatar">
@@ -753,7 +753,7 @@ const AgentChat: React.FC = () => {
                       <span key={i}>{line}<br /></span>
                     ))}
                   </div>
-                  {msg.action && (
+                  {msg.action && !messages.slice(index + 1).some((later) => later.role === 'user') && (
                     <Button
                       type="primary"
                       size="small"

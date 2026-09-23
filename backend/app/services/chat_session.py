@@ -198,41 +198,8 @@ def _latest_persisted_checkpoint(session_id: str, *, store_factory=None) -> dict
     return {}
 
 
-_RESUME_REQUESTS = frozenset({
-    "\u7ee7\u7eed", "\u7ee7\u7eed\u6267\u884c", "\u6062\u590d", "\u6062\u590d\u4efb\u52a1",
-    "\u4fee\u590d\u8bbe\u8ba1\u5951\u7ea6\u5e76\u7ee7\u7eed", "\u4fee\u590d\u8bbe\u8ba1\u5951\u7ea6",
-    "continue", "resume", "repair design contract and continue", "repair design contract",
-})
-
-
-def _is_resume_request(message: str) -> bool:
-    """Recognize an explicit reconnect/resume command."""
-    return _resume_supplement(message) is not None
-
-
-def _resume_supplement(message: str) -> str | None:
-    """Return optional guidance attached to an explicit resume command.
-
-    A delimiter is required for the extended form so ordinary messages such
-    as ``继续一下`` are not accidentally treated as recovery requests.
-    """
-    text = (message or "").strip()
-    normalized = text.lower()
-    if normalized in _RESUME_REQUESTS:
-        return ""
-    for command in sorted(_RESUME_REQUESTS, key=len, reverse=True):
-        if not normalized.startswith(command):
-            continue
-        suffix = text[len(command):]
-        if suffix and suffix[0] in " \u3000:,\uff0c\uff1a":
-            supplement = suffix[1:].strip()
-            if supplement:
-                return supplement
-    return None
-
-
 def _latest_resumable_run(session_id: str, *, store_factory=None):
-    """Return the newest non-terminal run that has a resumable checkpoint."""
+    """Resume only the latest unconsumed run, never an older abandoned task."""
     store_factory = store_factory or get_run_store
     if not session_id:
         return None
@@ -244,25 +211,29 @@ def _latest_resumable_run(session_id: str, *, store_factory=None):
     try:
         for record in store_factory().list(limit=50, session_id=session_id):
             checkpoint = record.metadata.get("checkpoint")
-            if not isinstance(checkpoint, dict) or not checkpoint:
+            if isinstance(checkpoint, dict) and checkpoint.get("resume_consumed"):
+                # A resumed parent can be newer by updated_at than its child.
                 continue
-            contract_recovery = bool(checkpoint.get("candidate_artifact"))
+            if not isinstance(checkpoint, dict) or not checkpoint:
+                return None
+            contract_recovery = (
+                bool(checkpoint.get("candidate_artifact"))
+                and checkpoint.get("stop_reason") == "contract_check_failed"
+            )
             if record.status not in resumable_statuses and not (
                 record.status == RunStatus.PARTIAL.value and contract_recovery
             ):
-                continue
+                return None
             if record.status == RunStatus.RUNNING.value and not checkpoint.get("resume_available"):
-                continue
-            if checkpoint.get("resume_consumed"):
-                continue
+                return None
             return record, checkpoint
     except Exception:
         logger.warning("[RunState] Could not find resumable run for %s", session_id, exc_info=True)
     return None
 
 
-def _resume_prompt(checkpoint: dict, supplement: str = "") -> str:
-    """Turn a persisted checkpoint into an explicit continuation request."""
+def _resume_prompt(checkpoint: dict, user_message: str) -> str:
+    """Give the agent the checkpoint and the complete latest user instruction."""
     original = str(checkpoint.get("request_summary") or checkpoint.get("message") or "")[:500]
     completed = checkpoint.get("completed_items") or []
     pending = checkpoint.get("pending_items") or []
@@ -270,30 +241,27 @@ def _resume_prompt(checkpoint: dict, supplement: str = "") -> str:
     last_step = checkpoint.get("last_step") or ""
     if checkpoint.get("candidate_artifact"):
         prompt = (
-            "continue the previous design-contract recovery. Original request: " + original
-            + ". The previous source candidate was saved and rolled back. Do not modify or "
-            + "restore source files before the design is reviewed and accepted. First inspect "
-            + "the contract violations and update only the design, then call submit_uml_review. "
-            + "If the user rejects the design, revise the design and submit it again. After the "
-            + "design is accepted, the framework restores the previous source/test candidate. "
-            + "Then evaluate that candidate against the accepted design, rewrite only what is "
-            + "needed, run tests, and let the authoritative contract gate decide."
+            "A previous task was interrupted by a design-contract gate. Original request: " + original
+            + ". The previous source candidate was saved and rolled back. Do not restore "
+            + "that candidate before a design review is accepted. Follow the latest "
+            + "user instruction below: if design needs revision, submit_uml_review and wait "
+            + "for acceptance before the framework restores the source/test candidate. If the "
+            + "user wants to keep the current design, do not restore the old candidate; "
+            + "implement code conforming to the existing design. After an accepted review, "
+            + "evaluate the restored candidate against the accepted design and rewrite it if "
+            + "needed. Run tests and let the contract gate decide."
         )
-        if supplement:
-            prompt += " User supplement for this continuation: " + str(supplement)[:500] + "."
-        return prompt[:1800]
+        return prompt + "\n\nLatest user message (complete; follow this instruction):\n" + user_message
     prompt = (
-        "continue the previous unfinished task. Original request: " + original
+        "A previous task was interrupted. Original request: " + original
         + ". Read the current files and existing changes first, skip completed steps, "
-        "and continue from the pending step; do not treat this as a new task."
+        "and use the latest user instruction to decide how to proceed."
         + (" Completed: " + "; ".join(map(str, completed[-16:])) + "." if completed else "")
         + (" Pending: " + "; ".join(map(str, pending[-16:])) + "." if pending else "")
         + (" Last step: " + str(last_step) + "." if last_step else "")
         + (" Verification: " + "; ".join(map(str, verification[-16:])) + "." if verification else "")
     )
-    if supplement:
-        prompt += " User supplement for this continuation: " + str(supplement)[:500] + "."
-    return prompt[:1800]
+    return prompt + "\n\nLatest user message (complete; follow this instruction):\n" + user_message
 
 
 def _resolve_workspace_paths(
@@ -406,6 +374,7 @@ async def _start_agent_chat_run(
     prompt_builder: Any,
     progress: ProgressRelay | None,
     message: str,
+    raw_user_message: str | None = None,
     websocket: WebSocket,
     trace_log: TraceSink,
     session_id: str,
@@ -436,7 +405,7 @@ async def _start_agent_chat_run(
             session_id=session_id,
             owner=connection_owner,
             metadata={
-                "message": message[:500],
+                "message": (raw_user_message if raw_user_message is not None else message)[:500],
                 "parent_run_id": parent_run_id,
                 "resume_of": resume_record.run_id if resume_record else "",
                 "source_dir": source_dir,
@@ -471,7 +440,7 @@ async def _start_agent_chat_run(
             )
         trace_log.set_run_id(run.run_id)
         trace_log.user_message(
-            message,
+            raw_user_message if raw_user_message is not None else message,
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
@@ -629,6 +598,7 @@ class ChatSessionCoordinator:
         async def _start_run(
             message: str,
             *,
+            raw_user_message: str | None = None,
             parent_run_id: str = "",
             resume_record=None,
             resume_checkpoint=None,
@@ -642,6 +612,7 @@ class ChatSessionCoordinator:
                 prompt_builder=prompt_builder,
                 progress=progress,
                 message=message,
+                raw_user_message=raw_user_message,
                 websocket=websocket,
                 trace_log=trace_log,
                 session_id=session_id,
@@ -702,21 +673,12 @@ class ChatSessionCoordinator:
                     user_message = msg.get("message", "")
                     resume_record = None
                     resume_checkpoint = {}
-                    resume_supplement = ""
-                    if _is_resume_request(user_message):
-                        resume_supplement = _resume_supplement(user_message) or ""
-                        resumable = _latest_resumable_run(session_id)
-                        if resumable is not None:
-                            resume_record, resume_checkpoint = resumable
-                        else:
-                            await _ws_send(websocket, {
-                                "event": "done",
-                                "result": "当前会话没有可恢复的未完成任务。",
-                            })
-                            continue
                     if not user_message:
                         await websocket.send_json({"event": "error", "message": "Empty message"})
                         continue
+                    resumable = _latest_resumable_run(session_id)
+                    if resumable is not None:
+                        resume_record, resume_checkpoint = resumable
 
                     workspace_paths, workspace_error = _resolve_workspace_paths(
                         msg,
@@ -734,7 +696,7 @@ class ChatSessionCoordinator:
                         continue
                     source_dir, test_dir, project_file, workspace_root, design_dir = workspace_paths
                     effective_user_message = (
-                        _resume_prompt(resume_checkpoint, resume_supplement)
+                        _resume_prompt(resume_checkpoint, user_message)
                         if resume_checkpoint else user_message
                     )
                     requested_contract_enabled = msg.get("design_contract_enabled")
@@ -794,7 +756,8 @@ class ChatSessionCoordinator:
                         )
 
                     await _start_run(
-                        effective_user_message, resume_record=resume_record,
+                        effective_user_message, raw_user_message=user_message,
+                        resume_record=resume_record,
                         resume_checkpoint=resume_checkpoint, request_id=msg.get("request_id", ""),
                         design_contract_enabled=requested_contract_enabled,
                     )
