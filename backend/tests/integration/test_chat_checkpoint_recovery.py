@@ -1,7 +1,7 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
 from fastapi import WebSocketDisconnect
 
 from app.agent_base.tools.review import ReviewManager
@@ -35,8 +35,7 @@ class _WebSocket:
         self.sent.append(payload)
 
 
-@pytest.mark.asyncio
-async def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_design_accept(
+def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_design_accept(
     tmp_path, monkeypatch,
 ):
     source = tmp_path / "echo.py"
@@ -117,7 +116,7 @@ async def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_afte
         json.dumps({"type": "chat", "message": "先评估旧候选是否符合新设计，不符合就重写"}, ensure_ascii=False),
         json.dumps({"type": "review_response", "review_id": review.id, "decision": "accept"}),
     ])
-    await chat_session.ChatSessionCoordinator(websocket).run()
+    asyncio.run(chat_session.ChatSessionCoordinator(websocket).run())
 
     assert start_args["resume_record"] is record
     assert start_args["resume_checkpoint"] is checkpoint
