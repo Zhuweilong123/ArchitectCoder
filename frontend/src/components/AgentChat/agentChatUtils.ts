@@ -9,6 +9,7 @@ export interface ChatMessage {
   review?: AgentReviewEvent;
   // 消息类别标记：'disconnect' 用于断线提示去重（连续断线只保留一条）
   kind?: string;
+  action?: { label: string; message: string };
 }
 
 // 持久化时裁剪 tool observation，避免撑爆 localStorage（5MB）

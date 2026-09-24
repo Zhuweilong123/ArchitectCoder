@@ -180,6 +180,7 @@ const EvaluationCenter: React.FC = () => {
     .map((item) => item.id), [cases, selectedSuites]);
   const baselineCases = useMemo(() => cases.filter((item) => (
     (item.metadata?.suite ? String(item.metadata.suite) : UNCLASSIFIED_SUITE) !== TRACE_SUITE
+    && item.metadata?.baseline_comparable !== false
   )), [cases]);
   const baselineCaseIds = useMemo(() => baselineCases.map((item) => item.id), [baselineCases]);
   const baselineSnapshotMatchesCatalog = !!baseline

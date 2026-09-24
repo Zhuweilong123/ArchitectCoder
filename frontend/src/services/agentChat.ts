@@ -68,6 +68,13 @@ export interface AgentContractCheckEvent {
   contract_enabled?: boolean;
 }
 
+export interface AgentContractRecoveryEvent {
+  event: 'contract_recovery_available';
+  run_id?: string;
+  action: string;
+  file_count?: number;
+}
+
 export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
@@ -97,6 +104,8 @@ export interface AgentDoneEvent {
   history?: string[];
   checkpoint?: {
     status?: string;
+    stop_reason?: string;
+    candidate_artifact?: { artifact_id?: string; file_count?: number };
     completed_items?: string[];
     pending_items?: string[];
   };
@@ -123,6 +132,7 @@ export type AgentEvent =
   | AgentChatChunkEvent
   | AgentReviewEvent
   | AgentContractCheckEvent
+  | AgentContractRecoveryEvent
   | AgentUmlReviewEvent
   | AgentReviewTimeoutEvent
   | AgentReviewExpiredEvent

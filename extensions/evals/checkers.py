@@ -230,12 +230,16 @@ class TracePolicyChecker(Checker):
 
     def __init__(self, trace_path: str = "", runtime: dict[str, Any] | None = None,
                  max_tool_calls: int | None = None, required_tools: list[str] | None = None,
-                 forbidden_tools: list[str] | None = None):
+                 forbidden_tools: list[str] | None = None,
+                 required_event_types: list[str] | None = None,
+                 required_contract_statuses: list[str] | None = None):
         self.trace_path = trace_path
         self.runtime = runtime or {}
         self.max_tool_calls = max_tool_calls
         self.required_tools = [str(item) for item in (required_tools or [])]
         self.forbidden_tools = [str(item) for item in (forbidden_tools or [])]
+        self.required_event_types = [str(item) for item in (required_event_types or [])]
+        self.required_contract_statuses = [str(item) for item in (required_contract_statuses or [])]
 
     @staticmethod
     def _has_successful_test_verification(events: list[dict[str, Any]]) -> bool:
@@ -291,6 +295,18 @@ class TracePolicyChecker(Checker):
             canonical_forbidden = list(self.forbidden_tools)
             missing = [tool for tool in canonical_required if tool not in canonical_tools]
             forbidden = [tool for tool in canonical_forbidden if tool in canonical_tools]
+            observed_event_types = {str(event.get("event_type") or "") for event in events}
+            observed_contract_statuses = {
+                str(event.get("status") or "") for event in events
+                if event.get("event_type") == "contract_check"
+            }
+            missing_event_types = [
+                item for item in self.required_event_types if item not in observed_event_types
+            ]
+            missing_contract_statuses = [
+                item for item in self.required_contract_statuses
+                if item not in observed_contract_statuses
+            ]
             verification_equivalent = False
             if (
                 "run_task" in canonical_required
@@ -304,14 +320,18 @@ class TracePolicyChecker(Checker):
                 # from satisfying a project-test requirement.
                 missing.remove("run_task")
                 verification_equivalent = True
-            passed = not missing and not forbidden
+            passed = not missing and not forbidden and not missing_event_types and not missing_contract_statuses
             return CheckerResult(
                 checker=self.name, passed=passed, score=1.0 if passed else 0.0,
                 message=(
                     "trace policy satisfied"
                     + (" (successful test verification equivalent to run_task)" if verification_equivalent else "")
                     if passed
-                    else f"missing={missing}, forbidden={forbidden}"
+                    else (
+                        f"missing_tools={missing}, forbidden_tools={forbidden}, "
+                        f"missing_event_types={missing_event_types}, "
+                        f"missing_contract_statuses={missing_contract_statuses}"
+                    )
                 ),
                 details={
                     "tool_calls": observed_calls,
@@ -321,6 +341,12 @@ class TracePolicyChecker(Checker):
                     "forbidden_tools": canonical_forbidden,
                     "missing": missing,
                     "forbidden": forbidden,
+                    "required_event_types": self.required_event_types,
+                    "observed_event_types": sorted(observed_event_types),
+                    "missing_event_types": missing_event_types,
+                    "required_contract_statuses": self.required_contract_statuses,
+                    "observed_contract_statuses": sorted(observed_contract_statuses),
+                    "missing_contract_statuses": missing_contract_statuses,
                     "verification_equivalent": verification_equivalent,
                 },
             )
@@ -710,6 +736,8 @@ def build_checkers(
                 max_tool_calls=config.get("max_tool_calls"),
                 required_tools=config.get("required_tools"),
                 forbidden_tools=config.get("forbidden_tools"),
+                required_event_types=config.get("required_event_types"),
+                required_contract_statuses=config.get("required_contract_statuses"),
             ))
         elif kind == "uml_valid":
             result.append(UMLValidChecker(config["path"]))

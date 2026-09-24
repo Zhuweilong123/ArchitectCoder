@@ -1,8 +1,11 @@
 """Tests for the provider-neutral tool execution boundary."""
 
 import asyncio
+from types import SimpleNamespace
 
 from app.agent_base.execution import ToolExecutor
+from app.agent_base.agents.react_runtime import tool_round_executor
+from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import ToolResult
@@ -64,3 +67,38 @@ def test_executor_applies_capability_policy_before_lookup():
 
     assert result.status == "blocked"
     assert result.error_code == "POLICY_BLOCKED"
+
+
+def test_react_tool_trace_spans_are_emitted_at_execution_boundary(monkeypatch):
+    registry = ToolRegistry()
+    registry.register_tool(_EchoTool())
+    runtime = SimpleNamespace(
+        requires_todo_plan=False,
+        todos=[],
+        execution_budget=None,
+        run_id="run-trace",
+        control_decision=None,
+    )
+    events = []
+
+    def record(kind, **payload):
+        events.append((kind, payload))
+        return "span-1" if kind == "tool_call" else None
+
+    monkeypatch.setattr(tool_round_executor, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(tool_round_executor, "emit_trace", record)
+
+    result = asyncio.run(ToolRoundExecutor(
+        registry,
+        agent_name="test",
+    ).execute([
+        {
+            "id": "call-1",
+            "function": {"name": "echo", "arguments": '{"value":"ok"}'},
+        },
+    ], step=1))
+
+    assert result.details[0]["status"] == "success"
+    assert [kind for kind, _ in events] == ["tool_call", "tool_result"]
+    assert events[0][1]["tool_name"] == "echo"
+    assert events[1][1]["span_id"] == "span-1"

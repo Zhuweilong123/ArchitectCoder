@@ -37,12 +37,13 @@ interface DoneItem { kind: 'done'; event: TraceEvent; }
 interface ErrorItem { kind: 'error'; event: TraceEvent; }
 interface SummaryItem { kind: 'summary'; event: TraceEvent; }
 interface ReviewItem { kind: 'review'; event: TraceEvent; }
+interface LifecycleItem { kind: 'lifecycle'; event: TraceEvent; }
 interface SubagentItem {
   kind: 'subagent';
   spanPath: string;
   items: Item[];
 }
-type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | SubagentItem;
+type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | LifecycleItem | SubagentItem;
 
 interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
 type TraceScope = 'chat' | 'evaluation';
@@ -189,6 +190,14 @@ function buildTurns(events: TraceEvent[]): Turn[] {
       case 'review_request':
       case 'review_response':
         cur.items.push({ kind: 'review', event: ev });
+        break;
+      case 'contract_check':
+      case 'candidate_artifact':
+      case 'candidate_rollback':
+      case 'candidate_restore':
+      case 'changes_committed':
+      case 'contract_graph_sync':
+        cur.items.push({ kind: 'lifecycle', event: ev });
         break;
       default:
         // session_start / session_end / review_* / kg_inject：暂不在时间轴单独渲染
@@ -503,9 +512,9 @@ function renderDone(ev: TraceEvent, language: TraceLanguage = 'zh'): React.React
 }
 
 function statusColor(status: string): string {
-  if (['completed', 'success', 'accepted'].includes(status)) return 'green';
-  if (['partial', 'waiting_approval', 'pending'].includes(status)) return 'orange';
-  if (['failed', 'timed_out', 'budget_exceeded', 'stopped'].includes(status)) return 'red';
+  if (['completed', 'success', 'accepted', 'pass', 'not_applicable'].includes(status)) return 'green';
+  if (['partial', 'waiting_approval', 'pending', 'warn'].includes(status)) return 'orange';
+  if (['failed', 'timed_out', 'budget_exceeded', 'stopped', 'block', 'inconclusive'].includes(status)) return 'red';
   return 'blue';
 }
 
@@ -576,6 +585,44 @@ function renderError(ev: TraceEvent, language: TraceLanguage = 'zh'): React.Reac
   );
 }
 
+function renderLifecycle(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
+  const labels: Record<string, [string, string]> = {
+    contract_check: ['设计契约校验', 'Design contract check'],
+    candidate_artifact: ['候选变更已保存', 'Candidate change saved'],
+    candidate_rollback: ['候选变更已回滚', 'Candidate change rolled back'],
+    candidate_restore: ['候选变更已恢复', 'Candidate change restored'],
+    changes_committed: ['变更已提交', 'Changes committed'],
+    contract_graph_sync: ['契约图同步', 'Contract graph sync'],
+  };
+  const [zh, en] = labels[String(ev.event_type)] || [String(ev.event_type), String(ev.event_type)];
+  const status = String(ev.status || (ev.allowed === true ? 'pass' : ev.allowed === false ? 'block' : 'info'));
+  const paths = Array.isArray(ev.changed_paths) ? ev.changed_paths : (Array.isArray(ev.paths) ? ev.paths : []);
+  const violations = Array.isArray(ev.violations) ? ev.violations : [];
+  return (
+    <div className="trace-card trace-summary">
+      <div className="trace-card-head">
+        {ev.allowed === false || status === 'block'
+          ? <WarningOutlined className="trace-icon err" />
+          : <SyncOutlined className="trace-icon" />}
+        <span className="trace-title">{tx(language, zh, en)}</span>
+        <Tag color={statusColor(status)}>{status}</Tag>
+        {ev.phase ? <Tag>{String(ev.phase)}</Tag> : null}
+        {ev.file_count != null ? <Tag>{String(ev.file_count)} files</Tag> : null}
+      </div>
+      {ev.message || ev.decision_message ? (
+        <div className="trace-thought">{String(ev.message || ev.decision_message)}</div>
+      ) : null}
+      {paths.length > 0 || violations.length > 0 ? (
+        <Collapse ghost items={[{
+          key: 'lifecycle-details',
+          label: tx(language, '详细结果', 'Details'),
+          children: <pre className="trace-pre">{pretty({ paths, violations })}</pre>,
+        }]} />
+      ) : null}
+    </div>
+  );
+}
+
 function renderItem(item: Item, language: TraceLanguage = 'zh'): React.ReactNode {
   switch (item.kind) {
     case 'llm': return renderLlm(item, language);
@@ -585,6 +632,7 @@ function renderItem(item: Item, language: TraceLanguage = 'zh'): React.ReactNode
     case 'error': return renderError(item.event, language);
     case 'summary': return renderTaskSummary(item.event, language);
     case 'review': return renderReview(item.event, language);
+    case 'lifecycle': return renderLifecycle(item.event, language);
     case 'subagent': return renderSubagent(item, language);
   }
 }

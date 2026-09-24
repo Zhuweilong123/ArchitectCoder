@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
+  "id": "radar-source-only-contract-intercept-001",
+  "name": "源码单改触发设计契约拦截并回滚",
+  "prompt": "将源码中的类名 EchoSimulator 修改为 EchoSimulatorClass，只修改源码。",
+  "project_id": "project_radar_v1",
+  "hard_checkers": [
+    {
+      "type": "paths_unchanged",
+      "paths": [
+        "design/radar_design_0730.umlproj",
+        "src/main.py",
+        "src/radar_sim/echo.py",
+        "test/test_echo.py",
+        "test/test_design_source_consistency.py"
+      ]
+    },
+    {
+      "type": "trace_policy",
+      "required_tools": ["apply_changes"],
+      "required_event_types": ["candidate_artifact", "candidate_rollback"],
+      "required_contract_statuses": ["block"]
+    }
+  ],
+  "max_seconds": 180,
+  "max_tool_calls": 40,
+  "max_total_tokens": 60000,
+  "metadata": {
+    "suite": "trace-regression",
+    "capability": "contract_intercept_candidate_rollback",
+    "operation": "source_only_rename",
+    "baseline_comparable": false,
+    "release_gate": false
+  }
+}

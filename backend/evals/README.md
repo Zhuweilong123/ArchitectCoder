@@ -20,8 +20,8 @@ normal writable temporary workspace before an evaluation starts.
 
 ## Radar case catalog
 
-The active catalog contains 16 newly rebuilt cases plus the two retained
-`trace_3_1` cases:
+The active catalog contains 16 newly rebuilt performance-baseline cases, two
+retained `trace_3_1` cases, and targeted diagnostic regressions:
 
 - 4 project-understanding cases: component/source/test inventory, UML diagram
   inventory, API contract lookup, and sequence-flow tracing.
@@ -31,9 +31,10 @@ The active catalog contains 16 newly rebuilt cases plus the two retained
 - 4 multi-turn cases: greeting without tools followed by component lookup,
   sequence verification, a source-to-UML creation task, and a changed seed
   requirement.
-- The performance baseline catalog contains only the 16 rebuilt cases; the two
-  retained `trace_3_1` cases remain available for regression history but are
-  excluded from baseline scoring and baseline archives.
+- The performance baseline catalog contains only the 16 rebuilt cases. The
+  retained `trace_3_1` cases and any case marked
+  `metadata.baseline_comparable: false` remain available for regression
+  testing but are excluded from baseline scoring and archives.
 
 Mutation cases use hidden regression tests plus visible project tests. Read-only
 cases protect every project file with `paths_unchanged`; cross-artifact cases

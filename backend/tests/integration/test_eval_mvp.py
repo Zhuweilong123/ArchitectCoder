@@ -33,7 +33,9 @@ from extensions.evals.runner import (
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
-from extensions.evals.batches import EvalBatch, EvalBatchManager, summarize, write_performance_result
+from extensions.evals.batches import (
+    EvalBatch, EvalBatchManager, _baseline_case_ids, summarize, write_performance_result,
+)
 from extensions.evals.full_api import BASELINE_PATH, get_baseline, get_repository
 
 
@@ -296,7 +298,9 @@ async def _run_checkers(workspace, configs):
 def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
-    assert len(cases) == 18
+    assert len(cases) == 19
+    assert len(_baseline_case_ids()) == 16
+    assert "radar-source-only-contract-intercept-001" not in _baseline_case_ids()
     assert all(case.schema_version == EVAL_CASE_SCHEMA_VERSION for case in cases.values())
     assert all(
         case.tool_protocol_version == EVAL_TOOL_PROTOCOL_VERSION
@@ -705,6 +709,29 @@ def test_trace_policy_does_not_accept_arbitrary_program_for_run_task(tmp_path):
     assert result.details["missing"] == ["run_task"]
 
 
+def test_trace_policy_checks_contract_rollback_evidence(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        "\n".join(json.dumps(event) for event in [
+            {"event_type": "tool_call", "tool_name": "apply_changes"},
+            {"event_type": "candidate_artifact"},
+            {"event_type": "contract_check", "status": "block"},
+            {"event_type": "candidate_rollback"},
+        ]),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(TracePolicyChecker(
+        trace_path=str(trace_path),
+        runtime={"turn_tool_calls": 1, "turn_tool_names": ["apply_changes"]},
+        required_tools=["apply_changes"],
+        required_event_types=["candidate_artifact", "candidate_rollback"],
+        required_contract_statuses=["block"],
+    ).check(tmp_path))
+
+    assert result.passed is True
+
+
 def test_eval_catalog_fails_closed_for_invalid_case(tmp_path, monkeypatch):
     (tmp_path / "valid.json").write_text(
         json.dumps({"id": "valid", "prompt": "ok"}), encoding="utf-8"
@@ -922,6 +949,7 @@ def test_eval_batch_merge_extracts_baseline_from_mixed_batch(tmp_path, monkeypat
         lambda: {
             "baseline-case": SimpleNamespace(metadata={}),
             "trace-case": SimpleNamespace(metadata={"suite": "trace-3.1"}),
+            "diagnostic-case": SimpleNamespace(metadata={"baseline_comparable": False}),
         },
     )
     baseline_result = EvalResult(
@@ -936,14 +964,18 @@ def test_eval_batch_merge_extracts_baseline_from_mixed_batch(tmp_path, monkeypat
         "case_id": "trace-case",
         "trace_id": "trace-case",
     })
+    diagnostic_result = baseline_result.model_copy(update={
+        "case_id": "diagnostic-case",
+        "trace_id": "diagnostic-case",
+    })
     batch = EvalBatch(
         batch_id="batch-mixed",
         version="dev-test",
-        case_ids=["baseline-case", "trace-case"],
+        case_ids=["baseline-case", "trace-case", "diagnostic-case"],
         status="completed",
         started_at="2026-09-08T00:00:00+00:00",
         finished_at="2026-09-08T00:01:00+00:00",
-        results=[baseline_result, trace_result],
+        results=[baseline_result, trace_result, diagnostic_result],
     )
     manager = EvalBatchManager()
     manager._batches[batch.batch_id] = batch

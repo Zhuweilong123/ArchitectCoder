@@ -30,6 +30,25 @@ def test_submit_uml_review_accept():
     assert "accept" in result
 
 
+def test_submit_uml_review_restores_candidate_after_acceptance():
+    mgr = ReviewManager()
+    restored = []
+    mgr.candidate_recovery = {"artifact_id": "run-1"}
+    mgr.candidate_restore_callback = lambda reference: restored.append(reference)
+    tool = SubmitUmlReviewTool(manager=mgr, timeout=5)
+
+    async def _scenario():
+        return await _run_with_resolve(
+            mgr, tool,
+            {"diagrams_json": json.dumps([{"name": "A"}])},
+            json.dumps({"decision": "accept", "feedback": ""}),
+        )
+
+    result = asyncio.run(_scenario())
+    assert "accept" in result
+    assert restored == [{"artifact_id": "run-1"}]
+
+
 def test_submit_uml_review_reject_with_feedback():
     mgr = ReviewManager()
     tool = SubmitUmlReviewTool(manager=mgr, timeout=5)

@@ -214,6 +214,10 @@ export function createAgentChatEventHandler({
             ? { ...step, todos: finalTodos }
             : step
         ));
+        const recoveryAction = event.checkpoint?.stop_reason === 'contract_check_failed'
+          && event.checkpoint.candidate_artifact
+          ? { label: '修复设计契约并继续', message: '修复设计契约并继续' }
+          : undefined;
         setMessages((prev) => {
           const hasStream = prev.some((message) => message.id.startsWith('stream_'));
           if (hasStream) {
@@ -223,6 +227,7 @@ export function createAgentChatEventHandler({
                     ...message,
                     id: message.id.replace('stream_', 'agent_'),
                     content: event.result || message.content,
+                    action: recoveryAction,
                     steps: finalSteps.length ? finalSteps : undefined,
                   }
                 : message,
@@ -234,6 +239,7 @@ export function createAgentChatEventHandler({
               id: `agent_${Date.now()}`,
               role: 'agent' as const,
               content: event.result || '(空回复)',
+              action: recoveryAction,
               timestamp: Date.now(),
               steps: finalSteps.length ? finalSteps : undefined,
             },

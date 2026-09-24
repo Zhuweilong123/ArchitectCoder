@@ -430,13 +430,25 @@ class ChatTraceLogger:
         })
 
     def review_request(self, *, review_id: int, review_type: str,
-                       title: str, question: str, content: str = "") -> None:
+                       title: str, question: str, content: str = "",
+                       metadata: dict | None = None) -> None:
         self.event(EVT_REVIEW_REQUEST, review_id=review_id,
                    review_type=review_type, title=title,
-                   question=question, content=content)
+                   question=question, content=content,
+                   metadata=metadata or {})
 
-    def review_response(self, *, review_id: int, response: str) -> None:
-        self.event(EVT_REVIEW_RESPONSE, review_id=review_id, response=response)
+    def review_response(self, *, review_id: int, response: str,
+                        review_type: str = "", decision: str = "",
+                        feedback: str = "", candidate_recovery: bool = False) -> None:
+        self.event(
+            EVT_REVIEW_RESPONSE,
+            review_id=review_id,
+            review_type=review_type,
+            response=response,
+            decision=decision,
+            feedback=feedback,
+            candidate_recovery=bool(candidate_recovery),
+        )
 
     def done(self, *, answer: str, runtime: dict | None = None) -> None:
         self.event(EVT_DONE, answer=answer, runtime=runtime or {})
