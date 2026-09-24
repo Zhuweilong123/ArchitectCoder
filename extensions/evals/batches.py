@@ -47,7 +47,10 @@ def _baseline_case_ids() -> set[str]:
 
     return {
         case_id for case_id, case in load_cases().items()
-        if str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
+        if (
+            str(getattr(case, "metadata", {}).get("suite") or "") != "trace-3.1"
+            and getattr(case, "metadata", {}).get("baseline_comparable") is not False
+        )
     }
 
 
