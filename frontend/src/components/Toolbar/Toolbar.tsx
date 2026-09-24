@@ -22,14 +22,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
 import { createDefaultDiagram, type UmlDiagram } from '../../types/uml';
 import {
-  saveDiagram, openDiagram, listDiagrams,
+  saveDiagram, openDiagram, openProject, saveProject, listDiagrams,
   listProjects,
   exportMarkdown,
   browseDirectory, type BrowseResult,
 } from '../../services/api';
-import {
-  openToolbarDiagram, openToolbarProject, saveToolbarProject,
-} from '../../services/toolbarProjectApi';
 import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportCanvasGraphSvg, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
@@ -242,7 +239,7 @@ const Toolbar: React.FC = () => {
         const targetPath = currentWorkspacePath
           ? `${normalizePath(currentWorkspacePath)}/${fileStem(projName)}.umlproj`
           : `${projName}.umlproj`;
-        const result = await saveToolbarProject(
+        const result = await saveProject(
           { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
           targetPath,
           currentWorkspacePath ? currentWorkspaceSafe : true,
@@ -482,7 +479,7 @@ const Toolbar: React.FC = () => {
     try {
       if (isProject) {
         const safe = !browseUnsafe.current;
-        const proj = await openToolbarProject(path, safe);
+        const proj = await openProject(path, safe);
         setProject(proj);
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
@@ -492,7 +489,7 @@ const Toolbar: React.FC = () => {
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
       } else {
         const safe = !browseUnsafe.current;
-        const d = await openToolbarDiagram(path, safe);
+        const d = await openDiagram(path, safe);
         // Wrap single .uml diagram in a fresh Project so stale
         // sequence/component entries from the previous project are cleared.
         const proj = {
@@ -611,7 +608,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentFilepath ||
         `${normalizePath(currentWorkspacePath!)}/${fileStem(curBase || proj.name || 'Untitled')}.umlproj`;
       const targetSafe = currentFilepath ? currentFileSafe.current : currentWorkspaceSafe;
-      const result = await saveToolbarProject(proj, targetPath, targetSafe);
+      const result = await saveProject(proj, targetPath, targetSafe);
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
       setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
@@ -650,7 +647,7 @@ const Toolbar: React.FC = () => {
       const targetPath = currentWorkspacePath
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
         : filename;
-      const result = await saveToolbarProject(
+      const result = await saveProject(
         { ...useDiagramStore.getState().getProjectSnapshot(), name: projName },
         targetPath,
         currentWorkspacePath ? currentWorkspaceSafe : true,

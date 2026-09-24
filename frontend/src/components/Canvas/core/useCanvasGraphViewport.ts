@@ -1,8 +1,25 @@
 import { useEffect, type MutableRefObject, type RefObject } from 'react';
 import type { Graph } from '@antv/x6';
 import { useDiagramStore } from '../../../stores/diagramStore';
+import { useUiStore } from '../../../stores/uiStore';
 import { attachGraphViewport } from '../graphViewport';
-import { syncCanvasViewport, type CanvasViewport } from './canvasCommon';
+import { centerCanvasContent, syncCanvasViewport, type CanvasViewport } from './canvasCommon';
+
+/** Center a newly populated canvas once, unless the user has a saved viewport. */
+export function centerCanvasAfterFirstSync(
+  graph: Graph,
+  graphRef: MutableRefObject<Graph | null>,
+  didFirstSync: MutableRefObject<boolean>,
+  viewport: CanvasViewport,
+): void {
+  if (didFirstSync.current || graph.getNodes().length === 0
+    || viewport.panX || viewport.panY || viewport.zoom !== 1) return;
+  didFirstSync.current = true;
+  setTimeout(() => {
+    const current = graphRef.current;
+    if (current) centerCanvasContent(current, useUiStore.getState().rightPanelWidth);
+  }, 200);
+}
 
 /**
  * Shared viewport lifecycle for all X6-backed diagram editors.
@@ -15,6 +32,8 @@ export function useCanvasGraphViewport(
   containerRef: RefObject<HTMLDivElement | null>,
   viewport: CanvasViewport,
 ): void {
+  const recenterCounter = useDiagramStore((state) => state.recenterCounter);
+
   useEffect(() => {
     const graph = graphRef.current;
     const container = containerRef.current;
@@ -47,4 +66,12 @@ export function useCanvasGraphViewport(
     if (!graph) return;
     syncCanvasViewport(graph, { ...useDiagramStore.getState().viewport, panY: viewport.panY });
   }, [viewport.panY]);
+
+  useEffect(() => {
+    if (recenterCounter <= 0) return;
+    setTimeout(() => {
+      const graph = graphRef.current;
+      if (graph) centerCanvasContent(graph, useUiStore.getState().rightPanelWidth);
+    }, 100);
+  }, [recenterCounter]);
 }

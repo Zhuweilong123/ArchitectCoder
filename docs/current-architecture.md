@@ -63,7 +63,7 @@ WebSocket / Evaluation / future HTTP or CLI
 | 组件图渲染规则 | `frontend/src/components/Canvas/compRenderUtils.ts` | 组件主题、HTML 渲染和节点尺寸计算 |
 | Canvas 生命周期 | `frontend/src/components/Canvas/core/canvasLifecycle.ts` | Graph 注册、注销、事件清理和销毁顺序 |
 | Canvas 公共运行时 | `frontend/src/components/Canvas/core/createCanvasGraph.ts`、`canvasCommon.ts`、`canvasEventAdapter.ts`、`useCanvasGraphViewport.ts` | Graph 创建、网格/视口同步和通用事件适配 |
-| 前端请求边界 | `frontend/src/services/toolbarProjectApi.ts`、`evaluationCenterApi.ts`、`api.ts` | Toolbar 工程文件、评测资源和 Trace Case 请求集中管理 |
+| 前端请求边界 | `frontend/src/services/api.ts`、`evaluationCenterApi.ts` | Toolbar 工程文件直接使用通用 API；评测资源和 Trace Case 批量请求由 EvaluationCenter 服务管理 |
 
 ## 3. 当前基础工具契约
 
@@ -160,8 +160,9 @@ extensions.knowledge_graph:create
   布局参数位于 `seqRenderUtils.ts`。
 - `CompEditor.tsx` 负责组件图 X6 生命周期和交互；主题、HTML 和节点尺寸计算位于
   `compRenderUtils.ts`。
-- Canvas 编辑器统一通过 `canvasLifecycle.ts` 完成 Graph 注册和销毁；Toolbar 与
-  EvaluationCenter 的批量请求分别通过服务层边界实现。
+- Canvas 编辑器统一通过 `canvasLifecycle.ts` 完成 Graph 注册和销毁，并通过
+  `useCanvasGraphViewport.ts` 处理首次居中和手动居中；Toolbar 直接使用通用 API，
+  EvaluationCenter 的批量请求由服务层处理。
 - `frontend/vite.config.ts` 显式拆分 React、Ant Design、X6、X6 插件和 Monaco vendor
 -  chunk；主入口只保留应用代码，避免将共享运行时再次打入业务入口。Ant Design
   作为共享 UI 运行时保留独立 vendor chunk，告警阈值与拆包策略在同一配置中维护。

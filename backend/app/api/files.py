@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
+def _resolve_open_path(filepath: str, *, safe: bool, mask_access_error: bool = False) -> str:
+    """Resolve an open request while preserving each endpoint's error response."""
+    try:
+        return (safe_path if safe else resolve_path)(filepath)
+    except HTTPException as exc:
+        if mask_access_error:
+            raise HTTPException(status_code=403, detail="Access denied") from exc
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from exc
+
+
 @router.get("/list")
 async def list_files():
     """List all saved UML diagram files."""
@@ -50,13 +62,7 @@ async def save_file(diagram: UmlDiagram, filename: str = ""):
 @router.get("/open")
 async def open_file(filepath: str, safe: bool = True):
     """Open a saved UML diagram file. Pass safe=false to allow any path on disk."""
-    path_resolver = safe_path if safe else resolve_path
-    try:
-        resolved = path_resolver(filepath)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid path")
+    resolved = _resolve_open_path(filepath, safe=safe)
     if not resolved.endswith(".uml"):
         raise HTTPException(status_code=400, detail="Only .uml files can be opened")
     if not os.path.exists(resolved):
@@ -309,13 +315,7 @@ async def save_project_endpoint(
 async def open_project(filepath: str, safe: bool = True):
     """Open a .umlproj (or legacy .uml) file as a Project.
     Pass safe=false to allow any path on disk."""
-    path_resolver = safe_path if safe else resolve_path
-    try:
-        resolved = path_resolver(filepath)
-    except HTTPException:
-        raise HTTPException(status_code=403, detail="Access denied")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid path")
+    resolved = _resolve_open_path(filepath, safe=safe, mask_access_error=True)
     if not os.path.exists(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:

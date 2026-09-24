@@ -10,6 +10,11 @@ from typing import Any
 from .models import MemoryType
 
 
+def normalize_subject(subject: str | None) -> str:
+    """Use one stable subject key for storage and recall."""
+    return re.sub(r"\s+", " ", str(subject or "").strip().lower())
+
+
 @dataclass(frozen=True)
 class MemoryWriteDecision:
     allowed: bool
@@ -98,11 +103,6 @@ class MemoryRecallPolicy:
         return {token for token in str(text).lower().split() if token}
 
     @staticmethod
-    def _normalize_subject(subject: str) -> str:
-        """Use the same stable key for conflict suppression as persistence."""
-        return re.sub(r"\s+", " ", str(subject or "").strip().lower())
-
-    @staticmethod
     def _is_confirmed(entry: Any) -> bool:
         """Return whether a memory has explicit user/system confirmation.
 
@@ -169,7 +169,7 @@ class MemoryRecallPolicy:
         for result in results:
             if result.score <= self.min_score or not str(result.entry.summary or "").strip():
                 continue
-            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            subject = normalize_subject(getattr(result.entry, "subject", ""))
             if not subject:
                 continue
             previous = subject_winners.get(subject)
@@ -178,7 +178,7 @@ class MemoryRecallPolicy:
 
         eligible = []
         for result in results:
-            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            subject = normalize_subject(getattr(result.entry, "subject", ""))
             if subject and subject_winners.get(subject) is not result:
                 continue
             eligible.append(result)
@@ -196,7 +196,7 @@ class MemoryRecallPolicy:
             memory_type = result.entry.memory_type
             if type_counts.get(memory_type, 0) >= self.max_per_type:
                 continue
-            subject = self._normalize_subject(getattr(result.entry, "subject", ""))
+            subject = normalize_subject(getattr(result.entry, "subject", ""))
             if subject and subject in seen_subjects:
                 continue
             summary = str(result.entry.summary or "").strip()

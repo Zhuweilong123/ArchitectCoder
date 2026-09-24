@@ -14,11 +14,11 @@ import { getCanvasLabels, getFragmentLabels, getMessageTypeLabels } from './canv
 import {
   buildLifelineHTML, getMessageVisual, LIFELINE_HEIGHT, LIFELINE_WIDTH, LIFELINE_Y,
 } from './seqRenderUtils';
-import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
+import { centerCanvasAfterFirstSync, useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { snapCanvasPosition } from './core/snapToGrid';
-import { centerCanvasContent, syncCanvasGrid } from './core/canvasCommon';
+import { syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import type { FragmentType } from '../../types/sequence';
 import { sequenceMessageY } from '../../utils/sequenceLayout';
@@ -921,21 +921,7 @@ const SeqEditor: React.FC = () => {
       prevLifelineIds.current = currentLIds;
       isInternalUpdate.current = false;
 
-      // Center viewport as soon as the first elements appear
-      if (
-        !_didFirstSync.current
-        && graph.getNodes().length > 0
-        && !(viewport.panX || viewport.panY)
-        && viewport.zoom === 1
-      ) {
-        _didFirstSync.current = true;
-        console.log('[SeqEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
-        setTimeout(() => {
-          const g = graphRef.current;
-          if (!g) return;
-          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
-        }, 200);
-      }
+      centerCanvasAfterFirstSync(graph, graphRef, _didFirstSync, viewport);
 
     } catch (err) {
       console.error('[SeqEditor] Sync error:', err);
@@ -956,20 +942,6 @@ const SeqEditor: React.FC = () => {
       thickness: diagram.grid_thickness || 1,
     });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
-
-  // ── Auto-center on recenter trigger ───────────────
-  const recenterCounter = useDiagramStore((s) => s.recenterCounter);
-  useEffect(() => {
-    if (recenterCounter <= 0) return;
-    const g = graphRef.current;
-    if (!g) return;
-    console.log('[SeqEditor] recenterCounter watcher, counter:', recenterCounter, 'nodes:', g.getNodes().length);
-    setTimeout(() => {
-      const g2 = graphRef.current;
-      if (!g2) return;
-      centerCanvasContent(g2, useUiStore.getState().rightPanelWidth);
-    }, 100);
-  }, [recenterCounter]);
 
   // ── Floating toolbar ────────────────────────────────
   const [showToolbar, setShowToolbar] = useState(true);
