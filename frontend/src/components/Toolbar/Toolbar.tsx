@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Button, Select, Tooltip, Dropdown, Modal, List, message, Tag,
+  Button, Select, Tooltip, Dropdown, Modal, List, message, Tag, Spin,
   Divider, Input, Form, Slider,
 } from 'antd';
 import {
@@ -20,7 +20,7 @@ import {
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
-import { createDefaultDiagram } from '../../types/uml';
+import { createDefaultDiagram, type UmlDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, listDiagrams,
   listProjects,
@@ -32,7 +32,8 @@ import {
 } from '../../services/toolbarProjectApi';
 import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
-import { exportCanvasGraph, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
+import { exportCanvasGraph, exportCanvasGraphSvg, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
+import { createZipBlob } from '../../utils/zipArchive';
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
@@ -81,6 +82,61 @@ function showProjectSaveError(error: unknown): void {
     return;
   }
   message.error('保存失败');
+}
+
+type CanvasGraph = NonNullable<ReturnType<typeof getActiveCanvasGraph>>;
+
+function waitForCanvasGraph(
+  previousGraph: CanvasGraph | null,
+  requiredCellIds: string[],
+): Promise<CanvasGraph> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const check = () => {
+      const graph = getActiveCanvasGraph();
+      const stage = graph?.view.svg.querySelector('.x6-graph-svg-stage');
+      const hasAllCells = graph && requiredCellIds.every((id) => {
+        const cell = graph.getCellById(id);
+        const view = cell && graph.findViewByCell(cell);
+        return !!view && !!stage?.contains(view.container);
+      });
+      if (graph && graph !== previousGraph && hasAllCells) {
+        window.requestAnimationFrame(() => {
+          if (getActiveCanvasGraph() === graph) resolve(graph);
+          else check();
+        });
+        return;
+      }
+      if (Date.now() - startedAt > 8000) {
+        reject(new Error('Timed out while rendering a project diagram'));
+        return;
+      }
+      window.requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
+function getDiagramCellIds(diagram: UmlDiagram): string[] {
+  const type = diagram.diagram_type || 'class';
+  if (type === 'sequence') {
+    return [
+      ...(diagram.lifelines || []).map((item) => item.id),
+      ...(diagram.messages || []).map((item) => item.id),
+      ...(diagram.fragments || []).map((item) => item.id),
+    ];
+  }
+  if (type === 'component') {
+    return [
+      ...(diagram.components || []).map((item) => item.id),
+      ...(diagram.comp_relations || []).map((item) => item.id),
+    ];
+  }
+  return [...diagram.classes.map((item) => item.id), ...diagram.relations.map((item) => item.id)];
+}
+
+function diagramFileStem(name: string, index: number): string {
+  return `${String(index + 1).padStart(2, '0')}_${fileStem(name).toLowerCase()}`;
 }
 
 const Toolbar: React.FC = () => {
@@ -132,6 +188,8 @@ const Toolbar: React.FC = () => {
   const [fileList, setFileList] = useState<Array<{
     name: string; path: string; size: number; modified: string;
   }>>([]);
+  const [exportingAll, setExportingAll] = useState(false);
+  const [exportProgress, setExportProgress] = useState('');
 
   // ── Path input for open dialog ──────────────────────
   const [pathInput, setPathInput] = useState('');
@@ -647,17 +705,129 @@ const Toolbar: React.FC = () => {
 
   const handleExportMd = async () => {
     try {
+      const graph = getActiveCanvasGraph();
+      if (!graph) {
+        message.warning(copy('noDiagram'));
+        return;
+      }
       const md = await exportMarkdown(diagram);
-      const blob = new Blob([md], { type: 'text/markdown' });
+      const backgroundColor = canvasTheme === 'dark'
+        ? '#111827'
+        : canvasTheme === 'blueprint' ? '#eaf5ff'
+          : canvasTheme === 'eye-care' ? '#f3f5ef' : '#fafafa';
+      const svg = await exportCanvasGraphSvg(graph, backgroundColor);
+      const folder = fileStem(diagram.name) || 'design';
+      const blob = createZipBlob([
+        { path: `${folder}/README.md`, content: md },
+        { path: `${folder}/diagrams/diagram.svg`, content: svg },
+      ]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${diagram.name}_design.md`;
+      a.download = `${folder}_design.zip`;
       a.click();
-      URL.revokeObjectURL(url);
-      message.success('Markdown 文档已导出');
-    } catch {
-      message.error('导出失败');
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message.success(copy('exportSuccess'));
+    } catch (error) {
+      console.error('[Toolbar] Current design document export failed:', error);
+      message.error(copy('exportFailed'));
+    }
+  };
+
+  const handleExportFullDocs = async () => {
+    const initialState = useDiagramStore.getState();
+    const diagrams = initialState.project.diagrams;
+    if (diagrams.length === 0) {
+      message.warning(copy('noDiagram'));
+      return;
+    }
+    if (!getActiveCanvasGraph()) {
+      message.warning(copy('exportFailed'));
+      return;
+    }
+
+    const backgroundColor = canvasTheme === 'dark'
+      ? '#111827'
+      : canvasTheme === 'blueprint' ? '#eaf5ff'
+        : canvasTheme === 'eye-care' ? '#f3f5ef' : '#fafafa';
+    const images: string[] = [];
+    setExportingAll(true);
+    try {
+      for (let index = 0; index < diagrams.length; index += 1) {
+        const item = diagrams[index];
+        setExportProgress(`${index + 1} / ${diagrams.length} - ${item.name}`);
+        const state = useDiagramStore.getState();
+        let graph = getActiveCanvasGraph();
+        if (state.project.active_diagram_index !== index) {
+          useDiagramStore.getState().setActiveDiagram(index);
+          graph = await waitForCanvasGraph(graph, getDiagramCellIds(item));
+        }
+        if (!graph) throw new Error(`Canvas graph unavailable for ${item.name}`);
+        images.push(await exportCanvasGraphSvg(graph, backgroundColor));
+      }
+    } catch (error) {
+      console.error('[Toolbar] Full design document export failed:', error);
+      message.error(copy('exportFailed'));
+      return;
+    } finally {
+      useDiagramStore.setState({
+        project: initialState.project,
+        viewport: initialState.viewport,
+        selectedClassId: initialState.selectedClassId,
+        selectedClassIds: initialState.selectedClassIds,
+        selectedRelationId: initialState.selectedRelationId,
+        selectedLifelineId: initialState.selectedLifelineId,
+        selectedMessageId: initialState.selectedMessageId,
+        selectedComponentId: initialState.selectedComponentId,
+        selectedCompRelationId: initialState.selectedCompRelationId,
+        undoStack: initialState.undoStack,
+        redoStack: initialState.redoStack,
+      });
+      setExportingAll(false);
+      setExportProgress('');
+    }
+
+    try {
+      const folder = fileStem(initialState.project.name) || 'project';
+      const documentResults = await Promise.all(diagrams.map((item) => exportMarkdown(item)));
+      const files: Array<{ path: string; content: string }> = [];
+      const indexLines = [
+        `# ${initialState.project.name} — Design Document`,
+        '',
+        `> Generated on ${new Date().toLocaleString()}`,
+        '',
+        '## Documents',
+        '',
+        '| # | Diagram | Type | Document |',
+        '|---:|---|---|---|',
+      ];
+      diagrams.forEach((item, index) => {
+        const stem = diagramFileStem(item.name, index);
+        const type = item.diagram_type || 'class';
+        const typeLabel = type === 'sequence' ? copy('sequenceDiagram')
+          : type === 'component' ? copy('componentDiagram') : copy('classDiagram');
+        const markdownPath = `design_docs/${stem}.md`;
+        const imagePath = `assets/${stem}.svg`;
+        const markdown = documentResults[index].replace(
+          'diagrams/diagram.svg',
+          imagePath,
+        );
+        files.push({ path: `${folder}/${markdownPath}`, content: markdown });
+        files.push({ path: `${folder}/design_docs/${imagePath}`, content: images[index] });
+        indexLines.push(`| ${index + 1} | ${item.name.replace(/\|/g, '\\|')} | ${typeLabel} | [Open](${markdownPath}) |`);
+      });
+      files.unshift({ path: `${folder}/README.md`, content: indexLines.join('\n') });
+      const blob = createZipBlob(files);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${folder}_full_design_docs.zip`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message.success(copy('exportAllDesignsSuccess'));
+    } catch (error) {
+      console.error('[Toolbar] Full design document packaging failed:', error);
+      message.error(copy('exportFailed'));
     }
   };
 
@@ -692,6 +862,16 @@ const Toolbar: React.FC = () => {
 
   return (
     <div className="toolbar">
+    <Modal
+      open={exportingAll}
+      title={interfaceLanguage === 'en' ? 'Exporting full design documents' : '\u6b63\u5728\u5bfc\u51fa\u5168\u91cf\u8bbe\u8ba1\u6587\u6863'}
+      footer={null}
+      closable={false}
+      keyboard={false}
+      maskClosable={false}
+    >
+      <Spin /> <span style={{ marginLeft: 8 }}>{exportProgress}</span>
+    </Modal>
       {/* Row 1: File + Diagrams + Undo/Redo + LLM */}
       <div className="toolbar-row">
       <div className="toolbar-left">
@@ -852,11 +1032,25 @@ const Toolbar: React.FC = () => {
             {copy('exportDesign')} <DownOutlined />
           </Button>
         </Dropdown>
-        <Tooltip title={copy('exportMarkdown')}>
-          <Button icon={<FileMarkdownOutlined />} onClick={handleExportMd}>
-            {copy('exportMarkdown')}
+        <Dropdown
+          menu={{ items: [
+            {
+              key: 'current-document',
+              label: interfaceLanguage === 'en' ? 'Current design document' : '\u5f53\u524d\u8bbe\u8ba1\u6587\u6863',
+              onClick: () => void handleExportMd(),
+            },
+            {
+              key: 'full-documents',
+              label: interfaceLanguage === 'en' ? 'Full design documents' : '\u5168\u91cf\u8bbe\u8ba1\u6587\u6863',
+              onClick: () => void handleExportFullDocs(),
+            },
+          ] }}
+          trigger={['click']}
+        >
+          <Button icon={<FileMarkdownOutlined />}>
+            {copy('exportMarkdown')} <DownOutlined />
           </Button>
-        </Tooltip>
+        </Dropdown>
       </div>
 
       <div className="toolbar-right">
