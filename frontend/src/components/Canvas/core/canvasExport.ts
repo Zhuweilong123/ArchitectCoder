@@ -404,15 +404,47 @@ export function exportCanvasGraph(
         return;
       }
 
+      exportCanvasGraphSvg(graph, backgroundColor)
+        .then((svg) => {
+          downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
+          resolve();
+        })
+        .catch(reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/** Serialize the visible graph content as a portable SVG string. */
+export function exportCanvasGraphSvg(graph: Graph, backgroundColor = '#fafafa'): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
       graph.toSVG((svg: string) => {
         if (!svg) {
           reject(new Error('Canvas export returned no SVG data'));
           return;
         }
-        downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
-        resolve();
+        resolve(svg);
       }, {
-        ...options,
+        preserveDimensions: true,
+        copyStyles: true,
+        serializeImages: true,
+        beforeSerialize(this: Graph, svg: SVGSVGElement) {
+          resetSvgViewportTransform(svg);
+          flattenHtmlDiagramNodes(this, svg);
+          normalizeExportEdgeLabels(svg, backgroundColor);
+          const bounds = svg.viewBox.baseVal;
+          const background = svg.ownerDocument.createElementNS(SVG_NS, 'rect');
+          background.setAttribute('x', String(bounds.x));
+          background.setAttribute('y', String(bounds.y));
+          background.setAttribute('width', String(bounds.width));
+          background.setAttribute('height', String(bounds.height));
+          background.setAttribute('fill', backgroundColor);
+          background.setAttribute('pointer-events', 'none');
+          svg.insertBefore(background, svg.firstChild);
+          return svg;
+        },
         // SVG ignores padding; its viewBox must include markers, labels and
         // the rendered Manhattan path explicitly.
         viewBox: getSvgExportViewBox(graph),
