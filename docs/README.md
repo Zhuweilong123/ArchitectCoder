@@ -1,6 +1,6 @@
 # 文档导航
 
-> 文档核查更新：2026-09-11。当前事实以源码、配置和下列实现文档为准。
+> 文档核查更新：2026-09-27。当前事实以源码、配置和下列实现文档为准。
 
 ## 当前事实
 
@@ -21,6 +21,10 @@
 - [`knowledge-graph-design.md`](knowledge-graph-design.md)：知识图谱模型、构建和查询。
 - [`trace-replay-design.md`](trace-replay-design.md)：Trace 记录、回放、混合执行设计和使用手册。
 - [`trace-to-eval-case-factory-design.md`](trace-to-eval-case-factory-design.md)：Trace 转评测用例草稿、fixture、Checker 审核和发布流程。
+
+## 设计提案
+
+- [`architecture-aware-dynamic-scheduling.md`](architecture-aware-dynamic-scheduling.md)：Architecture-aware Dynamic Scheduling；第一版静态只读调度已实现，成本校准、动态重分区与隔离并行写入仍在方案中。
 
 ## 历史与决策记录
 

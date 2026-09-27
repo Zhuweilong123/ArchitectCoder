@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # tool-routing behavior is revalidated. The core falls back to NoOp.
     agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
+    # Optional graph-guided read-only scheduling inside the existing provider.
+    # Disabled means the provider keeps its current planner/explorer behavior.
+    agent_architecture_scheduling_enabled: bool = False
+    agent_architecture_scheduling_max_workers: int = 2
+    agent_architecture_scheduling_total_tokens: int = 18000
+    agent_architecture_scheduling_worker_seconds: float = 90.0
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
     # concrete SQLite adapter is loaded dynamically so it can be disabled or

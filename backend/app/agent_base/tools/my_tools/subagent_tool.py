@@ -193,6 +193,8 @@ class SpawnSubagentTool(AsyncTool):
         workspace_root: str = "",
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
+        max_cumulative_tokens: int | None = None,
+        child_run_name: str = "subagent",
     ):
         super().__init__(
             name="spawn_subagent",
@@ -240,6 +242,13 @@ class SpawnSubagentTool(AsyncTool):
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
         self._single_use_used = False
+        # Optional task-level ceiling for scheduled explorers. The existing
+        # per-request budget semantics remain unchanged for other callers.
+        self.max_cumulative_tokens = (
+            max(1, int(max_cumulative_tokens))
+            if max_cumulative_tokens is not None else None
+        )
+        self.child_run_name = child_run_name
         unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
         if not self.toolkits or unknown_toolkits:
             raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
@@ -422,7 +431,10 @@ class SpawnSubagentTool(AsyncTool):
         parent_runtime = get_runtime()
         child_runtime = AgentRuntime(
             stop_check=parent_runtime.stop_check,
-            run_id=f"{parent_runtime.run_id}/subagent" if parent_runtime.run_id else "subagent",
+            run_id=(
+                f"{parent_runtime.run_id}/{self.child_run_name}"
+                if parent_runtime.run_id else self.child_run_name
+            ),
         )
         budget = ExecutionBudget(
             max_tool_calls=self.max_tool_calls,
@@ -579,6 +591,15 @@ class SpawnSubagentTool(AsyncTool):
                     "task_total_tokens_observed": budget.total_tokens,
                 }
                 self.last_context_report["last_request_context"] = request_context
+                if (
+                    self.max_cumulative_tokens is not None
+                    and budget.total_tokens
+                    + request_context["estimated_context_tokens"]
+                    + 600 >= self.max_cumulative_tokens
+                ):
+                    self.last_token_usage = budget.total_tokens
+                    self.last_context_report["token_budget_stop_reason"] = "task_token_limit"
+                    return stopped_message("task token limit")
                 if request_context["estimated_context_tokens"] >= self.context_budget.budget.max_context_tokens:
                     self.last_token_usage = budget.total_tokens
                     self.last_context_report.update({
