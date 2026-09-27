@@ -256,6 +256,7 @@ class DynamicExplorationScheduler:
             f"{root_run_id}:{fingerprint}".encode()).hexdigest()[:24]
         plan = self.store.open(schedule_id, root_run_id, fingerprint, items)
         active: dict[asyncio.Task[dict[str, Any]], WorkAssignment] = {}
+        new_worker_tokens = 0
         try:
             while True:
                 plan = self._recover(self.store.get(schedule_id) or plan)
@@ -325,7 +326,8 @@ class DynamicExplorationScheduler:
                 for task in finished:
                     active.pop(task)
                     try:
-                        await task
+                        result = await task
+                        new_worker_tokens += max(0, int(result.get("tokens") or 0))
                     except (asyncio.CancelledError, AgentInterrupted):
                         raise
                     except RunConflict:
@@ -338,4 +340,4 @@ class DynamicExplorationScheduler:
                 await asyncio.gather(*active, return_exceptions=True)
         plan = self.store.get(schedule_id) or plan
         results = tuple(item.result for item in plan.items if item.result is not None)
-        return ScheduleOutcome(results, sum(int(result.get("tokens") or 0) for result in results), plan)
+        return ScheduleOutcome(results, new_worker_tokens, plan)
