@@ -126,7 +126,10 @@ class DynamicExplorationScheduler:
             result = await worker(package, limit)
             result["seconds"] = round(time.monotonic() - started, 3)
             result["slot"] = item.slot
-            status = RunStatus.SUCCEEDED if result.get("status") == "completed" else RunStatus.FAILED
+            status = {
+                "completed": RunStatus.SUCCEEDED,
+                "partial": RunStatus.PARTIAL,
+            }.get(result.get("status"), RunStatus.FAILED)
             self.runs.transition(run.run_id, status, expected={RunStatus.RUNNING},
                                  owner_id=owner, metadata_patch={"result": result})
             self.store.finish(schedule_id, item.id, run.run_id, item.lease_token,

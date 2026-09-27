@@ -346,6 +346,39 @@ def test_spawn_subagent_does_not_accumulate_token_budget_across_requests(tmp_pat
     assert llm.count == 2
 
 
+def test_spawn_subagent_finalizes_before_cumulative_limit(tmp_path):
+    class _BudgetLLM:
+        def __init__(self):
+            self.choices = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.choices.append(tool_choice)
+            if tool_choice == "none":
+                return {"content": "verified evidence summary", "tool_calls": None,
+                        "usage": {"total_tokens": 100}}
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "read-1", "type": "function",
+                    "function": {"name": "list_files", "arguments": json.dumps({"path": "."})},
+                }],
+                "usage": {"total_tokens": 7000},
+            }
+
+    llm = _BudgetLLM()
+    tool = SpawnSubagentTool(
+        llm=llm, source_dir=str(tmp_path), toolkits=("strategy",),
+        max_total_tokens=10000, max_cumulative_tokens=10000,
+        token_finalization_reserve_tokens=1000,
+    )
+
+    result = asyncio.run(tool._execute({"description": "Inspect project files", "toolkit": "strategy"}))
+
+    assert result == "verified evidence summary"
+    assert llm.choices == ["auto", "none"]
+    assert tool.last_token_usage == 7100
+
+
 def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
     src = tmp_path / "src"
     src.mkdir()

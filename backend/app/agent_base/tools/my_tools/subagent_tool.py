@@ -593,6 +593,16 @@ class SpawnSubagentTool(AsyncTool):
                 self.last_context_report["last_request_context"] = request_context
                 if (
                     self.max_cumulative_tokens is not None
+                    and not finalization_mode
+                    and budget.total_tokens
+                    + request_context["estimated_context_tokens"]
+                    + max(2500, self.token_finalization_reserve_tokens)
+                    >= self.max_cumulative_tokens
+                ):
+                    forced_finalization_reason = "task token budget approaching"
+                    continue
+                if (
+                    self.max_cumulative_tokens is not None
                     and budget.total_tokens
                     + request_context["estimated_context_tokens"]
                     + 600 >= self.max_cumulative_tokens

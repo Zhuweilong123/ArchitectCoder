@@ -21,8 +21,17 @@ from extensions.orchestration.orchestrator import TaskOrchestrator
 from .impact import GraphUnavailable, ImpactSlice, collect_impact
 from .partition import ExplorationPackage, PartitionDecision, partition_impact
 from .scheduler import DynamicExplorationScheduler, graph_fingerprint, make_work_items
+from .evidence import collect_file_evidence
 
 logger = logging.getLogger(__name__)
+
+
+class _PlannerFailure(ValueError):
+    """Planner output could not be used, but its token usage still counts."""
+
+    def __init__(self, message: str, tokens: int):
+        super().__init__(message)
+        self.tokens = tokens
 
 _PLANNER_SYSTEM = """You prepare bounded graph-guided exploration for a coding Agent.
 Return one JSON object only:
@@ -107,7 +116,7 @@ class ArchitectureAwareOrchestrator:
                     f"{json.dumps(request.previous_checkpoint, ensure_ascii=False)[:1200]}"
                 )},
             ],
-            max_tokens=min(1800, max(256, int(self.settings.agent_planner_max_tokens))),
+            max_tokens=min(4096, max(256, int(self.settings.agent_planner_max_tokens))),
             json_mode=True,
             timeout=min(30.0, float(self.settings.agent_planner_timeout_seconds)),
             temperature=0.0,
@@ -115,9 +124,17 @@ class ArchitectureAwareOrchestrator:
         usage = response.get("usage") or {}
         tokens = max(0, int(usage.get("total_tokens") or 0)) if isinstance(usage, dict) else 0
         raw = str(response.get("content") or "").strip()
-        data = json.loads(raw)
+        if not raw:
+            raise _PlannerFailure("planner returned empty content", tokens)
+        try:
+            start = raw.find("{")
+            if start < 0:
+                raise json.JSONDecodeError("no JSON object", raw, 0)
+            data, _ = json.JSONDecoder().raw_decode(raw[start:])
+        except json.JSONDecodeError as exc:
+            raise _PlannerFailure("planner returned invalid JSON", tokens) from exc
         if not isinstance(data, dict):
-            raise ValueError("planner response is not a JSON object")
+            raise _PlannerFailure("planner response is not a JSON object", tokens)
         plan = self.planner._parse_plan(raw, contract)
         queries = tuple(
             dict.fromkeys(
@@ -132,7 +149,10 @@ class ArchitectureAwareOrchestrator:
         request: OrchestrationRequest,
         impact: ImpactSlice,
         package: ExplorationPackage,
+        evidence: tuple[str, ...] | None = None,
     ) -> str:
+        if evidence is None:
+            evidence = collect_file_evidence(request, impact, package)
         nodes = [impact.nodes[node_id] for node_id in package.node_ids]
         anchors = [
             {
@@ -155,7 +175,12 @@ class ArchitectureAwareOrchestrator:
             f"Request: {request.user_message[:1500]}\n"
             f"Project: {request.project_file}\n"
             f"Assigned graph nodes: {json.dumps(anchors, ensure_ascii=False)}\n"
-            f"Graph selection truncated: {impact.truncated}"
+            f"Graph selection truncated: {impact.truncated}\n\n"
+            "The following excerpts were read from the current project files "
+            "and include exact file and line coordinates. Use them as verified "
+            "evidence; use read-only tools for unresolved dependencies. Do not "
+            "claim that no files were read when excerpts are present.\n"
+            + ("\n\n".join(evidence) if evidence else "No file excerpt was available.")
         )
 
     async def _explore(
@@ -256,6 +281,7 @@ class ArchitectureAwareOrchestrator:
         async def run_one(package: ExplorationPackage, limit: int) -> dict[str, Any]:
             worker_seconds = min(180.0, max(1.0, float(
                 self.settings.agent_architecture_scheduling_worker_seconds)))
+            evidence = collect_file_evidence(request, impact, package)
             worker = self.explorer_factory(
                 llm=self.llm,
                 source_dir=self.source_dir,
@@ -269,7 +295,7 @@ class ArchitectureAwareOrchestrator:
             )
             try:
                 summary = await asyncio.wait_for(worker._execute({
-                    "description": self._worker_description(request, impact, package),
+                    "description": self._worker_description(request, impact, package, evidence),
                     "toolkit": "strategy",
                 }), timeout=worker_seconds + 5)
             except AgentInterrupted:
@@ -278,15 +304,24 @@ class ArchitectureAwareOrchestrator:
                 logger.warning("[ArchitectureScheduling] %s failed: %s", package.id, exc)
                 summary = f"Subagent stopped safely: {type(exc).__name__}"
             report = str(summary or "")
+            tool_evidence = any(
+                item.get("status") == "success"
+                and item.get("tool_name") in {"read_file", "search_text"}
+                for item in (getattr(worker, "last_evidence_summary", None) or ())
+                if isinstance(item, dict)
+            )
             failed = not report.strip() or report.startswith((
                 "Error:", "Subagent execution budget exceeded:",
                 "Subagent stopped:", "Subagent stopped safely:",
-            ))
+            )) or not (evidence or tool_evidence)
             return {
-                "package": package.id, "status": "failed" if failed else "completed",
+                "package": package.id,
+                "status": "failed" if failed else ("completed" if tool_evidence else "partial"),
                 "summary": report[:5000],
                 "tokens": max(0, int(getattr(worker, "last_token_usage", 0) or 0)),
                 "node_count": len(package.node_ids), "estimated_cost": package.cost,
+                "grounded_excerpts": len(evidence),
+                "tool_evidence": tool_evidence,
             }
 
         root = str(request.previous_checkpoint.get("architecture_schedule_root")
@@ -356,17 +391,22 @@ class ArchitectureAwareOrchestrator:
             else:
                 results, worker_tokens = await self._explore(
                     request, impact, decision, planner_tokens)
-            if not any(item["status"] == "completed" for item in results):
+            if not any(item["status"] in {"completed", "partial"} for item in results):
                 return await self._fallback(request, "all graph explorers failed", planner_tokens + worker_tokens)
         except (asyncio.CancelledError, AgentInterrupted):
             raise
+        except _PlannerFailure as exc:
+            logger.warning("[ArchitectureScheduling] %s", exc)
+            return await self._fallback(request, str(exc), exc.tokens)
         except Exception as exc:
             logger.warning("[ArchitectureScheduling] preparation failed", exc_info=True)
             return await self._fallback(
                 request, f"{type(exc).__name__}: {str(exc)[:120]}", planner_tokens,
             )
 
-        all_completed = all(item["status"] == "completed" for item in results)
+        pending_count = sum(item.result is None for item in schedule.items) if schedule else 0
+        all_completed = pending_count == 0 and all(
+            item["status"] == "completed" for item in results)
         directives = self.planner._build_runtime_directives(
             plan,
             explored=all_completed,
@@ -381,22 +421,23 @@ class ArchitectureAwareOrchestrator:
             + "\n\n## Graph-guided read-only findings\n"
             + "These are candidate graph facts and worker findings. Verify affected "
             "files and design claims before editing; unknown dependencies remain possible. "
-            f"Graph selection truncated: {impact.truncated}.\n"
+            f"Graph selection truncated: {impact.truncated}. "
+            f"Pending exploration work items: {pending_count}.\n"
             + "\n\n".join(reports)
         )
         return OrchestrationPreparation(
             context_blocks=(context,),
-            excluded_tools=("spawn_subagent",),
+            excluded_tools=("spawn_subagent",) if all_completed else (),
             token_overhead=planner_tokens + worker_tokens,
             runtime_directives=RuntimeDirectives(
                 requires_todo_plan=bool(directives.get("requires_todo_plan")),
                 requires_acceptance_todos=bool(directives.get("requires_acceptance_todos")),
                 todos=tuple(dict(item) for item in directives.get("todos", ())),
-                strategy_subagent_used=True,
+                strategy_subagent_used=all_completed,
             ),
             phase="explore",
             metadata={
-                "architecture_scheduling": "executed",
+                "architecture_scheduling": "executed" if all_completed else "partial",
                 "goal": plan.goal,
                 "source": plan.source,
                 "project_id": impact.project_id,
@@ -411,6 +452,7 @@ class ArchitectureAwareOrchestrator:
                 "schedule_id": schedule.id if schedule else "",
                 "schedule_root_run_id": schedule.root_run_id if schedule else "",
                 "schedule_revision": schedule.revision if schedule else 0,
+                "pending_work_items": pending_count,
                 "work_items": tuple({
                     "id": item.id,
                     "kind": "explore",
@@ -420,12 +462,17 @@ class ArchitectureAwareOrchestrator:
                     "slot": getattr(item, "slot", index),
                     "assignment_revision": getattr(item, "revision", 0),
                     "child_run_id": getattr(item, "child_run_id", ""),
+                    "status": (
+                        item.result.get("status", "unknown") if getattr(item, "result", None)
+                        else next((result["status"] for result in results
+                                   if result["package"] == item.id), "pending")
+                    ),
                 } for index, item in enumerate(
                     schedule.items if schedule else decision.packages)),
                 "packages": tuple(
                     {key: item[key] for key in (
                         "package", "status", "tokens", "node_count", "estimated_cost",
-                        "seconds", "slot",
+                        "seconds", "slot", "grounded_excerpts", "tool_evidence",
                     ) if key in item}
                     for item in results
                 ),
