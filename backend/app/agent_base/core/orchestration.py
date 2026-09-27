@@ -23,6 +23,7 @@ class OrchestrationRequest:
     test_dir: str = ""
     previous_checkpoint: dict[str, Any] = field(default_factory=dict)
     available_tools: tuple[str, ...] = ()
+    run_id: str = ""
 
 
 @dataclass(frozen=True)

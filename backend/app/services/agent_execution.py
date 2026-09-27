@@ -368,9 +368,12 @@ async def _prepare_orchestration(
 ) -> tuple[str, Any, str]:
     """Plan an Agent run and return its augmented context and tool allowlist."""
     logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
+    settings = get_settings()
+    if resume_checkpoint.get("architecture_scheduling_mode") is False:
+        settings = settings.model_copy(update={"agent_architecture_scheduling_enabled": False})
     orchestrator = load_orchestrator(
         llm=agent.llm,
-        settings=get_settings(),
+        settings=settings,
         project_file=project_file,
         source_dir=source_dir,
         test_dir=test_dir,
@@ -390,6 +393,7 @@ async def _prepare_orchestration(
         test_dir=test_dir,
         previous_checkpoint=resume_checkpoint,
         available_tools=tuple(agent.tool_registry.list_tools()),
+        run_id=run_id,
     ))
     if trace_log:
         trace_log.event(
@@ -764,6 +768,15 @@ async def handle_agent_execution(
         "resume_available": False,
         "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
+        "architecture_schedule_root": (
+            resume_checkpoint.get("architecture_schedule_root")
+            or resume_checkpoint.get("run_id") or run_id
+        ),
+        "architecture_scheduling_mode": bool(
+            get_settings().agent_architecture_scheduling_enabled
+            and resume_checkpoint.get("architecture_scheduling_mode") is not False
+        ),
+        "architecture_schedule_version": 2,
         "candidate_artifact": resume_checkpoint.get("candidate_artifact"),
         "candidate_recovery": bool(resume_checkpoint.get("candidate_artifact")),
         "project_file": project_file,

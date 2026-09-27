@@ -20,6 +20,7 @@ from extensions.orchestration.orchestrator import TaskOrchestrator
 
 from .impact import GraphUnavailable, ImpactSlice, collect_impact
 from .partition import ExplorationPackage, PartitionDecision, partition_impact
+from .scheduler import DynamicExplorationScheduler, graph_fingerprint, make_work_items
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,66 @@ class ArchitectureAwareOrchestrator:
                 results.append(item)
         return results, sum(item["tokens"] for item in results)
 
+    async def _explore_dynamic(
+        self, request: OrchestrationRequest, impact: ImpactSlice,
+        decision: PartitionDecision, planner_tokens: int,
+    ) -> tuple[list[dict[str, Any]], int, Any]:
+        remaining = max(0, int(self.settings.agent_architecture_scheduling_total_tokens) - planner_tokens)
+        items = make_work_items(impact, decision)
+        if remaining < len(items) * 2500:
+            raise GraphUnavailable("insufficient shared exploration budget")
+
+        async def run_one(package: ExplorationPackage, limit: int) -> dict[str, Any]:
+            worker_seconds = min(180.0, max(1.0, float(
+                self.settings.agent_architecture_scheduling_worker_seconds)))
+            worker = self.explorer_factory(
+                llm=self.llm,
+                source_dir=self.source_dir,
+                test_dir=self.test_dir,
+                design_dir=os.path.dirname(self.project_file) if self.project_file else "",
+                project_file=self.project_file,
+                toolkits=("strategy",), single_use=True,
+                max_total_tokens=min(limit, 12000), max_cumulative_tokens=limit,
+                max_run_seconds=worker_seconds, llm_timeout_seconds=worker_seconds,
+                max_tool_calls=12, child_run_name=package.id,
+            )
+            try:
+                summary = await asyncio.wait_for(worker._execute({
+                    "description": self._worker_description(request, impact, package),
+                    "toolkit": "strategy",
+                }), timeout=worker_seconds + 5)
+            except AgentInterrupted:
+                raise
+            except Exception as exc:
+                logger.warning("[ArchitectureScheduling] %s failed: %s", package.id, exc)
+                summary = f"Subagent stopped safely: {type(exc).__name__}"
+            report = str(summary or "")
+            failed = not report.strip() or report.startswith((
+                "Error:", "Subagent execution budget exceeded:",
+                "Subagent stopped:", "Subagent stopped safely:",
+            ))
+            return {
+                "package": package.id, "status": "failed" if failed else "completed",
+                "summary": report[:5000],
+                "tokens": max(0, int(getattr(worker, "last_token_usage", 0) or 0)),
+                "node_count": len(package.node_ids), "estimated_cost": package.cost,
+            }
+
+        root = str(request.previous_checkpoint.get("architecture_schedule_root")
+                   or request.previous_checkpoint.get("run_id") or request.run_id)
+        scheduler = DynamicExplorationScheduler(
+            max_workers=int(self.settings.agent_architecture_scheduling_max_workers),
+            worker_seconds=float(self.settings.agent_architecture_scheduling_worker_seconds),
+        )
+        outcome = await scheduler.run(
+            root_run_id=root,
+            fingerprint=graph_fingerprint(impact, request.user_message,
+                                          request.project_file or self.project_file,
+                                          request.source_dir, request.test_dir),
+            items=items, total_tokens=remaining, worker=run_one,
+        )
+        return list(outcome.results), outcome.worker_tokens, outcome.plan
+
     async def prepare(self, request: OrchestrationRequest) -> OrchestrationPreparation:
         project_file = request.project_file or self.project_file
         if not project_file or not self.explorer_factory:
@@ -288,9 +349,13 @@ class ArchitectureAwareOrchestrator:
                     self.settings.agent_architecture_scheduling_max_workers,
                 ))),
             )
-            results, worker_tokens = await self._explore(
-                request, impact, decision, planner_tokens,
-            )
+            schedule = None
+            if request.run_id:
+                results, worker_tokens, schedule = await self._explore_dynamic(
+                    request, impact, decision, planner_tokens)
+            else:
+                results, worker_tokens = await self._explore(
+                    request, impact, decision, planner_tokens)
             if not any(item["status"] == "completed" for item in results):
                 return await self._fallback(request, "all graph explorers failed", planner_tokens + worker_tokens)
         except (asyncio.CancelledError, AgentInterrupted):
@@ -343,17 +408,25 @@ class ArchitectureAwareOrchestrator:
                 "partition_max_load": decision.max_load,
                 "partition_cut_weight": decision.cut_weight,
                 "partition_conflict": decision.conflict,
+                "schedule_id": schedule.id if schedule else "",
+                "schedule_root_run_id": schedule.root_run_id if schedule else "",
+                "schedule_revision": schedule.revision if schedule else 0,
                 "work_items": tuple({
-                    "id": package.id,
+                    "id": item.id,
                     "kind": "explore",
-                    "node_ids": package.node_ids,
+                    "node_ids": item.node_ids,
                     "read_only": True,
-                    "estimated_cost": package.cost,
-                } for package in decision.packages),
+                    "estimated_cost": item.cost,
+                    "slot": getattr(item, "slot", index),
+                    "assignment_revision": getattr(item, "revision", 0),
+                    "child_run_id": getattr(item, "child_run_id", ""),
+                } for index, item in enumerate(
+                    schedule.items if schedule else decision.packages)),
                 "packages": tuple(
                     {key: item[key] for key in (
                         "package", "status", "tokens", "node_count", "estimated_cost",
-                    )}
+                        "seconds", "slot",
+                    ) if key in item}
                     for item in results
                 ),
                 "planner_tokens": planner_tokens,
