@@ -32,7 +32,7 @@ from .models import (
     RetrieveMode, RecallResult, _utc_now, _utc_now_dt,
 )
 from .tokenizer import tokenize_for_fts, tokenize
-from .policy import MemoryRecallPolicy, MemoryWritePolicy
+from .policy import MemoryRecallPolicy, MemoryWritePolicy, normalize_subject as _normalize_subject
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +59,6 @@ def _jaccard_similarity(text_a: str, text_b: str) -> float:
     union = tokens_a | tokens_b
     return len(intersection) / len(union)
 
-
-def _normalize_subject(subject: str) -> str:
-    """规范化主题键: strip + lowercase + 折叠空白.
-
-    保证 LLM 输出的 subject 在存储侧稳定, 减少同主题漂移导致的碎片化。
-    """
-    return re.sub(r"\s+", " ", (subject or "").strip().lower())
 
 # ---------------------------------------------------------------------------
 # type alias

@@ -15,13 +15,13 @@ import {
   buildCompHTML, CHILD_HEIGHT, CHILD_WIDTH,
   componentThemeVisuals, getCompNodeSize,
 } from './compRenderUtils';
-import { useCanvasGraphViewport } from './core/useCanvasGraphViewport';
+import { centerCanvasAfterFirstSync, useCanvasGraphViewport } from './core/useCanvasGraphViewport';
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  centerCanvasContent, edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
+  edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
@@ -624,20 +624,7 @@ const CompEditor: React.FC = () => {
       prevCompIds.current = currentIds;
       isInternalUpdate.current = false;
 
-      if (
-        !_didFirstSync.current
-        && graph.getNodes().length > 0
-        && !(viewport.panX || viewport.panY)
-        && viewport.zoom === 1
-      ) {
-        _didFirstSync.current = true;
-        console.log('[CompEditor] First sync with elements, scheduling centerContent. Nodes:', graph.getNodes().length);
-        setTimeout(() => {
-          const g = graphRef.current;
-          if (!g) return;
-          centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
-        }, 200);
-      }
+      centerCanvasAfterFirstSync(graph, graphRef, _didFirstSync, viewport);
     } catch (err) {
       console.error('[CompEditor] Sync error:', err);
       isInternalUpdate.current = false;
@@ -657,17 +644,6 @@ const CompEditor: React.FC = () => {
       thickness: diagram.grid_thickness || 1,
     });
   }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
-
-  // ── Auto-center on recenter trigger ───────────────
-  const recenterCounter = useDiagramStore((s) => s.recenterCounter);
-  useEffect(() => {
-    if (recenterCounter <= 0) return;
-    setTimeout(() => {
-      const g = graphRef.current;
-      if (!g) return;
-      centerCanvasContent(g, useUiStore.getState().rightPanelWidth);
-    }, 100);
-  }, [recenterCounter]);
 
   const [showToolbar, setShowToolbar] = useState(true);
   const labels = getCanvasLabels(interfaceLanguage).componentDiagram;
