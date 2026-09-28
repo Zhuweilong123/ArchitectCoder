@@ -136,6 +136,7 @@ from app.services.agent_execution import (
     _archive_task_to_memory,
     _should_archive_task_memory,
     handle_agent_execution,
+    recent_conversation_history,
 )
 
 
@@ -928,6 +929,9 @@ class ChatSessionCoordinator:
                                         final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
                                         tool_calls_detail=checkpoint.get("tool_calls", []),
                                         run_id=reviewed_run_id, trace_id=trace_log.trace_id,
+                                        conversation_history=recent_conversation_history(
+                                            dev_agent, turns=4, exclude_latest_turn=True,
+                                        ),
                                     ))
                                 answer = (
                                     "设计变更已通过审核，任务已完成。"

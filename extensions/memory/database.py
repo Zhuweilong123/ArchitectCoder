@@ -613,7 +613,7 @@ class MemoryDatabase:
             (importance_min, insight_factor, project_id),
         )
         affected += cur.rowcount
-        # 耐久类: preference/decision/rejection/convention
+        # Durable memories: preference/decision/rejection/convention/operational_lesson
         cur = conn.execute(
             """UPDATE memories
                SET importance_score = MAX(?, importance_score * ?)

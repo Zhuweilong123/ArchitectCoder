@@ -109,7 +109,6 @@ class Settings(BaseSettings):
     agent_memory_db_path: str = ""
     agent_memory_recall_top_k: int = 3
     agent_memory_recall_max_tokens: int = 500
-    agent_memory_archive_max_tokens: int = 3000
 
     # Optional trace backend.  The Agent core only depends on the tracing
     # port; the default JSONL provider remains compatible with existing logs.

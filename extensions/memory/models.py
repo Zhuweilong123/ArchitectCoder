@@ -26,6 +26,7 @@ class MemoryType(str, Enum):
     REJECTION   = "rejection"    # 被拒绝的建议: "不要加 Observer 模式"
     CONVENTION  = "convention"   # 代码/设计规范: "项目统一使用 MVC 分层"
     INSIGHT     = "insight"      # LLM 总结的通用 insight
+    OPERATIONAL_LESSON = "operational_lesson"  # 已确认且可复用的工具/环境操作经验
 
 
 class RetrieveMode(str, Enum):

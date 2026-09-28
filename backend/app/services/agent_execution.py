@@ -260,6 +260,43 @@ def _finalize_terminal_checkpoint(
         })
     return terminal_status, todos
 
+
+def recent_conversation_history(
+    agent: ReActAgent,
+    *,
+    turns: int = 4,
+    exclude_latest_turn: bool = False,
+) -> tuple[dict[str, str], ...]:
+    """Return the latest complete user/assistant turns without truncating text."""
+    messages: list[tuple[str, str]] = []
+    for item in getattr(agent, "_history", ()) or ():
+        if isinstance(item, dict):
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "")
+        else:
+            role = str(getattr(item, "role", "") or "")
+            content = str(getattr(item, "content", "") or "")
+        if role in {"user", "assistant"}:
+            messages.append((role, content))
+
+    completed_turns: list[tuple[tuple[str, str], tuple[str, str]]] = []
+    pending_user: tuple[str, str] | None = None
+    for message in messages:
+        if message[0] == "user":
+            pending_user = message
+        elif pending_user is not None:
+            completed_turns.append((pending_user, message))
+            pending_user = None
+
+    if exclude_latest_turn and completed_turns:
+        completed_turns = completed_turns[:-1]
+    selected = completed_turns[-max(0, turns):] if turns > 0 else []
+    return tuple(
+        {"role": role, "content": content}
+        for turn in selected
+        for role, content in turn
+    )
+
 async def _archive_task_to_memory(
     memory: MemoryPort,
     project_id: str,
@@ -268,6 +305,7 @@ async def _archive_task_to_memory(
     tool_calls_detail: list[dict],
     run_id: str = "",
     trace_id: str = "",
+    conversation_history: tuple[dict[str, str], ...] = (),
 ) -> None:
     try:
         result = await memory.archive(MemoryArchiveRequest(
@@ -277,6 +315,7 @@ async def _archive_task_to_memory(
             tool_steps=tuple(tool_calls_detail or ()),
             run_id=run_id,
             trace_id=trace_id,
+            conversation_history=conversation_history,
         ))
         logger.info(
             "[Memory] Archived task to memory (project=%s, stored=%d)",
@@ -501,6 +540,7 @@ async def _publish_terminal_execution(
     run_id: str,
     run_owner: str,
     session_id: str,
+    conversation_history: tuple[dict[str, str], ...],
     trace_log: TraceSink | None,
     send: Callable[[dict], Awaitable[bool]],
     write_task_summary: Callable[[str], None],
@@ -570,6 +610,7 @@ async def _publish_terminal_execution(
                 tool_calls_detail=task_tool_calls,
                 run_id=run_id,
                 trace_id=trace_log.trace_id if trace_log else "",
+                conversation_history=conversation_history,
             ))
 
     if trace_log:
@@ -996,6 +1037,7 @@ async def handle_agent_execution(
             run_id,
             orchestration_phase,
         )
+        archive_conversation_history = recent_conversation_history(agent, turns=4)
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
             agent.on_context_compacted = lambda report: trace_log.context_compacted(
@@ -1165,6 +1207,7 @@ async def handle_agent_execution(
                         run_id=run_id,
                         run_owner=run_owner,
                         session_id=session_id,
+                        conversation_history=archive_conversation_history,
                         trace_log=trace_log,
                         send=send,
                         write_task_summary=_write_task_summary,
@@ -1239,6 +1282,7 @@ async def handle_agent_execution(
                     run_id=run_id,
                     run_owner=run_owner,
                     session_id=session_id,
+                    conversation_history=archive_conversation_history,
                     trace_log=trace_log,
                     send=send,
                     write_task_summary=_write_task_summary,
