@@ -19,7 +19,7 @@ The built-in entry points are:
 The complete built-in implementations live in the corresponding extension
 package:
 
-- `orchestration/`: contracts, planner/orchestrator and provider adapter
+- `orchestration/`: architecture-aware graph exploration, partitioning and scheduling
 - `memory/`: SQLite memory manager, lifecycle, policies, models and provider
 - `trace/`: trace writer, reader, replay engine and provider adapter
 - `evals/`: evaluation models, catalog, runner, checkers, batches, provider and plugin-owned API routers

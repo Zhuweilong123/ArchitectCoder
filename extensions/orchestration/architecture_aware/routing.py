@@ -39,19 +39,32 @@ def _compact_map(raw: Any, requirement: str) -> dict[str, Any]:
     } if anchors else {}
 
 
-async def routing_map(settings: Any, project_file: str, requirement: str) -> dict[str, Any]:
-    """Read only a bounded architecture map; never schedule workers here."""
-    if not project_file or not getattr(settings, "agent_knowledge_graph_enabled", False):
-        return {}
+async def routing_map(
+    settings: Any, project_file: str, requirement: str,
+) -> tuple[dict[str, Any], str]:
+    """Read a bounded map and distinguish an empty map from an unavailable graph."""
+    if not project_file:
+        return {}, "project file is unavailable"
+    if not getattr(settings, "agent_knowledge_graph_enabled", False):
+        return {}, "knowledge graph is disabled"
     try:
         provider = load_knowledge_graph(settings=settings, project_file=project_file)
         project_id = project_id_for(project_file)
+        facts = await asyncio.wait_for(
+            asyncio.to_thread(provider.contract_facts, project_id, 1), timeout=3.0,
+        )
+        if not isinstance(facts, dict) or not facts.get("available"):
+            reason = str((facts or {}).get("error") or "project graph is unavailable or empty")
+            return {}, reason[:300]
         raw = await asyncio.wait_for(
             asyncio.to_thread(provider.map_project, project_id, 8), timeout=3.0,
         )
-        return _compact_map(raw, requirement)
-    except Exception:
-        return {}
+        if not isinstance(raw, dict) or raw.get("error"):
+            reason = str(raw.get("error") if isinstance(raw, dict) else "invalid graph response")
+            return {}, reason[:300]
+        return _compact_map(raw, requirement), ""
+    except Exception as exc:
+        return {}, f"graph routing lookup failed: {type(exc).__name__}: {exc}"[:300]
 
 
 def routing_context(graph_map: dict[str, Any]) -> str:

@@ -89,12 +89,6 @@ def test_settings_points_managed_plugins_at_extensions_directory():
     assert settings.agent_knowledge_graph_provider == "extensions.knowledge_graph:create"
 
 
-def test_settings_planner_budget_has_reasoning_headroom():
-    settings = _settings()
-
-    assert settings.agent_planner_max_tokens == 3000
-
-
 def test_settings_resolves_relative_storage_from_backend_directory():
     settings = _settings(uml_dir="../temp/uml_files")
 

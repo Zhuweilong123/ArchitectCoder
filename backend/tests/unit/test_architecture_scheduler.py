@@ -77,13 +77,21 @@ def test_schedule_rejects_stale_assignment_result(tmp_path):
     assert store.get("schedule").items[0].result is None
 
 
-def test_prepare_only_advertises_demand_tool_without_model_call():
+def test_prepare_only_advertises_demand_tool_without_model_call(monkeypatch):
+    async def fake_routing_map(*_args):
+        return {}, ""
+
+    monkeypatch.setattr(
+        "extensions.orchestration.architecture_aware.provider.routing_map",
+        fake_routing_map,
+    )
+
     class LLM:
         async def ainvoke_with_metadata(self, messages, **kwargs):
             raise AssertionError("preparation must not call the planner")
 
     provider = ArchitectureAwareOrchestrator(
-        llm=LLM(), settings=SimpleNamespace(),
+        llm=LLM(), settings=SimpleNamespace(agent_knowledge_graph_enabled=True),
         project_file="trade.umlproj", source_dir="src", test_dir="test",
         explorer_factory=object(),
     )
@@ -92,7 +100,6 @@ def test_prepare_only_advertises_demand_tool_without_model_call():
     )))
 
     assert result.metadata["architecture_scheduling"] == "demand_driven_ready"
-    assert result.token_overhead == 0
     assert "explore_architecture" in result.context
 
 
@@ -111,7 +118,7 @@ def test_prepare_without_demand_tool_has_no_architecture_context():
 
     assert result.metadata["architecture_scheduling"] == "unavailable"
     assert result.context == ""
-    assert result.token_overhead == 0
+    assert result.excluded_tools == ("route_architecture", "explore_architecture")
 
 
 def test_file_evidence_stays_inside_project_roots(tmp_path):

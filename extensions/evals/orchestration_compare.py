@@ -23,10 +23,8 @@ CASE_FILES = {
     "trade-orchestration-demand-001": "trade_orchestration_demand_001.json",
 }
 ARMS = {
-    "A": {"AGENT_ORCHESTRATION_ENABLED": "false",
-          "AGENT_ARCHITECTURE_SCHEDULING_ENABLED": "false"},
-    "C": {"AGENT_ORCHESTRATION_ENABLED": "true",
-          "AGENT_ARCHITECTURE_SCHEDULING_ENABLED": "true"},
+    "A": {"AGENT_ORCHESTRATION_ENABLED": "false"},
+    "C": {"AGENT_ORCHESTRATION_ENABLED": "true"},
 }
 SHARED_ENV = {
     "AGENT_MAIN_SUBAGENT_ENABLED": "false",
@@ -60,6 +58,7 @@ def _implementation_hash(case_id: str) -> str:
         root / "backend/evals/hidden_tests/project_trade/test_paid_cancel.py",
         root / "backend/app/agent_base/core/orchestration.py",
         root / "backend/app/agent_base/tools/my_tools/conversation_tools.py",
+        root / "backend/config/settings.py",
         root / "backend/app/services/agent_execution.py",
         root / "extensions/evals/runner.py",
         root / "extensions/evals/graph_fixture.py",
@@ -143,7 +142,6 @@ def _trace_metrics(path: str) -> dict[str, Any]:
     pre_demand_files = set(pre_demand)
     post_demand = [file for index, _, file in reads
                    if first_demand is not None and index > first_demand and file]
-    plans = [event for event in events if event.get("event_type") == "orchestrator_plan"]
     reports = []
     demand_calls = 0
     route_calls = 0
@@ -184,8 +182,6 @@ def _trace_metrics(path: str) -> dict[str, Any]:
                 finding.get("seconds") or 0
             )
     loads = list(slot_seconds.values())
-    prerun_planner_tokens = sum(int(plan.get("planner_tokens") or 0) for plan in plans)
-    prerun_worker_tokens = sum(int(plan.get("worker_tokens") or 0) for plan in plans)
     demand_worker_tokens = sum(int(report.get("worker_tokens") or 0) for report in reports)
     return {
         "main_read_calls_before_edit": len(pre_edit),
@@ -211,11 +207,9 @@ def _trace_metrics(path: str) -> dict[str, Any]:
         "direct_decisions": direct_decisions,
         "recorded_route_reasons": recorded_reasons,
         "scheduler_ms": round(scheduler_ms, 1),
-        "prerun_planner_tokens": prerun_planner_tokens,
-        "prerun_worker_tokens": prerun_worker_tokens,
         "demand_worker_tokens": demand_worker_tokens,
-        "worker_tokens": prerun_worker_tokens + demand_worker_tokens,
-        "delegated": prerun_worker_tokens > 0 or bool(findings),
+        "worker_tokens": demand_worker_tokens,
+        "delegated": bool(reports),
         "worker_items": len(findings),
         "grounded_items": sum(bool(item.get("tool_evidence")) for item in findings),
         "structured_evidence_items": sum(len(item.get("evidence") or ()) for item in findings),

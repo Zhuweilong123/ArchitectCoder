@@ -60,8 +60,8 @@ Requirement
 | `backend/app/agent_base/core/knowledge_graph.py` | `locate`、`expand`、`impact`、`contract_facts`、`index_facts`、`sync_facts` | 可版本化的有界子图查询、覆盖率与截断元数据、调度特征 |
 | `extensions/knowledge_graph/` | SQLite 图存储、UML/源码关系、ArtifactFacts 投影与增量同步 | 面向变更语义的影响分析、层级摘要、待解析和陈旧状态 |
 | `extensions/knowledge_graph/tools.py` 的 `impact()` | 反向邻接 BFS，区分直接与传递依赖 | 按关系与变更类型传播，返回证据、停止原因和未展开边界 |
-| `backend/app/agent_base/core/orchestration.py` | `prepare()`、运行时建议、NoOp 与加载失败降级 | 版本化计划、结果反馈及重新规划协议 |
-| `extensions/orchestration/orchestrator.py` | 有界规划、按需一次只读策略探索 | 工作图构建、成本模型、分区与分配策略 |
+| `backend/app/agent_base/core/orchestration.py` | `prepare()` 稳定接口、NoOp 与加载失败降级 | 版本化计划、结果反馈及重新规划协议 |
+| `extensions/orchestration/architecture_aware/` | 图谱影响分析、成本估计、分区、分派和按需只读探索 | 跨运行的全局资源协调 |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | 子 Agent 工具包、预算、Trace 和证据 | 结构化工作包输入/结果、子 Run 身份、生命周期适配 |
 | `backend/app/agent_base/tools/task_system.py` | JSON 任务存储、DAG、claim/complete、worktree | 分区归属、计划版本、剩余工作状态与原子调度 |
 | `backend/app/services/run_state.py` | SQLite Run 状态与租约 | 父子执行关联、调度恢复适配 |
@@ -430,7 +430,7 @@ revise(plan, execution_feedback, graph_delta)   → PlanRevision
 
 继续遵循此前约定：关闭新策略后恢复当前执行行为，包括已有独立的主 Agent 子代理配置。无需为此先建设通用编排平台。
 
-当前实现采用 `agent_architecture_scheduling_enabled` 布尔开关，默认 `false`。关闭时工厂直接返回原有 `LLMOrchestrator`，不会调用新图谱策略；原有 `AGENT_ORCHESTRATION_ENABLED=false` 仍返回 NoOp。开启时需同时启用原编排和知识图谱；图谱不可用或无法形成可靠切片时，`explore_architecture` 返回失败原因，由主 Agent 使用现有工具继续探索。用户现有的主 Agent 子代理开关保持独立。
+收缩后只保留一个编排总开关 `AGENT_ORCHESTRATION_ENABLED`。关闭时插件不加载，主 Agent 走单 Agent 流程；开启且项目图谱可用时提供架构感知调度。开启但图谱、项目或只读探索器不可用时，记录原因、移除架构调度工具并继续走单 Agent 流程，不再回退到通用 LLM 规划器。主 Agent 自身的子代理开关保持独立。
 
 当前 Settings 按进程缓存，配置切换需要重启后端。checkpoint 保存首次运行的图谱调度模式、计划版本和根 Run 标识；恢复时不将原本关闭的任务自动切入图谱调度，显式关闭开关仍立即退回现有流程。恢复会重新检查图谱和文件指纹，不匹配时建立新计划，不能复用旧摘要。
 
@@ -507,7 +507,7 @@ P0 先证明图谱能产生可靠工作包；P1 检验探索成本与委派价�
 
 ## 17. 第一版实施状态与启用方式
 
-第一版的独立实现位于 `extensions/orchestration/architecture_aware/`。现有 `extensions.orchestration:create` 工厂在新开关开启时构造该组件；新开关关闭时仍返回原 `LLMOrchestrator`。若原编排开关关闭，仍由插件管理器提供原有 NoOp 路径。
+实现位于 `extensions/orchestration/architecture_aware/`。`extensions.orchestration:create` 只创建架构感知调度器；编排总开关关闭时由插件管理器提供 NoOp 路径。图谱不可用时，Provider 返回带原因的不可用状态，不再启动通用规划器。
 
 要启用图谱调度，需同时设置：
 
@@ -515,7 +515,6 @@ P0 先证明图谱能产生可靠工作包；P1 检验探索成本与委派价�
 AGENT_ORCHESTRATION_ENABLED=true
 AGENT_ORCHESTRATOR_PROVIDER=extensions.orchestration:create
 AGENT_KNOWLEDGE_GRAPH_ENABLED=true
-AGENT_ARCHITECTURE_SCHEDULING_ENABLED=true
 ```
 
 当前代码新增的可选参数为 `AGENT_ARCHITECTURE_SCHEDULING_MAX_WORKERS`（默认 2，上限 2）、`AGENT_ARCHITECTURE_SCHEDULING_TOTAL_TOKENS`（默认 32000，探索阶段分配额度）和 `AGENT_ARCHITECTURE_SCHEDULING_WORKER_SECONDS`（默认 90）。环境变量变更后按现有 Settings 生命周期重启 backend。
@@ -528,7 +527,7 @@ AGENT_ARCHITECTURE_SCHEDULING_ENABLED=true
 4. 组件按文件边界构建只读探索单元，依据探索成本、跨组关系与负载目标分区。无法形成有价值的并行切片时返回 `not_delegated`，主 Agent 直接核查。
 5. 可以并行时，组件分配共享探索预算、最多两个只读 `strategy` 子 Agent，并通过 `ExplorationReport` 返回证据摘要、未解决项、分区评分、计划修订号及子 Run 标识。主 Agent 保留全部修改、审核、checkpoint、验证和终态职责。
 
-`ExplorationDemand`、`ExplorationReport` 和 `ExplorationPort` 定义在 Agent 核心接口层；路由工具、图谱影响分析、分区及调度策略定义在可选扩展内。主流程只依赖工具注册和原有 `prepare()` 端口。子 Agent 的累计 Token 限制在下一次模型请求前根据估计上下文检查；单次请求的实际用量可高于估计，因此不是绝对计费上限。Trace 的 `route_architecture` 调用及结果分别记录 `direct` / `explore` 和决策原因；只有 `explore` 才会进入调度器。预运行 `orchestrator_plan` 记录 `demand_driven_ready`、地图节点/候选名称数量和零规划/工作 Token。
+`ExplorationDemand`、`ExplorationReport` 和 `ExplorationPort` 定义在 Agent 核心接口层；路由工具、图谱影响分析、分区及调度策略定义在可选扩展内。主流程只依赖工具注册和 `prepare()` 端口。子 Agent 的累计 Token 限制在下一次模型请求前根据估计上下文检查；单次请求的实际用量可高于估计，因此不是绝对计费上限。Trace 的 `route_architecture` 调用及结果分别记录 `direct` / `explore` 和决策原因；只有 `explore` 才会进入调度器。`orchestration_preparation` 记录调度可用状态、不可用原因和路由图信息；准备阶段不再调用规划 LLM 或启动探索 Agent。
 
 当前成本系数与 `1/3/5` 关系权重是固定启发式，不是从评测拟合的结果。当前版本使用现有图谱实体和直接邻居；源码层需要已有索引，若索引只含设计层，子 Agent 会继续核对源码。现有源码图谱对语言和动态关系的覆盖有限；持久化的是所选影响切片的指纹、工作归属和摘要，不是完整版本化图快照。尚未实现新依赖触发的工作图扩张或隔离并行写入。代码/索引不一致时，主 Agent 仍须核对文件事实。
 

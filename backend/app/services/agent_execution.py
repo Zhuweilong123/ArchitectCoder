@@ -34,7 +34,6 @@ from app.agent_base.core.hooks import (
 from app.agent_base.core.memory import MemoryArchiveRequest, MemoryPort
 from app.agent_base.core.orchestration import (
     OrchestrationRequest,
-    apply_runtime_directives,
     exclude_tools,
     load_orchestrator,
 )
@@ -405,11 +404,11 @@ async def _prepare_orchestration(
     trace_log: TraceSink | None,
     run_id: str,
 ) -> tuple[str, Any, str]:
-    """Plan an Agent run and return its augmented context and tool allowlist."""
+    """Prepare optional architecture routing and return its tool allowlist."""
     logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
     settings = get_settings()
     if resume_checkpoint.get("architecture_scheduling_mode") is False:
-        settings = settings.model_copy(update={"agent_architecture_scheduling_enabled": False})
+        settings = settings.model_copy(update={"agent_orchestration_enabled": False})
     orchestrator = load_orchestrator(
         llm=agent.llm,
         settings=settings,
@@ -423,8 +422,6 @@ async def _prepare_orchestration(
         run_id,
         type(orchestrator).__name__,
     )
-    if trace_log:
-        trace_log.event("orchestrator_phase", phase="plan", status="started")
     result = await orchestrator.prepare(OrchestrationRequest(
         user_message=user_message,
         project_file=project_file,
@@ -436,24 +433,34 @@ async def _prepare_orchestration(
     ))
     if trace_log:
         trace_log.event(
-            "orchestrator_plan",
+            "orchestration_preparation",
             **result.metadata,
             phase=result.phase,
-            token_overhead=result.token_overhead,
         )
-        if result.phase == "explore":
-            trace_log.event(
-                "orchestrator_phase",
-                phase="explore",
-                status="completed",
-                worker_tokens=result.metadata.get("worker_tokens", 0),
-            )
-    apply_runtime_directives(result.runtime_directives)
+    scheduling_available = (
+        result.metadata.get("architecture_scheduling") == "demand_driven_ready"
+    )
+    get_runtime().policy_metadata["architecture_scheduling_enabled"] = scheduling_available
+    if not scheduling_available:
+        reason = str(
+            result.metadata.get("architecture_scheduling_reason")
+            or result.metadata.get("architecture_scheduling")
+            or "orchestration is disabled"
+        )
+        log = (
+            logger.warning
+            if result.metadata.get("architecture_scheduling") == "unavailable"
+            else logger.info
+        )
+        log(
+            "[AgentExecution] architecture scheduling unavailable; using single-agent path: %s",
+            reason,
+        )
     if result.context:
         context = "\n\n".join(filter(None, [context, result.context]))
     excluded_tools = result.excluded_tools
-    if not getattr(settings, "agent_architecture_scheduling_enabled", False):
-        excluded_tools = (*excluded_tools, "explore_architecture")
+    if not getattr(settings, "agent_orchestration_enabled", False):
+        excluded_tools = (*excluded_tools, "route_architecture", "explore_architecture")
     allowed_tools = None
     if excluded_tools:
         allowed_tools = exclude_tools(
@@ -818,7 +825,8 @@ async def handle_agent_execution(
             or resume_checkpoint.get("run_id") or run_id
         ),
         "architecture_scheduling_mode": bool(
-            get_settings().agent_architecture_scheduling_enabled
+            get_settings().agent_orchestration_enabled
+            and get_settings().agent_knowledge_graph_enabled
             and resume_checkpoint.get("architecture_scheduling_mode") is not False
         ),
         "architecture_schedule_version": 2,

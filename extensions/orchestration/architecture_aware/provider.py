@@ -219,44 +219,56 @@ class ArchitectureAwareOrchestrator:
 
     async def prepare(self, request: OrchestrationRequest) -> OrchestrationPreparation:
         route_available = "route_architecture" in request.available_tools
-        available = route_available or "explore_architecture" in request.available_tools
-        graph_map = await routing_map(self.settings, self.project_file, request.user_message) if available else {}
+        explore_available = "explore_architecture" in request.available_tools
+        tools_available = route_available or explore_available
+        if tools_available:
+            graph_map, graph_reason = await routing_map(
+                self.settings, self.project_file, request.user_message,
+            )
+        else:
+            graph_map, graph_reason = {}, "architecture scheduling tools were not registered"
+        available = tools_available and not graph_reason
+        excluded_tools = () if available else (
+            "route_architecture", "explore_architecture",
+        )
+        context = ""
+        if available:
+            if route_available:
+                context = (
+                    "Architecture exploration decision checkpoint: for a task with an unclear "
+                    "dependency path or several likely components, decide before broad file "
+                    "reading whether a narrow direct lookup suffices or graph-guided read-only "
+                    "exploration would help. Prefer exploration when several business "
+                    "capabilities are involved and source relationships are unverified. "
+                    "Use route_architecture with decision=direct or "
+                    "decision=explore and a brief reason; only explore requires a specific goal "
+                    "and 1-4 observed graph names. The scheduler may still decline delegation. "
+                    "For a clearly local edit, continue normally without a checkpoint call. "
+                    "After delegated exploration, inspect exact edit sites and unresolved "
+                    "dependencies rather than repeating broad reads. "
+                    + routing_context(graph_map)
+                )
+            else:
+                context = (
+                    "For a change spanning several components or with an unclear dependency "
+                    "path, request explore_architecture before broad source reading. Use a "
+                    "specific goal and 1-4 observed graph names. For a clear local edit, "
+                    "continue normally. " + routing_context(graph_map)
+                )
         return OrchestrationPreparation(
-            context_blocks=((
-                "Architecture exploration decision checkpoint: for a task with an unclear "
-                "dependency path or several likely components, decide before broad file "
-                "reading whether a narrow direct lookup suffices or graph-guided read-only "
-                "exploration would help. Prefer exploration when several business "
-                "capabilities are involved and source relationships are unverified. "
-                "Use route_architecture with decision=direct or "
-                "decision=explore and a brief reason; only explore requires a specific goal "
-                "and 1-4 observed graph names. The scheduler may still decline delegation. "
-                "For a clearly local edit, continue normally without a checkpoint call. "
-                "The existing explore_architecture tool remains available for a direct "
-                "exploration request. "
-                "After delegated exploration, inspect exact edit sites and unresolved "
-                "dependencies rather than repeating broad reads. "
-                + routing_context(graph_map)
-            ) if route_available else (
-                "For a change spanning several components or with an unclear dependency "
-                "path, request explore_architecture before broad source reading. Use a "
-                "specific goal and 1-4 observed graph names. For a clear local edit, "
-                "continue normally. " + routing_context(graph_map)
-            ),) if available else (),
-            phase="plan",
+            context_blocks=(context,) if context else (),
+            excluded_tools=excluded_tools,
+            phase="ready" if available else "unavailable",
             metadata={
                 "architecture_scheduling": "demand_driven_ready" if available else "unavailable",
+                "architecture_scheduling_reason": graph_reason,
                 "architecture_route_map_nodes": graph_map.get("graph_nodes", 0),
                 "architecture_route_candidates": len(graph_map.get("candidate_names", ())),
-                "planner_tokens": 0,
-                "worker_tokens": 0,
             },
         )
 
     async def explore(self, demand: ExplorationDemand) -> ExplorationReport:
         """Schedule read-only graph exploration in response to a main-Agent tool call."""
-        if not getattr(self.settings, "agent_architecture_scheduling_enabled", False):
-            return ExplorationReport(status="unavailable", reason="architecture scheduling disabled")
         if not self.project_file or not self.explorer_factory:
             return ExplorationReport(status="unavailable", reason="project graph or explorer unavailable")
         if not getattr(self.settings, "agent_knowledge_graph_enabled", False):

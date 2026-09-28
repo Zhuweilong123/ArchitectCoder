@@ -77,26 +77,16 @@ class Settings(BaseSettings):
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
 
-    # Main-flow orchestration knobs. The planner is deliberately small and the
-    # optional strategy worker is bounded so orchestration cannot consume the
-    # task budget before the main agent starts.
-    # Reasoning models may spend part of completion_tokens before emitting
-    # their JSON plan. Keep enough headroom to avoid empty/truncated plans.
-    agent_planner_max_tokens: int = 3000
-    agent_planner_timeout_seconds: float = 30.0
     # Independent budget for a main-agent-managed subagent.  This budget is
     # deliberately separate from the main agent's per-run execution budget.
     agent_subagent_per_run_execution_budget_tokens: int = 500000
     # Main-agent-managed subagent entry point. The optional orchestration layer
     # remains independently controlled by agent_orchestration_enabled.
     agent_main_subagent_enabled: bool = True
-    # Keep the optional planner/explorer path disabled until its hand-off and
-    # tool-routing behavior is revalidated. The core falls back to NoOp.
+    # Optional architecture-aware scheduling. Disabling it preserves the
+    # single-Agent flow; enabling it requires an available project graph.
     agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
-    # Optional graph-guided read-only scheduling inside the existing provider.
-    # Disabled means the provider keeps its current planner/explorer behavior.
-    agent_architecture_scheduling_enabled: bool = False
     agent_architecture_scheduling_max_workers: int = 2
     agent_architecture_scheduling_total_tokens: int = 32000
     agent_architecture_scheduling_worker_seconds: float = 90.0

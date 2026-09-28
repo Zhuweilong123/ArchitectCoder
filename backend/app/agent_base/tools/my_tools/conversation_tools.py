@@ -174,7 +174,6 @@ def create_conversation_tools(
     if (
         project_file
         and settings.agent_orchestration_enabled
-        and settings.agent_architecture_scheduling_enabled
         and settings.agent_knowledge_graph_enabled
     ):
         from .subagent_tool import SpawnSubagentTool
