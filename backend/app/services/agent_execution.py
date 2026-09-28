@@ -1116,9 +1116,19 @@ async def handle_agent_execution(
                     message=contract_message,
                     phase="pre_commit",
                 )
-                if contract_result is not None:
-                    agent.last_run_checkpoint["contract_check"] = contract_result.to_dict()
-                    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                contract_checkpoint = (
+                    contract_result.to_dict() if contract_result is not None else {
+                        "status": "skipped",
+                        "changed_paths": [],
+                        "violations": [],
+                    }
+                )
+                contract_checkpoint.update({
+                    "allowed": bool(contract_ok),
+                    "decision_message": contract_message or "",
+                })
+                agent.last_run_checkpoint["contract_check"] = contract_checkpoint
+                _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 if not contract_ok:
                     rollback_completed = False
                     candidate_artifact = None
