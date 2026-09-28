@@ -166,9 +166,9 @@ def create_conversation_tools(
         from app.agent_base.tools.task_system import create_task_system_tools
         tools.extend(create_task_system_tools(scope=task_scope))
 
-    # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
-    # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
-    # 关闭或 Provider 不可用时不会注册任何 KG 工具。
+    # Architecture scheduling contributes only its routing/exploration tools.
+    # The scheduler queries the KG provider internally; standalone KG tools
+    # remain available from the plugin factory but are not main-Agent tools.
     from app.agent_base.core.plugins import get_plugin_manager
     settings = get_settings()
     if (
@@ -191,18 +191,6 @@ def create_conversation_tools(
             },
             default=[],
         ))
-
-    tools.extend(get_plugin_manager().load_contribution(
-        "knowledge_graph",
-        "create_tools",
-        settings=get_settings(),
-        kwargs={
-            "project_file": project_file,
-            "source_dir": source_dir,
-            "include_compare": False,
-        },
-        default=[],
-    ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool

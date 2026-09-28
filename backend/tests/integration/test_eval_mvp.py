@@ -364,7 +364,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
         list_tool = next(tool for tool in tools if tool.name == "list_files")
         read_tool = next(tool for tool in tools if tool.name == "read_file")
         task_tool = next(tool for tool in tools if tool.name == "run_task")
-        listed = await list_tool._execute({"path": "design", "pattern": "*.umlproj"})
+        listed = await list_tool._execute({"path": "design", "pattern": "*.umlproj", "details": False})
         content = await read_tool._execute({"path": "design/radar_design_0730.umlproj"})
         validated = await task_tool._execute({
             "task": "validate", "target": "design/radar_design_0730.umlproj",

@@ -28,6 +28,7 @@ from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, Host
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
+from app.agent_base.tools.my_tools.file_inventory import file_metrics
 from app.core.risk_policy import RiskDecision, RiskPolicy
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 SHELL_TIMEOUT = 120  # 秒
 SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
+LIST_FILES_OUTPUT_CAP = 3500  # Keep broad inventories below the shared tool-output truncation limit.
 
 
 def _decode_output(data: bytes) -> str:
@@ -332,16 +334,22 @@ class ReadFileTool(AsyncTool):
         }
 
 
-class ListFilesTool(AsyncTool):
-    """按 glob 模式在 workspace 内查找文件。"""
+class BaseListFilesTool(AsyncTool):
+    """Shared glob listing and file metrics for workspace tools."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(
             name="list_files",
             description=(
-                "Find files in the workspace matching a glob pattern "
-                "(e.g. '**/*.py', 'src/*.ts'). Returns relative paths."
+                "List workspace files with compact metrics. B=bytes, L=physical lines, "
+                "S=symbol hints, I=interface hints, D=dependency-statement hints; "
+                "S/I/D are approximate. A nested relative path is relative to its "
+                "configured root (e.g. path='trade_sys/services'); alternatively use "
+                "path='source', pattern='trade_sys/services/**'. Do not prefix a "
+                "nested path with the alias (avoid path='source/trade_sys/services'). "
+                "When asked for an overview, summarize counts and largest files; group "
+                "full inventories by directory when the user asks for all files."
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
@@ -352,22 +360,66 @@ class ListFilesTool(AsyncTool):
         pattern = params.get("pattern", "")
         if not self._roots:
             return "(no workspace)"
-        return self._format_matches(self._roots, pattern)
+        return await asyncio.to_thread(
+            self._format_matches, self._roots, pattern,
+            details=params.get("details") is not False,
+            limit=self._result_limit(params.get("limit")),
+        )
 
-    def _format_matches(self, roots: list[str], pattern: str) -> str:
-        results: list[str] = []
+    @staticmethod
+    def _result_limit(value: object) -> int:
+        try:
+            return max(1, min(int(value), 1000)) if value is not None else 200
+        except (TypeError, ValueError):
+            return 200
+
+    def _format_matches(self, roots: list[str], pattern: str, *,
+                        details: bool = True, limit: int = 200) -> str:
+        selected: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        total = 0
         for root in roots:
             rp = Path(root).resolve()
             try:
-                matches = _glob.glob(pattern, root_dir=rp, recursive=True)
+                matches = _glob.iglob(pattern, root_dir=rp, recursive=True)
             except Exception:
                 continue
             for match in matches:
-                if (rp / match).resolve().is_relative_to(rp):
-                    results.append(str(match))
-        seen: set[str] = set()
-        uniq = [r for r in results if not (r in seen or seen.add(r))]
-        return "\n".join(uniq) if uniq else "(no matches)"
+                candidate = (rp / match).resolve()
+                name = str(match)
+                if not candidate.is_relative_to(rp) or name in seen:
+                    continue
+                seen.add(name)
+                total += 1
+                if len(selected) < limit:
+                    selected.append((name, candidate))
+        if not total:
+            return "(no matches)"
+        header = (
+            "B=bytes L=physical lines S=symbol hints I=interface hints "
+            "D=dependency-statement hints; S/I/D are approximate."
+            if details else ""
+        )
+        rows = [header] if header else []
+        truncated_by_chars = False
+        for name, path in selected:
+            metrics = file_metrics(path) if details else ""
+            row = f"{name}\t{metrics}" if metrics else name
+            candidate_rows = rows + [row]
+            if len("\n".join(candidate_rows)) > LIST_FILES_OUTPUT_CAP:
+                truncated_by_chars = True
+                break
+            rows.append(row)
+        shown = len(rows) - int(bool(header))
+        if total > shown:
+            reason = "output size" if truncated_by_chars else "entry limit"
+            notice = f"[truncated: showing {shown} of {total} entries ({reason}); narrow path/pattern]"
+            while rows and len("\n".join(rows + [notice])) > LIST_FILES_OUTPUT_CAP:
+                rows.pop()
+                shown -= 1
+                notice = f"[truncated: showing {shown} of {total} entries ({reason}); narrow path/pattern]"
+            rows.append(notice)
+        return "\n".join(rows)
 
     def to_openai_schema(self) -> dict:
         return {
@@ -379,6 +431,8 @@ class ListFilesTool(AsyncTool):
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'."},
+                        "details": {"type": "boolean", "description": "Include file metrics (default true)."},
+                        "limit": {"type": "integer", "description": "Maximum entries (default 200, maximum 1000); response also has a character cap."},
                     },
                     "required": ["pattern"],
                 },

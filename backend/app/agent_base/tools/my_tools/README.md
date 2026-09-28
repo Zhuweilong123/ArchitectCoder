@@ -40,7 +40,7 @@
 |---|---|---|
 | `conversation_tools.py` | `AsyncTool` 基类 + `ProgressRelay` + `create_conversation_tools()` | 工具基类、子 Agent 进度转发、会话工具工厂 |
 | `foundation_tools.py` | `list_files` / `read_file` / `search_text` / `apply_changes` / `run_program` / `run_task` / `shell` | DevAgent 与子代理共享的能力契约；统一路径、执行与审核策略 |
-| `foundation_runtime.py` | `ReadFileTool` / `ListFilesTool` / `SearchTextTool` / `ShellTool` | foundation 工具的路径、搜索和执行实现 |
+| `foundation_runtime.py` | `ReadFileTool` / `BaseListFilesTool` / `SearchTextTool` / `ShellTool` | foundation 工具的路径、搜索和执行实现；`BaseListFilesTool` 提供文件枚举与指标计算 |
 | `todo_tools.py` | `TodoWriteTool` | 会话级任务列表（`todo_write`） |
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
@@ -52,7 +52,7 @@
 | 工具 | 内部实现 | 功能 |
 |---|---|---|
 | `read_file` | `ReadFileTool` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `list_files` | `ListFilesTool` | 按路径和 glob 模式列出工作区文件 |
+| `list_files` | `ListFilesTool` | 按路径和 glob 模式列出文件及 `bytes`、`lines`、`symbol_hints`、`interface_hints`、`dependency_hints`；`details=false` 仅返回路径 |
 | `search_text` | `SearchTextTool` | 在工作区内搜索文本 |
 | `apply_changes` | `ApplyChangesTool` | 应用结构化文件修改并返回变更证据 |
 | `run_program` | `RunProgramTool` | 运行受约束的程序并返回结果 |
@@ -65,6 +65,8 @@
 | `submit_uml_review` | `SubmitUmlReviewTool` | UML diff 人工审核（暂停等待 accept/reject） |
 
 删除操作不再单独暴露 `delete_path`；需要删除明确目标时使用受安全策略约束的 `apply_changes` 或 `shell`。
+
+`list_files` 每行使用紧凑字段，开头只解释一次 `B=bytes L=physical lines S=symbol hints I=interface hints D=dependency-statement hints`。S/I/D 是跨语言文本估计，不代表完整符号表、接口定义或依赖边。默认最多返回 200 项，可用 `limit` 调整至 1000；工具结果另有 3500 字符上限，并明确报告展示数与总数。单个文件超过 2 MB 或无法安全读取时，除字节数外的指标显示 `?`。结果按文件大小和修改时间缓存，不调用模型或知识图谱。嵌套目录路径相对于源码/测试/设计根目录，例如 `trade_sys/services`；也可用 `path=source` 配合 `pattern=trade_sys/services/**`。
 
 > `create_conversation_tools()` 返回 `(tools, review_manager)`。`review_manager`
 > 供 shell 敏感命令与 `submit_uml_review` 共用同一审核通道。
@@ -84,7 +86,7 @@ DevAgent 与子代理共享同一组面向能力的工具契约。所有文件�
   （fail closed）。超时上限 `SHELL_REVIEW_TIMEOUT`。
 - 其余命令带 120s 超时直接放行；输出经 `TruncateHook` 截断。
 
-### 知识图谱理解（`knowledge_graph_v2_tools.py`，当前默认禁用）
+### 知识图谱理解（`extensions/knowledge_graph/tools.py`，主 Agent 默认不注册）
 
 KG 提供**文件原语给不了**的结构化答案：类型化关系、设计-代码一致性、大项目的
 有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`shell` 回答

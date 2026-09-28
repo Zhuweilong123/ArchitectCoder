@@ -85,8 +85,8 @@ GitHub Spec Kit、Kiro 等产品已经把 requirements → design → tasks → 
 - 生产链路复用的 Evals、Fixture、Checker 和归档；
 - KG、长期记忆和插件 Provider 边界。
 
-主 DevAgent 已经接入 `get_project_map`、`find_nodes`、`expand_neighbors` 三个知识图谱
-工具。旧规划中“主 Agent 完全碰不到 KG”的描述已经失效。
+主 DevAgent 不直接注册 `get_project_map`、`find_nodes`、`expand_neighbors`。
+架构感知调度组件通过知识图谱 Provider 内部查询，并向主 Agent 返回有界地图和探索结果。
 
 ### 3.2 尚未闭合的关键断点
 

@@ -27,7 +27,7 @@ from app.agent_base.tools.result import (
 )
 from app.agent_base.tools.my_tools.foundation_runtime import (
     ShellTool,
-    ListFilesTool as FoundationListFilesRuntime,
+    BaseListFilesTool,
     ReadFileTool,
     SearchTextTool,
     _decode_output,
@@ -69,7 +69,7 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-class ListFilesTool(FoundationListFilesRuntime):
+class ListFilesTool(BaseListFilesTool):
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(source_dir, test_dir, design_dir, workspace_root=workspace_root)
@@ -81,7 +81,13 @@ class ListFilesTool(FoundationListFilesRuntime):
         self.description = (
             "List files in the workspace matching a glob pattern. "
             "The default path is the source working directory; use source, test, "
-            "design, or workspace aliases to select another scope."
+            "design, or workspace aliases to select another scope. Results use "
+            "compact metrics: B=bytes, L=physical lines, S=symbol hints, "
+            "I=interface hints, D=dependency-statement hints; S/I/D are estimates. "
+            "A nested relative path is root-relative, e.g. path='trade_sys/services'; "
+            "or use path='source', pattern='trade_sys/services/**'. Avoid combining "
+            "the source alias and subpath. Broad inventories are grouped by directory "
+            "in the final answer; overview requests should summarize counts and largest files."
         )
 
     async def _execute(self, params: dict) -> str:
@@ -90,7 +96,11 @@ class ListFilesTool(FoundationListFilesRuntime):
         roots, scoped_pattern, error = self._resolve_scope(path, pattern)
         if error:
             return error
-        return self._format_matches(roots, scoped_pattern)
+        return await asyncio.to_thread(
+            self._format_matches, roots, scoped_pattern,
+            details=params.get("details") is not False,
+            limit=self._result_limit(params.get("limit")),
+        )
 
     def _resolve_scope(self, path: str, pattern: str) -> tuple[list[str], str, str | None]:
         """Resolve a list scope without mixing an absolute path into a glob root."""

@@ -214,10 +214,9 @@ Python 源文件 → AST 解析 (ast.parse)
 | `expand_neighbors` | 有界邻域展开；`mode=impact` 时执行反向影响分析 | “User 类有哪些依赖/影响？” |
 | `compare_design_code` | 设计与代码差异、签名漂移和测试覆盖 | “UML 设计都实现完了吗？” |
 
-生产 `conversation_tools.py` 通过插件管理器调用 `create_tools()`，并固定传入
-`include_compare=False`，所以主 Agent 默认只注册前三个工具；比较工具必须由专门
-的组合场景显式传入 `include_compare=True`。provider 被禁用或不可用时，工厂返回
-空列表，不注册任何 KG 工具。
+生产 `conversation_tools.py` 不再把这些图谱工具注册给主 Agent。架构感知调度通过
+`KnowledgeGraphProvider` 内部获取有界地图、定位节点和扩展邻域；上面的工具工厂仍可由
+专门的图谱场景显式调用，`include_compare=True` 时才包含比较工具。
 
 ## 8. 集成点
 

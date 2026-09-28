@@ -192,7 +192,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     assert "test_main.py" not in source_result
 
     test_result = asyncio.run(tool._execute({
-        "path": str(test), "pattern": "**/*.py",
+        "path": str(test), "pattern": "**/*.py", "details": False,
     }))
     assert test_result.strip() == "test_main.py"
 
