@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from app.services.run_state import RunStatus, RunStore
-from app.agent_base.core.orchestration import OrchestrationPreparation, OrchestrationRequest
+from app.agent_base.core.orchestration import OrchestrationRequest
 from extensions.orchestration.architecture_aware import scheduler as scheduling
 from extensions.orchestration.architecture_aware.evidence import collect_file_evidence
 from extensions.orchestration.architecture_aware.impact import ImpactSlice
@@ -78,61 +77,41 @@ def test_schedule_rejects_stale_assignment_result(tmp_path):
     assert store.get("schedule").items[0].result is None
 
 
-def test_planner_accepts_fenced_json_and_configured_token_limit():
-    calls = []
-    payload = {
-        "needs_execution": True,
-        "needs_exploration": True,
-        "goal": "Update sales flow",
-        "search_queries": ["SalesService"],
-        "steps": [{"id": "inspect", "content": "Inspect design and source",
-                   "phase": "explore", "acceptance": "Impact is known"}],
-    }
-
+def test_prepare_only_advertises_demand_tool_without_model_call():
     class LLM:
         async def ainvoke_with_metadata(self, messages, **kwargs):
-            calls.append(kwargs["max_tokens"])
-            return {"content": "```json\n" + json.dumps(payload) + "\n```\nDone.",
-                    "usage": {"total_tokens": 23}}
+            raise AssertionError("preparation must not call the planner")
 
-    settings = SimpleNamespace(agent_planner_max_tokens=3000,
-                               agent_planner_timeout_seconds=30)
     provider = ArchitectureAwareOrchestrator(
-        llm=LLM(), settings=settings, legacy=None,
+        llm=LLM(), settings=SimpleNamespace(),
         project_file="trade.umlproj", source_dir="src", test_dir="test",
-        explorer_factory=None,
+        explorer_factory=object(),
     )
-    plan, queries, tokens = asyncio.run(provider._plan(
-        OrchestrationRequest(user_message="Update sales flow")))
+    result = asyncio.run(provider.prepare(OrchestrationRequest(
+        user_message="Update sales flow", available_tools=("explore_architecture",),
+    )))
 
-    assert plan.needs_exploration
-    assert queries == ("SalesService",)
-    assert tokens == 23
-    assert calls == [3000]
+    assert result.metadata["architecture_scheduling"] == "demand_driven_ready"
+    assert result.token_overhead == 0
+    assert "explore_architecture" in result.context
 
 
-def test_empty_planner_response_keeps_token_usage_on_fallback():
+def test_prepare_without_demand_tool_has_no_architecture_context():
     class LLM:
         async def ainvoke_with_metadata(self, messages, **kwargs):
-            return {"content": "", "usage": {"total_tokens": 1800}}
+            raise AssertionError("preparation must not call the planner")
 
-    class Legacy:
-        async def prepare(self, request):
-            return OrchestrationPreparation()
-
-    settings = SimpleNamespace(agent_knowledge_graph_enabled=True,
-                               agent_planner_max_tokens=3000,
-                               agent_planner_timeout_seconds=30)
     provider = ArchitectureAwareOrchestrator(
-        llm=LLM(), settings=settings, legacy=Legacy(),
+        llm=LLM(), settings=SimpleNamespace(),
         project_file="trade.umlproj", source_dir="src", test_dir="test",
         explorer_factory=object(),
     )
     result = asyncio.run(provider.prepare(
         OrchestrationRequest(user_message="Update sales flow")))
 
-    assert result.metadata["architecture_scheduling"] == "fallback"
-    assert result.token_overhead == 1800
+    assert result.metadata["architecture_scheduling"] == "unavailable"
+    assert result.context == ""
+    assert result.token_overhead == 0
 
 
 def test_file_evidence_stays_inside_project_roots(tmp_path):
@@ -186,7 +165,7 @@ def test_excerpt_only_exploration_is_partial(tmp_path, monkeypatch):
                                agent_architecture_scheduling_worker_seconds=5,
                                agent_architecture_scheduling_max_workers=2)
     provider = ArchitectureAwareOrchestrator(
-        llm=object(), settings=settings, legacy=None,
+        llm=object(), settings=settings,
         project_file=str(project_file), source_dir=str(source), test_dir="",
         explorer_factory=Worker,
     )
@@ -195,7 +174,7 @@ def test_excerpt_only_exploration_is_partial(tmp_path, monkeypatch):
         source_dir=str(source), run_id="root",
     )
     results, tokens, plan = asyncio.run(provider._explore_dynamic(
-        request, impact, partition_impact(impact), 0))
+        request, impact, partition_impact(impact)))
 
     assert results[0]["status"] == "partial"
     assert results[0]["grounded_excerpts"] == 1

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.config import get_settings
+from backend.config.paths import runtime_root
 from app.services.llm_service import chat
 from app.core.json_utils import clean_llm_json_response
 
@@ -18,7 +19,7 @@ except ImportError:
 router = APIRouter(prefix="/api/testhub", tags=["testhub"])
 
 settings = get_settings()
-TESTHUB_DIR = os.path.abspath(os.path.join(settings.uml_dir, "..", "testHub"))
+TESTHUB_DIR = str(runtime_root(settings) / "testHub")
 
 
 def _get_testhub_dir(dir_override: str | None = None):
@@ -237,7 +238,7 @@ class TestReviewRequest(BaseModel):
 @router.post("/save-review")
 async def save_test_review(req: TestReviewRequest):
     """Save test case review operation log to dev_review.txt (unified review file)."""
-    review_file = os.path.abspath(os.path.join(settings.uml_dir, "..", "dev_review.txt"))
+    review_file = str(runtime_root(settings) / "dev_review.txt")
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{ts}] [用例审核] {req.action}"

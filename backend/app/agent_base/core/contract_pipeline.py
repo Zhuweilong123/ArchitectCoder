@@ -70,7 +70,12 @@ def assemble_contract(
     if not index_graph:
         return ContractAssembly(snapshot=snapshot, facts=facts, graph_status="not_requested")
 
-    graph = knowledge_graph_provider or load_knowledge_graph(settings=settings)
+    values = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
+    graph = knowledge_graph_provider or load_knowledge_graph(
+        settings=settings,
+        project_file=str(values.get("project_file") or ""),
+        workspace_root=str(values.get("workspace_root") or ""),
+    )
     indexer = getattr(graph, "sync_facts", None)
     if not callable(indexer):
         indexer = getattr(graph, "index_facts", None)

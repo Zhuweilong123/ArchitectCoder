@@ -84,6 +84,21 @@
   min-width: 0;
 }
 
+.trace-date-select {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.trace-date-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #f5f7fa;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .trace-session-title > span {
   overflow: hidden;
   text-overflow: ellipsis;

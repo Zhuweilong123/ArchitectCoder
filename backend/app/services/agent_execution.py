@@ -412,10 +412,13 @@ async def _prepare_orchestration(
     apply_runtime_directives(result.runtime_directives)
     if result.context:
         context = "\n\n".join(filter(None, [context, result.context]))
+    excluded_tools = result.excluded_tools
+    if not getattr(settings, "agent_architecture_scheduling_enabled", False):
+        excluded_tools = (*excluded_tools, "explore_architecture")
     allowed_tools = None
-    if result.excluded_tools:
+    if excluded_tools:
         allowed_tools = exclude_tools(
-            agent.tool_registry.list_tools(), result.excluded_tools,
+            agent.tool_registry.list_tools(), excluded_tools,
         )
     return context, allowed_tools, result.phase
 
@@ -552,7 +555,8 @@ async def _publish_terminal_execution(
         )
     write_task_summary(summary_status)
 
-    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+    from backend.config.project_storage import project_id_for
+    project_id = project_id_for(project_file) if project_file else ""
     if project_id and _should_archive_task_memory(
         terminal_status, task_tool_calls, agent.last_run_checkpoint,
     ):
@@ -799,6 +803,15 @@ async def handle_agent_execution(
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
+        run_id=run_id,
+        policy_metadata={
+            "architecture_schedule_root": agent.last_run_checkpoint.get(
+                "architecture_schedule_root", run_id,
+            ),
+            "architecture_scheduling_enabled": agent.last_run_checkpoint.get(
+                "architecture_scheduling_mode", False,
+            ),
+        },
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None

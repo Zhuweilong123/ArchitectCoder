@@ -641,8 +641,7 @@ const Toolbar: React.FC = () => {
       if (projName !== project.name) {
         setProject({ ...project, name: projName });
       }
-      // Save in the active workspace when one was selected; otherwise retain
-      // the historical default uml_dir behavior.
+      // Save in the active workspace, or let the API create a project folder.
       const filename = fname.toLowerCase().endsWith('.umlproj') ? fname : `${fname}.umlproj`;
       const targetPath = currentWorkspacePath
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
@@ -1253,7 +1252,7 @@ const Toolbar: React.FC = () => {
         </Form>
 
         <Divider orientation="left" plain style={{ fontSize: 12 }}>
-          已有项目文件（保存在 {currentFilepath || 'uml_files/'}）
+          已有项目文件（保存在 {currentFilepath || 'project/'}）
         </Divider>
 
         <List

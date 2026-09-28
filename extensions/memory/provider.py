@@ -6,6 +6,8 @@ import json
 import os
 from typing import Any
 
+from backend.config.project_storage import project_storage
+
 from app.agent_base.core.memory import (
     MemoryArchiveRequest,
     MemoryArchiveResult,
@@ -16,14 +18,12 @@ from app.agent_base.core.memory import (
 from .manager import MemoryManager
 
 
-def _memory_db_path(settings) -> str:
+def _memory_db_path(settings, project_file: str = "", workspace_root: str = "") -> str:
     configured = str(getattr(settings, "agent_memory_db_path", "") or "").strip()
     if configured:
         return os.path.normpath(os.path.abspath(configured))
-    uml_dir = str(getattr(settings, "uml_dir", "../temp/uml_files") or "../temp/uml_files")
-    return os.path.normpath(os.path.abspath(
-        os.path.join(os.path.dirname(uml_dir), "data", "memories.db"),
-    ))
+    storage = project_storage(project_file, workspace_root=workspace_root)
+    return str(storage.memory_db) if storage else ""
 
 
 def _format_tool_steps(tool_steps: tuple[dict[str, Any], ...], max_steps: int = 8) -> str:
@@ -45,15 +45,22 @@ class SQLiteMemoryProvider:
     def __init__(self, *, llm, settings, **kwargs):
         self.llm = llm
         self.settings = settings
-        self.db_path = _memory_db_path(settings)
+        self.db_path = _memory_db_path(
+            settings, str(kwargs.get("project_file") or ""),
+            str(kwargs.get("workspace_root") or ""),
+        )
         self.recall_top_k = max(1, int(getattr(settings, "agent_memory_recall_top_k", 3)))
         self.recall_max_tokens = max(1, int(getattr(settings, "agent_memory_recall_max_tokens", 500)))
         self.archive_max_tokens = max(1, int(getattr(settings, "agent_memory_archive_max_tokens", 3000)))
 
     def _manager(self) -> MemoryManager:
+        if not self.db_path:
+            raise ValueError("project path is required for local memory")
         return MemoryManager(db_path=self.db_path)
 
     async def recall(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+        if not self.db_path:
+            return MemoryRecallResult()
         manager = self._manager()
         try:
             results = await manager.recall(
@@ -73,6 +80,8 @@ class SQLiteMemoryProvider:
             manager.close()
 
     async def archive(self, request: MemoryArchiveRequest) -> MemoryArchiveResult:
+        if not self.db_path:
+            return MemoryArchiveResult(metadata={"provider": "sqlite", "skipped": "no_project"})
         if self.llm is None:
             return MemoryArchiveResult(metadata={"provider": "sqlite", "skipped": "no_llm"})
         manager = self._manager()
@@ -108,7 +117,7 @@ class SQLiteMemoryProvider:
             manager.close()
 
     async def reinforce(self, memory_ids: tuple[str, ...], project_id: str = "") -> None:
-        if not memory_ids or not project_id:
+        if not self.db_path or not memory_ids or not project_id:
             return
         manager = self._manager()
         try:

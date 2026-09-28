@@ -9,7 +9,7 @@ from .settings import Settings, get_settings
 
 def runtime_root(settings: Settings | None = None) -> Path:
     current = settings or get_settings()
-    return Path(current.uml_dir).resolve().parent
+    return Path(current.runtime_dir).resolve()
 
 
 def evaluation_root(settings: Settings | None = None) -> Path:

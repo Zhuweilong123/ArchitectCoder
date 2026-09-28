@@ -117,10 +117,14 @@ def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
         raise ValueError("No workspace root configured")
 
     p = Path(path)
+    if ".architectcoder" in p.parts:
+        raise ValueError("Project state is managed by ArchitectCoder")
     if p.is_absolute():
         resolved = p.resolve()
         for root in resolved_roots:
             if resolved.is_relative_to(root):
+                if ".architectcoder" in resolved.parts:
+                    raise ValueError("Project state is managed by ArchitectCoder")
                 return resolved
         raise ValueError(f"Path escapes workspace: {path}")
 
@@ -128,13 +132,16 @@ def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
     if require_exist:
         for root in resolved_roots:
             candidate = (root / p).resolve()
-            if candidate.is_relative_to(root) and candidate.exists():
+            if (candidate.is_relative_to(root) and candidate.exists()
+                    and ".architectcoder" not in candidate.parts):
                 return candidate
 
     # 默认 / fallback：固定第一个 root，检查逃逸
     resolved = (resolved_roots[0] / p).resolve()
     if not resolved.is_relative_to(resolved_roots[0]):
         raise ValueError(f"Path escapes workspace: {path}")
+    if ".architectcoder" in resolved.parts:
+        raise ValueError("Project state is managed by ArchitectCoder")
     return resolved
 
 
@@ -269,7 +276,7 @@ class ReadFileTool(AsyncTool):
 
         found: list[str] = []
         seen: set[str] = set()
-        ignored = {".git", "node_modules", "__pycache__", ".pytest_cache"}
+        ignored = {".git", ".architectcoder", "node_modules", "__pycache__", ".pytest_cache"}
         for root in roots:
             try:
                 for candidate in root.rglob(name):

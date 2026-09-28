@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,41 +24,84 @@ class ImpactSlice:
     truncated: bool = False
 
 
+def _seed_score(item: dict[str, Any], query: str, rank: int) -> float:
+    """Prefer exact, source-grounded symbols over broad text hits."""
+    name = re.sub(r"[^\w]+", "", str(item.get("name") or "").casefold())
+    term = re.sub(r"[^\w]+", "", query.casefold())
+    lexical = 0.0
+    if name and term and name == term:
+        lexical = 100.0
+    elif name and len(term) >= 4 and term in name:
+        lexical = 35.0
+    elif term and len(name) >= 4 and name in term:
+        lexical = 15.0
+    node_type = str(item.get("node_type") or "")
+    try:
+        retrieval = max(0.0, float(item.get("score") or 0))
+    except (TypeError, ValueError):
+        retrieval = 0.0
+    return (
+        lexical + (8.0 if item.get("source") == "code" else 0.0)
+        + (4.0 if node_type == "method" else 2.0 if node_type == "class" else 0.0)
+        + max(0, 5 - rank) + min(5.0, math.log1p(retrieval))
+    )
+
+
 async def collect_impact(
     provider: Any,
     project_id: str,
     queries: tuple[str, ...],
     *,
-    max_seeds: int = 6,
+    max_seeds: int = 4,
     max_nodes: int = 36,
 ) -> ImpactSlice:
     """Locate architecture/source seeds, then follow direct typed relations.
 
     The graph is a read-side index. A missing seed is not evidence that the
-    requirement has no effect; the caller returns to the existing explorer.
+    requirement has no effect; the caller reports uncertainty to the main Agent.
     """
 
     facts = await asyncio.to_thread(provider.contract_facts, project_id, 1)
     if not isinstance(facts, dict) or not facts.get("available"):
         raise GraphUnavailable("project graph is unavailable or empty")
 
-    seeds: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    candidates: list[list[tuple[float, dict[str, Any]]]] = []
     for query in queries[:4]:
         result = await asyncio.to_thread(
-            provider.locate, project_id, query[:80], top_k=3,
+            provider.locate, project_id, query[:80], top_k=5,
         )
         if not isinstance(result, dict) or result.get("error"):
             continue
-        for item in result.get("results", ()):
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for rank, item in enumerate(result.get("results", ())):
             if not isinstance(item, dict):
                 continue
-            node_id = str(item.get("id") or "")
-            if node_id and node_id not in seen:
-                seeds.append(item)
-                seen.add(node_id)
-            if len(seeds) >= max_seeds:
+            if item.get("id"):
+                ranked.append((_seed_score(item, query, rank), item))
+        if ranked:
+            candidates.append(sorted(ranked, key=lambda pair: -pair[0]))
+    seeds: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_seed(item: dict[str, Any]) -> None:
+        node_id = str(item["id"])
+        if node_id not in seen and len(seeds) < max_seeds:
+            seeds.append(item)
+            seen.add(node_id)
+
+    # Reserve one relevant seed for each distinct search term before filling
+    # the remaining slots. A broad term must not crowd out later exact names.
+    for ranked in candidates:
+        for _, item in ranked:
+            if str(item["id"]) not in seen:
+                add_seed(item)
                 break
+    remaining = sorted(
+        (pair for ranked in candidates for pair in ranked),
+        key=lambda pair: -pair[0],
+    )
+    for _, item in remaining:
+        add_seed(item)
         if len(seeds) >= max_seeds:
             break
     if not seeds:

@@ -10,7 +10,7 @@ ChatTrace — 会话级结构化 trace 层 (JSONL).
   - 记录 LLM 原始往返（prompt/completion/model/tokens）、工具调用参数与完整返回
   - 记录环境快照（agent/prompt 版本、KG 状态），便于复现现场
 
-文件命名: trace_{session_id}.jsonl。普通聊天位于 temp/chat_log/，评测 Trace
+文件命名: trace_{session_id}.jsonl。普通聊天按日期位于 temp/chat_log/YYYY-MM-DD/，评测 Trace
 由调用方指定到 temp/evals/traces/。
 """
 
@@ -164,7 +164,7 @@ def _event(
 class ChatTraceLogger:
     """JSONL trace 写入器 — 每连接一个文件，事件即时追加，线程安全。
 
-    写入 temp/chat_log/trace_{session_id}.jsonl（机器回放 JSONL）。
+    写入 temp/chat_log/YYYY-MM-DD/trace_{session_id}.jsonl（机器回放 JSONL）。
     """
 
     def __init__(self, session_id: str = "", log_dir: str | None = None):
@@ -176,6 +176,7 @@ class ChatTraceLogger:
         self._log_dir = log_dir
         self._closed = False
         self._n = 0
+        self._started = False
 
     def set_run_id(self, run_id: str) -> None:
         """Associate subsequent events with one durable harness Run."""
@@ -189,8 +190,17 @@ class ChatTraceLogger:
     def path(self) -> str:
         if self._path is None:
             log_dir = self._log_dir or _chat_log_dir()
-            os.makedirs(log_dir, exist_ok=True)
-            self._path = os.path.join(log_dir, f"trace_{self.session_id}.jsonl")
+            if self._log_dir:
+                path = os.path.join(
+                    log_dir,
+                    f"trace_{trace_format.safe_trace_session_id(self.session_id)}.jsonl",
+                )
+            else:
+                path = trace_format.find_chat_trace_path(log_dir, self.session_id)
+                if path is None:
+                    path = trace_format.new_chat_trace_path(log_dir, self.session_id)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self._path = str(path)
         return self._path
 
     # ── 底层写入 ─────────────────────────────────────
@@ -228,14 +238,19 @@ class ChatTraceLogger:
 
     def start(self, *, user_message: str = "",
               project_file: str = "", source_dir: str = "",
-              test_dir: str = "", design_dir: str = "",
+              test_dir: str = "", workspace_root: str = "",
+              design_dir: str = "",
               env_snapshot: dict | None = None) -> None:
         """会话开始事件 — 记录环境快照便于复现。"""
+        if self._started:
+            return
+        self._started = True
         payload = {
             "user_message": user_message,
             "project_file": project_file,
             "source_dir": source_dir,
             "test_dir": test_dir,
+            "workspace_root": workspace_root,
             "design_dir": design_dir,
         }
         if env_snapshot:
@@ -248,7 +263,10 @@ class ChatTraceLogger:
         try:
             # 先写结束事件，再标记 closed。旧实现先置位，导致 event() 内部
             # 被 _write() 直接短路，trace 永远没有 session_end。
-            self.event(EVT_SESSION_END, total_events=self._n)
+            if self._n:
+                self.event(EVT_SESSION_END, total_events=self._n)
+            if not self._n:
+                return
             logger.info("[Trace] Session trace → %s (%d events)", self.path, self._n)
         except Exception:
             logger.exception("[Trace] Failed to finalize %s", self.path)

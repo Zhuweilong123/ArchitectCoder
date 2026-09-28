@@ -27,9 +27,7 @@ from app.agent_base.tools.base import Tool, ToolParameter
 SKILL_ENTRY = "SKILL.md"
 
 # skills/ 位于仓库根：my_tools → tools → agent_base → app → backend → <repo root>。
-# 不复用 os.path.join(settings.uml_dir, "..", "..")（services/tools.py:354 等处的
-# 仓库根推导）：uml_dir 默认值是相对路径 "../temp/uml_files"，依赖进程 CWD=backend/，
-# 换目录启动就全歪。skill 目录用 __file__ 锚定，与启动方式无关。
+# skill 目录用 __file__ 锚定，与启动方式无关。
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 
 

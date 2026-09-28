@@ -10,6 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from backend.config.project_storage import project_id_for
+
 from app.agent_base.core.contracts import (
     ArtifactFacts,
     ContractEntity,
@@ -54,7 +56,11 @@ class DesignContractProvider:
 
     def snapshot_from_facts(self, facts: ArtifactFacts) -> ContractSnapshot:
         """Project a previously collected fact bundle without reparsing files."""
-        graph_facts = self._kg.collect(facts.project_id)
+        graph_facts = self._kg.collect(
+            facts.project_id,
+            project_file=str(facts.metadata.get("project_file") or ""),
+            workspace_root=str(facts.metadata.get("workspace_root") or ""),
+        )
         graph_mappings = self._kg.infer_mappings(list(facts.entities), graph_facts)
         mappings = _merge_mappings(list(facts.mappings), graph_mappings)
         metadata = dict(facts.metadata)
@@ -109,7 +115,9 @@ class DesignContractProvider:
             test_root, workspace, entities, errors, self._language_adapters,
         )
         mappings = _infer_mappings(entities)
-        resolved_project_id = project_id or _project_id(values, workspace)
+        resolved_project_id = project_id or project_id_for(
+            active, workspace_root=workspace,
+        ) or _project_id(values, workspace)
         status = "collected" if entities else "blocked"
         if errors and entities:
             status = "partial"
@@ -125,6 +133,7 @@ class DesignContractProvider:
             diagnostics=tuple(errors),
             metadata={
                 "workspace_root": workspace,
+                "project_file": active,
                 "layout_mode": values.get("layout_mode", ""),
                 "design_file_count": len(project_files),
                 "entity_counts": _counts(entities),

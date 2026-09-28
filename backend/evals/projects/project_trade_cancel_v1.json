@@ -1,0 +1,10 @@
+{
+  "id": "project_trade_cancel_v1",
+  "version": "1.0.0",
+  "fixture": "project_trade_cancel_v1",
+  "entry_file": "design/trade_sys_0822.umlproj",
+  "source_dir": "src",
+  "test_dir": "test",
+  "protected_paths": ["design/trade_sys_0822.umlproj"],
+  "allowed_write_paths": ["src", "test"]
+}

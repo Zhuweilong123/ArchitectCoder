@@ -275,14 +275,14 @@ def save_project(project, filepath=None):
 from extensions.knowledge_graph import GraphBuilder, GraphRetriever, KnowledgeGraphDB
 
 # 1. 从项目构建知识图谱
-builder = GraphBuilder(db_path="./data/knowledge_graph.db")
+builder = GraphBuilder(db_path="./project/my_project/.architectcoder/knowledge_graph.db")
 stats = builder.build_from_project(project, "my_project")
 
 # 2. 从源码文件补充代码层
 stats = builder.build_from_source_file("app.py", "my_project")
 
 # 3. 检索
-retriever = GraphRetriever(db_path="./data/knowledge_graph.db")
+retriever = GraphRetriever(db_path="./project/my_project/.architectcoder/knowledge_graph.db")
 results = retriever.query("my_project", "User login")
 neighbors = retriever.expand("my_project", [results[0].node.id], depth=2)
 diffs = retriever.diff("my_project")

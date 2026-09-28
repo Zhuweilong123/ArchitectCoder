@@ -1,10 +1,10 @@
-"""TraceReader — 读取并解析 temp/chat_log/trace_*.jsonl。
+"""TraceReader — 读取并解析 temp/chat_log/YYYY-MM-DD/trace_*.jsonl。
 
 只读、无副作用。供 TraceViewer（浏览 / 读取）与后续回放驱动复用，
 避免各消费方各自重写 JSONL 解析逻辑。
 
 产物约定（与 chat_trace.py 对齐）：
-  - 文件名: trace_{session_id}.jsonl
+  - 文件名: trace_{session_id}.jsonl；聊天日志按首次事件日期分目录
   - 每行一个 JSON 事件，字段含 event_type / span_id / ts_ms / monotonic_ns 等。
 """
 
@@ -19,6 +19,10 @@ from extensions.trace.format import (
     EVT_CONTEXT_COMPACTED,
     EVT_TASK_SUMMARY,
     chat_log_dir,
+    find_chat_trace_path,
+    is_trace_date_dir,
+    iter_chat_trace_paths,
+    safe_trace_session_id,
 )
 from backend.config import evaluation_traces_dir
 
@@ -43,17 +47,9 @@ def _trace_sources() -> list[tuple[str, str]]:
     return sources
 
 
-def _trace_dirs(trace_type: str | None = None) -> list[str]:
-    """Read ordinary chat and evaluation traces through one reader."""
-    return [
-        path for source, path in _trace_sources()
-        if not trace_type or source == trace_type
-    ]
-
-
 def _sanitize_session_id(session_id: str) -> str:
     """仅保留安全字符，防止路径穿越。session_id 通常为时间戳 / uuid / 十六进制。"""
-    return "".join(c for c in session_id if c.isalnum() or c in "-_.")
+    return safe_trace_session_id(session_id)
 
 
 def _ts_of(line: str):
@@ -94,6 +90,17 @@ def _peek(path: str) -> dict:
     }
 
 
+def _trace_date(path: str, trace_type: str, first_ts: object, modified: float) -> str:
+    parent = os.path.basename(os.path.dirname(path))
+    if trace_type == "chat" and is_trace_date_dir(parent):
+        return parent
+    try:
+        timestamp = float(first_ts) / 1000 if first_ts is not None else modified
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return datetime.fromtimestamp(modified).strftime("%Y-%m-%d")
+
+
 def list_traces() -> list[dict]:
     """列出所有 trace 文件，按修改时间倒序。"""
     traces = []
@@ -101,10 +108,15 @@ def list_traces() -> list[dict]:
     for trace_type, log_dir in _trace_sources():
         if not os.path.isdir(log_dir):
             continue
-        for name in os.listdir(log_dir):
+        paths = (
+            iter_chat_trace_paths(log_dir) if trace_type == "chat"
+            else (os.path.join(log_dir, name) for name in os.listdir(log_dir))
+        )
+        for candidate in paths:
+            path = os.fspath(candidate)
+            name = os.path.basename(path)
             if not name.startswith("trace_") or not name.endswith(".jsonl"):
                 continue
-            path = os.path.join(log_dir, name)
             if path in seen:
                 continue
             seen.add(path)
@@ -114,13 +126,17 @@ def list_traces() -> list[dict]:
                 continue
 
             session_id = name[len("trace_"):-len(".jsonl")]
+            metadata = _peek(path)
+            date = _trace_date(path, trace_type, metadata.get("first_ts_ms"), st.st_mtime)
             traces.append({
                 "session_id": session_id,
                 "filename": name,
+                "date": date,
+                "relative_path": os.path.relpath(path, log_dir).replace(os.sep, "/"),
                 "size": st.st_size,
                 "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
                 "trace_type": trace_type,
-                **_peek(path),
+                **metadata,
             })
 
     traces.sort(key=lambda t: t["modified"], reverse=True)
@@ -130,14 +146,13 @@ def list_traces() -> list[dict]:
 def read_trace(session_id: str, trace_type: str | None = None) -> dict | None:
     """读取单个 session 的完整事件流（保持文件顺序）。"""
     safe_id = _sanitize_session_id(session_id)
-    path = next(
-        (
-            os.path.join(directory, f"trace_{safe_id}.jsonl")
-            for directory in _trace_dirs(trace_type)
-            if os.path.isfile(os.path.join(directory, f"trace_{safe_id}.jsonl"))
-        ),
-        None,
-    )
+    path = None
+    if trace_type in (None, "chat"):
+        path = find_chat_trace_path(_trace_dir(), safe_id)
+    if path is None and trace_type in (None, "evaluation"):
+        candidate = os.path.join(str(evaluation_traces_dir()), f"trace_{safe_id}.jsonl")
+        if os.path.isfile(candidate):
+            path = candidate
     if path is None:
         return None
 

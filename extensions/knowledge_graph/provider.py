@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.config.project_storage import project_storage
+
 from .builder import GraphBuilder
 from .database import KnowledgeGraphDB
 from .retriever import GraphRetriever
@@ -47,25 +49,36 @@ class LocalKnowledgeGraphProvider:
 
     def __init__(self, settings=None, db_path: str | None = None, **kwargs):
         self.settings = settings
-        self.db_path = str(Path(db_path or self._default_db_path(settings)).resolve())
+        self.db_path = self._database_path(
+            settings, db_path=db_path,
+            project_file=str(kwargs.get("project_file") or ""),
+            workspace_root=str(kwargs.get("workspace_root") or ""),
+        )
 
     @staticmethod
-    def _default_db_path(settings=None) -> str:
+    def _database_path(settings=None, *, db_path=None, project_file="", workspace_root="") -> str:
         if settings is None:
             from backend.config import get_settings
 
             settings = get_settings()
-        configured = str(getattr(settings, "agent_knowledge_graph_db_path", "") or "").strip()
+        configured = str(db_path or getattr(settings, "agent_knowledge_graph_db_path", "") or "").strip()
         if configured:
-            return configured
-        return os.path.join(
-            os.path.dirname(settings.uml_dir),
-            "data",
-            "knowledge_graph.db",
+            return str(Path(configured).resolve())
+        storage = project_storage(project_file, workspace_root=workspace_root)
+        return str(storage.graph_db) if storage else ""
+
+    def _path_for(self, *, project_file: str = "", workspace_root: str = "") -> str:
+        if self.db_path:
+            return self.db_path
+        return self._database_path(
+            self.settings, project_file=project_file, workspace_root=workspace_root,
         )
 
     def rebuild_project(self, project: Any, project_id: str, filepath: str = "") -> Any:
-        builder = GraphBuilder(db_path=self.db_path)
+        path = self._path_for(project_file=filepath)
+        if not path:
+            raise ValueError("project path is required for knowledge graph indexing")
+        builder = GraphBuilder(db_path=path)
         try:
             return builder.rebuild_project(project, project_id, filepath=filepath)
         finally:
@@ -96,6 +109,8 @@ class LocalKnowledgeGraphProvider:
         # tool classes during application startup.
         from .tools import KGService
 
+        if not self.db_path:
+            return {"error": "project path is required for knowledge graph queries"}
         context = _LocalKnowledgeGraphContext(self.db_path)
         try:
             return callback(KGService(context))
@@ -122,7 +137,14 @@ class LocalKnowledgeGraphProvider:
 
     def index_facts(self, facts: Any) -> Any:
         """Project shared ``ArtifactFacts`` into the local graph when requested."""
-        builder = GraphBuilder(db_path=self.db_path)
+        metadata = getattr(facts, "metadata", {}) or {}
+        path = self._path_for(
+            project_file=str(metadata.get("project_file") or ""),
+            workspace_root=str(metadata.get("workspace_root") or ""),
+        )
+        if not path:
+            raise ValueError("project path is required for knowledge graph indexing")
+        builder = GraphBuilder(db_path=path)
         try:
             return builder.index_facts(facts)
         finally:
@@ -130,7 +152,14 @@ class LocalKnowledgeGraphProvider:
 
     def sync_facts(self, facts: Any) -> Any:
         """Synchronize the local graph from changed artifact facts."""
-        builder = GraphBuilder(db_path=self.db_path)
+        metadata = getattr(facts, "metadata", {}) or {}
+        path = self._path_for(
+            project_file=str(metadata.get("project_file") or ""),
+            workspace_root=str(metadata.get("workspace_root") or ""),
+        )
+        if not path:
+            raise ValueError("project path is required for knowledge graph indexing")
+        builder = GraphBuilder(db_path=path)
         try:
             return builder.sync_facts(facts)
         finally:
@@ -176,11 +205,14 @@ class LocalKnowledgeGraphProvider:
         """Create Agent tools while keeping the concrete factory in this extension."""
         from .tools import create_kg_v2_tools
 
+        scoped = self if self.db_path or not project_file else LocalKnowledgeGraphProvider(
+            settings=self.settings, project_file=project_file,
+        )
         return create_kg_v2_tools(
             project_file=project_file,
             source_dir=source_dir,
             include_compare=include_compare,
-            provider=self,
+            provider=scoped,
         )
 
     @staticmethod

@@ -21,16 +21,20 @@ from .partition import ExplorationPackage, PartitionDecision, _unit_key
 from .store import ScheduleConflict, SchedulePlan, ScheduleStore, WorkAssignment
 
 logger = logging.getLogger(__name__)
+_MAX_ITEM_TOKENS = 16000
 
 
-def make_work_items(impact: ImpactSlice, decision: PartitionDecision) -> tuple[WorkAssignment, ...]:
-    """Split each partition at file boundaries to leave work for later waves."""
+def make_work_items(
+    impact: ImpactSlice, decision: PartitionDecision, *, max_items: int | None = None,
+) -> tuple[WorkAssignment, ...]:
+    """Split partitions only when the shared budget can fund useful later waves."""
     items: list[WorkAssignment] = []
+    split = max_items is None or max_items >= 2 * len(decision.packages)
     for slot, package in enumerate(decision.packages):
         units: dict[str, list[str]] = {}
         for node_id in package.node_ids:
             units.setdefault(_unit_key(node_id, impact.nodes[node_id]), []).append(node_id)
-        groups: list[list[str]] = [[] for _ in range(min(2, len(units)))]
+        groups: list[list[str]] = [[] for _ in range(min(2 if split else 1, len(units)))]
         loads = [0.0 for _ in groups]
         ordered = sorted(units.values(), key=lambda ids: -sum(decision.node_costs[i].score for i in ids))
         for ids in ordered:
@@ -75,7 +79,9 @@ def graph_fingerprint(
                 break
             except OSError:
                 continue
-    payload = ("architecture-schedule-v2", request_text,
+    # Evidence reports now use a structured, read-range-backed contract.
+    # Do not resume old free-form worker results under the new contract.
+    payload = ("architecture-schedule-v5", request_text,
                str(project.resolve()), stamp, impact.project_id,
                impact.nodes, impact.edges, sorted(set(file_stamps)))
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
@@ -268,7 +274,7 @@ class DynamicExplorationScheduler:
                 if not pending:
                     break
                 spent = sum(int(item.result.get("tokens") or 0) for item in completed)
-                reserved = sum(min(12000, max(2500, int(total_tokens * item.cost /
+                reserved = sum(min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
                     max(0.1, sum(entry.cost for entry in plan.items))))) for item in active.values())
                 external = []
                 own_runs = {item.child_run_id for item in active.values()}
@@ -280,7 +286,7 @@ class DynamicExplorationScheduler:
                         run.lease_expires_at or 0) > time.time():
                         external.append(item)
                 active_slots = {item.slot for item in (*active.values(), *external)}
-                reserved += sum(min(12000, max(2500, int(total_tokens * item.cost /
+                reserved += sum(min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
                     max(0.1, sum(entry.cost for entry in plan.items))))) for item in external)
                 if active:
                     plan = self._rebalance(plan, tuple(active.values()) + tuple(external))
@@ -297,7 +303,7 @@ class DynamicExplorationScheduler:
                     if not candidates:
                         continue
                     item = candidates[0]
-                    limit = min(12000, max(2500, int(total_tokens * item.cost /
+                    limit = min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
                         max(0.1, sum(entry.cost for entry in plan.items)))))
                     if spent + reserved + limit > total_tokens:
                         continue

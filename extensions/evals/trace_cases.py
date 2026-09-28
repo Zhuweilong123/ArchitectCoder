@@ -101,7 +101,7 @@ def _capture_root() -> Path:
 def _allowed_workspace_roots() -> list[Path]:
     settings = get_settings()
     repo_root = Path(__file__).resolve().parents[2]
-    roots = [repo_root, Path(settings.uml_dir).resolve(), Path(settings.uml_dir).resolve().parent]
+    roots = [repo_root, Path(settings.project_dir).resolve(), Path(settings.runtime_dir).resolve()]
     roots.extend(Path(item.strip()).resolve() for item in settings.workspace_roots.split(",") if item.strip())
     return roots
 

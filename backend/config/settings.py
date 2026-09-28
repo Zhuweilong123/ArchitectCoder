@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # Disabled means the provider keeps its current planner/explorer behavior.
     agent_architecture_scheduling_enabled: bool = False
     agent_architecture_scheduling_max_workers: int = 2
-    agent_architecture_scheduling_total_tokens: int = 18000
+    agent_architecture_scheduling_total_tokens: int = 32000
     agent_architecture_scheduling_worker_seconds: float = 90.0
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
@@ -189,16 +189,19 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # File storage
-    uml_dir: str = "../temp/uml_files"
+    runtime_dir: str = "../temp"
+    project_dir: str = "../project"
+    # Compatibility alias for older diagram and directory APIs.
+    uml_dir: str = "../project"
 
-    @field_validator("uml_dir", mode="after")
+    @field_validator("uml_dir", "project_dir", "runtime_dir", mode="after")
     @classmethod
     def resolve_uml_dir(cls, value: str) -> str:
         """Resolve relative storage paths from the backend directory.
 
         The backend is launched from both ``backend/`` and the repository
         root by different entry points. Resolving here keeps UML, trace,
-        eval, memory, and audit artifacts on the same stable storage tree.
+        eval and audit artifacts on the same stable runtime tree.
         Absolute paths remain explicit deployment overrides.
         """
         path = Path(value)
@@ -208,7 +211,7 @@ class Settings(BaseSettings):
         return str((backend_dir / path).resolve())
 
     # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
-    # 仓库目录和 uml_dir；需要访问外部源码时显式配置此项。
+    # 仓库目录和项目目录；需要访问外部源码时显式配置此项。
     workspace_roots: str = ""
 
     # CORS

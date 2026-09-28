@@ -1,0 +1,3471 @@
+{
+  "version": "1.0",
+  "revision": 18,
+  "name": "trade_sys_0822",
+  "diagrams": [
+    {
+      "version": "1.0",
+      "name": "Fruit Sales System Architecture",
+      "diagram_type": "component",
+      "component_id": "",
+      "classes": [],
+      "relations": [],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [
+        {
+          "id": "comp_web",
+          "name": "CompWebFrontend",
+          "x": 100.0,
+          "y": 540.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "UI"
+          ],
+          "required_interfaces": [
+            "SalesApi",
+            "UserApi",
+            "ReportApi"
+          ]
+        },
+        {
+          "id": "comp_user",
+          "name": "CompUserService",
+          "x": 460.0,
+          "y": 820.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "UserApi"
+          ],
+          "required_interfaces": [
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "comp_sales",
+          "name": "CompSalesService",
+          "x": 460.0,
+          "y": 540.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "SalesApi"
+          ],
+          "required_interfaces": [
+            "InventoryApi",
+            "UserApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "comp_inventory",
+          "name": "CompInventoryService",
+          "x": 460.0,
+          "y": 80.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "InventoryApi"
+          ],
+          "required_interfaces": [
+            "SupplierApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "comp_supplier",
+          "name": "CompSupplierService",
+          "x": 460.0,
+          "y": 310.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "SupplierApi"
+          ],
+          "required_interfaces": [
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "comp_report",
+          "name": "CompReportService",
+          "x": 460.0,
+          "y": 1000.0,
+          "width": 200.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "ReportApi"
+          ],
+          "required_interfaces": [
+            "SalesApi",
+            "InventoryApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "comp_db",
+          "name": "CompDatabase",
+          "x": 820.0,
+          "y": 540.0,
+          "width": 220.0,
+          "height": 160.0,
+          "parent_id": "",
+          "provided_interfaces": [
+            "DatabaseClient"
+          ],
+          "required_interfaces": []
+        }
+      ],
+      "comp_relations": [
+        {
+          "id": "crel_web_sales",
+          "source": "comp_web",
+          "target": "comp_sales",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_web_user",
+          "source": "comp_web",
+          "target": "comp_user",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_web_report",
+          "source": "comp_web",
+          "target": "comp_report",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_sales_inv",
+          "source": "comp_sales",
+          "target": "comp_inventory",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_sales_user",
+          "source": "comp_sales",
+          "target": "comp_user",
+          "type": "dependency",
+          "vertices": []
+        },
+        {
+          "id": "crel_sales_db",
+          "source": "comp_sales",
+          "target": "comp_db",
+          "type": "dependency",
+          "vertices": [
+            {
+              "x": 760.0,
+              "y": 626.0
+            }
+          ]
+        },
+        {
+          "id": "crel_inv_supplier",
+          "source": "comp_inventory",
+          "target": "comp_supplier",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_inv_db",
+          "source": "comp_inventory",
+          "target": "comp_db",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_user_db",
+          "source": "comp_user",
+          "target": "comp_db",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_supplier_db",
+          "source": "comp_supplier",
+          "target": "comp_db",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_report_sales",
+          "source": "comp_report",
+          "target": "comp_sales",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_report_inv",
+          "source": "comp_report",
+          "target": "comp_inventory",
+          "type": "dependency",
+          "vertices": null
+        },
+        {
+          "id": "crel_report_db",
+          "source": "comp_report",
+          "target": "comp_db",
+          "type": "dependency",
+          "vertices": null
+        }
+      ],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 0.72576,
+      "pan_x": 161.8168,
+      "pan_y": -91.82576
+    },
+    {
+      "version": "1.0",
+      "name": "Web Frontend Views",
+      "diagram_type": "class",
+      "component_id": "comp_web",
+      "classes": [
+        {
+          "id": "class_web_page",
+          "name": "WebPage",
+          "stereotype": "abstract",
+          "attributes": [
+            {
+              "name": "pageId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "route",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "render",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": true
+            },
+            {
+              "name": "navigate",
+              "return_type": "void",
+              "params": "route: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 712.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "前端页面基类：所有视图页面继承统一渲染与路由跳转能力",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_login_view",
+          "name": "LoginView",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "username",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "password",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "onSubmit",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "validateInput",
+              "return_type": "bool",
+              "params": "",
+              "visibility": "-",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 120.0,
+            "y": 486.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "登录/注册页面：校验输入后调用 UserApi 完成认证",
+          "provided_interfaces": [],
+          "required_interfaces": [
+            "UserApi"
+          ]
+        },
+        {
+          "id": "class_fruit_view",
+          "name": "FruitCatalogView",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "fruitList",
+              "type": "List<Fruit>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "loadFruits",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "addToCart",
+              "return_type": "void",
+              "params": "fruitId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 416.0,
+            "y": 486.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "水果目录页：展示在售水果、价格与库存状态，支持加入购物车",
+          "provided_interfaces": [],
+          "required_interfaces": [
+            "SalesApi"
+          ]
+        },
+        {
+          "id": "class_cart_view",
+          "name": "ShoppingCartView",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "cartItems",
+              "type": "List<CartItem>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "checkout",
+              "return_type": "void",
+              "params": "couponId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateQuantity",
+              "return_type": "void",
+              "params": "itemId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 712.0,
+            "y": 486.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "购物车页：查看选购的水果、调整数量并发起结算",
+          "provided_interfaces": [],
+          "required_interfaces": [
+            "SalesApi"
+          ]
+        },
+        {
+          "id": "class_order_view",
+          "name": "OrderView",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "orderList",
+              "type": "List<Order>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "loadOrders",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "payOrder",
+              "return_type": "void",
+              "params": "orderId: string, payType: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 1008.0,
+            "y": 486.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "订单页：查看订单列表与状态、发起支付或取消订单",
+          "provided_interfaces": [],
+          "required_interfaces": [
+            "SalesApi"
+          ]
+        },
+        {
+          "id": "class_admin_view",
+          "name": "AdminDashboardView",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "reportList",
+              "type": "List<SalesReport>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "loadSalesReport",
+              "return_type": "void",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "loadInventoryReport",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 1304.0,
+            "y": 486.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "管理后台页：查看销售/库存报表与经营数据看板",
+          "provided_interfaces": [],
+          "required_interfaces": [
+            "ReportApi"
+          ]
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_inherit_login",
+          "source": "class_login_view",
+          "target": "class_web_page",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": ""
+        },
+        {
+          "id": "rel_inherit_fruit",
+          "source": "class_fruit_view",
+          "target": "class_web_page",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": ""
+        },
+        {
+          "id": "rel_inherit_cart",
+          "source": "class_cart_view",
+          "target": "class_web_page",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": ""
+        },
+        {
+          "id": "rel_inherit_order",
+          "source": "class_order_view",
+          "target": "class_web_page",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": ""
+        },
+        {
+          "id": "rel_inherit_admin",
+          "source": "class_admin_view",
+          "target": "class_web_page",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": ""
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": -247.5,
+      "pan_y": -55.0
+    },
+    {
+      "version": "1.0",
+      "name": "User & Permission Domain",
+      "diagram_type": "class",
+      "component_id": "comp_user",
+      "classes": [
+        {
+          "id": "class_user_service",
+          "name": "UserService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "login",
+              "return_type": "bool",
+              "params": "username: string, password: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "register",
+              "return_type": "string",
+              "params": "customer: Customer",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "assignRole",
+              "return_type": "void",
+              "params": "userId: string, roleId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "checkPermission",
+              "return_type": "bool",
+              "params": "userId: string, permCode: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 1024.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "用户服务：负责账号认证、注册、角色分配与权限校验",
+          "provided_interfaces": [
+            "UserApi"
+          ],
+          "required_interfaces": [
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "class_user",
+          "name": "User",
+          "stereotype": "abstract",
+          "attributes": [
+            {
+              "name": "userId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "passwordHash",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "phone",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "email",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "createTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "login",
+              "return_type": "bool",
+              "params": "username: string, password: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "logout",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "changePassword",
+              "return_type": "bool",
+              "params": "oldPwd: string, newPwd: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "validate",
+              "return_type": "bool",
+              "params": "",
+              "visibility": "#",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "用户基类：封装账号公共信息，密码仅存哈希值",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_customer",
+          "name": "Customer",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "vipLevel",
+              "type": "int",
+              "visibility": "+",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "points",
+              "type": "int",
+              "visibility": "+",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "balance",
+              "type": "double",
+              "visibility": "+",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "register",
+              "return_type": "string",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "recharge",
+              "return_type": "bool",
+              "params": "amount: double",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "consume",
+              "return_type": "void",
+              "params": "points: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 624.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "顾客：会员等级越高折扣越大，购物累计积分可抵扣",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_admin",
+          "name": "Admin",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "department",
+              "type": "string",
+              "visibility": "+",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "manageFruit",
+              "return_type": "void",
+              "params": "fruit: Fruit",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "manageOrder",
+              "return_type": "void",
+              "params": "orderId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateReport",
+              "return_type": "void",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 624.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "管理员/店长：管理水果、订单并生成经营报表",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_role",
+          "name": "Role",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "roleId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "roleName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "assignPermission",
+              "return_type": "void",
+              "params": "permission: Permission",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "removePermission",
+              "return_type": "void",
+              "params": "permission: Permission",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 136.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "角色：顾客、店员、采购员、店长等，角色可挂载多个权限",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_permission",
+          "name": "Permission",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "permId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "permCode",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "permName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "checkAccess",
+              "return_type": "bool",
+              "params": "roleId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "权限：定义可执行的操作码，如 manage_fruit、manage_order",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_inherit_customer",
+          "source": "class_customer",
+          "target": "class_user",
+          "type": "inheritance",
+          "vertices": [
+            {
+              "x": 828.0,
+              "y": 580.0
+            },
+            {
+              "x": 532.0,
+              "y": 580.0
+            }
+          ],
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "顾客是用户的一种"
+        },
+        {
+          "id": "rel_inherit_admin",
+          "source": "class_admin",
+          "target": "class_user",
+          "type": "inheritance",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "管理员是用户的一种"
+        },
+        {
+          "id": "rel_user_role",
+          "source": "class_user",
+          "target": "class_role",
+          "type": "association",
+          "vertices": [
+            {
+              "x": 360.0,
+              "y": 340.0
+            },
+            {
+              "x": 360.0,
+              "y": 420.0
+            }
+          ],
+          "multiplicity_source": "*",
+          "multiplicity_target": "*",
+          "role_name": "roles",
+          "note": "一个用户可拥有多个角色，一个角色可属于多个用户"
+        },
+        {
+          "id": "rel_role_perm",
+          "source": "class_role",
+          "target": "class_permission",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "*",
+          "multiplicity_target": "*",
+          "role_name": "permissions",
+          "note": "角色与权限多对多关联"
+        },
+        {
+          "id": "rel_user_svc",
+          "source": "class_user_service",
+          "target": "class_user",
+          "type": "association",
+          "vertices": [
+            {
+              "x": 1020.0,
+              "y": 540.0
+            },
+            {
+              "x": 1020.0,
+              "y": 460.0
+            },
+            {
+              "x": 980.0,
+              "y": 460.0
+            },
+            {
+              "x": 980.0,
+              "y": 440.0
+            },
+            {
+              "x": 660.0,
+              "y": 440.0
+            },
+            {
+              "x": 660.0,
+              "y": 580.0
+            }
+          ],
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "users",
+          "note": "UserService 管理所有用户账号"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": -124.5,
+      "pan_y": -174.5
+    },
+    {
+      "version": "1.0",
+      "name": "Sales Domain",
+      "diagram_type": "class",
+      "component_id": "comp_sales",
+      "classes": [
+        {
+          "id": "class_sales_service",
+          "name": "SalesService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "createOrder",
+              "return_type": "string",
+              "params": "customerId: string, cartItems: List<CartItem>",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "cancelOrder",
+              "return_type": "bool",
+              "params": "orderId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "checkout",
+              "return_type": "string",
+              "params": "cartId: string, couponId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "payOrder",
+              "return_type": "bool",
+              "params": "orderId: string, payType: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryOrder",
+              "return_type": "Order",
+              "params": "orderId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryOrders",
+              "return_type": "List<Order>",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "calculateAmount",
+              "return_type": "double",
+              "params": "couponId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 580.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "销售服务：订单创建、结算、支付与查询；创建订单时预占可用库存（现有库存-已预占），支付时提交预占并扣减库存，取消或失败时释放预占，杜绝超卖",
+          "provided_interfaces": [
+            "SalesApi"
+          ],
+          "required_interfaces": [
+            "InventoryApi",
+            "UserApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "class_order",
+          "name": "Order",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "orderId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "orderNo",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "customerId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalAmount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "discountAmount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "payAmount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "createTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "payTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "remark",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "calculateAmount",
+              "return_type": "double",
+              "params": "coupon: Coupon",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateStatus",
+              "return_type": "void",
+              "params": "status: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "cancel",
+              "return_type": "bool",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 1171.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "订单：状态机 待支付→已支付→已发货→已完成/已取消；支付对应提交库存预占，取消或支付失败需回滚扣减并释放预占",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_order_item",
+          "name": "OrderItem",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "itemId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "orderId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "unitPrice",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "quantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "subtotal",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "calcSubtotal",
+              "return_type": "double",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 284.0,
+            "y": 1712.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "订单明细：下单时快照水果名称与单价，防止后续改价影响历史订单",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_shopping_cart",
+          "name": "ShoppingCart",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "cartId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "customerId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "addItem",
+              "return_type": "void",
+              "params": "fruitId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "removeItem",
+              "return_type": "void",
+              "params": "itemId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateQuantity",
+              "return_type": "void",
+              "params": "itemId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "clear",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 580.0,
+            "y": 739.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "购物车：每个顾客一个购物车，结算后清空",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_cart_item",
+          "name": "CartItem",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "cartItemId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "unitPrice",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "quantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "calcSubtotal",
+              "return_type": "double",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 1171.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "购物车明细项",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_payment",
+          "name": "Payment",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "paymentId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "orderId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "payType",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "amount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "transactionNo",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "payTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "pay",
+              "return_type": "bool",
+              "params": "orderId: string, payType: string, amount: double",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "refund",
+              "return_type": "bool",
+              "params": "paymentId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryStatus",
+              "return_type": "string",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 580.0,
+            "y": 1712.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "支付记录：支持微信/支付宝/余额，退款需原路退回",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_coupon",
+          "name": "Coupon",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "couponId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "customerId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "couponName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "discountType",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "discountValue",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "minAmount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "validFrom",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "validUntil",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "validate",
+              "return_type": "bool",
+              "params": "orderAmount: double",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "use",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 876.0,
+            "y": 1712.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "优惠券：满减或折扣券，需满足最低消费金额且未过期",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_order_items",
+          "source": "class_order",
+          "target": "class_order_item",
+          "type": "composition",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "1..*",
+          "role_name": "items",
+          "note": "订单包含一条或多条明细"
+        },
+        {
+          "id": "rel_cart_items",
+          "source": "class_shopping_cart",
+          "target": "class_cart_item",
+          "type": "composition",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "1..*",
+          "role_name": "items",
+          "note": "购物车包含若干明细项"
+        },
+        {
+          "id": "rel_order_payment",
+          "source": "class_order",
+          "target": "class_payment",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "1",
+          "role_name": "payment",
+          "note": "一个订单对应一条支付记录"
+        },
+        {
+          "id": "rel_order_coupon",
+          "source": "class_order",
+          "target": "class_coupon",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "0..1",
+          "multiplicity_target": "0..1",
+          "role_name": "coupon",
+          "note": "订单可选用一张优惠券"
+        },
+        {
+          "id": "rel_sales_order",
+          "source": "class_sales_service",
+          "target": "class_order",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "orders",
+          "note": "销售服务管理多个订单"
+        },
+        {
+          "id": "rel_sales_cart",
+          "source": "class_sales_service",
+          "target": "class_shopping_cart",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "carts",
+          "note": "销售服务处理顾客购物车"
+        },
+        {
+          "id": "rel_cart_order",
+          "source": "class_shopping_cart",
+          "target": "class_order",
+          "type": "dependency",
+          "vertices": null,
+          "multiplicity_source": "",
+          "multiplicity_target": "",
+          "role_name": "",
+          "note": "购物车结算时生成订单"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Inventory Domain",
+      "diagram_type": "class",
+      "component_id": "comp_inventory",
+      "classes": [
+        {
+          "id": "class_inventory_service",
+          "name": "InventoryService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "stockIn",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int, operatorId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "stockOut",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int, orderNo: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "checkStock",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "createPurchaseOrder",
+              "return_type": "string",
+              "params": "supplierId: string, items: List<PurchaseOrderItem>",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "confirmArrival",
+              "return_type": "bool",
+              "params": "purchaseId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryStock",
+              "return_type": "Fruit",
+              "params": "fruitId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryStockRecords",
+              "return_type": "List<InventoryRecord>",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "validateQuoteAndStock",
+              "return_type": "bool",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "availableStock",
+              "return_type": "int",
+              "params": "fruitId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "reserveStock",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "commitReservation",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int, orderNo: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "releaseStock",
+              "return_type": "bool",
+              "params": "fruitId: string, quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "库存服务：出入库、库存校验、采购单创建与到货确认；通过预占(reserveStock)/提交(commitReservation)/释放(releaseStock)实现库存预占闭环，防止并发超卖",
+          "provided_interfaces": [
+            "InventoryApi"
+          ],
+          "required_interfaces": [
+            "SupplierApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "class_fruit_category",
+          "name": "FruitCategory",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "categoryId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "categoryName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "addCategory",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateCategory",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "水果分类：如苹果、柑橘、热带水果、浆果等",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_fruit",
+          "name": "Fruit",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "fruitId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "categoryId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "unit",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "price",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "costPrice",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "stockQuantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "reservedQuantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "safetyStock",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "shelfLife",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "updatePrice",
+              "return_type": "void",
+              "params": "newPrice: double",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateStock",
+              "return_type": "void",
+              "params": "quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "checkStock",
+              "return_type": "bool",
+              "params": "quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "availableStock",
+              "return_type": "int",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "reserve",
+              "return_type": "bool",
+              "params": "quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "release",
+              "return_type": "void",
+              "params": "quantity: int",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 820.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "水果商品：库存低于 safetyStock 时触发补货提醒；水果易损耗需按保质期管理；可售库存 availableStock = stockQuantity - reservedQuantity，reserve/release 维护预占，防止超卖",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_inventory_record",
+          "name": "InventoryRecord",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "recordId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "type",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "quantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "operatorId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "orderNo",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "createTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "remark",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "recordIn",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "recordOut",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryByFruit",
+              "return_type": "List<InventoryRecord>",
+              "params": "fruitId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 1399.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "出入库记录：type 为 IN/OUT，与采购单或销售订单关联，支持追溯",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_purchase_order",
+          "name": "PurchaseOrder",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "purchaseId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "purchaseNo",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "supplierId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalAmount",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "createTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "arriveTime",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "operatorId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "createPurchaseOrder",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "confirmArrival",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "cancelPurchase",
+              "return_type": "bool",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 820.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "采购单：状态 待到货→已到货/已取消，到货后自动入库",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_purchase_order_item",
+          "name": "PurchaseOrderItem",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "itemId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "purchaseId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "fruitId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "quantity",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "unitPrice",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "subtotal",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "calcSubtotal",
+              "return_type": "double",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 1399.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "采购明细：记录采购单价用于成本核算",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_cat_fruit",
+          "source": "class_fruit_category",
+          "target": "class_fruit",
+          "type": "aggregation",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "fruits",
+          "note": "一个分类下包含多种水果"
+        },
+        {
+          "id": "rel_fruit_record",
+          "source": "class_fruit",
+          "target": "class_inventory_record",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "records",
+          "note": "一种水果有多条出入库记录"
+        },
+        {
+          "id": "rel_purchase_items",
+          "source": "class_purchase_order",
+          "target": "class_purchase_order_item",
+          "type": "composition",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "1..*",
+          "role_name": "items",
+          "note": "采购单包含一条或多条采购明细"
+        },
+        {
+          "id": "rel_inv_fruit",
+          "source": "class_inventory_service",
+          "target": "class_fruit",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "fruits",
+          "note": "库存服务管理全部水果商品"
+        },
+        {
+          "id": "rel_inv_purchase",
+          "source": "class_inventory_service",
+          "target": "class_purchase_order",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "purchases",
+          "note": "库存服务创建并跟踪采购单"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": -58.5,
+      "pan_y": 74.5
+    },
+    {
+      "version": "1.0",
+      "name": "Supplier Domain",
+      "diagram_type": "class",
+      "component_id": "comp_supplier",
+      "classes": [
+        {
+          "id": "class_supplier_service",
+          "name": "SupplierService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "queryQuote",
+              "return_type": "double",
+              "params": "supplierId: string, items: List<PurchaseOrderItem>",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "addSupplier",
+              "return_type": "string",
+              "params": "supplier: Supplier",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateSupplier",
+              "return_type": "bool",
+              "params": "supplier: Supplier",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "evaluateSupplier",
+              "return_type": "void",
+              "params": "supplierId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 80.0,
+            "y": 80.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "供应商服务：报价查询、供应商档案管理与供货评价",
+          "provided_interfaces": [
+            "SupplierApi"
+          ],
+          "required_interfaces": [
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "class_supplier",
+          "name": "Supplier",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "supplierId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "supplierName",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "contactPerson",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "phone",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "address",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "rating",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "status",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "addSupplier",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "updateSupplier",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "queryQuote",
+              "return_type": "double",
+              "params": "items: List<PurchaseOrderItem>",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 440.0,
+            "y": 80.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "供应商档案：记录供货品质评分，评分低者进入淘汰名单",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_supplier_svc",
+          "source": "class_supplier_service",
+          "target": "class_supplier",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "suppliers",
+          "note": "供应商服务维护多个供应商档案"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Report Domain",
+      "diagram_type": "class",
+      "component_id": "comp_report",
+      "classes": [
+        {
+          "id": "class_report_service",
+          "name": "ReportService",
+          "stereotype": "class",
+          "attributes": [],
+          "methods": [
+            {
+              "name": "generateDailySalesReport",
+              "return_type": "SalesReport",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateMonthlyReport",
+              "return_type": "SalesReport",
+              "params": "month: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateInventoryReport",
+              "return_type": "InventoryReport",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "exportExcel",
+              "return_type": "string",
+              "params": "reportId: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "aggregateByCategory",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 580.0,
+            "y": 100.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "报表服务：汇总销售与库存数据生成经营报表，支持导出",
+          "provided_interfaces": [
+            "ReportApi"
+          ],
+          "required_interfaces": [
+            "SalesApi",
+            "InventoryApi",
+            "DatabaseClient"
+          ]
+        },
+        {
+          "id": "class_sales_report",
+          "name": "SalesReport",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "reportId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "reportDate",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalSales",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalOrders",
+              "type": "int",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalProfit",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "topFruits",
+              "type": "List<string>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "generateDailyReport",
+              "return_type": "SalesReport",
+              "params": "date: string",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "aggregateByCategory",
+              "return_type": "void",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 432.0,
+            "y": 649.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "销售报表：按日/月汇总销售额、订单量、毛利与热销水果排行",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        },
+        {
+          "id": "class_inventory_report",
+          "name": "InventoryReport",
+          "stereotype": "class",
+          "attributes": [
+            {
+              "name": "reportId",
+              "type": "string",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "reportDate",
+              "type": "DateTime",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "totalStockValue",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "lowStockItems",
+              "type": "List<Fruit>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "expiredSoonItems",
+              "type": "List<Fruit>",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            },
+            {
+              "name": "wasteQuantity",
+              "type": "double",
+              "visibility": "-",
+              "default_value": "",
+              "is_static": false
+            }
+          ],
+          "methods": [
+            {
+              "name": "generateStockReport",
+              "return_type": "InventoryReport",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            },
+            {
+              "name": "generateWasteReport",
+              "return_type": "InventoryReport",
+              "params": "",
+              "visibility": "+",
+              "is_static": false,
+              "is_abstract": false
+            }
+          ],
+          "position": {
+            "x": 728.0,
+            "y": 649.0
+          },
+          "size": {
+            "width": 200.0,
+            "height": 150.0
+          },
+          "note": "库存报表：库存总值、低库存预警、临期水果与损耗统计",
+          "provided_interfaces": [],
+          "required_interfaces": []
+        }
+      ],
+      "relations": [
+        {
+          "id": "rel_report_sales",
+          "source": "class_report_service",
+          "target": "class_sales_report",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "salesReports",
+          "note": "报表服务生成多份销售报表"
+        },
+        {
+          "id": "rel_report_inv",
+          "source": "class_report_service",
+          "target": "class_inventory_report",
+          "type": "association",
+          "vertices": null,
+          "multiplicity_source": "1",
+          "multiplicity_target": "*",
+          "role_name": "inventoryReports",
+          "note": "报表服务生成多份库存报表"
+        }
+      ],
+      "lifelines": [],
+      "messages": [],
+      "fragments": [],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": -334.5,
+      "pan_y": -245.0
+    },
+    {
+      "version": "1.0",
+      "name": "Place Order Flow",
+      "diagram_type": "sequence",
+      "component_id": "comp_sales",
+      "classes": [],
+      "relations": [],
+      "lifelines": [
+        {
+          "id": "life_customer",
+          "name": "Customer",
+          "class_ref": "class_customer",
+          "x": 100.0,
+          "activations": []
+        },
+        {
+          "id": "life_web",
+          "name": "WebFrontend",
+          "class_ref": "",
+          "x": 328.0,
+          "activations": []
+        },
+        {
+          "id": "life_sales",
+          "name": "SalesService",
+          "class_ref": "class_sales_service",
+          "x": 592.0,
+          "activations": []
+        },
+        {
+          "id": "life_inv",
+          "name": "InventoryService",
+          "class_ref": "class_inventory_service",
+          "x": 868.0,
+          "activations": []
+        },
+        {
+          "id": "life_pay",
+          "name": "Payment",
+          "class_ref": "class_payment",
+          "x": 1088.0,
+          "activations": []
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_order_01",
+          "from_lifeline": "life_customer",
+          "to_lifeline": "life_web",
+          "label": "addToCart(fruitId, quantity)",
+          "type": "sync",
+          "order": 1,
+          "y": 190.0,
+          "note": "顾客在水果目录页选择水果加入购物车"
+        },
+        {
+          "id": "msg_order_02",
+          "from_lifeline": "life_web",
+          "to_lifeline": "life_sales",
+          "label": "createOrder(customerId, cartItems)",
+          "type": "sync",
+          "order": 2,
+          "y": 238.0,
+          "note": "前端提交购物车明细生成订单草稿"
+        },
+        {
+          "id": "msg_order_03",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_inv",
+          "label": "reserveStock(fruitId, quantity)",
+          "type": "sync",
+          "order": 3,
+          "y": 286.0,
+          "note": "逐项预占可用库存（现有库存-已预占），任一不足则整单失败并释放本单已预占"
+        },
+        {
+          "id": "msg_order_04",
+          "from_lifeline": "life_inv",
+          "to_lifeline": "life_sales",
+          "label": "return stockResult",
+          "type": "return",
+          "order": 4,
+          "y": 334.0,
+          "note": "返回预占结果，任一不足则整单失败并释放本单已预占"
+        },
+        {
+          "id": "msg_order_05",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_sales",
+          "label": "calculateAmount(couponId)",
+          "type": "self",
+          "order": 5,
+          "y": 396.0,
+          "note": "计算订单金额：原价减优惠券折扣，VIP 会员按等级再打折"
+        },
+        {
+          "id": "msg_order_06",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_pay",
+          "label": "pay(orderId, payType, amount)",
+          "type": "sync",
+          "order": 6,
+          "y": 458.0,
+          "note": "发起支付（微信/支付宝/余额），生成支付记录"
+        },
+        {
+          "id": "msg_order_07",
+          "from_lifeline": "life_pay",
+          "to_lifeline": "life_sales",
+          "label": "return payResult",
+          "type": "return",
+          "order": 7,
+          "y": 506.0,
+          "note": "返回支付结果，成功后订单状态置为已支付"
+        },
+        {
+          "id": "msg_order_08",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_inv",
+          "label": "commitReservation(fruitId, quantity, orderNo)",
+          "type": "sync",
+          "order": 8,
+          "y": 554.0,
+          "note": "支付成功后提交预占：扣减库存并释放预占，任一项失败则回滚已扣库存并退款"
+        },
+        {
+          "id": "msg_order_09",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_web",
+          "label": "return orderInfo",
+          "type": "return",
+          "order": 9,
+          "y": 602.0,
+          "note": "返回订单号与支付状态，前端跳转订单详情页"
+        },
+        {
+          "id": "msg_order_10",
+          "from_lifeline": "life_sales",
+          "to_lifeline": "life_inv",
+          "label": "releaseStock(fruitId, quantity)",
+          "type": "sync",
+          "order": 10,
+          "y": 650.0,
+          "note": "库存不足或提交失败时释放本单预占、回补已扣库存，保证不超卖"
+        }
+      ],
+      "fragments": [
+        {
+          "id": "frag_order_alt",
+          "type": "alt",
+          "label": "[库存充足]",
+          "x": 568.0,
+          "width": 684.0,
+          "y_start": 258.0,
+          "y_end": 590.0
+        },
+        {
+          "id": "frag_order_else",
+          "type": "alt",
+          "label": "[else: 库存不足]",
+          "x": 568.0,
+          "width": 684.0,
+          "y_start": 620.0,
+          "y_end": 680.0
+        }
+      ],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 0.4,
+      "pan_x": 187.7999928535867,
+      "pan_y": 264.35999596005394
+    },
+    {
+      "version": "1.0",
+      "name": "Procurement Stock-in Flow",
+      "diagram_type": "sequence",
+      "component_id": "comp_inventory",
+      "classes": [],
+      "relations": [],
+      "lifelines": [
+        {
+          "id": "life_purchaser",
+          "name": "Purchaser",
+          "class_ref": "class_admin",
+          "x": 60.0,
+          "activations": []
+        },
+        {
+          "id": "life_web2",
+          "name": "WebFrontend",
+          "class_ref": "",
+          "x": 270.0,
+          "activations": []
+        },
+        {
+          "id": "life_inv2",
+          "name": "InventoryService",
+          "class_ref": "class_inventory_service",
+          "x": 480.0,
+          "activations": []
+        },
+        {
+          "id": "life_supplier2",
+          "name": "SupplierService",
+          "class_ref": "class_supplier_service",
+          "x": 690.0,
+          "activations": []
+        },
+        {
+          "id": "life_db2",
+          "name": "Database",
+          "class_ref": "",
+          "x": 900.0,
+          "activations": []
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_stock_01",
+          "from_lifeline": "life_purchaser",
+          "to_lifeline": "life_web2",
+          "label": "createPurchaseOrder(supplierId, items)",
+          "type": "sync",
+          "order": 1,
+          "y": 190.0,
+          "note": "采购员录入采购单：选择供应商与水果清单"
+        },
+        {
+          "id": "msg_stock_02",
+          "from_lifeline": "life_web2",
+          "to_lifeline": "life_inv2",
+          "label": "createPurchaseOrder(supplierId, items)",
+          "type": "sync",
+          "order": 2,
+          "y": 230.0,
+          "note": "前端转发采购单创建请求"
+        },
+        {
+          "id": "msg_stock_03",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_supplier2",
+          "label": "queryQuote(supplierId, items)",
+          "type": "sync",
+          "order": 3,
+          "y": 270.0,
+          "note": "向供应商服务查询最新报价"
+        },
+        {
+          "id": "msg_stock_04",
+          "from_lifeline": "life_supplier2",
+          "to_lifeline": "life_inv2",
+          "label": "return quote",
+          "type": "return",
+          "order": 4,
+          "y": 310.0,
+          "note": "返回供应商报价，用于生成采购明细单价"
+        },
+        {
+          "id": "msg_stock_05",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_inv2",
+          "label": "validateQuoteAndStock()",
+          "type": "self",
+          "order": 5,
+          "y": 350.0,
+          "note": "校验报价合理性并核对当前库存预警，生成采购明细"
+        },
+        {
+          "id": "msg_stock_06",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_db2",
+          "label": "savePurchaseOrder(purchaseOrder)",
+          "type": "sync",
+          "order": 6,
+          "y": 390.0,
+          "note": "持久化采购单，状态为待到货"
+        },
+        {
+          "id": "msg_stock_07",
+          "from_lifeline": "life_db2",
+          "to_lifeline": "life_inv2",
+          "label": "return saved",
+          "type": "return",
+          "order": 7,
+          "y": 430.0,
+          "note": "保存成功返回采购单号"
+        },
+        {
+          "id": "msg_stock_08",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_web2",
+          "label": "return purchaseNo",
+          "type": "return",
+          "order": 8,
+          "y": 470.0,
+          "note": "返回采购单号给前端"
+        },
+        {
+          "id": "msg_stock_09",
+          "from_lifeline": "life_web2",
+          "to_lifeline": "life_purchaser",
+          "label": "return purchaseNo",
+          "type": "return",
+          "order": 9,
+          "y": 510.0,
+          "note": "采购员确认采购单已创建"
+        },
+        {
+          "id": "msg_stock_10",
+          "from_lifeline": "life_purchaser",
+          "to_lifeline": "life_web2",
+          "label": "confirmArrival(purchaseId)",
+          "type": "sync",
+          "order": 10,
+          "y": 550.0,
+          "note": "水果到货后采购员执行到货确认"
+        },
+        {
+          "id": "msg_stock_11",
+          "from_lifeline": "life_web2",
+          "to_lifeline": "life_inv2",
+          "label": "confirmArrival(purchaseId)",
+          "type": "sync",
+          "order": 11,
+          "y": 590.0,
+          "note": "前端转发到货确认请求"
+        },
+        {
+          "id": "msg_stock_12",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_inv2",
+          "label": "stockIn(fruitId, quantity, operatorId)",
+          "type": "self",
+          "order": 12,
+          "y": 630.0,
+          "note": "逐项增加库存并登记入库记录，更新采购单状态为已完成"
+        },
+        {
+          "id": "msg_stock_13",
+          "from_lifeline": "life_inv2",
+          "to_lifeline": "life_web2",
+          "label": "return stockResult",
+          "type": "return",
+          "order": 13,
+          "y": 670.0,
+          "note": "返回入库结果"
+        },
+        {
+          "id": "msg_stock_14",
+          "from_lifeline": "life_web2",
+          "to_lifeline": "life_purchaser",
+          "label": "return stockResult",
+          "type": "return",
+          "order": 14,
+          "y": 710.0,
+          "note": "采购员查看入库结果"
+        }
+      ],
+      "fragments": [
+        {
+          "id": "frag_stock_opt",
+          "type": "opt",
+          "label": "[到货确认]",
+          "x": 250.0,
+          "width": 670.0,
+          "y_start": 530.0,
+          "y_end": 730.0
+        }
+      ],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    },
+    {
+      "version": "1.0",
+      "name": "Sales Report Generation Flow",
+      "diagram_type": "sequence",
+      "component_id": "comp_report",
+      "classes": [],
+      "relations": [],
+      "lifelines": [
+        {
+          "id": "life_manager",
+          "name": "Manager",
+          "class_ref": "class_admin",
+          "x": 60.0,
+          "activations": []
+        },
+        {
+          "id": "life_report",
+          "name": "ReportService",
+          "class_ref": "class_report_service",
+          "x": 270.0,
+          "activations": []
+        },
+        {
+          "id": "life_sales3",
+          "name": "SalesService",
+          "class_ref": "class_sales_service",
+          "x": 480.0,
+          "activations": []
+        },
+        {
+          "id": "life_inv3",
+          "name": "InventoryService",
+          "class_ref": "class_inventory_service",
+          "x": 690.0,
+          "activations": []
+        },
+        {
+          "id": "life_db3",
+          "name": "Database",
+          "class_ref": "",
+          "x": 900.0,
+          "activations": []
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_report_01",
+          "from_lifeline": "life_manager",
+          "to_lifeline": "life_report",
+          "label": "generateDailySalesReport(date)",
+          "type": "sync",
+          "order": 1,
+          "y": 190.0,
+          "note": "店长发起生成指定日期的销售报表"
+        },
+        {
+          "id": "msg_report_02",
+          "from_lifeline": "life_report",
+          "to_lifeline": "life_sales3",
+          "label": "queryOrders(date)",
+          "type": "sync",
+          "order": 2,
+          "y": 230.0,
+          "note": "查询该日期全部已完成订单"
+        },
+        {
+          "id": "msg_report_03",
+          "from_lifeline": "life_sales3",
+          "to_lifeline": "life_report",
+          "label": "return orderList",
+          "type": "return",
+          "order": 3,
+          "y": 270.0,
+          "note": "返回订单明细列表"
+        },
+        {
+          "id": "msg_report_04",
+          "from_lifeline": "life_report",
+          "to_lifeline": "life_inv3",
+          "label": "queryStockRecords(date)",
+          "type": "sync",
+          "order": 4,
+          "y": 310.0,
+          "note": "查询当日出入库记录用于成本核算"
+        },
+        {
+          "id": "msg_report_05",
+          "from_lifeline": "life_inv3",
+          "to_lifeline": "life_report",
+          "label": "return recordList",
+          "type": "return",
+          "order": 5,
+          "y": 350.0,
+          "note": "返回出入库记录列表"
+        },
+        {
+          "id": "msg_report_06",
+          "from_lifeline": "life_report",
+          "to_lifeline": "life_report",
+          "label": "aggregateByCategory()",
+          "type": "self",
+          "order": 6,
+          "y": 390.0,
+          "note": "按水果品类聚合销售额、销量与毛利，统计热销排行"
+        },
+        {
+          "id": "msg_report_07",
+          "from_lifeline": "life_report",
+          "to_lifeline": "life_db3",
+          "label": "saveReport(salesReport)",
+          "type": "sync",
+          "order": 7,
+          "y": 430.0,
+          "note": "持久化报表结果"
+        },
+        {
+          "id": "msg_report_08",
+          "from_lifeline": "life_db3",
+          "to_lifeline": "life_report",
+          "label": "return saved",
+          "type": "return",
+          "order": 8,
+          "y": 470.0,
+          "note": "保存成功"
+        },
+        {
+          "id": "msg_report_09",
+          "from_lifeline": "life_report",
+          "to_lifeline": "life_manager",
+          "label": "return report",
+          "type": "return",
+          "order": 9,
+          "y": 510.0,
+          "note": "返回生成的销售报表供查看或导出 Excel"
+        }
+      ],
+      "fragments": [
+        {
+          "id": "frag_report_loop",
+          "type": "loop",
+          "label": "[for each order]",
+          "x": 460.0,
+          "width": 460.0,
+          "y_start": 210.0,
+          "y_end": 370.0
+        }
+      ],
+      "components": [],
+      "comp_relations": [],
+      "grid_visible": true,
+      "grid_size": 20,
+      "grid_color": "#e0e0e0",
+      "grid_thickness": 1,
+      "snap_to_grid": true,
+      "zoom": 1.0,
+      "pan_x": 0.0,
+      "pan_y": 0.0
+    }
+  ],
+  "active_diagram_index": 0
+}

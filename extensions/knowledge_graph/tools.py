@@ -27,7 +27,7 @@ import logging
 import os
 from typing import Any, Callable, Optional
 
-from app.agent_base.core.knowledge_graph import KnowledgeGraphProvider, get_knowledge_graph
+from app.agent_base.core.knowledge_graph import KnowledgeGraphProvider
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.async_tool import AsyncTool
 
@@ -686,13 +686,13 @@ def create_kg_v2_tools(
         [KgMapTool, KgLocateTool, KgExpandTool]；include_compare=True 时追加 KgDiffTool
     """
     if provider is None:
-        provider = get_knowledge_graph()
+        from app.agent_base.core.knowledge_graph import load_knowledge_graph
+        provider = load_knowledge_graph(project_file=project_file)
 
     project_id = ""
     if project_file:
-        project_id = _normalize_project_id(
-            os.path.splitext(os.path.basename(project_file))[0],
-        )
+        from backend.config.project_storage import project_id_for
+        project_id = project_id_for(project_file)
     tools: list[Tool] = [
         KgMapTool(provider, project_id),
         KgLocateTool(provider, project_id),

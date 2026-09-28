@@ -415,7 +415,7 @@ backend/app/services/
 
 ### 13.2 端口演进
 
-保留现有 `prepare()` 的兼容行为。第一阶段通过它附加影响分析与分区报告。多轮运行时调度使用新的策略端口，建议职责为：
+保留现有 `prepare()` 端口供普通编排使用；架构感知组件通过它提供轻量工具提示。影响分析与分区由主 Agent 的探索诉求触发。多轮运行时调度使用新的策略端口，建议职责为：
 
 ```text
 plan(requirement, graph_snapshot, capabilities) → PartitionPlan
@@ -430,7 +430,7 @@ revise(plan, execution_feedback, graph_delta)   → PlanRevision
 
 继续遵循此前约定：关闭新策略后恢复当前执行行为，包括已有独立的主 Agent 子代理配置。无需为此先建设通用编排平台。
 
-当前实现采用 `agent_architecture_scheduling_enabled` 布尔开关，默认 `false`。关闭时工厂直接返回原有 `LLMOrchestrator`，不会调用新图谱策略；原有 `AGENT_ORCHESTRATION_ENABLED=false` 仍返回 NoOp。开启时需同时启用原编排和知识图谱；图谱不可用或无法形成可靠切片时，调用原 Provider 的准备逻辑。用户现有的主 Agent 子代理开关保持独立。
+当前实现采用 `agent_architecture_scheduling_enabled` 布尔开关，默认 `false`。关闭时工厂直接返回原有 `LLMOrchestrator`，不会调用新图谱策略；原有 `AGENT_ORCHESTRATION_ENABLED=false` 仍返回 NoOp。开启时需同时启用原编排和知识图谱；图谱不可用或无法形成可靠切片时，`explore_architecture` 返回失败原因，由主 Agent 使用现有工具继续探索。用户现有的主 Agent 子代理开关保持独立。
 
 当前 Settings 按进程缓存，配置切换需要重启后端。checkpoint 保存首次运行的图谱调度模式、计划版本和根 Run 标识；恢复时不将原本关闭的任务自动切入图谱调度，显式关闭开关仍立即退回现有流程。恢复会重新检查图谱和文件指纹，不匹配时建立新计划，不能复用旧摘要。
 
@@ -518,26 +518,36 @@ AGENT_KNOWLEDGE_GRAPH_ENABLED=true
 AGENT_ARCHITECTURE_SCHEDULING_ENABLED=true
 ```
 
-当前代码新增的可选参数为 `AGENT_ARCHITECTURE_SCHEDULING_MAX_WORKERS`（默认 2，上限 2）、`AGENT_ARCHITECTURE_SCHEDULING_TOTAL_TOKENS`（默认 18000，探索阶段分配额度）和 `AGENT_ARCHITECTURE_SCHEDULING_WORKER_SECONDS`（默认 90）。环境变量变更后按现有 Settings 生命周期重启 backend。
+当前代码新增的可选参数为 `AGENT_ARCHITECTURE_SCHEDULING_MAX_WORKERS`（默认 2，上限 2）、`AGENT_ARCHITECTURE_SCHEDULING_TOTAL_TOKENS`（默认 32000，探索阶段分配额度）和 `AGENT_ARCHITECTURE_SCHEDULING_WORKER_SECONDS`（默认 90）。环境变量变更后按现有 Settings 生命周期重启 backend。
 
 当前执行路径：
 
-1. 用一次有界规划调用生成需求目标、任务步骤和图谱搜索词。
-2. 通过当前 KG Provider 探测项目索引，定位最多 6 个种子，并有界展开直接邻居与反向影响，最多保留 36 个节点。
-3. 从图谱节点构建只读探索单元，按文件合并；依据探索成本五项特征、跨组关系权重与 `max(load)` 目标选择一组或两组。
-4. 为每组构造受限 `strategy` 子 Agent；分配探索阶段额度，最多两个并行执行；结果以有界摘要、工作包和评分元数据交给主 Agent。
-5. 主 Agent 继续使用现有修改、审核、checkpoint、验证和终态流程。图谱不可用、无法定位或探索失败时，调用原有 Provider 的 `prepare()`。
+1. 主 Agent 启动时，编排组件的 `prepare()` 读取有界项目图谱地图，提供少量候选架构名称和路由提示；不调用规划模型或子 Agent。图谱不可用时只提供提示，不阻断主流程。
+2. 遇到跨组件的不确定性时，主 Agent 在广泛读取源码前调用 `route_architecture`，记录选择直接定点查找或图谱探索的原因；选择探索时提供具体目标与 1–4 个已观察到的名称。明确的局部修改可直接执行，不受固定读文件次数门槛限制。原 `explore_architecture(goal, search_queries)` 保留兼容。
+3. 工具适配器通过 `ExplorationDemand` 将请求交给独立组件；组件通过当前 KG Provider 定位最多 4 个种子，有界展开直接邻居与反向影响，最多保留 36 个节点。
+4. 组件按文件边界构建只读探索单元，依据探索成本、跨组关系与负载目标分区。无法形成有价值的并行切片时返回 `not_delegated`，主 Agent 直接核查。
+5. 可以并行时，组件分配共享探索预算、最多两个只读 `strategy` 子 Agent，并通过 `ExplorationReport` 返回证据摘要、未解决项、分区评分、计划修订号及子 Run 标识。主 Agent 保留全部修改、审核、checkpoint、验证和终态职责。
 
-子 Agent 的累计 Token 限制在下一次模型请求前根据估计上下文检查；单次请求的实际用量可能高于估计，因此这不是绝对的计费硬上限。每个子 Agent 的超时和工具调用次数仍由原执行预算控制。Trace 的准备结果包含规划与子 Agent 实际 Token 统计。
+`ExplorationDemand`、`ExplorationReport` 和 `ExplorationPort` 定义在 Agent 核心接口层；路由工具、图谱影响分析、分区及调度策略定义在可选扩展内。主流程只依赖工具注册和原有 `prepare()` 端口。子 Agent 的累计 Token 限制在下一次模型请求前根据估计上下文检查；单次请求的实际用量可高于估计，因此不是绝对计费上限。Trace 的 `route_architecture` 调用及结果分别记录 `direct` / `explore` 和决策原因；只有 `explore` 才会进入调度器。预运行 `orchestrator_plan` 记录 `demand_driven_ready`、地图节点/候选名称数量和零规划/工作 Token。
 
 当前成本系数与 `1/3/5` 关系权重是固定启发式，不是从评测拟合的结果。当前版本使用现有图谱实体和直接邻居；源码层需要已有索引，若索引只含设计层，子 Agent 会继续核对源码。现有源码图谱对语言和动态关系的覆盖有限；持久化的是所选影响切片的指纹、工作归属和摘要，不是完整版本化图快照。尚未实现新依赖触发的工作图扩张或隔离并行写入。代码/索引不一致时，主 Agent 仍须核对文件事实。
 
 ## 18. P2 有界动态只读调度的实现范围
 
-`scheduler.py` 在初始分区内按文件边界生成最多四个探索工作项，最多两个只读子 Agent 同时执行。`store.py` 使用 RunStore 所在 SQLite 数据库持久化计划版本、工作项归属、领取令牌、结果及重分区事件；每项执行另建关联根 Run 的子 Run，租约由 RunStore 管理。领取、结果提交和待启动任务迁移均以事务和版本条件保护。子 Agent 完成后，调度器用实际耗时与估计成本更新两个执行槽的速度估计；预测最大剩余耗时改善至少 10% 且目标槽空闲时，仅迁移未领取的工作项。
+`scheduler.py` 按共享 Token 预算决定工作项粒度：默认 32000 Token 时两个分区各保留一个工作项；预算足以让四项各获得约 12000 Token 时，才按文件边界拆出后续波次。最多两个只读子 Agent 同时执行。`store.py` 使用 RunStore 所在 SQLite 数据库持久化计划版本、工作项归属、领取令牌、结果及重分区事件；每项执行另建关联根 Run 的子 Run，租约由 RunStore 管理。领取、结果提交和待启动任务迁移均以事务和版本条件保护。子 Agent 完成后，调度器用实际耗时与估计成本更新两个执行槽的速度估计；预测最大剩余耗时改善至少 10% 且目标槽空闲时，仅迁移未领取的工作项。
 
-恢复时，匹配请求、所选图切片、项目文件及可定位源码文件指纹的计划可复用已提交摘要；终态子 Run 的结果从 RunStore 元数据补交，过期租约对应工作项可重新入队。取消的子 Run 保留终态，后续恢复重新领取对应工作项。单次执行仍受探索 Token 总额度与每个子 Agent 的时间、Token、工具调用上限约束；预算不足或图谱失效时走原 Provider。计划事件保留 `plan_created`、`item_claimed`、`item_finished` 和 `repartition`，准备结果携带计划 ID、修订号、子 Run 及分片统计。
+恢复时，匹配需求、所选图切片、项目文件及可定位源码文件指纹的计划可复用已提交摘要；终态子 Run 的结果从 RunStore 元数据补交，过期租约对应工作项可重新入队。取消的子 Run 保留终态，后续恢复重新领取对应工作项。单次执行仍受探索 Token 总额度与每个子 Agent 的时间、Token、工具调用上限约束；预算不足或图谱失效时工具返回 `unavailable`。计划事件保留 `plan_created`、`item_claimed`、`item_finished` 和 `repartition`，工具结果携带计划 ID、修订号、子 Run 及分片统计。
 
-实际项目验证后，规划输出上限遵循 `AGENT_PLANNER_MAX_TOKENS`（组件最高 4096），空输出仍计入规划 Token。每个工作项在委派前从受限源码目录与项目 UML 文件提取少量带行号的摘录；路径越界的图谱文件引用不会被读取。仅有这些摘录、没有子 Agent 工具证据的结果标为 `partial`，未启动项在元数据中显式列出；主 Agent 保留再次委派与逐文件核查能力。图谱切片达到 36 节点上限或预算不足时，`partial` 不表示影响范围已完整覆盖。
+每个工作项在委派前从受限源码目录与项目 UML 文件提取少量带行号的摘录；路径越界的图谱文件引用不会被读取。仅有这些摘录、没有子 Agent 工具证据的结果标为 `partial`，未启动项在工具结果中显式计数；主 Agent 保留再次委派与逐文件核查能力。图谱切片达到 36 节点上限时，`partial` 不表示影响范围已完整覆盖。
 
 这一步仅调度探索读取，主 Agent 仍负责全部修改、审核、验证与最终交付。当前局部重分区只根据耗时与空闲容量调整已有切片，没有根据子 Agent 自由文本报告自动增建依赖工作项；这需要结构化反馈和图谱增量一致性约束。
+
+## 19. 探索结果与路由提醒的第二轮优化
+
+图谱定位现在分别对每个搜索词保留一个最高相关种子，再按名称精确匹配、源码实体、方法类型与检索分数补齐种子名额，最多选取四个种子，避免宽泛名称独占候选。图谱仍只是候选索引；真实行为以文件工具读取为准。每工作项累计额度上限为 16000 Token；默认 32000 Token 共享预算在两个工作项之间按估计成本分配，单次模型请求的目标上限仍为 12000 Token。
+
+只读子 Agent 被要求返回有界 JSON：最多三条带路径、起止行、符号、已核实行为和 `edit` / `dependency` / `test` 角色的发现，另列未解决依赖与排除的无关候选。组件只把能落在该子 Agent 成功 `read_file` 范围内的发现放入 `ExplorationFinding.evidence`；未通过核对的发现进入未解决计数。没有结构化文件证据的报告保留为 `partial`，不能标为已完整核实。主 Agent仍须在修改前读取精确修改点。
+
+后续试跑发现较长的工作项常在生成 JSON 前触及累计额度，因此工作项提示进一步收缩为最多三次定点文件读取、最多三条发现，并把子 Agent 工具调用上限设为 6。`partial` 包括未核实依赖、报告缺少结构化证据或预算停止；它不表示子 Agent 已完成影响范围调查。
+
+可选组件通过现有 Agent Hook 观察工具批次。在启用架构调度的主 Agent 广泛列出项目文件后，下一次模型请求收到一次短路由提醒，要求主 Agent自行选择 `direct` 或 `explore` 并记录原因。提醒不暂停工具、不预运行委派、不设置固定读文件次数门槛；模型请求返回后即从对话上下文移除。子 Agent 与关闭架构调度的运行不触发此逻辑。

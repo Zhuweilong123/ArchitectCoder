@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -137,10 +138,15 @@ class ProjectRepository:
             return self._save_locked(project, path, current_revision + 1)
 
     def list_projects(self, root: str | Path | None = None) -> list[dict[str, Any]]:
-        base = Path(root or self._settings().uml_dir).resolve()
+        base = Path(root or self._settings().project_dir).resolve()
         base.mkdir(parents=True, exist_ok=True)
         files = []
-        for path in base.glob("*.umlproj"):
+        paths = list(base.glob("*.umlproj"))
+        if root is None:
+            project_base = Path(self._settings().project_dir).resolve()
+            if project_base.is_dir():
+                paths.extend(project_base.glob("*/design/*.umlproj"))
+        for path in paths:
             try:
                 stat = path.stat()
             except OSError:
@@ -169,11 +175,14 @@ class ProjectRepository:
     def _target_path(self, project: Project, filepath: str | Path | None) -> Path:
         if filepath:
             return Path(filepath).resolve()
+        return self.new_project_path(project.name)
+
+    def new_project_path(self, name: str) -> Path:
         settings = self._settings()
-        root = Path(settings.uml_dir).resolve()
-        root.mkdir(parents=True, exist_ok=True)
-        filename = f"{project.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.umlproj"
-        return root / filename
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "project"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        design = Path(settings.project_dir).resolve() / f"{safe_name}_{stamp}" / "design"
+        return design / f"{safe_name}.umlproj"
 
     @staticmethod
     def _settings():

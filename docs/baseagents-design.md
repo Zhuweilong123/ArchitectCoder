@@ -260,13 +260,13 @@ Project Memory    跨任务的偏好、决策、约定、拒绝和洞察
 任务结束 → 工具过程摘要 + 最终结论 → MemoryManager.remember() → 异步归档
 ```
 
-记忆存储于 `data/memories.db`（SQLite + FTS5 + jieba）。记忆系统已引入
+记忆存储于项目内的 `.architectcoder/memories.db`（SQLite + FTS5 + jieba）。记忆系统已引入
 **subject 后写覆盖 + recency 检索 + 类型化衰退 + 检索别名 + 写入门禁 + 召回治理**，详见
 `docs/memory-system-design.md`。
 
 ## 10. 会话日志（trace）
 
-每次 WebSocket 连接生成结构化 trace 日志，落盘 `temp/chat_log/`：
+每次 WebSocket 连接生成结构化 trace 日志，按日期落盘 `temp/chat_log/YYYY-MM-DD/`：
 
 | 日志 | 格式 | 内容 |
 |------|------|------|

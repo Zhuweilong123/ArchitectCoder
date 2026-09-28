@@ -114,10 +114,10 @@ def create_conversation_tools(
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .foundation_tools import create_foundation_tools
     from backend.config import get_settings
-    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
+    # 设计目录：优先 project_file 所在目录，否则使用项目目录。
     design_dir = design_dir or (
         os.path.dirname(os.path.abspath(project_file))
-        if project_file else os.path.abspath(get_settings().uml_dir)
+        if project_file else os.path.abspath(get_settings().project_dir)
     )
     if not workspace_root:
         workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
@@ -170,6 +170,29 @@ def create_conversation_tools(
     # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
     # 关闭或 Provider 不可用时不会注册任何 KG 工具。
     from app.agent_base.core.plugins import get_plugin_manager
+    settings = get_settings()
+    if (
+        project_file
+        and settings.agent_orchestration_enabled
+        and settings.agent_architecture_scheduling_enabled
+        and settings.agent_knowledge_graph_enabled
+    ):
+        from .subagent_tool import SpawnSubagentTool
+
+        tools.extend(get_plugin_manager().load_contribution(
+            "orchestration",
+            "create_tools",
+            settings=settings,
+            kwargs={
+                "llm": llm,
+                "project_file": project_file,
+                "source_dir": source_dir,
+                "test_dir": test_dir,
+                "explorer_factory": SpawnSubagentTool,
+            },
+            default=[],
+        ))
+
     tools.extend(get_plugin_manager().load_contribution(
         "knowledge_graph",
         "create_tools",

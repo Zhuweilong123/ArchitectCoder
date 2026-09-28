@@ -71,7 +71,32 @@ def create(
 ):
     """Provider factory used by ``load_orchestrator``."""
 
-    legacy = LLMOrchestrator(TaskOrchestrator(
+    if (
+        getattr(settings, "agent_architecture_scheduling_enabled", False)
+        and getattr(settings, "agent_knowledge_graph_enabled", False)
+        and project_file
+        and explorer_factory
+    ):
+        try:
+            from .architecture_aware import ArchitectureAwareOrchestrator
+
+            return ArchitectureAwareOrchestrator(
+                llm=llm,
+                settings=settings,
+                project_file=project_file,
+                source_dir=source_dir,
+                test_dir=test_dir,
+                explorer_factory=explorer_factory,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "[ArchitectureScheduling] initialization failed; using current provider",
+                exc_info=True,
+            )
+
+    return LLMOrchestrator(TaskOrchestrator(
         llm,
         project_file=project_file,
         source_dir=source_dir,
@@ -81,28 +106,3 @@ def create(
         worker_max_total_tokens=settings.agent_subagent_per_run_execution_budget_tokens,
         explorer_factory=explorer_factory,
     ))
-    if not getattr(settings, "agent_architecture_scheduling_enabled", False):
-        return legacy
-
-    # The new strategy is contained behind the existing orchestration port.
-    # Its construction and read-side failures return to the current provider.
-    try:
-        from .architecture_aware import ArchitectureAwareOrchestrator
-
-        return ArchitectureAwareOrchestrator(
-            llm=llm,
-            settings=settings,
-            legacy=legacy,
-            project_file=project_file,
-            source_dir=source_dir,
-            test_dir=test_dir,
-            explorer_factory=explorer_factory,
-        )
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "[ArchitectureScheduling] initialization failed; using current provider",
-            exc_info=True,
-        )
-        return legacy
