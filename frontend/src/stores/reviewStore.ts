@@ -29,11 +29,13 @@ interface ShowReviewInput {
   title: string;
   content?: string;
   question?: string;
+  auto?: boolean;
 }
 
 interface ReviewState {
   reviewId: number | null;
   reviewType: string;
+  autoReview: boolean;
   title: string;
   content: string;
   question: string;
@@ -54,6 +56,7 @@ interface ReviewState {
 const INITIAL = {
   reviewId: null as number | null,
   reviewType: '',
+  autoReview: false,
   title: '',
   content: '',
   question: '',
@@ -66,9 +69,9 @@ const INITIAL = {
 export const useReviewStore = create<ReviewState>((set, get) => ({
   ...INITIAL,
 
-  showReview: ({ reviewId, reviewType, title, content = '', question = '' }) => {
+  showReview: ({ reviewId, reviewType, title, content = '', question = '', auto = false }) => {
     set({
-      reviewId, reviewType, title, content, question,
+      reviewId, reviewType, autoReview: auto, title, content, question,
       status: 'pending', actedFrom: null, deferred: false, expiredReason: '',
     });
     // 登记送达跟踪标记（agentChat 内部用于断线清理/补发对账）
@@ -107,17 +110,15 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const s = get();
     if (s.status !== 'pending' || s.reviewId === null) return false;
 
-    // Agent edits are already written to disk before the review request is
-    // emitted. Restore and persist the original project before unblocking it.
-    if (s.reviewType === 'uml_diff') {
+    // Fallback reviews have already ended their run, so keep their existing
+    // persistence path. A live tool review is restored by the backend.
+    if (s.reviewType === 'uml_diff' && s.autoReview) {
       const restoredProject = restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
       const filepath = useDiagramStore.getState().currentFilepath;
       if (restoredProject && filepath) {
         try {
           const result = await saveProject(
-            useDiagramStore.getState().getProjectSnapshot(),
-            filepath,
-            false,
+            useDiagramStore.getState().getProjectSnapshot(), filepath, false,
           );
           useDiagramStore.getState().markSaved(result.revision);
         } catch (error) {
@@ -127,11 +128,18 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
         }
       }
     }
-    set({ status: 'rejected', actedFrom: from, deferred: false });
 
     // 拒绝 = 回滚画布到审核前 + 意见喂回 agent 修订（修订后会推新审核）
     const text = feedback || '拒绝，请修改';
     const result = sendReviewResponse(s.reviewId, text, 'reject');
+    if (result === 'failed' && !s.autoReview) {
+      message.warning('反馈发送失败，请检查连接后重试');
+      return false;
+    }
+    if (s.reviewType === 'uml_diff' && !s.autoReview) {
+      restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
+    }
+    set({ status: 'rejected', actedFrom: from, deferred: false });
 
     if (s.reviewType === 'uml_diff') {
       const ui = useUiStore.getState();

@@ -5,6 +5,9 @@ import json
 from app.agent_base.tools.review import (
     ReviewManager, SubmitUmlReviewTool,
 )
+from app.models.uml import Project, UmlDiagram
+from app.services.change_set import ChangeSet
+from app.services.project_repository import ProjectRepository
 
 
 async def _run_with_resolve(mgr, tool, params, resolve_value, delay=0.05):
@@ -132,6 +135,78 @@ def test_submit_uml_review_resolves_workspace_relative_project_file(tmp_path):
     pending = asyncio.run(_scenario())
     assert pending[0]["metadata"]["diagrams"][0]["name"] == "Architecture"
     assert pending[0]["metadata"]["changed_diagrams"]
+
+
+def test_submit_uml_review_resolves_design_alias_in_nested_design_dir(tmp_path):
+    project_root = tmp_path / "project"
+    design_dir = project_root / "design" / "uml"
+    design_dir.mkdir(parents=True)
+    project_file = design_dir / "example.umlproj"
+    project_file.write_text(json.dumps({
+        "name": "example",
+        "revision": 1,
+        "diagrams": [{"name": "Architecture", "diagram_type": "component"}],
+    }), encoding="utf-8")
+    manager = ReviewManager()
+    manager.baseline = [{"name": "Old", "diagram_type": "component"}]
+    tool = SubmitUmlReviewTool(
+        manager=manager,
+        project_file=str(project_file),
+        workspace_root=str(project_root),
+        design_dir=str(design_dir),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(tool._execute({"project_file": "design/example.umlproj"}))
+        await asyncio.sleep(0.05)
+        pending = manager.get_pending()
+        manager.resolve(0, json.dumps({"decision": "accept"}))
+        await task
+        return pending
+
+    pending = asyncio.run(scenario())
+    assert len(pending) == 1
+    assert pending[0]["metadata"]["diagrams"][0]["name"] == "Architecture"
+    assert pending[0]["metadata"]["changed_diagrams"]
+
+
+def test_submit_uml_review_does_not_request_empty_diff(tmp_path):
+    manager = ReviewManager()
+    tool = SubmitUmlReviewTool(manager=manager, workspace_root=str(tmp_path))
+
+    result = asyncio.run(tool._execute({"project_file": "design/missing.umlproj"}))
+
+    assert result.startswith("Error: UML review project file not found")
+    assert manager.get_pending() == []
+
+
+def test_reject_restores_tracked_project_before_agent_continues(tmp_path):
+    repository = ProjectRepository()
+    project_file = tmp_path / "example.umlproj"
+    repository.save(Project(name="example", diagrams=[UmlDiagram(name="Old")]), project_file)
+    before = project_file.read_text(encoding="utf-8")
+    manager = ReviewManager()
+    manager.baseline = [diagram.model_dump() for diagram in repository.load(project_file).diagrams]
+    change_set = ChangeSet(str(project_file), project_repository=repository)
+    change_set.begin()
+    candidate = json.loads(before)
+    candidate["revision"] = 2
+    candidate["diagrams"][0]["name"] = "New"
+    after = json.dumps(candidate)
+    project_file.write_text(after, encoding="utf-8")
+    change_set.record(str(project_file), True, before, after)
+    tool = SubmitUmlReviewTool(
+        manager=manager, project_file=str(project_file), change_set=change_set,
+    )
+
+    result = asyncio.run(_run_with_resolve(
+        manager, tool, {"summary": "rename diagram"},
+        json.dumps({"decision": "reject", "feedback": "keep old name"}),
+    ))
+
+    assert json.loads(result)["decision"] == "reject"
+    assert project_file.read_text(encoding="utf-8") == before
+    assert not change_set.has_changes
 
 
 def test_review_id_is_not_reused_after_reset():

@@ -1235,6 +1235,16 @@ async def handle_agent_execution(
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                    from app.services.project_repository import ProjectRepository
+                    project_repository = ProjectRepository()
+                    for item in manifest:
+                        committed_path = str(item.get("path", ""))
+                        if committed_path.lower().endswith(".umlproj") and os.path.isfile(committed_path):
+                            await send({
+                                "event": "project_committed",
+                                "filepath": committed_path,
+                                "revision": project_repository.revision(committed_path),
+                            })
                     if trace_log:
                         trace_log.event(
                             "changes_committed",

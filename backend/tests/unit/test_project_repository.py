@@ -116,3 +116,26 @@ def test_changeset_rejects_external_edit_after_agent_write(tmp_path):
     assert changes.status == "conflict"
     assert repository.load(filepath).name == "external-edit"
     assert repository.load(filepath).revision == 1
+
+
+def test_rejected_candidate_restores_project_and_allows_revision(tmp_path):
+    repository = ProjectRepository()
+    filepath = tmp_path / "demo.umlproj"
+    repository.save(Project(name="demo"), filepath)
+    original = filepath.read_text(encoding="utf-8")
+    changes = ChangeSet(str(filepath), project_repository=repository)
+    changes.begin()
+
+    rejected = json.dumps({**json.loads(original), "name": "rejected", "revision": 2})
+    filepath.write_text(rejected, encoding="utf-8")
+    changes.record(str(filepath), True, original, rejected)
+    assert changes.restore_path_for_review(str(filepath))
+    assert filepath.read_text(encoding="utf-8") == original
+    assert not changes.has_changes
+
+    revised = json.dumps({**json.loads(original), "name": "revised"})
+    filepath.write_text(revised, encoding="utf-8")
+    changes.record(str(filepath), True, original, revised)
+    changes.commit()
+    assert repository.load(filepath).name == "revised"
+    assert repository.revision(filepath) == 2

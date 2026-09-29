@@ -142,6 +142,29 @@ class ChangeSet:
             })
         return entries
 
+    def restore_path_for_review(self, path: str) -> bool:
+        """Discard one rejected candidate while keeping this run open for revision."""
+        resolved = str(Path(path).resolve())
+        with self._lock:
+            record = self._records.get(resolved)
+            if record is None:
+                return False
+            target = Path(resolved)
+            current = _read_text_preserving_newlines(target) if target.is_file() else ""
+            if _sha256(current) != record.after_sha256:
+                raise ProjectConflictError(
+                    resolved,
+                    self._project_revisions.get(resolved, 0),
+                    self.project_repository.revision(resolved),
+                )
+            before_exists, before = self._before[resolved]
+            if before_exists:
+                _atomic_write(target, before)
+            elif target.exists():
+                target.unlink()
+            self._records.pop(resolved, None)
+            return True
+
     def commit(self) -> list[dict]:
         with self._lock:
             if self.status != "open":

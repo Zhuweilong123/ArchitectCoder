@@ -20,6 +20,7 @@ import {
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
+import { useReviewStore } from '../../stores/reviewStore';
 import { createDefaultDiagram, type UmlDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, openProject, saveProject, listDiagrams,
@@ -170,6 +171,9 @@ const Toolbar: React.FC = () => {
     setCurrentWorkspacePath: s.setCurrentWorkspacePath,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const umlReviewBlocksSave = useReviewStore((s) =>
+    s.reviewType === 'uml_diff' && (s.status === 'pending' || s.status === 'accepted' || s.status === 'rejected')
+  );
 
   const {
     selectedLanguage,
@@ -288,7 +292,7 @@ const Toolbar: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [currentFilepath, project, isModified]); // eslint-disable-line
+  }, [currentFilepath, project, isModified, umlReviewBlocksSave]); // eslint-disable-line
 
   // ── File operations ─────────────────────────────────
   const handleNew = () => {
@@ -481,6 +485,8 @@ const Toolbar: React.FC = () => {
         const safe = !browseUnsafe.current;
         const proj = await openProject(path, safe);
         setProject(proj);
+        const review = useReviewStore.getState();
+        if (review.status !== 'pending' && review.reviewId !== null) review.clear();
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
         setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
@@ -591,6 +597,10 @@ const Toolbar: React.FC = () => {
 
   // Quick save (always saves as .umlproj project)
   const handleSave = async () => {
+    if (umlReviewBlocksSave) {
+      message.warning('设计审核尚未提交完成，请等待结果或先另存为');
+      return;
+    }
     if (!currentFilepath && !currentWorkspacePath) {
       openSaveAs();
       return;
@@ -833,7 +843,7 @@ const Toolbar: React.FC = () => {
   const handleZoomReset = () => useDiagramStore.getState().setZoom(1.0);
 
   const saveMenuItems = [
-    { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), onClick: handleSave },
+    { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), disabled: umlReviewBlocksSave, onClick: handleSave },
     { key: 'saveas', label: copy('saveAs'), onClick: openSaveAs },
   ];
 
