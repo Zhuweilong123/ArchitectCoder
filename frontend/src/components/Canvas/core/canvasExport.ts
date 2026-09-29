@@ -219,8 +219,18 @@ function flattenComponent(
   const maxChars = Math.max(18, Math.floor((width - 20) / 7));
   const stereotype = root.querySelector('.comp-stereotype')?.textContent || '';
   const name = root.querySelector('.comp-name')?.textContent || '';
-  const interfaces = Array.from(root.querySelectorAll('.comp-iface'))
-    .map((element) => element.textContent || '');
+  const interfaceGroups = Array.from(root.querySelectorAll('.comp-block'))
+    .map((block) => ({
+      label: block.querySelector('.comp-block-label')?.textContent?.trim() || '',
+      interfaces: Array.from(block.querySelectorAll('.comp-iface')).map((element) => ({
+        name: element.textContent?.trim() || '',
+        provided: element.classList.contains('provided'),
+      })),
+    }));
+  const providedColor = root.classList.contains('theme-dark') ? '#4ade80'
+    : root.classList.contains('theme-eye-care') ? '#4f805d' : '#389e0d';
+  const requiredColor = root.classList.contains('theme-dark') ? '#f87171'
+    : root.classList.contains('theme-eye-care') ? '#b8574f' : '#cf1322';
   let y = 22;
   if (stereotype.trim()) {
     appendExportText(native, document, stereotype, width / 2, y, {
@@ -235,12 +245,46 @@ function flattenComponent(
   native.appendChild(createSvgElement(document, 'line', {
     x1: 10, y1: y, x2: width - 10, y2: y, stroke: palette.divider, 'stroke-width': 1,
   }));
-  interfaces.forEach((value) => {
-    y += 20;
-    appendExportText(native, document, value, 12, y, {
-      fill: palette.text, fontSize: 10, maxChars,
+  interfaceGroups.forEach(({ label, interfaces }) => {
+    native.appendChild(createSvgElement(document, 'line', {
+      x1: 10, y1: y + 12, x2: width - 10, y2: y + 12,
+      stroke: palette.divider, 'stroke-width': 1,
+    }));
+    appendExportText(native, document, label, 12, y + 24, {
+      fill: palette.secondary, fontSize: 8, maxChars,
     });
+    interfaces.forEach(({ name: value, provided }, index) => {
+      const rowY = y + 45 + index * 20;
+      const color = provided ? providedColor : requiredColor;
+      native.appendChild(createSvgElement(document, 'line', {
+        x1: 12, y1: provided ? rowY - 4 : rowY - 9,
+        x2: 18, y2: provided ? rowY - 4 : rowY - 9,
+        stroke: color, 'stroke-width': 1.6, 'stroke-linecap': 'round',
+      }));
+      native.appendChild(provided
+        ? createSvgElement(document, 'circle', {
+            cx: 25, cy: rowY - 4, r: 6,
+            fill: 'none', stroke: color, 'stroke-width': 1.6,
+          })
+        : createSvgElement(document, 'path', {
+            d: `M 18 ${rowY - 9} L 18 ${rowY - 4} A 7 7 0 0 0 32 ${rowY - 4} L 32 ${rowY - 9}`,
+            fill: 'none', stroke: color, 'stroke-width': 1.6,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+          }));
+      appendExportText(native, document, value, 38, rowY, {
+        fill: color, fontSize: 10, maxChars: maxChars - 4,
+      });
+    });
+    y += 32 + interfaces.length * 20;
   });
+  const separator = root.querySelector('.comp-children-separator') as HTMLElement | null;
+  const separatorY = separator ? Number.parseFloat(separator.style.top) : NaN;
+  if (Number.isFinite(separatorY)) {
+    native.appendChild(createSvgElement(document, 'line', {
+      x1: 10, y1: separatorY, x2: width - 10, y2: separatorY,
+      stroke: palette.divider, 'stroke-width': 1, 'stroke-dasharray': '4,4',
+    }));
+  }
   cellElement.querySelectorAll('foreignObject').forEach((element) => element.remove());
   cellElement.appendChild(native);
   removeExportOnlyElements(cellElement);
@@ -299,11 +343,46 @@ function downloadBlob(blob: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function downloadDataUri(dataUri: string, filename: string): void {
-  const anchor = document.createElement('a');
-  anchor.href = dataUri;
-  anchor.download = filename;
-  anchor.click();
+function rasterizeSvg(svg: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    const root = parsed.documentElement;
+    const viewBox = root.getAttribute('viewBox')?.trim().split(/[\s,]+/).map(Number) || [];
+    const width = Math.ceil(viewBox[2]);
+    const height = Math.ceil(viewBox[3]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+      reject(new Error('Canvas export returned invalid SVG dimensions'));
+      return;
+    }
+    root.setAttribute('width', String(width));
+    root.setAttribute('height', String(height));
+    const url = URL.createObjectURL(new Blob(
+      [new XMLSerializer().serializeToString(root)],
+      { type: 'image/svg+xml;charset=utf-8' },
+    ));
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('Could not create PNG canvas'));
+        return;
+      }
+      context.drawImage(image, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error('Canvas export returned no PNG data'));
+      }, 'image/png');
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not rasterize exported SVG'));
+    };
+    image.src = url;
+  });
 }
 
 /**
@@ -355,65 +434,18 @@ function getSvgExportViewBox(
 }
 
 /** Export the visible graph content with a small margin around its bounds. */
-export function exportCanvasGraph(
+export async function exportCanvasGraph(
   graph: Graph,
   format: CanvasExportFormat,
   filename: string,
   backgroundColor = '#fafafa',
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    try {
-      // Let X6 calculate the content viewBox. It already converts the graph
-      // coordinates to the exported SVG coordinates; supplying a second
-      // manually converted viewBox shifts diagrams when the canvas is panned.
-      const options = {
-        preserveDimensions: true,
-        copyStyles: true,
-        serializeImages: true,
-        beforeSerialize(this: Graph, svg: SVGSVGElement) {
-          resetSvgViewportTransform(svg);
-          flattenHtmlDiagramNodes(this, svg);
-          normalizeExportEdgeLabels(svg, backgroundColor);
-          const bounds = svg.viewBox.baseVal;
-          const background = svg.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'rect');
-          background.setAttribute('x', String(bounds.x));
-          background.setAttribute('y', String(bounds.y));
-          background.setAttribute('width', String(bounds.width));
-          background.setAttribute('height', String(bounds.height));
-          background.setAttribute('fill', backgroundColor);
-          background.setAttribute('pointer-events', 'none');
-          svg.insertBefore(background, svg.firstChild);
-          return svg;
-        },
-      };
-
-      if (format === 'png') {
-        graph.toPNG((dataUri: string) => {
-          if (!dataUri) {
-            reject(new Error('Canvas export returned no image data'));
-            return;
-          }
-          downloadDataUri(dataUri, filename);
-          resolve();
-        }, {
-          ...options,
-          // X6 honours padding only in its raster export path.
-          padding: SVG_EXPORT_PADDING,
-          backgroundColor,
-        });
-        return;
-      }
-
-      exportCanvasGraphSvg(graph, backgroundColor)
-        .then((svg) => {
-          downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
-          resolve();
-        })
-        .catch(reject);
-    } catch (error) {
-      reject(error);
-    }
-  });
+  const svg = await exportCanvasGraphSvg(graph, backgroundColor);
+  if (format === 'png') {
+    downloadBlob(await rasterizeSvg(svg), filename);
+  } else {
+    downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
+  }
 }
 
 /** Serialize the visible graph content as a portable SVG string. */

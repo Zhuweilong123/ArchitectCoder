@@ -1,6 +1,22 @@
 import type { UmlDiagram } from '../types/uml';
 import type { CompNode } from '../types/component';
 
+/** Space occupied by a component's title and interface groups. */
+export function getComponentHeaderHeight(component: CompNode): number {
+  const groups = [component.provided_interfaces || [], component.required_interfaces || []];
+  return 76 + groups.reduce((height, interfaces) => (
+    height + (interfaces.length ? 24 + interfaces.length * 22 : 0)
+  ), 0);
+}
+
+export function getComponentChildTop(component: CompNode): number {
+  return getComponentHeaderHeight(component) + 36;
+}
+
+export function getComponentDividerTop(component: CompNode): number {
+  return getComponentHeaderHeight(component) + 12;
+}
+
 /** Calculate component positions and dimensions without mutating store state. */
 export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
   const components = diagram.components || [];
@@ -26,7 +42,8 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
   components.forEach((component) => {
     sizes.set(component.id, {
       width: component.width || (component.parent_id ? 150 : 200),
-      height: component.height || (component.parent_id ? 100 : 160),
+      height: Math.max(component.height || (component.parent_id ? 100 : 160),
+        getComponentHeaderHeight(component)),
     });
   });
 
@@ -56,7 +73,7 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     const currentSize = sizes.get(id)!;
     sizes.set(id, {
       width: Math.max(currentSize.width, gridWidth + 40),
-      height: Math.max(currentSize.height, gridHeight + 64),
+      height: Math.max(currentSize.height, gridHeight + getComponentChildTop(componentById.get(id)!) + 20),
     });
     return sizes.get(id)!;
   };
@@ -116,26 +133,6 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     });
   }
 
-  // Longest-path ranks are useful for a pipeline, but make a typical layered
-  // application diagram unnecessarily wide: a service that depends on another
-  // service can push the database several columns farther right. For a dense
-  // component graph, keep entry points, domain services and terminal adapters
-  // in three readable bands. The edges still express the detailed dependency.
-  const maxLevel = Math.max(...Array.from(levels.values()));
-  const sources = new Set(topLevel
-    .filter((component) => (incoming.get(component.id) || []).length === 0)
-    .map((component) => component.id));
-  const terminals = new Set(topLevel
-    .filter((component) => (outgoing.get(component.id) || []).length === 0)
-    .map((component) => component.id));
-  if (topLevel.length >= 5 && maxLevel >= 3 && sources.size > 0 && terminals.size > 0) {
-    topLevel.forEach((component) => {
-      if (sources.has(component.id)) levels.set(component.id, 0);
-      else if (terminals.has(component.id)) levels.set(component.id, 2);
-      else levels.set(component.id, 1);
-    });
-  }
-
   const positions = new Map<string, { x: number; y: number }>();
   const rows = new Map<number, CompNode[]>();
   topLevel.forEach((component) => {
@@ -144,6 +141,28 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     rows.set(levels.get(component.id) || 0, row);
   });
   const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
+  // Order each rank using connected neighbours. Two passes account for both
+  // upstream and downstream edges, instead of preserving an unrelated old Y.
+  const orderByNeighbours = (level: number, neighbours: Map<string, string[]>) => {
+    const row = rows.get(level) || [];
+    row.sort((a, b) => {
+      const barycenter = (component: CompNode) => {
+        const positions = (neighbours.get(component.id) || [])
+          .filter((id) => levels.get(id) !== level)
+          .map((id) => {
+            const neighbourLevel = levels.get(id);
+            return (rows.get(neighbourLevel ?? -1) || []).findIndex((item) => item.id === id);
+          })
+          .filter((index) => index >= 0);
+        return positions.length
+          ? positions.reduce((sum, index) => sum + index, 0) / positions.length
+          : Number.POSITIVE_INFINITY;
+      };
+      return barycenter(a) - barycenter(b) || a.y - b.y || a.id.localeCompare(b.id);
+    });
+  };
+  orderedLevels.slice(1).forEach((level) => orderByNeighbours(level, incoming));
+  orderedLevels.slice(0, -1).reverse().forEach((level) => orderByNeighbours(level, outgoing));
   const columnGap = 160;
   const verticalGap = 70;
   const maxColumnHeight = Math.max(...orderedLevels.map((level) => {
@@ -153,20 +172,8 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
   }));
   const layoutCenterY = Math.max(480, maxColumnHeight / 2 + 80);
   let nextX = 100;
-  const centerById = new Map<string, number>();
   orderedLevels.forEach((level) => {
     const row = rows.get(level) || [];
-    row.sort((a, b) => {
-      const averageCenter = (component: CompNode) => {
-        const upstreamCenters = (incoming.get(component.id) || [])
-          .map((upstreamId) => centerById.get(upstreamId))
-          .filter((center): center is number => typeof center === 'number');
-        return upstreamCenters.length > 0
-          ? upstreamCenters.reduce((sum, center) => sum + center, 0) / upstreamCenters.length
-          : component.y;
-      };
-      return averageCenter(a) - averageCenter(b) || a.y - b.y || a.id.localeCompare(b.id);
-    });
     const totalHeight = row.reduce((sum, component) => sum + sizes.get(component.id)!.height, 0)
       + Math.max(0, row.length - 1) * verticalGap;
     let nextY = layoutCenterY - totalHeight / 2;
@@ -174,7 +181,6 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     row.forEach((component) => {
       const height = sizes.get(component.id)!.height;
       positions.set(component.id, { x: Math.max(100, nextX), y: nextY });
-      centerById.set(component.id, nextY + height / 2);
       nextY += height + verticalGap;
     });
     nextX += columnWidth + columnGap;
@@ -202,7 +208,7 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
       const column = index % columns;
       const x = parentPosition.x + 20
         + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gapX, 0);
-      const y = parentPosition.y + 44
+      const y = parentPosition.y + getComponentChildTop(parent)
         + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gapY, 0);
       positions.set(child.id, { x, y });
       placeChildren(child.id);
@@ -212,6 +218,12 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
 
   return {
     ...diagram,
+    // The old turns belong to the old node positions. A new automatic layout
+    // must also reroute edges, including previously adjusted ones.
+    comp_relations: (diagram.comp_relations || []).map((relation) => ({
+      ...relation,
+      vertices: undefined,
+    })),
     components: components.map((component) => ({
       ...component,
       ...(positions.get(component.id) || {}),

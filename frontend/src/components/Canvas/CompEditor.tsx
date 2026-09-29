@@ -21,10 +21,63 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
+  edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, getSpacedEdgePorts, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import type { CompNode, CompRelation } from '../../types/component';
+import { getComponentDividerTop } from '../../utils/componentLayout';
+
+// Child rows have an 18 px gap and several container centres sit in that gap.
+// The class-diagram clearance (32 px) closes it and forces a long detour.
+const COMPONENT_EDGE_CLEARANCE = 4;
+const OUTER_EDGE_CLEARANCE = 24;
+const DELEGATION_AISLE_INSET = COMPONENT_EDGE_CLEARANCE + 4;
+
+type DelegationPort = { source: { x: number; y: number }; target: { x: number; y: number }; targetAnchor: 'top' | 'left' | 'right' };
+
+function getLocalDelegationPort(
+  parent: CompNode,
+  child: CompNode,
+  components: CompNode[],
+): DelegationPort {
+  const dividerY = parent.y + getComponentDividerTop(parent);
+  const childCenterX = child.x + child.width / 2;
+  const siblings = components.filter((component) => component.parent_id === parent.id && component.id !== child.id);
+  const crossesSibling = (start: { x: number; y: number }, end: { x: number; y: number }) => siblings.some((sibling) => {
+    const left = sibling.x - COMPONENT_EDGE_CLEARANCE;
+    const right = sibling.x + sibling.width + COMPONENT_EDGE_CLEARANCE;
+    const top = sibling.y - COMPONENT_EDGE_CLEARANCE;
+    const bottom = sibling.y + sibling.height + COMPONENT_EDGE_CLEARANCE;
+    if (start.x === end.x) {
+      return start.x > left && start.x < right
+        && Math.max(start.y, end.y) > top && Math.min(start.y, end.y) < bottom;
+    }
+    return start.y > top && start.y < bottom
+      && Math.max(start.x, end.x) > left && Math.min(start.x, end.x) < right;
+  });
+  const direct = {
+    source: { x: childCenterX, y: dividerY },
+    target: { x: childCenterX, y: child.y },
+    targetAnchor: 'top' as const,
+  };
+  if (!crossesSibling(direct.source, direct.target)) return direct;
+
+  const childCenterY = child.y + child.height / 2;
+  const sidePorts: DelegationPort[] = [
+    { source: { x: child.x - DELEGATION_AISLE_INSET, y: dividerY },
+      target: { x: child.x, y: childCenterY }, targetAnchor: 'left' },
+    { source: { x: child.x + child.width + DELEGATION_AISLE_INSET, y: dividerY },
+      target: { x: child.x + child.width, y: childCenterY }, targetAnchor: 'right' },
+  ];
+  const clearPort = sidePorts.find(({ source, target }) => (
+    source.x > parent.x + DELEGATION_AISLE_INSET
+    && source.x < parent.x + parent.width - DELEGATION_AISLE_INSET
+    && !crossesSibling(source, { x: source.x, y: target.y })
+    && !crossesSibling({ x: source.x, y: target.y }, target)
+  ));
+  return clearPort || direct;
+}
+
 import './CompEditor.css';
 
 // ── Register X6 shapes (once) ────────────────────────
@@ -158,8 +211,8 @@ const CompEditor: React.FC = () => {
           stroke: '#b7791f', strokeWidth: 2, strokeDasharray: '6,4',
           targetMarker: { name: 'block', width: 10, height: 6 },
         },
-        router: getObstacleAvoidingManhattanRouter(),
-        connector: { name: 'rounded' },
+        router: getObstacleAvoidingManhattanRouter(COMPONENT_EDGE_CLEARANCE),
+        connector: { name: 'normal' },
       },
     });
 
@@ -453,7 +506,8 @@ const CompEditor: React.FC = () => {
         const selected = c.id === selectedComponentId;
         // Theme is part of the rendered HTML. Always rebuild this small HTML
         // fragment so a theme change can never reuse a stale node fragment.
-        const htmlContent = buildCompHTML(c, selected, canvasTheme, interfaceLanguage);
+        const htmlContent = buildCompHTML(c, selected, canvasTheme, interfaceLanguage,
+          comps.some((child) => child.parent_id === c.id));
         const cached = htmlCache.current.get(c.id);
         const signature = JSON.stringify([
           htmlContent, c.x, c.y, w, h, c.parent_id || '', canvasTheme,
@@ -523,11 +577,75 @@ const CompEditor: React.FC = () => {
         const { width, height } = getCompNodeSize(component);
         return { id: component.id, x: component.x, y: component.y, width, height };
       });
+      const topLevelRects = componentRects.filter((rect) => (
+        !comps.find((component) => component.id === rect.id)?.parent_id
+      ));
       const autoRouteCacheKey = JSON.stringify([
         componentRects,
+        comps.map(({ id, parent_id }) => [id, parent_id]),
         rels.map(({ id, source, target }) => [id, source, target]),
       ]);
       rels.forEach((r) => {
+        const sourceComponent = comps.find((component) => component.id === r.source);
+        const targetComponent = comps.find((component) => component.id === r.target);
+        const localDelegation = r.type === 'delegation'
+          && !!sourceComponent && targetComponent?.parent_id === sourceComponent.id;
+        const delegationPort = localDelegation
+          ? getLocalDelegationPort(sourceComponent, targetComponent, comps)
+          : undefined;
+        const outerPorts = !localDelegation && sourceComponent && targetComponent
+          && !sourceComponent.parent_id && !targetComponent.parent_id
+          ? getSpacedEdgePorts(r, rels.filter((relation) => relation.type !== 'delegation'),
+            topLevelRects)
+          : undefined;
+        const sourceAnchorDx = localDelegation
+          ? delegationPort!.source.x - (sourceComponent.x + sourceComponent.width / 2)
+          : 0;
+        const sourceAnchorDy = localDelegation
+          ? getComponentDividerTop(sourceComponent) - sourceComponent.height / 2
+          : 0;
+        const sourceCenter = sourceComponent ? {
+          x: sourceComponent.x + sourceComponent.width / 2,
+          y: sourceComponent.y + sourceComponent.height / 2,
+        } : undefined;
+        const targetCenter = targetComponent ? {
+          x: targetComponent.x + targetComponent.width / 2,
+          y: targetComponent.y + targetComponent.height / 2,
+        } : undefined;
+        const horizontal = sourceCenter && targetCenter
+          ? Math.abs(targetCenter.x - sourceCenter.x) >= Math.abs(targetCenter.y - sourceCenter.y)
+          : true;
+        const forward = sourceCenter && targetCenter
+          ? (horizontal ? targetCenter.x >= sourceCenter.x : targetCenter.y >= sourceCenter.y)
+          : true;
+        const sourcePoint = delegationPort?.source || outerPorts?.sourcePoint || (sourceComponent && sourceCenter ? horizontal
+          ? { x: sourceComponent.x + (forward ? sourceComponent.width + 1 : -1), y: sourceCenter.y }
+          : { x: sourceCenter.x, y: sourceComponent.y + (forward ? sourceComponent.height + 1 : -1) }
+          : undefined);
+        const targetPoint = delegationPort?.target || outerPorts?.targetPoint || (targetComponent && targetCenter
+          ? horizontal
+            ? { x: targetComponent.x + (forward ? -1 : targetComponent.width + 1), y: targetCenter.y }
+            : { x: targetCenter.x, y: targetComponent.y + (forward ? -1 : targetComponent.height + 1) }
+          : undefined);
+        const sourceTerminal = localDelegation
+          ? { cell: r.source, anchor: { name: 'center', args: {
+                dx: sourceAnchorDx, dy: sourceAnchorDy,
+              } },
+              connectionPoint: { name: 'anchor' } }
+          : outerPorts && sourceCenter
+            ? { cell: r.source, anchor: { name: 'center', args: {
+                  dx: outerPorts.sourcePoint.x - sourceCenter.x,
+                  dy: outerPorts.sourcePoint.y - sourceCenter.y,
+                } }, connectionPoint: { name: 'anchor' } }
+          : { cell: r.source };
+        const targetTerminal = localDelegation
+          ? { cell: r.target, anchor: { name: delegationPort!.targetAnchor }, connectionPoint: { name: 'anchor' } }
+          : outerPorts && targetCenter
+            ? { cell: r.target, anchor: { name: 'center', args: {
+                  dx: outerPorts.targetPoint.x - targetCenter.x,
+                  dy: outerPorts.targetPoint.y - targetCenter.y,
+                } }, connectionPoint: { name: 'anchor' } }
+          : { cell: r.target };
         const selected = r.id === selectedCompRelationId;
         const stroke = selected
           ? (canvasTheme === 'dark' ? '#93c5fd' : canvasTheme === 'eye-care' ? '#6e9677' : '#2563eb')
@@ -548,7 +666,7 @@ const CompEditor: React.FC = () => {
         // “dependency” on every long route obscures the diagram, especially
         // when several dependencies share a corridor. Keep labels for the
         // less self-evident relation kinds.
-        const labels = r.type === 'dependency' ? [] : [{
+        const labels = r.type === 'dependency' || localDelegation ? [] : [{
           attrs: {
             text: { text: r.type, fontSize: 10, fontWeight: 600, fill: labelColor },
             rect: { fill: labelBackground, stroke: labelBorder, strokeWidth: 0.8, rx: 4, ry: 4 },
@@ -563,7 +681,16 @@ const CompEditor: React.FC = () => {
           ? r.vertices
           : cachedAutoRoute?.key === autoRouteCacheKey
             ? cachedAutoRoute.vertices
-            : getObstacleAvoidingEdgeVertices(r, rels, componentRects);
+            : outerPorts
+              ? [outerPorts.sourceOutside,
+                ...getObstacleAvoidingEdgeVertices(r, rels, topLevelRects, OUTER_EDGE_CLEARANCE, {
+                  source: outerPorts.sourceOutside,
+                  target: outerPorts.targetOutside,
+                  includeTerminals: true,
+                }),
+                outerPorts.targetOutside]
+              : getObstacleAvoidingEdgeVertices(r, rels, componentRects, COMPONENT_EDGE_CLEARANCE,
+                { source: sourcePoint, target: targetPoint });
         if (!Array.isArray(r.vertices) && cachedAutoRoute?.key !== autoRouteCacheKey) {
           autoRouteCache.current.set(r.id, { key: autoRouteCacheKey, vertices });
         }
@@ -573,15 +700,23 @@ const CompEditor: React.FC = () => {
           fill: 'none',
           pointerEvents: 'stroke',
         };
-        const edgeSignature = JSON.stringify([r.source, r.target, r.type, selected, canvasTheme, vertices]);
+        const edgeSignature = JSON.stringify([
+          r.source, r.target, r.type, selected, canvasTheme, vertices,
+          sourceAnchorDx, sourceAnchorDy, delegationPort?.targetAnchor,
+          outerPorts?.sourcePoint, outerPorts?.targetPoint,
+        ]);
         try {
           if (existingEdges.has(r.id)) {
             if (edgeSignatureCache.current.get(r.id) === edgeSignature) return;
             const edge = graph.getCellById(r.id) as any;
             if (edge) {
-              if (edge.getSourceCellId() !== r.source) edge.setSource({ cell: r.source });
-              if (edge.getTargetCellId() !== r.target) edge.setTarget({ cell: r.target });
+              edge.setSource(sourceTerminal);
+              edge.setTarget(targetTerminal);
               if (!edgeVerticesEqual(edge.getVertices(), vertices)) edge.setVertices(vertices);
+              edge.setRouter(localDelegation || outerPorts
+                ? { name: 'normal' }
+                : getObstacleAvoidingManhattanRouter(COMPONENT_EDGE_CLEARANCE));
+              edge.setConnector({ name: 'normal' });
               edge.setLabels(labels);
               edge.setAttrByPath('line/stroke', stroke);
               edge.setAttrByPath('line/strokeWidth', selected ? 2.5 : 2);
@@ -604,16 +739,18 @@ const CompEditor: React.FC = () => {
             }
             const edge = graph.addEdge({
               id: r.id,
-              source: { cell: r.source },
-              target: { cell: r.target },
+              source: sourceTerminal,
+              target: targetTerminal,
               vertices,
               attrs: {
                 line: lineAttrs,
                 wrap: interactionAttrs,
               },
               labels,
-              router: getObstacleAvoidingManhattanRouter(),
-              connector: { name: 'rounded' },
+              router: localDelegation || outerPorts
+                ? { name: 'normal' }
+                : getObstacleAvoidingManhattanRouter(COMPONENT_EDGE_CLEARANCE),
+              connector: { name: 'normal' },
             });
             if (edge) edgeSignatureCache.current.set(r.id, edgeSignature);
           }

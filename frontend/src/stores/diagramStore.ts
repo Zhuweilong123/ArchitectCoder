@@ -660,6 +660,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
+      relations: activeDiagram.relations.map((relation) => ({
+        ...relation,
+        vertices: undefined,
+      })),
       classes: activeDiagram.classes.map((cls) => {
         const position = positions.get(cls.id);
         return position ? { ...cls, position } : cls;

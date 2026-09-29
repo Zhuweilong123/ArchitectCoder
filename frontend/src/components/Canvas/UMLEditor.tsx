@@ -17,7 +17,7 @@ import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/
 import { attachCanvasEventAdapter } from './core/canvasEventAdapter';
 import { snapCanvasPosition } from './core/snapToGrid';
 import {
-  edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, materializeEdgeRouteVertices,
+  edgeVerticesEqual, getObstacleAvoidingEdgeVertices, getObstacleAvoidingManhattanRouter, getSpacedEdgePorts, materializeEdgeRouteVertices,
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
@@ -622,6 +622,21 @@ const UMLEditor: React.FC = () => {
         diagram.relations.map(({ id, source, target }) => [id, source, target]),
       ]);
       diagram.relations.forEach((rel) => {
+        const ports = getSpacedEdgePorts(rel, diagram.relations, classRects, 32, 12);
+        const sourceRect = classRects.find((rect) => rect.id === rel.source);
+        const targetRect = classRects.find((rect) => rect.id === rel.target);
+        const sourceTerminal = ports && sourceRect
+          ? { cell: rel.source, anchor: { name: 'center', args: {
+              dx: ports.sourcePoint.x - sourceRect.x - sourceRect.width / 2,
+              dy: ports.sourcePoint.y - sourceRect.y - sourceRect.height / 2,
+            } }, connectionPoint: { name: 'anchor' } }
+          : { cell: rel.source };
+        const targetTerminal = ports && targetRect
+          ? { cell: rel.target, anchor: { name: 'center', args: {
+              dx: ports.targetPoint.x - targetRect.x - targetRect.width / 2,
+              dy: ports.targetPoint.y - targetRect.y - targetRect.height / 2,
+            } }, connectionPoint: { name: 'anchor' } }
+          : { cell: rel.target };
         const isSelected = rel.id === selectedRelationId;
         const isComposition = rel.type === RelationType.COMPOSITION;
         const isAggregation = rel.type === RelationType.AGGREGATION;
@@ -702,7 +717,15 @@ const UMLEditor: React.FC = () => {
           ? rel.vertices
           : cachedAutoRoute?.key === autoRouteCacheKey
             ? cachedAutoRoute.vertices
-            : getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects);
+            : ports
+              ? [ports.sourceOutside,
+                ...getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects, 24, {
+                  source: ports.sourceOutside,
+                  target: ports.targetOutside,
+                  includeTerminals: true,
+                }),
+                ports.targetOutside]
+              : getObstacleAvoidingEdgeVertices(rel, diagram.relations, classRects);
         if (!Array.isArray(rel.vertices) && cachedAutoRoute?.key !== autoRouteCacheKey) {
           autoRouteCache.current.set(rel.id, { key: autoRouteCacheKey, vertices });
         }
@@ -715,6 +738,7 @@ const UMLEditor: React.FC = () => {
         const signature = JSON.stringify([
           rel.source, rel.target, labelText, isDashed, arrowStyle,
           isSelected, isComposition, isAggregation, vertices, canvasTheme,
+          ports?.sourcePoint, ports?.targetPoint,
         ]);
 
         try {
@@ -723,10 +747,12 @@ const UMLEditor: React.FC = () => {
             // Update existing edge
             const edge = graph.getCellById(rel.id) as Edge;
             if (edge) {
-              if (edge.getSourceCellId() !== rel.source) edge.setSource({ cell: rel.source });
-              if (edge.getTargetCellId() !== rel.target) edge.setTarget({ cell: rel.target });
+              edge.setSource(sourceTerminal);
+              edge.setTarget(targetTerminal);
               edge.setLabels(edgeLabels);
               if (!edgeVerticesEqual(edge.getVertices(), vertices)) edge.setVertices(vertices);
+              edge.setRouter({ name: 'normal' });
+              edge.setConnector({ name: 'normal' });
               edge.setAttrByPath('line/stroke', lineAttrs.stroke);
               edge.setAttrByPath('line/strokeWidth', lineAttrs.strokeWidth);
               edge.setAttrByPath('line/strokeDasharray', isDashed ? '5,5' : '');
@@ -757,12 +783,12 @@ const UMLEditor: React.FC = () => {
             }
             const edge = graph.addEdge({
               id: rel.id,
-              source: { cell: rel.source },
-              target: { cell: rel.target },
+              source: sourceTerminal,
+              target: targetTerminal,
               labels: edgeLabels,
               vertices,
-              router: getObstacleAvoidingManhattanRouter(),
-              connector: { name: 'rounded' },
+              router: { name: 'normal' },
+              connector: { name: 'normal' },
               attrs: { line: lineAttrs, wrap: interactionAttrs },
             });
             if (edge) edgeSignatureCache.current.set(rel.id, signature);
