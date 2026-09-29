@@ -7,11 +7,17 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any
 
+from app.agent_base.tools.my_tools.file_inventory import inspect_file
+
+from .graph_files import resolve_node_file
 from .impact import ImpactSlice
 
 
 # Fixed initial reference values. They are score scales, not measured budgets.
 _REFERENCE = (3000, 20, 12, 20, 20)
+_FEATURE_NAMES = ("tokens", "symbols", "dependencies", "complexity", "change_impact")
+_FEATURE_WEIGHTS = {name: 0.2 for name in _FEATURE_NAMES}
+_COST_MODEL_VERSION = "file-signals-log-mean-v1"
 _RELATION_WEIGHT = {
     "implements": 5.0,
     "realization": 5.0,
@@ -28,6 +34,9 @@ _RELATION_WEIGHT = {
 class NodeCost:
     score: float
     features: dict[str, float]
+    normalized_features: dict[str, float]
+    measurements: dict[str, int | None]
+    feature_source: str
 
 
 @dataclass(frozen=True)
@@ -45,9 +54,19 @@ class PartitionDecision:
     max_load: float
     cut_weight: float
     conflict: float = 0.0  # First release delegates read-only work only.
+    units: dict[str, tuple[str, ...]] | None = None
+    unit_costs: dict[str, float] | None = None
+    node_units: dict[str, str] | None = None
+    unit_assignments: dict[str, str] | None = None
+    total_link_weight: float = 0.0
+    unit_links: tuple[dict[str, Any], ...] = ()
+    weighted_edges: tuple[dict[str, Any], ...] = ()
 
 
-def estimate_costs(impact: ImpactSlice) -> dict[str, NodeCost]:
+def estimate_costs(
+    impact: ImpactSlice, *, project_file: str = "", source_dir: str = "",
+    test_dir: str = "",
+) -> dict[str, NodeCost]:
     degree: dict[str, int] = {node_id: 0 for node_id in impact.nodes}
     incoming: dict[str, int] = {node_id: 0 for node_id in impact.nodes}
     for source, target, _ in impact.edges:
@@ -66,21 +85,54 @@ def estimate_costs(impact: ImpactSlice) -> dict[str, NodeCost]:
         token_count = {
             "source_file": 800, "test_file": 400,
         }.get(node_type, 80 + span * 8)
+        path = resolve_node_file(
+            node, project_file=project_file, source_dir=source_dir,
+            test_dir=test_dir,
+        ) if node.get("source") in {"code", "test"} else None
+        signals = inspect_file(path) if path else None
+        if signals:
+            if node_type in {"source_file", "test_file"}:
+                token_count = max(80, math.ceil(signals.bytes / 4))
+                symbols = max(1, (signals.symbol_hints or 0)
+                              + (signals.interface_hints or 0))
+            else:
+                token_count = max(80, min(math.ceil(signals.bytes / 4), 80 + span * 8))
+                symbols = max(1, min(signals.symbol_hints or 1, 8))
+        dependency_count = degree.get(node_id, 0) + (
+            (signals.dependency_hints or 0)
+            if signals and node_type in {"source_file", "test_file"} else 0
+        )
+        complexity = 1 + math.log1p(signals.lines if signals and signals.lines is not None
+                                     and node_type in {"source_file", "test_file"} else span)
         raw = (
             token_count,
             symbols,
-            degree.get(node_id, 0),
-            1 + math.log1p(span),
+            dependency_count,
+            complexity,
             incoming.get(node_id, 0),
         )
         scaled = tuple(
             math.log1p(value) / math.log1p(reference)
             for value, reference in zip(raw, _REFERENCE)
         )
-        names = ("tokens", "symbols", "dependencies", "complexity", "change_impact")
+        names = _FEATURE_NAMES
+        normalized_features = dict(zip(names, scaled))
+        measurements = {
+            "file_bytes": signals.bytes if signals else None,
+            "file_lines": signals.lines if signals else None,
+            "symbol_hints": signals.symbol_hints if signals else None,
+            "interface_hints": signals.interface_hints if signals else None,
+            "dependency_hints": signals.dependency_hints if signals else None,
+            "graph_degree": degree.get(node_id, 0),
+            "incoming_edges": incoming.get(node_id, 0),
+            "source_span_lines": span,
+        }
         result[node_id] = NodeCost(
             score=max(0.1, sum(scaled) / len(scaled)),
             features=dict(zip(names, raw)),
+            normalized_features=normalized_features,
+            measurements=measurements,
+            feature_source="file_signals" if signals else "graph_fallback",
         )
     return result
 
@@ -93,7 +145,10 @@ def _unit_key(node_id: str, node: dict[str, Any]) -> str:
     return "entity:" + node_id
 
 
-def partition_impact(impact: ImpactSlice, *, max_workers: int = 2) -> PartitionDecision:
+def partition_impact(
+    impact: ImpactSlice, *, max_workers: int = 2, project_file: str = "",
+    source_dir: str = "", test_dir: str = "",
+) -> PartitionDecision:
     """Minimize worst read load plus weighted cross-package coupling.
 
     Groups co-located file entities, makes a deterministic greedy split, and
@@ -103,7 +158,10 @@ def partition_impact(impact: ImpactSlice, *, max_workers: int = 2) -> PartitionD
 
     if not impact.nodes:
         raise ValueError("impact slice is empty")
-    costs = estimate_costs(impact)
+    costs = estimate_costs(
+        impact, project_file=project_file, source_dir=source_dir,
+        test_dir=test_dir,
+    )
     units: dict[str, list[str]] = {}
     for node_id, node in impact.nodes.items():
         units.setdefault(_unit_key(node_id, node), []).append(node_id)
@@ -184,4 +242,23 @@ def partition_impact(impact: ImpactSlice, *, max_workers: int = 2) -> PartitionD
         objective=round(score, 4),
         max_load=round(worst, 4),
         cut_weight=round(cut, 4),
+        units={key: tuple(sorted(ids)) for key, ids in units.items()},
+        unit_costs={key: round(value, 6) for key, value in unit_cost.items()},
+        node_units=node_unit,
+        unit_assignments={key: packages[chosen[key]].id for key in keys},
+        total_link_weight=total_link,
+        unit_links=tuple({
+            "left_unit": left,
+            "right_unit": right,
+            "weight": weight,
+            "cut": chosen[left] != chosen[right],
+        } for (left, right), weight in sorted(links.items())),
+        weighted_edges=tuple({
+            "source": source,
+            "target": target,
+            "relation": relation,
+            "weight": _RELATION_WEIGHT.get(relation, 1.0),
+            "cut": node_unit.get(source) != node_unit.get(target)
+                   and chosen[node_unit[source]] != chosen[node_unit[target]],
+        } for source, target, relation in sorted(impact.edges)),
     )

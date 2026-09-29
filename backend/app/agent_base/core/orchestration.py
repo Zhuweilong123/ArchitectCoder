@@ -77,6 +77,7 @@ class ExplorationFinding:
     node_count: int = 0
     estimated_cost: float = 0.0
     tokens: int = 0
+    token_budget: int = 0
     seconds: float = 0.0
     slot: int = -1
     grounded_excerpts: int = 0
@@ -95,6 +96,8 @@ class ExplorationReport:
     schedule_revision: int = 0
     affected_nodes: int = 0
     impact_truncated: bool = False
+    unmatched_queries: tuple[str, ...] = ()
+    exploration_budget: int = 0
     partition_count: int = 0
     partition_objective: float = 0.0
     partition_max_load: float = 0.0

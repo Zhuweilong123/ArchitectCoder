@@ -146,3 +146,11 @@ execution time separate, and includes route decisions, scheduler activation,
 one-time checkpoint delivery, read-range-backed structured worker findings,
 load balance, and worker token counts. This case does not
 alter the 16-case baseline.
+
+Each comparison batch also writes `cost_model_audits.jsonl`. It contains linked
+`planned` and final outcome snapshots for each architecture-cost estimate,
+keyed by `audit_id`: model version and formula, node feature inputs and
+measurement sources, normalized scores, relation cuts, partition ownership,
+assigned token budgets, actual worker tokens and time, evidence status, and
+scheduler revision events. The same snapshots are recorded in the run Trace as
+`architecture_cost_audit`; they are not returned to the Agent as tool output.

@@ -416,6 +416,14 @@ class TraceSession:
 
         def bridge(kind: str, *args, **kwargs):
             span_path = "/".join(current_trace_spans())
+            if kind == "event":
+                payload = kwargs.get("payload")
+                tracer.event(
+                    str(kwargs.get("event_type") or "custom_trace_event"),
+                    payload=payload if isinstance(payload, dict) else {},
+                    span_path=span_path,
+                )
+                return None
             if kind == "llm_request":
                 return tracer.llm_request(
                     provider=kwargs.get("provider", "unknown"),

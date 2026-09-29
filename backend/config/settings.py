@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
     agent_architecture_scheduling_max_workers: int = 2
-    agent_architecture_scheduling_total_tokens: int = 32000
+    agent_architecture_scheduling_total_tokens: int = 64000
     agent_architecture_scheduling_worker_seconds: float = 90.0
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
@@ -214,6 +214,7 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "populate_by_name": True,
+        "extra": "ignore",
     }
 
     @property

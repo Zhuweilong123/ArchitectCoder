@@ -26,7 +26,7 @@ python -m extensions.evals.orchestration_compare --repeats 10
 python -m extensions.evals.orchestration_compare --case-id trade-orchestration-demand-001 --repeats 10
 ```
 
-脚本交错安排 A/C 的顺序，并写入 `temp/evals/orchestration_compare/<批次>/`。`manifest.json` 记录配置、fixture 哈希及相关实现文件哈希，`results.jsonl` 保存原始评测结果，`traces/` 保存完整 Trace，`summary.json` 保存逐次指标与分组中位数。执行失败会留下错误记录；不要把缺失结果计为零成本或通过。
+脚本交错安排 A/C 的顺序，并写入 `temp/evals/orchestration_compare/<批次>/`。`manifest.json` 记录配置、fixture 哈希及相关实现文件哈希，`results.jsonl` 保存原始评测结果，`traces/` 保存完整 Trace，`summary.json` 保存逐次指标与分组中位数，`cost_model_audits.jsonl` 单独保存每次实际运行的完整 Exploration Cost Model 审计数据，按 `audit_id` 关联计划与执行后快照。审计包含模型版本与公式、节点级原始/归一化特征及其来源、文件测量值、分组与图边切割权重、分区结果、初始/最终工作项归属、预算分配、实际 Token/耗时/证据状态及调度事件。普通 Trace 也保留同一 `architecture_cost_audit` 事件；该数据不注入 Agent 对话。执行失败会留下错误记录；不要把缺失结果计为零成本或通过。
 
 ## 指标解释
 

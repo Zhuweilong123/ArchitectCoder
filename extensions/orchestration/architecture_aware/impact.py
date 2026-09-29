@@ -22,6 +22,7 @@ class ImpactSlice:
     seed_ids: tuple[str, ...]
     queries: tuple[str, ...]
     truncated: bool = False
+    unmatched_queries: tuple[str, ...] = ()
 
 
 def _seed_score(item: dict[str, Any], query: str, rank: int) -> float:
@@ -66,11 +67,13 @@ async def collect_impact(
         raise GraphUnavailable("project graph is unavailable or empty")
 
     candidates: list[list[tuple[float, dict[str, Any]]]] = []
+    unmatched: list[str] = []
     for query in queries[:4]:
         result = await asyncio.to_thread(
             provider.locate, project_id, query[:80], top_k=5,
         )
         if not isinstance(result, dict) or result.get("error"):
+            unmatched.append(query)
             continue
         ranked: list[tuple[float, dict[str, Any]]] = []
         for rank, item in enumerate(result.get("results", ())):
@@ -80,6 +83,8 @@ async def collect_impact(
                 ranked.append((_seed_score(item, query, rank), item))
         if ranked:
             candidates.append(sorted(ranked, key=lambda pair: -pair[0]))
+        else:
+            unmatched.append(query)
     seeds: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -172,4 +177,5 @@ async def collect_impact(
         seed_ids=tuple(str(seed["id"]) for seed in seeds),
         queries=queries,
         truncated=truncated,
+        unmatched_queries=tuple(unmatched),
     )

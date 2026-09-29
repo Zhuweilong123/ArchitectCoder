@@ -40,7 +40,7 @@ def _compact_map(raw: Any, requirement: str) -> dict[str, Any]:
 
 
 async def routing_map(
-    settings: Any, project_file: str, requirement: str,
+    settings: Any, project_file: str, requirement: str, source_dir: str = "",
 ) -> tuple[dict[str, Any], str]:
     """Read a bounded map and distinguish an empty map from an unavailable graph."""
     if not project_file:
@@ -62,6 +62,9 @@ async def routing_map(
         if not isinstance(raw, dict) or raw.get("error"):
             reason = str(raw.get("error") if isinstance(raw, dict) else "invalid graph response")
             return {}, reason[:300]
+        files = raw.get("files") or {}
+        if source_dir and int(files.get("source_count") or 0) == 0:
+            return {}, "source graph has no indexed source files"
         return _compact_map(raw, requirement), ""
     except Exception as exc:
         return {}, f"graph routing lookup failed: {type(exc).__name__}: {exc}"[:300]

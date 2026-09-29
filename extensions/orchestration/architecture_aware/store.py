@@ -36,6 +36,7 @@ class SchedulePlan:
     fingerprint: str
     revision: int
     items: tuple[WorkAssignment, ...]
+    events: tuple[dict[str, Any], ...] = ()
 
 
 class ScheduleStore:
@@ -101,6 +102,11 @@ class ScheduleStore:
             "SELECT * FROM architecture_work_items WHERE schedule_id = ? ORDER BY item_id",
             (schedule_id,),
         ).fetchall()
+        event_rows = db.execute(
+            """SELECT revision, event, details_json, created_at
+               FROM architecture_schedule_events WHERE schedule_id = ? ORDER BY rowid""",
+            (schedule_id,),
+        ).fetchall()
         return SchedulePlan(
             id=schedule_id,
             root_run_id=header["root_run_id"],
@@ -118,6 +124,12 @@ class ScheduleStore:
                 claimed_at=row["claimed_at"],
                 result=json.loads(row["result_json"]) if row["result_json"] else None,
             ) for row in rows),
+            events=tuple({
+                "revision": int(row["revision"]),
+                "event": str(row["event"]),
+                "details": json.loads(row["details_json"] or "{}"),
+                "created_at": float(row["created_at"]),
+            } for row in event_rows),
         )
 
     def get(self, schedule_id: str) -> SchedulePlan | None:

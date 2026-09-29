@@ -96,11 +96,11 @@ def test_prepare_only_advertises_demand_tool_without_model_call(monkeypatch):
         explorer_factory=object(),
     )
     result = asyncio.run(provider.prepare(OrchestrationRequest(
-        user_message="Update sales flow", available_tools=("explore_architecture",),
+        user_message="Update sales flow", available_tools=("route_architecture",),
     )))
 
     assert result.metadata["architecture_scheduling"] == "demand_driven_ready"
-    assert "explore_architecture" in result.context
+    assert "route_architecture" in result.context
 
 
 def test_prepare_without_demand_tool_has_no_architecture_context():
@@ -118,7 +118,7 @@ def test_prepare_without_demand_tool_has_no_architecture_context():
 
     assert result.metadata["architecture_scheduling"] == "unavailable"
     assert result.context == ""
-    assert result.excluded_tools == ("route_architecture", "explore_architecture")
+    assert result.excluded_tools == ("route_architecture",)
 
 
 def test_file_evidence_stays_inside_project_roots(tmp_path):

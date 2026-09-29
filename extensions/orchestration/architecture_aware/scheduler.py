@@ -94,6 +94,13 @@ class ScheduleOutcome:
     plan: SchedulePlan
 
 
+def item_token_budget(item: WorkAssignment, total_tokens: int,
+                      items: tuple[WorkAssignment, ...]) -> int:
+    """Reproduce the scheduler's deterministic reservation for one item."""
+    total_cost = max(0.1, sum(entry.cost for entry in items))
+    return min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost / total_cost)))
+
+
 class DynamicExplorationScheduler:
     """Use RunStore leases for execution and CAS plan revisions for ownership."""
 
@@ -274,8 +281,8 @@ class DynamicExplorationScheduler:
                 if not pending:
                     break
                 spent = sum(int(item.result.get("tokens") or 0) for item in completed)
-                reserved = sum(min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
-                    max(0.1, sum(entry.cost for entry in plan.items))))) for item in active.values())
+                reserved = sum(item_token_budget(item, total_tokens, plan.items)
+                               for item in active.values())
                 external = []
                 own_runs = {item.child_run_id for item in active.values()}
                 for item in plan.items:
@@ -286,8 +293,8 @@ class DynamicExplorationScheduler:
                         run.lease_expires_at or 0) > time.time():
                         external.append(item)
                 active_slots = {item.slot for item in (*active.values(), *external)}
-                reserved += sum(min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
-                    max(0.1, sum(entry.cost for entry in plan.items))))) for item in external)
+                reserved += sum(item_token_budget(item, total_tokens, plan.items)
+                                for item in external)
                 if active:
                     plan = self._rebalance(plan, tuple(active.values()) + tuple(external))
                 for slot in range(self.max_workers):
@@ -303,8 +310,7 @@ class DynamicExplorationScheduler:
                     if not candidates:
                         continue
                     item = candidates[0]
-                    limit = min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost /
-                        max(0.1, sum(entry.cost for entry in plan.items)))))
+                    limit = item_token_budget(item, total_tokens, plan.items)
                     if spent + reserved + limit > total_tokens:
                         continue
                     try:

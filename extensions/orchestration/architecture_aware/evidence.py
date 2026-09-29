@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .impact import ImpactSlice
+from .graph_files import resolve_node_file
 from .partition import ExplorationPackage
 
 
@@ -19,6 +20,11 @@ def _excerpt(
 ) -> str:
     lines: list[str] = []
     try:
+        if path.stat().st_size > 2_000_000:
+            return ""
+        with path.open("rb") as probe:
+            if b"\0" in probe.read(4096):
+                return ""
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for number, raw in enumerate(handle, 1):
                 if number > max_scan:
@@ -34,7 +40,10 @@ def _excerpt(
         # latter gave workers misleading, nearly empty evidence in the trade
         # evaluation despite the target method being present in the file.
         name = re.escape(term)
-        declaration = re.compile(rf"^\s*(?:async\s+)?(?:def|class)\s+{name}\b")
+        declaration = re.compile(
+            rf"^\s*(?:(?:export|public|private|protected|static|async|default)\s+)*"
+            rf"(?:def|class|function|fn|func|interface|trait|struct|type)\s+{name}\b"
+        )
         match = next((i for i, line in enumerate(lines) if declaration.search(line)), None)
         if match is None:
             match = next((i for i, line in enumerate(lines) if term in line), None)
@@ -57,14 +66,13 @@ def _excerpt(
 def collect_file_evidence(
     request: Any, impact: ImpactSlice, package: ExplorationPackage,
 ) -> tuple[str, ...]:
-    """Read at most two source files and one UML excerpt for this package."""
+    """Read at most two text source files and one UML excerpt for this package."""
     project = Path(request.project_file).resolve()
     named_roots = tuple(
         (alias, Path(value).resolve())
         for alias, value in (("source", request.source_dir), ("test", request.test_dir))
         if value
     )
-    roots = tuple(root for _, root in named_roots)
     names_by_path: dict[Path, list[tuple[str, str]]] = {}
     design_names: list[str] = []
     requested_methods = re.findall(
@@ -74,22 +82,17 @@ def collect_file_evidence(
     for node_id in package.node_ids:
         node = impact.nodes[node_id]
         name = str(node.get("name") or "").strip()[:100]
-        location = str(node.get("file") or node.get("path") or "").strip()
-        if not location:
+        path = resolve_node_file(
+            node, project_file=request.project_file,
+            source_dir=request.source_dir, test_dir=request.test_dir,
+        )
+        if path is None:
             if name:
                 design_names.append(name)
             continue
-        raw = Path(location)
-        candidates = (raw,) if raw.is_absolute() else tuple(root / raw for root in roots)
-        for candidate in candidates:
-            try:
-                path = candidate.resolve()
-            except (OSError, ValueError):
-                continue
-            if path.suffix == ".py" and _within(path, roots) and path.is_file():
-                names_by_path.setdefault(path, []).append(
-                    (name, str(node.get("node_type") or node.get("type") or "")))
-                break
+        if path.is_file():
+            names_by_path.setdefault(path, []).append(
+                (name, str(node.get("node_type") or node.get("type") or "")))
 
     evidence: list[str] = []
     for path, names in list(names_by_path.items())[:2]:

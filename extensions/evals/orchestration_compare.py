@@ -58,6 +58,7 @@ def _implementation_hash(case_id: str) -> str:
         root / "backend/evals/hidden_tests/project_trade/test_paid_cancel.py",
         root / "backend/app/agent_base/core/orchestration.py",
         root / "backend/app/agent_base/tools/my_tools/conversation_tools.py",
+        root / "backend/app/trace/tracing.py",
         root / "backend/config/settings.py",
         root / "backend/app/services/agent_execution.py",
         root / "extensions/evals/runner.py",
@@ -85,6 +86,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _trace_metrics(path: str) -> dict[str, Any]:
     events = _read_jsonl(Path(path)) if path else []
+    cost_audits = [
+        event.get("payload") for event in events
+        if event.get("event_type") == "architecture_cost_audit"
+        and isinstance(event.get("payload"), dict)
+    ]
     main_calls = [
         (index, event) for index, event in enumerate(events)
         if event.get("event_type") == "tool_call"
@@ -232,7 +238,39 @@ def _trace_metrics(path: str) -> dict[str, Any]:
             if loads and statistics.mean(loads) > 0 else None
         ),
         "exploration_statuses": [report.get("status", "unknown") for report in reports],
+        "cost_model_audit_count": len(cost_audits),
+        "cost_model_versions": sorted({
+            str((audit.get("model") or {}).get("version") or "")
+            for audit in cost_audits
+            if (audit.get("model") or {}).get("version")
+        }),
     }
+
+
+def _write_cost_audits(runs: list[dict[str, Any]], output: Path) -> Path:
+    """Copy complete model inputs and outcomes into a queryable JSONL artifact."""
+    rows = []
+    for run in runs:
+        trace_path = Path(str(run.get("trace_path") or ""))
+        if not trace_path.is_file():
+            continue
+        for event in _read_jsonl(trace_path):
+            payload = event.get("payload")
+            if event.get("event_type") == "architecture_cost_audit" and isinstance(payload, dict):
+                rows.append({
+                    "run_id": run.get("run_id", ""),
+                    "case_id": run.get("case_id", ""),
+                    "arm": run.get("arm", ""),
+                    "iteration": run.get("iteration", 0),
+                    "trace_path": str(trace_path),
+                    "audit": payload,
+                })
+    destination = output / "cost_model_audits.jsonl"
+    destination.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    return destination
 
 
 def _metrics(row: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +281,7 @@ def _metrics(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "arm": metadata.get("comparison_arm"),
         "iteration": metadata.get("comparison_iteration"),
+        "case_id": row.get("case_id", ""),
         "run_id": row.get("run_id"),
         "passed": bool(row.get("passed")),
         "status": row.get("status"),
@@ -407,6 +446,8 @@ def _run_matrix(args: argparse.Namespace) -> int:
                 errors.append({"iteration": iteration, "arm": arm,
                                "error": "comparison process timeout"})
     report = _summary(_read_jsonl(results), args.case_id)
+    audit_path = _write_cost_audits(report["runs"], output)
+    report["cost_model_audits_path"] = str(audit_path)
     report["harness_errors"] = errors
     (output / "summary.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",

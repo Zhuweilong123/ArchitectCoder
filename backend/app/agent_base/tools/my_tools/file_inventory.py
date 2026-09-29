@@ -8,6 +8,7 @@ cannot identify every declaration or resolve dependency edges.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -49,36 +50,56 @@ def _physical_lines(data: bytes) -> int:
     return breaks + int(data[-1:] not in {b"\n", b"\r"})
 
 
+@dataclass(frozen=True)
+class FileSignals:
+    bytes: int
+    lines: int | None = None
+    symbol_hints: int | None = None
+    interface_hints: int | None = None
+    dependency_hints: int | None = None
+
+    def compact(self) -> str:
+        def value(number: int | None) -> str:
+            return str(number) if number is not None else "?"
+
+        return " ".join((
+            f"B{self.bytes}", f"L{value(self.lines)}",
+            f"S{value(self.symbol_hints)}", f"I{value(self.interface_hints)}",
+            f"D{value(self.dependency_hints)}",
+        ))
+
+
 @lru_cache(maxsize=2048)
-def _cached_metrics(path: str, size: int, mtime_ns: int) -> str:
-    fields = [f"B{size}"]
+def _cached_signals(path: str, size: int, mtime_ns: int) -> FileSignals:
+    unknown = FileSignals(bytes=size)
     if size > _MAX_SCAN_BYTES:
-        return " ".join(fields + [
-            "L?", "S?", "I?", "D?",
-        ])
+        return unknown
     try:
         data = Path(path).read_bytes()
     except OSError:
-        return " ".join(fields + [
-            "L?", "S?", "I?", "D?",
-        ])
+        return unknown
     if b"\0" in data[:4096]:
-        return " ".join(fields + [
-            "L?", "S?", "I?", "D?",
-        ])
+        return unknown
     content = data.decode("utf-8", errors="replace")
     symbols, interfaces, dependencies = _text_hints(content)
-    return " ".join(fields + [
-        f"L{_physical_lines(data)}", f"S{symbols}", f"I{interfaces}", f"D{dependencies}",
-    ])
+    return FileSignals(
+        bytes=size, lines=_physical_lines(data), symbol_hints=symbols,
+        interface_hints=interfaces, dependency_hints=dependencies,
+    )
+
+
+def inspect_file(path: Path) -> FileSignals | None:
+    """Return cached, language-neutral measurements for a regular file."""
+    try:
+        stat = path.stat()
+        if not path.is_file():
+            return None
+    except OSError:
+        return None
+    return _cached_signals(str(path), stat.st_size, stat.st_mtime_ns)
 
 
 def file_metrics(path: Path) -> str:
     """Return compact metrics, or an empty string for directories and races."""
-    try:
-        stat = path.stat()
-        if not path.is_file():
-            return ""
-    except OSError:
-        return ""
-    return _cached_metrics(str(path), stat.st_size, stat.st_mtime_ns)
+    signals = inspect_file(path)
+    return signals.compact() if signals else ""

@@ -3,7 +3,7 @@
   "tool_protocol_version": "foundation-tools-v1",
   "id": "trade-orchestration-demand-001",
   "name": "显式架构探索诉求下的取消订单闭环",
-  "prompt": "先调查取消订单对销售、支付、库存和报表的跨组件影响，并给出源码与 UML 的依据。如果有 explore_architecture 工具，请用它对已观察到的组件或符号发起一次只读架构探索；如果没有，就用现有工具完成同等调查。然后修复已支付、未发货订单取消时的退款和库存回补，保证重复取消幂等、待支付取消仍释放预占、已发货不可取消；日报和月报仅统计最终有效的已支付订单，不计已取消订单的销售额、排行或出库成本。保持公开方法签名与 UML 文件不变，补充必要的回归测试并运行项目测试。",
+  "prompt": "先调查取消订单对销售、支付、库存和报表的跨组件影响，并给出源码与 UML 的依据。如果有 route_architecture 工具，请用 decision=explore 对已观察到的组件或符号发起一次只读架构探索，并说明选择理由；如果没有，就用现有工具完成同等调查。然后修复已支付、未发货订单取消时的退款和库存回补，保证重复取消幂等、待支付取消仍释放预占、已发货不可取消；日报和月报仅统计最终有效的已支付订单，不计已取消订单的销售额、排行或出库成本。保持公开方法签名与 UML 文件不变，补充必要的回归测试并运行项目测试。",
   "project_id": "project_trade_cancel_v1",
   "hard_checkers": [
     {"type": "hidden_pytest", "path": "project_trade/test_paid_cancel.py", "timeout": 90},

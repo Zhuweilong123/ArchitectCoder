@@ -379,6 +379,8 @@ def compact_node(node, file_map: Optional[dict] = None) -> dict:
         if key in props:
             out[key] = props[key]
     # code 层定位：优先节点自带 filename（builder 已存），其次 file_map
+    if node.source in {"code", "test"}:
+        out["indexed_at"] = node.updated_at
     if node.source == "code":
         fname = props.get("filename", "")
         out["file"] = (file_map or {}).get(fname) or _normalize_path(props.get("path", "")) or fname
