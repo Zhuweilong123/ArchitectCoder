@@ -23,20 +23,17 @@ export interface CanvasGraphOptions {
   };
 }
 
-const canvasThemeVisuals: Record<CanvasTheme, { background: string; grid: string }> = {
-  light: { background: '#fafafa', grid: '#e0e0e0' },
-  dark: { background: '#111827', grid: '#334155' },
-  blueprint: { background: '#eaf5ff', grid: '#bae6fd' },
-  'eye-care': { background: '#f3f5ef', grid: '#d8e1d5' },
+const canvasThemeVisuals: Record<CanvasTheme, { background: string }> = {
+  light: { background: '#fafafa' },
+  dark: { background: '#111827' },
+  blueprint: { background: '#eaf5ff' },
+  'eye-care': { background: '#f3f5ef' },
 };
 
-/** Keep X6's generated background/grid in sync with the HTML node theme. */
+/** Keep the canvas background in sync without overriding project grid settings. */
 export function applyCanvasThemeToGraph(graph: Graph, theme: CanvasTheme): void {
   const visuals = canvasThemeVisuals[theme];
   graph.drawBackground({ color: visuals.background });
-  // `drawGrid` replaces the grid definition, while `update` refreshes the
-  // existing pattern and preserves the diagram's configured size/visibility.
-  graph.grid.update({ color: visuals.grid, thickness: 1 });
 }
 
 /** Create the shared X6 graph shell used by all diagram editors. */

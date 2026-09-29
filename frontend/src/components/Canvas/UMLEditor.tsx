@@ -261,8 +261,10 @@ const UMLEditor: React.FC = () => {
     autoLayoutClasses: s.autoLayoutClasses,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const gridSettings = useDiagramStore((s) => s.project.grid_settings);
 
   const setRightPanelTab = useUiStore((s) => s.setRightPanelTab);
+  const setRightPanelVisible = useUiStore((s) => s.setRightPanelVisible);
   const canvasTheme = useUiStore((s) => s.canvasTheme);
   const interfaceLanguage = useUiStore((s) => s.interfaceLanguage);
 
@@ -275,10 +277,10 @@ const UMLEditor: React.FC = () => {
     const graph = createCanvasGraph({
       container: containerRef.current,
       grid: {
-        size: diagram.grid_size || 20,
-        visible: true,
-        color: diagram.grid_color || '#aaaaaa',
-        thickness: diagram.grid_thickness || 1,
+        size: gridSettings.grid_size,
+        visible: gridSettings.grid_visible,
+        color: gridSettings.grid_color,
+        thickness: gridSettings.grid_thickness,
       },
       connection: {
         line: {
@@ -298,6 +300,7 @@ const UMLEditor: React.FC = () => {
       onNodeClick: (node) => {
         selectClass(node.id);
         setRightPanelTab('properties');
+        setRightPanelVisible(true);
       },
       onSelectionChanged: (cells) => {
         const classIds = cells
@@ -308,14 +311,15 @@ const UMLEditor: React.FC = () => {
       onBlankClick: () => {
         selectClass(null);
         selectRelation(null);
+        setRightPanelVisible(false);
       },
       onNodeMoved: (node) => {
         const position = node.position();
         const store = useDiagramStore.getState();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          getActiveDiagram().snap_to_grid,
-          getActiveDiagram().grid_size,
+          store.project.grid_settings.snap_to_grid,
+          store.project.grid_settings.grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -340,6 +344,7 @@ const UMLEditor: React.FC = () => {
           : edge;
         selectRelation(selectedEdge.id);
         setRightPanelTab('properties');
+        setRightPanelVisible(true);
       },
       onEdgeMouseEnter: (edge) => {
         const relation = (getActiveDiagram().relations || []).find((item) => item.id === edge.id);
@@ -816,12 +821,12 @@ const UMLEditor: React.FC = () => {
     const graph = graphRef.current as any;
     if (!graph) return;
     syncCanvasGrid(graph, {
-      visible: diagram.grid_visible,
-      size: diagram.grid_size,
-      color: diagram.grid_color || '#aaaaaa',
-      thickness: diagram.grid_thickness || 1,
+      visible: gridSettings.grid_visible,
+      size: gridSettings.grid_size,
+      color: gridSettings.grid_color,
+      thickness: gridSettings.grid_thickness,
     });
-  }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
+  }, [gridSettings]);
 
   // ── Helpers ──────────────────────────────────────────
   const handleAddClass = useCallback(() => {

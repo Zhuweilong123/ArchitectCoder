@@ -1,5 +1,5 @@
 import type { UmlAttribute, UmlClass, UmlDiagram, UmlMethod, UmlRelation, Project } from '../types/uml';
-import { RelationType, Stereotype, Visibility } from '../types/uml';
+import { DEFAULT_GRID_SETTINGS, RelationType, Stereotype, Visibility } from '../types/uml';
 import type { SeqFragment, SeqLifeline, SeqMessage } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
 
@@ -237,13 +237,26 @@ export function normalizeProject(value: unknown): Project {
   const item = record(value);
   const diagrams = array(item.diagrams).map(normalizeDiagram);
   const active = number(item.active_diagram_index, 0, 0);
+  const activeIndex = diagrams.length > 0
+    ? Math.min(Math.floor(active), diagrams.length - 1)
+    : 0;
+  // Older projects stored a separate grid on every diagram. Preserve the
+  // currently visible diagram's choice when first moving to project scope.
+  const legacy = record(array(item.diagrams)[activeIndex]);
+  const source = record(item.grid_settings);
+  const gridSettings = {
+    grid_visible: boolean(source.grid_visible, boolean(legacy.grid_visible, DEFAULT_GRID_SETTINGS.grid_visible)),
+    grid_size: number(source.grid_size, number(legacy.grid_size, DEFAULT_GRID_SETTINGS.grid_size, 4, 200), 4, 200),
+    grid_color: text(source.grid_color, text(legacy.grid_color, DEFAULT_GRID_SETTINGS.grid_color)),
+    grid_thickness: number(source.grid_thickness, number(legacy.grid_thickness, DEFAULT_GRID_SETTINGS.grid_thickness, 1, 10), 1, 10),
+    snap_to_grid: boolean(source.snap_to_grid, boolean(legacy.snap_to_grid, DEFAULT_GRID_SETTINGS.snap_to_grid)),
+  };
   return {
     version: text(item.version, '1.0'),
     revision: number(item.revision, 0, 0),
     name: text(item.name, 'Untitled'),
-    diagrams,
-    active_diagram_index: diagrams.length > 0
-      ? Math.min(Math.floor(active), diagrams.length - 1)
-      : 0,
+    grid_settings: gridSettings,
+    diagrams: diagrams.map((diagram) => ({ ...diagram, ...gridSettings })),
+    active_diagram_index: activeIndex,
   };
 }

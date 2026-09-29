@@ -165,8 +165,9 @@ const SeqEditor: React.FC = () => {
     fitSequenceFragments: s.fitSequenceFragments,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const gridSettings = useDiagramStore((s) => s.project.grid_settings);
 
-  const { setRightPanelTab, canvasTheme, interfaceLanguage } = useUiStore();
+  const { setRightPanelTab, setRightPanelVisible, canvasTheme, interfaceLanguage } = useUiStore();
 
   const beginInlineEdit = useCallback((edit: InlineEditState) => {
     setInlineEdit(edit);
@@ -205,19 +206,20 @@ const SeqEditor: React.FC = () => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = getActiveDiagram();
     const graph = createCanvasGraph({
       container: containerRef.current,
       grid: {
-        size: d.grid_size || 20,
-        visible: d.grid_visible !== false,
-        color: d.grid_color || '#e0e0e0',
-        thickness: d.grid_thickness || 1,
+        size: gridSettings.grid_size,
+        visible: gridSettings.grid_visible,
+        color: gridSettings.grid_color,
+        thickness: gridSettings.grid_thickness,
       },
     });
 
     // Click-to-click message creation (lifelines only)
     graph.on('node:click', ({ node }) => {
+      setRightPanelTab('properties');
+      setRightPanelVisible(true);
       if (node.shape === 'seq-fragment') {
         (graph as any).__selectedFragment = node.id;
         return;
@@ -228,7 +230,6 @@ const SeqEditor: React.FC = () => {
         return;
       }
       selectLifeline(node.id);
-      setRightPanelTab('properties');
     });
 
     // Inline editing: double-click the visible text instead of opening the
@@ -259,6 +260,7 @@ const SeqEditor: React.FC = () => {
       selectLifeline(null);
       selectMessage(null);
       (graph as any).__selectedFragment = null;
+      setRightPanelVisible(false);
     });
 
     // Right-click on a fragment or lifeline → context menu
@@ -293,8 +295,8 @@ const SeqEditor: React.FC = () => {
         const position = node.position();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          getActiveDiagram().snap_to_grid,
-          getActiveDiagram().grid_size,
+          store.project.grid_settings.snap_to_grid,
+          store.project.grid_settings.grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -340,8 +342,8 @@ const SeqEditor: React.FC = () => {
       const position = node.position();
       const nextPosition = snapCanvasPosition(
         { x: position.x, y: position.y },
-        getActiveDiagram().snap_to_grid,
-        getActiveDiagram().grid_size,
+        useDiagramStore.getState().project.grid_settings.snap_to_grid,
+        useDiagramStore.getState().project.grid_settings.grid_size,
       );
       // Lifelines share one horizontal baseline. Only persist X; any
       // accidental vertical drag is immediately snapped back to it.
@@ -356,6 +358,7 @@ const SeqEditor: React.FC = () => {
     graph.on('edge:click', ({ edge }) => {
       selectMessage(edge.id);
       setRightPanelTab('properties');
+      setRightPanelVisible(true);
     });
     graph.on('edge:dblclick', ({ edge, e }: any) => {
       const message = (getActiveDiagram().messages || []).find((item) => item.id === edge.id);
@@ -936,12 +939,12 @@ const SeqEditor: React.FC = () => {
     const graph = graphRef.current as any;
     if (!graph) return;
     syncCanvasGrid(graph, {
-      visible: diagram.grid_visible !== false,
-      size: diagram.grid_size || 20,
-      color: diagram.grid_color || '#e0e0e0',
-      thickness: diagram.grid_thickness || 1,
+      visible: gridSettings.grid_visible,
+      size: gridSettings.grid_size,
+      color: gridSettings.grid_color,
+      thickness: gridSettings.grid_thickness,
     });
-  }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
+  }, [gridSettings]);
 
   // ── Floating toolbar ────────────────────────────────
   const [showToolbar, setShowToolbar] = useState(true);

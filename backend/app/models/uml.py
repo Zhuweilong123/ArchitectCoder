@@ -1,7 +1,7 @@
 """UML data models based on the design document specifications."""
 
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 from enum import Enum
 
@@ -184,6 +184,14 @@ class UmlDiagram(BaseModel):
 
 # ---------- Project (multi-diagram container) ----------
 
+class GridSettings(BaseModel):
+    grid_visible: bool = True
+    grid_size: int = Field(default=20, ge=4, le=200)
+    grid_color: str = "#f59e0b"
+    grid_thickness: int = Field(default=1, ge=1, le=10)
+    snap_to_grid: bool = True
+
+
 class Project(BaseModel):
     """A project contains multiple diagrams of different types.
 
@@ -195,8 +203,31 @@ class Project(BaseModel):
     version: str = "1.0"
     revision: int = Field(default=0, ge=0)
     name: str = "Untitled"
+    grid_settings: GridSettings = Field(default_factory=GridSettings)
     diagrams: list[UmlDiagram] = Field(default_factory=list)
     active_diagram_index: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_diagram_grid(cls, value):
+        if not isinstance(value, dict) or "grid_settings" in value:
+            return value
+        diagrams = value.get("diagrams") or []
+        if not isinstance(diagrams, list) or not diagrams:
+            return value
+        index = value.get("active_diagram_index", 0)
+        try:
+            index = max(0, min(int(index), len(diagrams) - 1))
+        except (TypeError, ValueError):
+            index = 0
+        active = diagrams[index]
+        if not isinstance(active, dict):
+            return value
+        fields = GridSettings.model_fields
+        return {
+            **value,
+            "grid_settings": {key: active[key] for key in fields if key in active},
+        }
 
     @property
     def active_diagram(self) -> UmlDiagram | None:

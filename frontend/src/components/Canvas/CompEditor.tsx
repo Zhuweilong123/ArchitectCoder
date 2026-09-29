@@ -188,22 +188,22 @@ const CompEditor: React.FC = () => {
     selectedCompRelationId: s.selectedCompRelationId,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const gridSettings = useDiagramStore((s) => s.project.grid_settings);
 
-  const { setRightPanelTab, canvasTheme, interfaceLanguage } = useUiStore();
+  const { setRightPanelTab, setRightPanelVisible, canvasTheme, interfaceLanguage } = useUiStore();
 
   // ── Init graph ──────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || graphRef.current) return;
     ensureShapesRegistered();
 
-    const d = getActiveDiagram();
     const graph = createCanvasGraph({
       container: containerRef.current,
       grid: {
-        size: d.grid_size || 20,
-        visible: d.grid_visible !== false,
-        color: d.grid_color || '#e0e0e0',
-        thickness: d.grid_thickness || 1,
+        size: gridSettings.grid_size,
+        visible: gridSettings.grid_visible,
+        color: gridSettings.grid_color,
+        thickness: gridSettings.grid_thickness,
       },
       connection: {
         allowMulti: true,
@@ -222,18 +222,20 @@ const CompEditor: React.FC = () => {
       onNodeClick: (node) => {
         selectComponent(node.id);
         setRightPanelTab('properties');
+        setRightPanelVisible(true);
       },
       onBlankClick: () => {
         selectComponent(null);
         selectCompRelation(null);
+        setRightPanelVisible(false);
       },
       onNodeMoved: (node) => {
         const position = node.position();
         const store = useDiagramStore.getState();
         const nextPosition = snapCanvasPosition(
           { x: position.x, y: position.y },
-          getActiveDiagram().snap_to_grid,
-          getActiveDiagram().grid_size,
+          store.project.grid_settings.snap_to_grid,
+          store.project.grid_settings.grid_size,
         );
         if (position.x !== nextPosition.x || position.y !== nextPosition.y) {
           isInternalUpdate.current = true;
@@ -258,6 +260,7 @@ const CompEditor: React.FC = () => {
           : edge;
         selectCompRelation(selectedEdge.id);
         setRightPanelTab('properties');
+        setRightPanelVisible(true);
       },
       onEdgeMouseEnter: (edge) => {
         const relation = (getActiveDiagram().comp_relations || []).find((item) => item.id === edge.id);
@@ -775,12 +778,12 @@ const CompEditor: React.FC = () => {
     const graph = graphRef.current as any;
     if (!graph) return;
     syncCanvasGrid(graph, {
-      visible: diagram.grid_visible !== false,
-      size: diagram.grid_size || 20,
-      color: diagram.grid_color || '#e0e0e0',
-      thickness: diagram.grid_thickness || 1,
+      visible: gridSettings.grid_visible,
+      size: gridSettings.grid_size,
+      color: gridSettings.grid_color,
+      thickness: gridSettings.grid_thickness,
     });
-  }, [diagram.grid_visible, diagram.grid_size, diagram.grid_color, diagram.grid_thickness]);
+  }, [gridSettings]);
 
   const [showToolbar, setShowToolbar] = useState(true);
   const labels = getCanvasLabels(interfaceLanguage).componentDiagram;

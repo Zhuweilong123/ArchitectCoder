@@ -139,3 +139,26 @@ def test_rejected_candidate_restores_project_and_allows_revision(tmp_path):
     changes.commit()
     assert repository.load(filepath).name == "revised"
     assert repository.revision(filepath) == 2
+
+
+def test_project_grid_defaults_and_legacy_diagram_migration():
+    assert Project(name="new").grid_settings.grid_color == "#f59e0b"
+    assert Project.model_validate({"diagrams": [{"name": "new"}]}).grid_settings.grid_color == "#f59e0b"
+
+    legacy = Project.model_validate({
+        "name": "legacy",
+        "active_diagram_index": 1,
+        "diagrams": [
+            {"name": "first", "grid_color": "#111111", "grid_size": 10},
+            {"name": "active", "grid_color": "#ff8800", "grid_size": 50,
+             "grid_visible": False, "grid_thickness": 3, "snap_to_grid": False},
+        ],
+    })
+    assert legacy.grid_settings.model_dump() == {
+        "grid_visible": False,
+        "grid_size": 50,
+        "grid_color": "#ff8800",
+        "grid_thickness": 3,
+        "snap_to_grid": False,
+    }
+    assert Project.model_validate(legacy.model_dump()).grid_settings == legacy.grid_settings

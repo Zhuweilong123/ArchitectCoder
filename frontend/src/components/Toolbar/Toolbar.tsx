@@ -171,6 +171,7 @@ const Toolbar: React.FC = () => {
     setCurrentWorkspacePath: s.setCurrentWorkspacePath,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const gridSettings = useDiagramStore((s) => s.project.grid_settings);
   const umlReviewBlocksSave = useReviewStore((s) =>
     s.reviewType === 'uml_diff' && (s.status === 'pending' || s.status === 'accepted' || s.status === 'rejected')
   );
@@ -501,6 +502,13 @@ const Toolbar: React.FC = () => {
         const proj = {
           version: '1.0',
           name: d.name,
+          grid_settings: {
+            grid_visible: d.grid_visible,
+            grid_size: d.grid_size,
+            grid_color: d.grid_color,
+            grid_thickness: d.grid_thickness,
+            snap_to_grid: d.snap_to_grid,
+          },
           diagrams: [d],
           active_diagram_index: 0,
         };
@@ -1063,7 +1071,7 @@ const Toolbar: React.FC = () => {
         <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
         <Tooltip title={copy('grid')}>
           <Button
-            icon={diagram.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
+            icon={gridSettings.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
             onClick={toggleGrid}
           />
         </Tooltip>
@@ -1073,7 +1081,7 @@ const Toolbar: React.FC = () => {
             icon={<SettingOutlined />}
             onClick={() => setGridSettingsVisible(true)}
           >
-            {diagram.grid_size}px
+            {gridSettings.grid_size}px
           </Button>
         </Tooltip>
 
@@ -1298,10 +1306,13 @@ const Toolbar: React.FC = () => {
         cancelText="取消"
         width={420}
       >
+        <div style={{ color: '#888', fontSize: 12 }}>
+          {interfaceLanguage === 'en' ? 'Applies to every diagram in this project.' : '应用于本项目的所有图。'}
+        </div>
         <Form layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item label="网格大小">
             <Select
-              value={diagram.grid_size}
+              value={gridSettings.grid_size}
               onChange={(v) => setGridSize(v)}
               options={[
                 { value: 5, label: '5px' },
@@ -1316,15 +1327,15 @@ const Toolbar: React.FC = () => {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 type="color"
-                value={diagram.grid_color || '#e0e0e0'}
+                value={gridSettings.grid_color}
                 onChange={(e) => setGridColor(e.target.value)}
                 style={{ width: 40, height: 32, border: '1px solid #d9d9d9', borderRadius: 4, cursor: 'pointer' }}
               />
               <Input
-                value={diagram.grid_color || '#e0e0e0'}
+                value={gridSettings.grid_color}
                 onChange={(e) => setGridColor(e.target.value)}
                 style={{ width: 100 }}
-                placeholder="#e0e0e0"
+                placeholder="#f59e0b"
               />
               <span style={{ fontSize: 12, color: '#888' }}>选择或输入颜色</span>
             </div>
@@ -1334,7 +1345,7 @@ const Toolbar: React.FC = () => {
             <Slider
               min={1}
               max={5}
-              value={diagram.grid_thickness || 1}
+              value={gridSettings.grid_thickness}
               onChange={(v) => setGridThickness(v)}
               marks={{ 1: '细', 3: '中', 5: '粗' }}
             />
