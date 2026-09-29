@@ -803,106 +803,32 @@ class SearchTextTool(GrepFileTool):
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
-        # The foundation factory receives the design directory rather
-        # than the project file. Keep the inherited bounded scanner and add
-        # the design root explicitly, without widening its path boundary.
         project_file = design_dir if os.path.isfile(design_dir) else ""
-        super().__init__(workspace_root or source_dir, "" if workspace_root else test_dir, project_file)
+        if project_file:
+            design_dir = os.path.dirname(os.path.abspath(project_file))
+        super().__init__(
+            source_dir=source_dir, test_dir=test_dir,
+            project_file=project_file, design_dir=design_dir,
+            workspace_root=workspace_root,
+        )
         self.design_dir = design_dir
         self.workspace_root = workspace_root
         self.source_dir = source_dir
         self.test_dir = test_dir
         self.name = "search_text"
         self.description = (
-            "Search project source, tests, and design files by text or regular expression. "
-            "The optional path accepts a file or directory scope such as source, src, "
-            "test, design, or workspace. Returns file names, line numbers, and short "
-            "matching snippets."
+            "Search text files across the configured project roots, regardless of "
+            "programming language or file extension. Uses a case-sensitive regex, "
+            "falling back to a literal substring when the regex is invalid. The optional "
+            "path accepts one file or a recursive directory scope such as source, test, "
+            "design, or workspace. Results include workspace-relative path, line, and "
+            "column. Binary files and common dependency/build/cache directories are skipped; "
+            "workspace .searchignore can add exclusions."
         )
         self.read_only = True
         self.can_parallel = True
 
     async def _execute(self, parameters):
         # Keep the same async testing/dispatch shape as the other filesystem
-        # tools while retaining GrepFileTool's bounded synchronous scanner.
-        return self.run(parameters)
-
-    def _candidate_files(self) -> list[str]:
-        files = super()._candidate_files()
-        root = self.design_dir
-        if root and os.path.isdir(root):
-            for dirpath, _dirs, names in os.walk(root):
-                files.extend(
-                    os.path.join(dirpath, name) for name in names
-                    if name.endswith((".umlproj", ".uml", ".json"))
-                )
-        return list(dict.fromkeys(files))
-
-    def _resolve_allowed_path(self, raw_path: str) -> str | None:
-        raw_path = _expand_workspace_alias(
-            raw_path, self.workspace_root, self.source_dir,
-            self.test_dir, self.design_dir,
-        )
-        resolved = super()._resolve_allowed_path(raw_path)
-        if resolved:
-            return resolved
-        root = self.design_dir
-        if not root:
-            return None
-        candidate = os.path.abspath(raw_path) if os.path.isabs(raw_path) else os.path.abspath(os.path.join(root, raw_path))
-        if not os.path.isfile(candidate):
-            return None
-        try:
-            if os.path.commonpath([candidate, os.path.abspath(root)]) != os.path.abspath(root):
-                return None
-        except ValueError:
-            return None
-        return candidate
-
-
-    def _resolve_search_paths(self, raw_path: str) -> list[str] | None:
-        """Resolve a file or directory scope using the shared workspace aliases."""
-        expanded = _expand_workspace_alias(
-            raw_path, self.workspace_root, self.source_dir,
-            self.test_dir, self.design_dir,
-        )
-        roots = [
-            root for root in (
-                self.workspace_root, self.source_dir,
-                self.test_dir, self.design_dir,
-            ) if root
-        ]
-        candidate = os.path.abspath(expanded) if os.path.isabs(expanded) else None
-        if candidate is None:
-            for root in roots:
-                possible = os.path.abspath(os.path.join(root, expanded))
-                if os.path.exists(possible):
-                    candidate = possible
-                    break
-        if candidate is None or not os.path.exists(candidate):
-            return None
-
-        resolved_roots = [os.path.abspath(root) for root in roots]
-        try:
-            if not any(
-                os.path.commonpath([candidate, root]) == root
-                for root in resolved_roots
-            ):
-                return None
-        except ValueError:
-            return None
-
-        if os.path.isfile(candidate):
-            return [candidate]
-        if not os.path.isdir(candidate):
-            return None
-
-        suffixes = (".py", ".umlproj", ".uml", ".json")
-        files: list[str] = []
-        for dirpath, _dirs, names in os.walk(candidate):
-            files.extend(
-                os.path.join(dirpath, name)
-                for name in names
-                if name.lower().endswith(suffixes)
-            )
-        return sorted(files)
+        # tools while retaining GrepFileTool's portable synchronous scanner.
+        return await asyncio.to_thread(self.run, parameters)
