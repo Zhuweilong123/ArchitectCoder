@@ -45,10 +45,10 @@ def safe_path(user_path: str) -> str:
     """
     settings = get_settings()
     # Resolve the project root (parent of backend/)
-    project_root = os.path.abspath(os.path.join(settings.uml_dir, "..", ".."))
+    project_root = str(Path(__file__).resolve().parents[3])
 
     if not user_path:
-        return os.path.abspath(settings.uml_dir)
+        return os.path.abspath(settings.project_dir)
 
     # If relative, anchor it to the project root
     if not os.path.isabs(user_path):
@@ -88,8 +88,8 @@ def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, st
         # Configured roots extend that baseline for external projects; they must
         # not accidentally make in-repository artifacts such as project/ or
         # temp/ inaccessible.
-        roots = [repo_root, Path(settings.uml_dir).resolve(),
-                 Path(settings.uml_dir).resolve().parent]
+        roots = [repo_root, Path(settings.project_dir).resolve(),
+                 Path(settings.runtime_dir).resolve()]
         roots.extend(Path(p).resolve() for p in configured)
 
         candidate = Path(user_path)

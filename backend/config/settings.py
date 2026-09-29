@@ -77,23 +77,19 @@ class Settings(BaseSettings):
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
 
-    # Main-flow orchestration knobs. The planner is deliberately small and the
-    # optional strategy worker is bounded so orchestration cannot consume the
-    # task budget before the main agent starts.
-    # Reasoning models may spend part of completion_tokens before emitting
-    # their JSON plan. Keep enough headroom to avoid empty/truncated plans.
-    agent_planner_max_tokens: int = 3000
-    agent_planner_timeout_seconds: float = 30.0
     # Independent budget for a main-agent-managed subagent.  This budget is
     # deliberately separate from the main agent's per-run execution budget.
     agent_subagent_per_run_execution_budget_tokens: int = 500000
     # Main-agent-managed subagent entry point. The optional orchestration layer
     # remains independently controlled by agent_orchestration_enabled.
     agent_main_subagent_enabled: bool = True
-    # Keep the optional planner/explorer path disabled until its hand-off and
-    # tool-routing behavior is revalidated. The core falls back to NoOp.
+    # Optional architecture-aware scheduling. Disabling it preserves the
+    # single-Agent flow; enabling it requires an available project graph.
     agent_orchestration_enabled: bool = True
     agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
+    agent_architecture_scheduling_max_workers: int = 2
+    agent_architecture_scheduling_total_tokens: int = 64000
+    agent_architecture_scheduling_worker_seconds: float = 90.0
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
     # concrete SQLite adapter is loaded dynamically so it can be disabled or
@@ -103,7 +99,6 @@ class Settings(BaseSettings):
     agent_memory_db_path: str = ""
     agent_memory_recall_top_k: int = 3
     agent_memory_recall_max_tokens: int = 500
-    agent_memory_archive_max_tokens: int = 3000
 
     # Optional trace backend.  The Agent core only depends on the tracing
     # port; the default JSONL provider remains compatible with existing logs.
@@ -145,6 +140,8 @@ class Settings(BaseSettings):
     # and fails closed unless isolation capabilities are explicitly provided
     # by a future worker implementation.
     agent_execution_worker: Literal["local", "wsl", "container"] = "local"
+    # Combined stdout/stderr collection limit per command, enforced while reading.
+    agent_command_output_limit_bytes: int = 10 * 1024 * 1024
     agent_container_image: str = "ubuntu:24.04"
     agent_container_executable: str = "docker"
     agent_container_preflight_timeout_seconds: float = 10.0
@@ -183,16 +180,19 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # File storage
-    uml_dir: str = "../temp/uml_files"
+    runtime_dir: str = "../temp"
+    project_dir: str = "../project"
+    # Compatibility alias for older diagram and directory APIs.
+    uml_dir: str = "../project"
 
-    @field_validator("uml_dir", mode="after")
+    @field_validator("uml_dir", "project_dir", "runtime_dir", mode="after")
     @classmethod
     def resolve_uml_dir(cls, value: str) -> str:
         """Resolve relative storage paths from the backend directory.
 
         The backend is launched from both ``backend/`` and the repository
         root by different entry points. Resolving here keeps UML, trace,
-        eval, memory, and audit artifacts on the same stable storage tree.
+        eval and audit artifacts on the same stable runtime tree.
         Absolute paths remain explicit deployment overrides.
         """
         path = Path(value)
@@ -202,7 +202,7 @@ class Settings(BaseSettings):
         return str((backend_dir / path).resolve())
 
     # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
-    # 仓库目录和 uml_dir；需要访问外部源码时显式配置此项。
+    # 仓库目录和项目目录；需要访问外部源码时显式配置此项。
     workspace_roots: str = ""
 
     # CORS
@@ -216,6 +216,7 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "populate_by_name": True,
+        "extra": "ignore",
     }
 
     @property

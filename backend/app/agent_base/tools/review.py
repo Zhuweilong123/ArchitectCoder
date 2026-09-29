@@ -245,7 +245,8 @@ class SubmitUmlReviewTool(Tool):
     """
 
     def __init__(self, manager: ReviewManager, timeout: float = 300.0,
-                 progress=None, project_file: str = "", workspace_root: str = ""):
+                 progress=None, project_file: str = "", workspace_root: str = "",
+                 design_dir: str = "", change_set=None):
         super().__init__(
             name="submit_uml_review",
             description=(
@@ -262,6 +263,8 @@ class SubmitUmlReviewTool(Tool):
         self.progress = progress
         self.project_file = project_file
         self.workspace_root = workspace_root
+        self.design_dir = design_dir
+        self.change_set = change_set
 
     def _resolve_project_file(self, value: str) -> str:
         """Resolve model-supplied project paths against the runtime workspace.
@@ -278,6 +281,25 @@ class SubmitUmlReviewTool(Tool):
         raw = Path(value).expanduser()
         if raw.is_absolute():
             return str(raw.resolve())
+
+        # The workspace file tools map the ``design`` alias to design_dir.
+        # That directory can itself be nested below workspace/design/.
+        parts = raw.parts
+        if self.design_dir and parts and parts[0].casefold() == "design":
+            candidate = (Path(self.design_dir) / Path(*parts[1:])).resolve()
+            if candidate.is_file():
+                return str(candidate)
+
+        configured = Path(self.project_file).resolve() if self.project_file else None
+        is_configured_alias = (
+            len(parts) == 1
+            or (len(parts) == 2 and parts[0].casefold() == "design")
+        )
+        if (
+            configured and configured.is_file() and is_configured_alias
+            and raw.name.casefold() == configured.name.casefold()
+        ):
+            return str(configured)
 
         roots: list[Path] = []
         if self.workspace_root:
@@ -348,28 +370,39 @@ class SubmitUmlReviewTool(Tool):
         title = summary or "UML diff review"
 
         # ── 主路径：框架自己 load before/after（模型只负责改 + 报文件路径 + 摘要）──
-        if project_file and _os.path.isfile(project_file):
+        if project_file:
+            if not _os.path.isfile(project_file):
+                return f"Error: UML review project file not found: {project_file}"
             try:
                 from app.services.file_service import load_project
                 after = [d.model_dump() for d in load_project(project_file).diagrams]
-            except Exception:
+            except Exception as exc:
                 logger.exception("[SubmitUmlReviewTool] load project failed")
-                after = []
+                return f"Error: could not load UML review project: {exc}"
+            if not after:
+                return f"Error: UML review project has no diagrams: {project_file}"
             before = self.manager.baseline
+            changed = changed_diagrams(after, before)
+            if not changed:
+                return f"Error: UML review project has no diagram changes: {project_file}"
             content = title
             metadata = {
                 "diagrams": after,
-                "changed_diagrams": changed_diagrams(after, before),
+                "changed_diagrams": changed,
                 "original_diagrams": before,
             }
         else:
             # ── 兜底：无 project_file 时用显式传入的 diagrams ──
             diagrams_json = parameters.get("diagrams_json", "")
             original_json = parameters.get("original_diagrams_json", "")
+            if not diagrams_json:
+                return "Error: UML review requires a project_file or non-empty diagrams_json"
             try:
                 diagrams = _json.loads(diagrams_json) if isinstance(diagrams_json, str) else diagrams_json
-            except _json.JSONDecodeError:
-                diagrams = diagrams_json
+            except (TypeError, ValueError):
+                return "Error: diagrams_json must be a JSON array"
+            if not isinstance(diagrams, list) or not diagrams:
+                return "Error: diagrams_json must be a non-empty JSON array"
             original = None
             if original_json:
                 try:
@@ -429,6 +462,18 @@ class SubmitUmlReviewTool(Tool):
             parsed_result = _json.loads(result)
         except (TypeError, ValueError):
             parsed_result = {}
+        if (
+            isinstance(parsed_result, dict)
+            and parsed_result.get("decision") == "reject"
+            and project_file
+            and self.change_set is not None
+        ):
+            try:
+                if not self.change_set.restore_path_for_review(project_file):
+                    return "Error: rejected UML candidate was not tracked for restoration"
+            except Exception as exc:
+                logger.exception("[SubmitUmlReviewTool] rejected candidate restore failed")
+                return f"Error: could not restore rejected UML candidate: {exc}"
         if (
             isinstance(parsed_result, dict)
             and parsed_result.get("decision") == "accept"

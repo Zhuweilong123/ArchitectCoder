@@ -56,6 +56,7 @@
 }
 
 .comp-node {
+  position: relative;
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
@@ -66,6 +67,15 @@
   border-top: 3px solid #b7791f;
   border-radius: 8px;
   box-shadow: 0 6px 16px rgba(122, 84, 31, 0.1);
+}
+
+.comp-children-separator {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  border-top: 1px dashed currentColor;
+  opacity: 0.35;
+  pointer-events: none;
 }
 
 .comp-node.child {
@@ -113,22 +123,17 @@
   margin-bottom: 3px;
 }
 
-.comp-lollipop {
-  display: inline-block; width: 14px; height: 14px; line-height: 14px;
-  border: 1.5px solid #389e0d; border-radius: 50%; text-align: center;
-  font-size: 9px; color: #389e0d; margin-right: 2px;
-}
-.comp-socket {
-  display: inline-block; width: 14px; height: 10px; line-height: 12px;
-  border: 1.5px solid #cf1322; border-radius: 0 0 10px 10px; text-align: center;
-  font-size: 9px; color: #cf1322; margin-right: 2px;
-}
-
 .comp-node .comp-iface {
+  display: flex; align-items: center; gap: 4px;
   padding: 1px 0; margin: 1px 0; font-size: 11px;
 }
 .comp-node .comp-iface.provided { color: #389e0d; }
 .comp-node .comp-iface.required { color: #cf1322; }
+.comp-interface-icon {
+  display: block; width: 20px; height: 16px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 
 .comp-node.selected {
   box-shadow: inset 0 0 0 2px #2563eb, 0 8px 20px rgba(37, 99, 235, 0.16);

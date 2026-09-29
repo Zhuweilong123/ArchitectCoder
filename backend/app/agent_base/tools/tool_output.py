@@ -1,0 +1,104 @@
+"""Bounded model-facing tool output with trace-backed continuation."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.trace.tracing import current_trace_sink
+
+from .base import Tool, ToolParameter
+
+
+MAX_FED_CHARS = 3000
+SKILL_FED_CHARS = 20_000
+MAX_PAGE_CONTENT_CHARS = 2600
+
+
+def tool_output_page_budget(tool_name: str) -> int | None:
+    """Keep file and skill retrieval budgets separate from ordinary results."""
+    if tool_name == "read_file":
+        return None
+    if tool_name == "skill":
+        return SKILL_FED_CHARS
+    return MAX_FED_CHARS
+
+
+def first_tool_output_page(output: str, output_id: str, *,
+                           max_chars: int = MAX_FED_CHARS) -> str:
+    """Return an exact prefix and a continuation reference within the cap."""
+    if len(output) <= max_chars or not output_id:
+        return output
+    offset = max_chars
+    while True:
+        marker = (
+            f"\n\n[tool output truncated; total_chars={len(output)}; "
+            f"output_id={output_id}; next_offset={offset}; "
+            "call read_tool_output with this output_id and offset to continue]"
+        )
+        next_offset = max_chars - len(marker)
+        if next_offset == offset:
+            return output[:offset] + marker
+        offset = next_offset
+
+
+class ReadToolOutputTool(Tool):
+    """Read a stable character range from this session's original tool result."""
+
+    def __init__(self):
+        super().__init__(
+            name="read_tool_output",
+            description=(
+                "Continue a truncated result from a tool other than read_file "
+                "using its output_id and next_offset. Reads the original text "
+                "from the current trace without rerunning the tool. For current "
+                "workspace file content, use read_file with a line offset."
+            ),
+        )
+        self.read_only = True
+        self.can_parallel = True
+
+    def get_parameters(self) -> list[ToolParameter]:
+        return [
+            ToolParameter(name="output_id", type="string",
+                          description="Reference printed in the truncated tool result"),
+            ToolParameter(name="offset", type="integer",
+                          description="Character offset printed as next_offset"),
+            ToolParameter(name="limit", type="integer", required=False,
+                          default=MAX_PAGE_CONTENT_CHARS,
+                          description="Characters to read, at most 2600"),
+        ]
+
+    def run(self, parameters: dict[str, Any]) -> str:
+        output_id = str(parameters.get("output_id") or "").strip()
+        try:
+            offset = int(parameters.get("offset"))
+            limit = int(parameters.get("limit", MAX_PAGE_CONTENT_CHARS))
+        except (TypeError, ValueError, OverflowError):
+            return "Error: offset and limit must be integers"
+        if offset < 0 or limit < 1:
+            return "Error: offset must be nonnegative and limit must be positive"
+        sink = current_trace_sink()
+        if sink is None:
+            return "Error: no active trace for this task"
+        reader = getattr(sink, "read_tool_output", None)
+        if not callable(reader):
+            return "Error: current trace cannot read tool outputs"
+        output = reader(output_id, excluded_tool_names=frozenset({"read_file"}))
+        if output is None:
+            return ("Error: output_id was not found or is a read_file result "
+                    "in the current trace; use read_file for file content")
+        if offset > len(output):
+            return f"Error: offset exceeds the {len(output)}-character result"
+        end = min(len(output), offset + min(limit, MAX_PAGE_CONTENT_CHARS))
+        next_offset = str(end) if end < len(output) else "none"
+        return (
+            f"[tool output {output_id}; chars {offset}:{end} of {len(output)}]\n"
+            + output[offset:end]
+            + f"\n[next_offset={next_offset}]"
+        )
+
+
+__all__ = [
+    "MAX_FED_CHARS", "SKILL_FED_CHARS", "ReadToolOutputTool",
+    "first_tool_output_page", "tool_output_page_budget",
+]

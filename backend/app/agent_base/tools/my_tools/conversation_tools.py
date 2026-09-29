@@ -114,10 +114,10 @@ def create_conversation_tools(
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .foundation_tools import create_foundation_tools
     from backend.config import get_settings
-    # 设计目录：优先 project_file 所在目录（当前项目的 design_dir），否则全局 uml_dir
+    # 设计目录：优先 project_file 所在目录，否则使用项目目录。
     design_dir = design_dir or (
         os.path.dirname(os.path.abspath(project_file))
-        if project_file else os.path.abspath(get_settings().uml_dir)
+        if project_file else os.path.abspath(get_settings().project_dir)
     )
     if not workspace_root:
         workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
@@ -135,6 +135,7 @@ def create_conversation_tools(
         command_executor=command_executor,
         workspace_root=workspace_root,
         execution_broker=execution_broker,
+        output_cap=get_settings().agent_command_output_limit_bytes,
     ))
 
     # todo_write：会话任务列表
@@ -166,27 +167,38 @@ def create_conversation_tools(
         from app.agent_base.tools.task_system import create_task_system_tools
         tools.extend(create_task_system_tools(scope=task_scope))
 
-    # KG 结构化理解工具（动词命名，与文件原语互补：回答「有没有/谁依赖谁/设计实现没」，
-    # read_file/grep 回答具体内容与符号）。工具暴露复用知识图谱插件开关，
-    # 关闭或 Provider 不可用时不会注册任何 KG 工具。
+    # Architecture scheduling contributes only its routing/exploration tools.
+    # The scheduler queries the KG provider internally; standalone KG tools
+    # remain available from the plugin factory but are not main-Agent tools.
     from app.agent_base.core.plugins import get_plugin_manager
-    tools.extend(get_plugin_manager().load_contribution(
-        "knowledge_graph",
-        "create_tools",
-        settings=get_settings(),
-        kwargs={
-            "project_file": project_file,
-            "source_dir": source_dir,
-            "include_compare": False,
-        },
-        default=[],
-    ))
+    settings = get_settings()
+    if (
+        project_file
+        and settings.agent_orchestration_enabled
+        and settings.agent_knowledge_graph_enabled
+    ):
+        from .subagent_tool import SpawnSubagentTool
+
+        tools.extend(get_plugin_manager().load_contribution(
+            "orchestration",
+            "create_tools",
+            settings=settings,
+            kwargs={
+                "llm": llm,
+                "project_file": project_file,
+                "source_dir": source_dir,
+                "test_dir": test_dir,
+                "explorer_factory": SpawnSubagentTool,
+            },
+            default=[],
+        ))
 
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool
         tools.append(SubmitUmlReviewTool(
             manager=review_mgr, progress=progress, project_file=project_file,
-            workspace_root=workspace_root,
+            workspace_root=workspace_root, design_dir=design_dir,
+            change_set=change_set,
         ))
 
     return tools, review_mgr

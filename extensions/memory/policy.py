@@ -30,6 +30,7 @@ class MemoryWritePolicy:
         MemoryType.DECISION,
         MemoryType.REJECTION,
         MemoryType.CONVENTION,
+        MemoryType.OPERATIONAL_LESSON,
     }
 
     def __init__(self, min_confidence: float = 0.55, max_summary_length: int = 500):
@@ -82,6 +83,7 @@ class MemoryRecallPolicy:
 
     _TYPE_PRIORITY = {
         MemoryType.DECISION: 5,
+        MemoryType.OPERATIONAL_LESSON: 4,
         MemoryType.REJECTION: 4,
         MemoryType.CONVENTION: 3,
         MemoryType.PREFERENCE: 2,

@@ -40,6 +40,78 @@ export interface CanvasNodeRect {
   height: number;
 }
 
+type EdgeSide = 'left' | 'right' | 'top' | 'bottom';
+
+/** Shared edge ports for class and top-level component diagrams. */
+export function getSpacedEdgePorts(
+  edge: CanvasEdgeEndpoint,
+  edges: CanvasEdgeEndpoint[],
+  nodes: CanvasNodeRect[],
+  stub = 32,
+  laneSpacing = 0,
+) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const source = byId.get(edge.source);
+  const target = byId.get(edge.target);
+  if (!source || !target) return null;
+  const center = (node: CanvasNodeRect) => ({ x: node.x + node.width / 2, y: node.y + node.height / 2 });
+  const sides = (from: CanvasNodeRect, to: CanvasNodeRect): [EdgeSide, EdgeSide] => {
+    const a = center(from);
+    const b = center(to);
+    return Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)
+      ? (b.x >= a.x ? ['right', 'left'] : ['left', 'right'])
+      : (b.y >= a.y ? ['bottom', 'top'] : ['top', 'bottom']);
+  };
+  const [sourceSide, targetSide] = sides(source, target);
+  const offset = (node: CanvasNodeRect, side: EdgeSide, endpoint: 'source' | 'target') => {
+    const peers = edges.filter((candidate) => {
+      if (candidate[endpoint] !== node.id) return false;
+      const from = byId.get(candidate.source);
+      const to = byId.get(candidate.target);
+      return !!from && !!to && sides(from, to)[endpoint === 'source' ? 0 : 1] === side;
+    }).sort((a, b) => {
+      const otherA = byId.get(a[endpoint === 'source' ? 'target' : 'source']);
+      const otherB = byId.get(b[endpoint === 'source' ? 'target' : 'source']);
+      const axis = side === 'left' || side === 'right' ? 'y' : 'x';
+      return (otherA ? center(otherA)[axis] : 0) - (otherB ? center(otherB)[axis] : 0)
+        || a.id.localeCompare(b.id);
+    });
+    const index = peers.findIndex((candidate) => candidate.id === edge.id);
+    const span = side === 'left' || side === 'right' ? node.height : node.width;
+    const limit = Math.max(0, span / 2 - 36);
+    return {
+      shift: Math.max(-limit, Math.min(limit, (index - (peers.length - 1) / 2) * 18)),
+      rank: Math.max(0, index),
+    };
+  };
+  const port = (node: CanvasNodeRect, side: EdgeSide, shift: number) => {
+    const middle = center(node);
+    switch (side) {
+      case 'left': return { x: node.x, y: middle.y + shift };
+      case 'right': return { x: node.x + node.width, y: middle.y + shift };
+      case 'top': return { x: middle.x + shift, y: node.y };
+      case 'bottom': return { x: middle.x + shift, y: node.y + node.height };
+    }
+  };
+  const outside = (point: CanvasPoint, side: EdgeSide, distance: number) => {
+    switch (side) {
+      case 'left': return { x: point.x - distance, y: point.y };
+      case 'right': return { x: point.x + distance, y: point.y };
+      case 'top': return { x: point.x, y: point.y - distance };
+      case 'bottom': return { x: point.x, y: point.y + distance };
+    }
+  };
+  const sourceOffset = offset(source, sourceSide, 'source');
+  const targetOffset = offset(target, targetSide, 'target');
+  const sourcePoint = port(source, sourceSide, sourceOffset.shift);
+  const targetPoint = port(target, targetSide, targetOffset.shift);
+  return {
+    sourcePoint, targetPoint,
+    sourceOutside: outside(sourcePoint, sourceSide, stub + Math.min(sourceOffset.rank, 4) * laneSpacing),
+    targetOutside: outside(targetPoint, targetSide, stub),
+  };
+}
+
 /** Avoid triggering X6 route work when a store sync already has these points. */
 export function edgeVerticesEqual(
   current: Array<{ x: number; y: number }> | undefined,
@@ -60,16 +132,22 @@ const ROUTER_CLEARANCE = 32;
  * project diagram and silently falls back to the non-obstacle-aware `orth`
  * router when exhausted.
  */
-export function getObstacleAvoidingManhattanRouter() {
+export function getObstacleAvoidingManhattanRouter(clearance = ROUTER_CLEARANCE) {
   return {
     name: 'manhattan' as const,
     args: {
-      padding: ROUTER_CLEARANCE,
-      step: 16,
+      padding: clearance,
+      step: Math.min(16, Math.max(4, clearance)),
       maxLoopCount: 20_000,
       // A terminal must be reachable; every other visible node stays an
       // obstacle in the route map.
       excludeTerminals: ['source', 'target'],
+      ...(clearance < ROUTER_CLEARANCE ? {
+        // Component routes already have verified orthogonal waypoints. X6's
+        // generic fallback and grid snapping can move them into a rectangle.
+        fallbackRouter: (vertices: CanvasPoint[]) => vertices,
+        snapToGrid: false,
+      } : {}),
     },
   };
 }
@@ -138,6 +216,114 @@ function routeLength(points: CanvasPoint[]): number {
   ), 0);
 }
 
+/** Find an orthogonal path when the short list of conventional bends is blocked. */
+function findClearRoute(
+  start: CanvasPoint,
+  end: CanvasPoint,
+  obstacles: CanvasNodeRect[],
+  clearance: number,
+): CanvasPoint[] | null {
+  const margin = clearance + 1;
+  const xs = Array.from(new Set([
+    start.x, end.x,
+    ...obstacles.flatMap((node) => [node.x - margin, node.x + node.width + margin]),
+  ])).sort((a, b) => a - b);
+  const ys = Array.from(new Set([
+    start.y, end.y,
+    ...obstacles.flatMap((node) => [node.y - margin, node.y + node.height + margin]),
+  ])).sort((a, b) => a - b);
+  const width = xs.length;
+  const height = ys.length;
+  const startIndex = xs.indexOf(start.x) * height + ys.indexOf(start.y);
+  const endIndex = xs.indexOf(end.x) * height + ys.indexOf(end.y);
+  const point = (index: number): CanvasPoint => ({
+    x: xs[Math.floor(index / height)], y: ys[index % height],
+  });
+  const blocked = new Uint8Array(width * height);
+  for (let index = 0; index < blocked.length; index += 1) {
+    if (obstacles.some((node) => isInsideExpandedRect(point(index), node, clearance))) {
+      blocked[index] = 1;
+    }
+  }
+  if (blocked[startIndex] || blocked[endIndex]) return null;
+
+  // Each grid point has horizontal and vertical arrival states. The small
+  // bend cost favours a readable route among equal-length alternatives.
+  const stateCount = width * height * 3;
+  const distances = new Float64Array(stateCount).fill(Number.POSITIVE_INFINITY);
+  const previous = new Int32Array(stateCount).fill(-1);
+  const heap: Array<{ state: number; score: number }> = [];
+  const push = (state: number, score: number) => {
+    heap.push({ state, score });
+    for (let i = heap.length - 1; i > 0;) {
+      const parent = Math.floor((i - 1) / 2);
+      if (heap[parent].score <= heap[i].score) break;
+      [heap[parent], heap[i]] = [heap[i], heap[parent]];
+      i = parent;
+    }
+  };
+  const pop = () => {
+    const first = heap[0];
+    const last = heap.pop();
+    if (heap.length && last) {
+      heap[0] = last;
+      for (let i = 0;;) {
+        const left = i * 2 + 1;
+        const right = left + 1;
+        if (left >= heap.length) break;
+        const child = right < heap.length && heap[right].score < heap[left].score ? right : left;
+        if (heap[i].score <= heap[child].score) break;
+        [heap[i], heap[child]] = [heap[child], heap[i]];
+        i = child;
+      }
+    }
+    return first;
+  };
+  const initial = startIndex * 3;
+  distances[initial] = 0;
+  push(initial, 0);
+  while (heap.length) {
+    const entry = pop()!;
+    const { state, score } = entry;
+    if (score !== distances[state]) continue;
+    const index = Math.floor(state / 3);
+    if (index === endIndex) {
+      const path: CanvasPoint[] = [];
+      for (let current = state; current >= 0; current = previous[current]) {
+        path.push(point(Math.floor(current / 3)));
+      }
+      path.reverse();
+      return path.slice(1, -1).filter((middle, i, inner) => {
+        const before = i === 0 ? start : inner[i - 1];
+        const after = i === inner.length - 1 ? end : inner[i + 1];
+        return (before.x !== middle.x || middle.x !== after.x)
+          && (before.y !== middle.y || middle.y !== after.y);
+      });
+    }
+    const x = Math.floor(index / height);
+    const y = index % height;
+    for (const [nextX, nextY, direction] of [
+      [x - 1, y, 1], [x + 1, y, 1], [x, y - 1, 2], [x, y + 1, 2],
+    ]) {
+      if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+      const nextIndex = nextX * height + nextY;
+      if (blocked[nextIndex]) continue;
+      const next = point(nextIndex);
+      if (obstacles.some((node) => segmentIntersectsExpandedRect(
+        point(index), next, node, clearance,
+      ))) continue;
+      const nextState = nextIndex * 3 + direction;
+      const distance = score + Math.abs(next.x - xs[x]) + Math.abs(next.y - ys[y])
+        + (state % 3 !== 0 && state % 3 !== direction ? 16 : 0);
+      if (distance >= distances[nextState]) continue;
+      distances[nextState] = distance;
+      previous[nextState] = state;
+      push(nextState, distance);
+    }
+  }
+  return null;
+}
+
 /**
  * Supply Manhattan with obstacle-safe turning points before it performs its
  * finer grid search. This keeps a route clear even when X6 needs its `orth`
@@ -147,24 +333,28 @@ export function getObstacleAvoidingEdgeVertices(
   edge: CanvasEdgeEndpoint,
   edges: CanvasEdgeEndpoint[],
   nodes: CanvasNodeRect[],
+  clearance = ROUTER_CLEARANCE,
+  endpoints?: { source?: CanvasPoint; target?: CanvasPoint; includeTerminals?: boolean },
 ): CanvasPoint[] {
   const source = nodes.find((node) => node.id === edge.source);
   const target = nodes.find((node) => node.id === edge.target);
   if (!source || !target) return [];
 
-  const sourceCenter = getNodeCenter(source);
-  const targetCenter = getNodeCenter(target);
-  const obstacles = nodes.filter((node) => node.id !== edge.source && node.id !== edge.target);
+  const sourceCenter = endpoints?.source || getNodeCenter(source);
+  const targetCenter = endpoints?.target || getNodeCenter(target);
+  const obstacles = endpoints?.includeTerminals
+    ? nodes
+    : nodes.filter((node) => node.id !== edge.source && node.id !== edge.target);
   if (obstacles.length === 0) return getParallelEdgeVertices(edge, edges, nodes);
 
-  const left = Math.min(...obstacles.map((node) => node.x)) - ROUTER_CLEARANCE;
-  const right = Math.max(...obstacles.map((node) => node.x + node.width)) + ROUTER_CLEARANCE;
-  const top = Math.min(...obstacles.map((node) => node.y)) - ROUTER_CLEARANCE;
-  const bottom = Math.max(...obstacles.map((node) => node.y + node.height)) + ROUTER_CLEARANCE;
+  const left = Math.min(...obstacles.map((node) => node.x)) - clearance;
+  const right = Math.max(...obstacles.map((node) => node.x + node.width)) + clearance;
+  const top = Math.min(...obstacles.map((node) => node.y)) - clearance;
+  const bottom = Math.max(...obstacles.map((node) => node.y + node.height)) + clearance;
   // In a layered graph, the globally outer corridor can be needlessly long
   // (or blocked at the source row). Add a small set of corridors immediately
   // outside every obstacle so a route can take the nearest clear side.
-  const localClearance = ROUTER_CLEARANCE + 8;
+  const localClearance = clearance + 8;
   const localCorridors = obstacles.flatMap((node) => [
     [{ x: node.x - localClearance, y: sourceCenter.y }, { x: node.x - localClearance, y: targetCenter.y }],
     [{ x: node.x + node.width + localClearance, y: sourceCenter.y }, { x: node.x + node.width + localClearance, y: targetCenter.y }],
@@ -186,7 +376,7 @@ export function getObstacleAvoidingEdgeVertices(
     const route = normalizeRouteVertices([sourceCenter, ...vertices, targetCenter]);
     const collisions = obstacles.reduce((count, node) => (
       route.slice(1).some((point, index) => segmentIntersectsExpandedRect(
-        route[index], point, node, ROUTER_CLEARANCE,
+        route[index], point, node, clearance,
       )) ? count + 1 : count
     ), 0);
     return {
@@ -197,7 +387,21 @@ export function getObstacleAvoidingEdgeVertices(
       score: routeLength(route) + vertices.length * 16,
     };
   }).sort((a, b) => a.collisions - b.collisions || a.score - b.score);
-  return scored[0]?.vertices || [];
+  if (scored[0]?.collisions === 0) {
+    if (endpoints?.includeTerminals) {
+      const gridRoute = findClearRoute(sourceCenter, targetCenter, obstacles, clearance);
+      // An outer connection can use a narrow corridor, but a modest distance
+      // saving is not worth several extra bends in an architecture overview.
+      const outerBendCost = 150;
+      if (gridRoute && routeLength([sourceCenter, ...gridRoute, targetCenter])
+        + gridRoute.length * outerBendCost
+        < routeLength([sourceCenter, ...scored[0].vertices, targetCenter])
+          + scored[0].vertices.length * outerBendCost) return gridRoute;
+    }
+    return scored[0].vertices;
+  }
+  return findClearRoute(sourceCenter, targetCenter, obstacles, clearance)
+    || scored[0]?.vertices || [];
 }
 
 /** Give parallel edges separate lanes so coincident relationships remain selectable. */

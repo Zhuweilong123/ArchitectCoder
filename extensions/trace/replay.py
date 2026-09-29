@@ -126,13 +126,13 @@ def _reconstruct_workspace(events: list[dict]) -> tuple[str, str, str, str]:
             elif s.startswith("- Test directory:") and not test_dir:
                 test_dir = s.split(":", 1)[1].strip()
 
-    # design_dir：project_file 所在目录（当前项目设计目录），否则全局 uml_dir
+    # design_dir：project_file 所在目录，否则使用项目目录。
     if project_file and os.path.isfile(project_file):
         design_dir = os.path.dirname(os.path.abspath(project_file))
     else:
         try:
             from backend.config import get_settings
-            design_dir = os.path.abspath(get_settings().uml_dir)
+            design_dir = os.path.abspath(get_settings().project_dir)
         except Exception:
             design_dir = ""
     return source_dir, test_dir, design_dir, project_file

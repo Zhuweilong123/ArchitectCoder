@@ -21,7 +21,8 @@ from ...core.hooks import (
 from ...evidence import EvidenceLedger, record_runtime_verification
 from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
-from app.trace.tracing import emit_trace
+from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
+from app.trace.tracing import current_trace_sink, emit_trace
 
 
 @dataclass
@@ -119,6 +120,16 @@ class ToolRoundExecutor:
                 observation_full, observation_fed, tool_result, duration_ms = execution
             if isinstance(tool_args, str):
                 observation_full = observation_fed = execution[0]
+
+            sink = current_trace_sink()
+            page_budget = tool_output_page_budget(tool_name)
+            if (page_budget is not None and observation_fed == observation_full
+                    and tool_span and sink is not None
+                    and sink.trace_id
+                    and callable(getattr(sink, "read_tool_output", None))):
+                observation_fed = first_tool_output_page(
+                    observation_full, tool_span, max_chars=page_budget,
+                )
 
             if tool_result.verification is not None:
                 check = tool_result.verification

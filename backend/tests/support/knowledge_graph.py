@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from backend.config.project_storage import project_id_for
 
 from extensions.knowledge_graph.tools import create_kg_v2_tools
 from app.models.uml import (
@@ -56,7 +57,7 @@ def build_knowledge_graph(tmp_path: Path) -> tuple[str, str, str]:
             type=RelationType.ASSOCIATION,
         )],
     )
-    project_id = "proj"
+    project_id = project_id_for(str(tmp_path / "proj.umlproj"))
 
     builder = GraphBuilder(db_path=db_path)
     builder.build_from_project(

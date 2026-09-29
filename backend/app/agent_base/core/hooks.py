@@ -247,7 +247,7 @@ def get_hooks() -> HookRegistry:
 
 
 # ── 内置默认 hook ─────────────────────────────────────────
-# 中断与截断是所有 agent 的通用默认行为，模块加载时注册一次；
+# 通用中断与运行策略在模块加载时注册；工具输出分页由执行器负责。
 # 可被更高 priority 的自定义 hook 短路覆盖。
 
 def _interrupt_hook(ctx: HookContext) -> Optional[str]:
@@ -267,9 +267,8 @@ class TruncateHook:
     且无法归因。标记会超出 ``max_chars`` 若干字符，这是有意的——
     宁可多几十字符，也不能让模型对"内容被删过"这件事无感。
 
-    ``per_tool`` 按工具名覆盖上限。默认 2000 是针对 ``read_file`` 这类读**任意
-    用户文件**的工具定的；而 ``skill`` 读的是仓库内受控、体量有界的知识包，
-    被腰斩等于让模型照着半份规范执行，故单独放宽。
+    ``per_tool`` 按工具名覆盖上限。此类保留给显式注册的定制策略；
+    默认运行时使用可续读的工具结果协议，``read_file`` 单独按行限量。
     """
 
     def __init__(self, max_chars: int = 2000, per_tool: Optional[dict] = None):
@@ -393,31 +392,7 @@ def _register_default_hooks() -> None:
     get_hooks().register(HookEvent.TOOL_BEFORE, RunPolicyHook(), priority=90)
     get_hooks().register(HookEvent.LLM_AFTER, RunPolicyHook(), priority=90)
     get_hooks().register(HookEvent.TOOL_BATCH_AFTER, RunPolicyHook(), priority=90)
-    get_hooks().register(
-        HookEvent.TOOL_AFTER,
-        # 20000 覆盖当前最大的 skill 引用文件（约 11KB），仍留兜底不会无限膨胀
-        # Keep iterative tool history compact without forcing the model to
-        # reopen ordinary source files just because a useful read window was
-        # clipped. Recent evaluation traces showed 20-48 repeated ``read_file``
-        # calls in a single task: the old 1200-character cap commonly cut a
-        # 30-line method in half. Source reads are still bounded, while
-        # focused searches and task output retain a moderate cap. The full
-        # observation remains in ChatTrace for audit.
-        TruncateHook(
-            max_chars=1200,
-            per_tool={
-                "read_file": 6000,
-                "search_text": 4000,
-                "run_task": 6000,
-                "skill": 20000,
-                # Delegated reports have a bounded head/tail excerpt in the
-                # subagent itself; preserve that excerpt instead of applying
-                # the generic 1200-character cap.
-                "spawn_subagent": 6000,
-            },
-        ),
-        priority=0,
-    )
+    # The ToolRoundExecutor pages every long tool result through its trace.
 
 
 _register_default_hooks()

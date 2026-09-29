@@ -1,6 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
-  type AgentEvent, type AgentProgressEvent, type AgentTodoItem,
+  sendReviewResponse, type AgentEvent, type AgentProgressEvent, type AgentTodoItem,
 } from '../../services/agentChat';
 import { processDesignUpdated } from '../../services/designElementHandler';
 import { useDiagramStore } from '../../stores/diagramStore';
@@ -147,6 +147,15 @@ export function createAgentChatEventHandler({
 
       case 'uml_review': {
         const diagrams = normalizeReviewDiagrams(event.diagrams);
+        if (diagrams.length === 0) {
+          sendReviewResponse(event.review_id, '审核数据为空，请重新提交有效的 UML 差异', 'reject');
+          appendSystemMessage(setMessages, {
+            id: `review_invalid_${Date.now()}`,
+            content: '审核请求缺少 UML 图数据，已拒绝该请求。请让 Agent 重新提交。',
+            timestamp: Date.now(),
+          });
+          break;
+        }
         const changedDiagrams = event.changed_diagrams === undefined
           ? undefined
           : normalizeReviewDiagrams(event.changed_diagrams);
@@ -162,6 +171,7 @@ export function createAgentChatEventHandler({
           reviewId: event.review_id,
           reviewType: 'uml_diff',
           title: event.title,
+          auto: event.auto,
           question: '是否接受此变更？',
         });
         appendSystemMessage(setMessages, {
@@ -171,6 +181,19 @@ export function createAgentChatEventHandler({
             : `🔔 Agent 请求 UML 设计审核: ${event.title}\n\n请在右侧「差异对比」面板查看变更，并确认是否接受。`,
           timestamp: Date.now(),
         });
+        break;
+      }
+
+      case 'project_committed': {
+        const store = useDiagramStore.getState();
+        const currentPath = (store.currentFilepath || '').replace(/\\/g, '/').toLowerCase();
+        const committedPath = event.filepath.replace(/\\/g, '/').toLowerCase();
+        if (currentPath && currentPath === committedPath) {
+          const review = useReviewStore.getState();
+          if (review.status === 'pending') break;
+          store.markSaved(event.revision);
+          if (review.status === 'accepted') review.clear();
+        }
         break;
       }
 
@@ -202,6 +225,8 @@ export function createAgentChatEventHandler({
       case 'done': {
         useDiagramStore.getState().endBatch();
         setBusy(false);
+        const review = useReviewStore.getState();
+        if (review.status === 'rejected') review.clear();
         const steps = liveStepsRef.current;
         liveStepsRef.current = [];
         setCurrentSteps([]);

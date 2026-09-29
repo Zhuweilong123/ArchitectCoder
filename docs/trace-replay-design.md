@@ -45,7 +45,7 @@ ReActAgent 循环
 
 ## 4. trace 记录格式
 
-- **文件**：`temp/chat_log/trace_{session_id}.jsonl`。
+- **文件**：`temp/chat_log/YYYY-MM-DD/trace_{session_id}.jsonl`。读取端同时兼容历史平铺文件。
 - **写入**：`extensions/trace/chat_trace.py` 的 `ChatTraceLogger`；核心 Trace Port 与全局 hook 位于 `backend/app/trace/tracing.py`，LLM 通过 `_trace_hook` 转发。
 - **事件类型**：
 
@@ -271,7 +271,7 @@ POST /api/trace/{session_id}/replay?mode=mock|rerun|live&turn=N&tool_policy=read
 
 ### 9.6 常见问题
 
-- 会话列表为空：确认后端已启动，并且 `temp/chat_log/` 下已有 `trace_*.jsonl`。
+- 会话列表为空：确认后端已启动，并且 `temp/chat_log/YYYY-MM-DD/` 下已有 `trace_*.jsonl`。
 - Rerun 不逐字一致：这是重新调用 LLM 的正常现象；确定性校验使用 Mock。
 - 点击回放没有重新执行：通常命中了缓存，点击结果弹窗中的「重新执行」。
 - 只想查看工具而不产生副作用：使用 Mock；Live 默认只读，但仍会访问当前工作区。

@@ -153,19 +153,18 @@ function condense(ids: string[], outgoing: Map<string, string[]>): Group[] {
 export function layoutClasses(diagram: UmlDiagram): Map<string, Position> {
   const classes = diagram.classes || [];
   const ids = new Set(classes.map((cls) => cls.id));
-  const hierarchy = diagram.relations.filter((relation) => (
-    (relation.type === RelationType.INHERITANCE || relation.type === RelationType.REALIZATION)
-    && ids.has(relation.source) && ids.has(relation.target)
+  const primary = diagram.relations.filter((relation) => (
+    ids.has(relation.source) && ids.has(relation.target)
   ));
-  const primary = hierarchy.length > 0
-    ? hierarchy
-    : diagram.relations.filter((relation) => ids.has(relation.source) && ids.has(relation.target));
-  const hierarchyMode = hierarchy.length > 0;
   const outgoing = new Map(classes.map((cls) => [cls.id, [] as string[]]));
   const incoming = new Map(classes.map((cls) => [cls.id, [] as string[]]));
   primary.forEach((relation) => {
-    const from = hierarchyMode ? relation.target : relation.source;
-    const to = hierarchyMode ? relation.source : relation.target;
+    // Inheritance points from subtype to base type, while the other
+    // relationships follow their declared source-to-target direction.
+    const hierarchy = relation.type === RelationType.INHERITANCE
+      || relation.type === RelationType.REALIZATION;
+    const from = hierarchy ? relation.target : relation.source;
+    const to = hierarchy ? relation.source : relation.target;
     const neighbors = outgoing.get(from);
     if (!neighbors || neighbors.includes(to)) return;
     neighbors.push(to);

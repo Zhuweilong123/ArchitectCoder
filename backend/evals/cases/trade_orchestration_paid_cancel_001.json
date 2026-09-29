@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "tool_protocol_version": "foundation-tools-v1",
+  "id": "trade-orchestration-paid-cancel-001",
+  "name": "已支付订单取消的跨模块闭环",
+  "prompt": "在水果销售项目中修复已支付、未发货订单的取消流程：取消成功时原路退款，并把该订单已扣减的每种水果库存恢复；重复取消不能重复退款或重复回补。待支付订单取消仍应释放预占库存，已发货订单不能取消。日报和月报只统计最终有效的已支付订单，已取消订单不得贡献订单数、销售额、热销排行或出库成本。保持现有公开方法签名与 UML 文件不变，补充必要的回归测试并运行项目测试。",
+  "project_id": "project_trade_cancel_v1",
+  "hard_checkers": [
+    {"type": "hidden_pytest", "path": "project_trade/test_paid_cancel.py", "timeout": 90},
+    {"type": "pytest", "path": "test", "timeout": 90},
+    {"type": "paths_unchanged", "paths": ["design/trade_sys_0822.umlproj", "src/trade_sys/app.py", "src/trade_sys/database.py", "src/trade_sys/services/user_service.py", "src/trade_sys/services/supplier_service.py", "src/trade_sys/web/views.py"]}
+  ],
+  "max_seconds": 300,
+  "max_tool_calls": 80,
+  "max_total_tokens": 100000,
+  "metadata": {
+    "suite": "orchestration",
+    "capability": "cross_component_paid_cancel",
+    "operation": "update",
+    "sample_type": "positive",
+    "baseline_comparable": false,
+    "release_gate": false,
+    "hidden_oracle": true,
+    "preindex_knowledge_graph": true,
+    "benchmark_variant": "natural_demand"
+  }
+}

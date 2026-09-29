@@ -196,7 +196,7 @@ def test_spawn_subagent_rejects_malformed_tool_calls_without_raising(tmp_path):
     assert "malformed tool calls" in result
 
 
-def test_spawn_subagent_bounds_large_parent_report(tmp_path):
+def test_spawn_subagent_preserves_large_parent_report(tmp_path):
     class _VerboseLLM:
         async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
             return {"content": "HEAD\n" + ("detail\n" * 2000) + "TAIL", "tool_calls": None}
@@ -205,10 +205,10 @@ def test_spawn_subagent_bounds_large_parent_report(tmp_path):
 
     result = asyncio.run(tool._execute({"description": "summarize the project"}))
 
-    assert len(result) <= 6000
+    assert len(result) > 6000
     assert result.startswith("HEAD")
     assert result.endswith("TAIL")
-    assert "complete report remains in the trace" in result
+    assert result.count("detail\n") == 2000
 
 
 def test_spawn_subagent_requires_description(tmp_path):
@@ -239,7 +239,7 @@ def test_standard_toolkit_full_editing(tmp_path):
     names = tool.sub_registries["standard"].list_tools()
     assert {
         "list_files", "read_file", "search_text", "apply_changes",
-        "run_program", "run_task", "shell", "skill",
+        "run_program", "run_task", "shell", "skill", "read_tool_output",
     } <= set(names)
     assert not ({"write_file", "edit_file", "glob", "bash"} & set(names))
     # 安全不变量：子代理永不递归、永不经由委派绕过审核
@@ -250,7 +250,7 @@ def test_standard_toolkit_full_editing(tmp_path):
 def test_read_only_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["read_only"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text"}
+    assert set(names) == {"list_files", "read_file", "search_text", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -258,7 +258,7 @@ def test_read_only_toolkit_no_writes(tmp_path):
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -271,7 +271,7 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
     schema = tool.to_openai_schema()
@@ -289,7 +289,7 @@ def test_verification_toolkit_runs_only_fixed_checks(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["verification"].list_tools()
     assert set(names) == {
-        "list_files", "read_file", "search_text", "skill", "run_task",
+        "list_files", "read_file", "search_text", "skill", "run_task", "read_tool_output",
     }
     assert not ({"apply_changes", "run_program", "shell"} & set(names))
     schema = next(
@@ -346,6 +346,39 @@ def test_spawn_subagent_does_not_accumulate_token_budget_across_requests(tmp_pat
     assert llm.count == 2
 
 
+def test_spawn_subagent_finalizes_before_cumulative_limit(tmp_path):
+    class _BudgetLLM:
+        def __init__(self):
+            self.choices = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.choices.append(tool_choice)
+            if tool_choice == "none":
+                return {"content": "verified evidence summary", "tool_calls": None,
+                        "usage": {"total_tokens": 100}}
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "read-1", "type": "function",
+                    "function": {"name": "list_files", "arguments": json.dumps({"path": "."})},
+                }],
+                "usage": {"total_tokens": 7000},
+            }
+
+    llm = _BudgetLLM()
+    tool = SpawnSubagentTool(
+        llm=llm, source_dir=str(tmp_path), toolkits=("strategy",),
+        max_total_tokens=10000, max_cumulative_tokens=10000,
+        token_finalization_reserve_tokens=1000,
+    )
+
+    result = asyncio.run(tool._execute({"description": "Inspect project files", "toolkit": "strategy"}))
+
+    assert result == "verified evidence summary"
+    assert llm.choices == ["auto", "none"]
+    assert tool.last_token_usage == 7100
+
+
 def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
@@ -390,10 +423,15 @@ def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
         )),
     )
 
-    result = asyncio.run(tool._execute({
-        "description": "collect evidence",
-        "toolkit": "read_only",
-    }))
+    from app.trace.tracing import TraceSession
+    from extensions.trace.chat_trace import ChatTraceLogger
+
+    with TraceSession(session_id="subagent_context", sink=ChatTraceLogger(
+            "subagent_context", log_dir=str(tmp_path))):
+        result = asyncio.run(tool._execute({
+            "description": "collect evidence",
+            "toolkit": "read_only",
+        }))
 
     assert result == "context summary"
     assert llm.count == 6

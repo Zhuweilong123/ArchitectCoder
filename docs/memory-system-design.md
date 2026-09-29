@@ -73,7 +73,8 @@ reinforce/close 只记录日志。因此调用方不需要为可选记忆增加�
 `SQLiteMemoryProvider.create(*, llm, settings, **kwargs)` 实现核心端口：
 
 - **数据库路径**：优先使用 `AGENT_MEMORY_DB_PATH`；为空时取
-  `dirname(settings.uml_dir)/data/memories.db`，并规范化为绝对路径。
+  `<项目根目录>/.architectcoder/memories.db`；项目定位与旧数据策略见
+  [project-owned-state.md](project-owned-state.md)。
 - **召回参数**：`AGENT_MEMORY_RECALL_TOP_K`（默认 3）和
   `AGENT_MEMORY_RECALL_MAX_TOKENS`（默认 500）。请求中的正值优先，请求值为空/零时使用配置值。
 - **归档参数**：`AGENT_MEMORY_ARCHIVE_MAX_TOKENS`（默认 3000）限制后台提取调用。
@@ -272,7 +273,7 @@ jieba 不可用时，中文使用 bigram + unigram 回退，英文按字母数�
 ```python
 from extensions.memory import MemoryManager
 
-manager = MemoryManager(db_path="./data/memories.db")
+manager = MemoryManager(db_path="./project/my_project/.architectcoder/memories.db")
 try:
     results = await manager.recall("project-id", "查询内容", top_k=5, max_tokens=800)
     prompt = manager.inject_memories("系统提示", results)

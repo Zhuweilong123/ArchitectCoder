@@ -1,7 +1,7 @@
 /** Diagram store — manages Project state with multiple diagrams. */
 
 import { create } from 'zustand';
-import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project } from '../types/uml';
+import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project, GridSettings } from '../types/uml';
 import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
 import type { SeqLifeline, SeqMessage, SeqFragment, MessageType } from '../types/sequence';
 import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } from '../types/sequence';
@@ -135,6 +135,18 @@ function _updateActiveDiagram(project: Project, updater: (d: UmlDiagram) => UmlD
   return {
     ...project,
     diagrams: project.diagrams.map((d, i) => (i === idx ? updater(d) : d)),
+  };
+}
+
+function _updateProjectGrid(project: Project, changes: Partial<GridSettings>): Project {
+  const grid_settings = { ...project.grid_settings, ...changes };
+  return { ...project, grid_settings };
+}
+
+function _snapshotProjectGrid(project: Project): Project {
+  return {
+    ...project,
+    diagrams: project.diagrams.map((diagram) => ({ ...diagram, ...project.grid_settings })),
   };
 }
 
@@ -346,12 +358,13 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   getProjectSnapshot: () => {
     const state = get();
-    return _updateActiveDiagram(state.project, (diagram) => ({
+    const updated = _updateActiveDiagram(state.project, (diagram) => ({
       ...diagram,
       zoom: state.viewport.zoom,
       pan_x: state.viewport.panX,
       pan_y: state.viewport.panY,
     }));
+    return _snapshotProjectGrid(updated);
   },
 
   newProject: (name) => {
@@ -396,6 +409,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const newD = createDefaultDiagram(name || `${type}_${state.project.diagrams.length + 1}`);
     newD.diagram_type = type;
     newD.component_id = componentId || '';
+    Object.assign(newD, state.project.grid_settings);
     const diagrams = [...state.project.diagrams, newD];
     console.debug('[Store] addDiagram:', type, newD.name, '→', diagrams.length, 'total');
     set({
@@ -480,7 +494,9 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // ── Active-diagram actions ────────────────────────────
 
   setDiagram: (diagram) => {
-    const normalizedDiagram = normalizeDiagram(diagram);
+    const normalizedDiagram = {
+      ...normalizeDiagram(diagram), ...get().project.grid_settings,
+    };
     console.debug('[Store] setDiagram: updating active diagram', normalizedDiagram.name);
     const project = _updateActiveDiagram(get().project, () => normalizedDiagram);
     const activeDiagram = _activeDiagram(project);
@@ -660,6 +676,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
+      relations: activeDiagram.relations.map((relation) => ({
+        ...relation,
+        vertices: undefined,
+      })),
       classes: activeDiagram.classes.map((cls) => {
         const position = positions.get(cls.id);
         return position ? { ...cls, position } : cls;
@@ -1058,34 +1078,33 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // ── Grid ──────────────────────────────────────────────
 
   toggleGrid: () => {
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      grid_visible: !d.grid_visible,
-    }));
-    set({ project });
+    const state = get();
+    set({ project: _updateProjectGrid(state.project, {
+      grid_visible: !state.project.grid_settings.grid_visible,
+    }), isModified: true });
   },
 
   setGridSize: (size) => {
-    const project = _updateActiveDiagram(get().project, (d) => ({ ...d, grid_size: size }));
-    set({ project });
+    set({ project: _updateProjectGrid(get().project, {
+      grid_size: Math.max(4, Math.min(200, size)),
+    }), isModified: true });
   },
 
   setGridColor: (color) => {
-    const project = _updateActiveDiagram(get().project, (d) => ({ ...d, grid_color: color }));
-    set({ project });
+    set({ project: _updateProjectGrid(get().project, { grid_color: color }), isModified: true });
   },
 
   setGridThickness: (thickness) => {
-    const project = _updateActiveDiagram(get().project, (d) => ({ ...d, grid_thickness: thickness }));
-    set({ project });
+    set({ project: _updateProjectGrid(get().project, {
+      grid_thickness: Math.max(1, Math.min(10, thickness)),
+    }), isModified: true });
   },
 
   toggleSnapToGrid: () => {
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      snap_to_grid: !d.snap_to_grid,
-    }));
-    set({ project });
+    const state = get();
+    set({ project: _updateProjectGrid(state.project, {
+      snap_to_grid: !state.project.grid_settings.snap_to_grid,
+    }), isModified: true });
   },
 
   // ── View ──────────────────────────────────────────────

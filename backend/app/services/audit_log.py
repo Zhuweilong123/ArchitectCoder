@@ -21,9 +21,8 @@ _SECRET_VALUE = re.compile(r"(?i)(bearer\s+|sk-[a-z0-9_-]{8,})[a-z0-9._~+/=-]*")
 
 
 def _audit_path() -> Path:
-    from backend.config import get_settings
-
-    return Path(get_settings().uml_dir).resolve().parent / "data" / "audit.jsonl"
+    from backend.config.paths import runtime_root
+    return runtime_root() / "data" / "audit.jsonl"
 
 
 def _redact(value: Any, key: str = "") -> Any:

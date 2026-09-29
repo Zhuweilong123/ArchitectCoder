@@ -3,7 +3,7 @@
 借鉴 Claude Code 范式的 A 层工具，为「AI 开发助手」补齐底层动手能力：
 读现有代码、精确修改、跑命令。所有文件操作经 ``safe_path`` 守卫在 workspace 内；
 shell 两级防护：高危命令直接拒绝，敏感命令经 ReviewManager 请求人工批准，
-其余命令带超时直接放行；输出截断由默认 ``TruncateHook``（core/hooks.py）负责。
+其余命令带超时直接放行；长工具结果由运行时分页后喂给模型。
 
 Usage::
 
@@ -25,9 +25,14 @@ from pathlib import Path
 from typing import Optional
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.runtime.process_output import (
+    DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
+)
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.async_tool import AsyncTool
+from app.agent_base.tools.result import ToolResult, command_result
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
+from app.agent_base.tools.my_tools.file_inventory import file_metrics
 from app.core.risk_policy import RiskDecision, RiskPolicy
 
 logger = logging.getLogger(__name__)
@@ -85,7 +90,7 @@ _DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
 _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
 SHELL_TIMEOUT = 120  # 秒
-SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
+SHELL_OUTPUT_CAP = DEFAULT_OUTPUT_LIMIT_BYTES  # 采集时的字节硬上限；模型输出由运行时分页
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
 
 
@@ -117,10 +122,14 @@ def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
         raise ValueError("No workspace root configured")
 
     p = Path(path)
+    if ".architectcoder" in p.parts:
+        raise ValueError("Project state is managed by ArchitectCoder")
     if p.is_absolute():
         resolved = p.resolve()
         for root in resolved_roots:
             if resolved.is_relative_to(root):
+                if ".architectcoder" in resolved.parts:
+                    raise ValueError("Project state is managed by ArchitectCoder")
                 return resolved
         raise ValueError(f"Path escapes workspace: {path}")
 
@@ -128,13 +137,16 @@ def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
     if require_exist:
         for root in resolved_roots:
             candidate = (root / p).resolve()
-            if candidate.is_relative_to(root) and candidate.exists():
+            if (candidate.is_relative_to(root) and candidate.exists()
+                    and ".architectcoder" not in candidate.parts):
                 return candidate
 
     # 默认 / fallback：固定第一个 root，检查逃逸
     resolved = (resolved_roots[0] / p).resolve()
     if not resolved.is_relative_to(resolved_roots[0]):
         raise ValueError(f"Path escapes workspace: {path}")
+    if ".architectcoder" in resolved.parts:
+        raise ValueError("Project state is managed by ArchitectCoder")
     return resolved
 
 
@@ -192,14 +204,21 @@ class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
     _MAX_PATH_SUGGESTIONS = 5
+    _MAX_LINES = 2000
+    _MAX_OUTPUT_CHARS = 100_000
+    _MAX_LINE_CHARS = 16_000
+    _OUTPUT_METADATA_RESERVE = 256
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
                  workspace_root: str = ""):
         super().__init__(
             name="read_file",
             description=(
-                "Read a file from the workspace and return its text content. "
-                "Use offset (start line) and limit (max lines) to read a specific range."
+                "Read current workspace file content by path. Use offset (0-based "
+                "start line) and limit (max 2000 lines) to target a range; omitted "
+                "limit reads up to 2000 lines. If the result reports next_line, "
+                "continue with read_file at that line. For an oversized line, "
+                "also pass its next_char as char_offset."
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
@@ -221,19 +240,96 @@ class ReadFileTool(AsyncTool):
         except ValueError as e:
             return f"Error: {e}"
         try:
-            lines = fp.read_text(encoding="utf-8").splitlines()
+            offset = max(int(params.get("offset") or 0), 0)
+            requested_limit = params.get("limit")
+            limit = (self._MAX_LINES if requested_limit is None else
+                     min(int(requested_limit), self._MAX_LINES))
+            char_offset = int(params.get("char_offset") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return "Error: offset, limit, and char_offset must be integers"
+        if limit < 1 or char_offset < 0:
+            return "Error: limit must be positive and char_offset nonnegative"
+        try:
+            return await asyncio.to_thread(
+                self._read_window, fp, offset, limit, char_offset,
+            )
         except FileNotFoundError:
             return self._missing_file_message(path)
         except Exception as e:
             return f"Error: {e}"
 
-        offset = max(int(params.get("offset") or 0), 0)
-        limit = params.get("limit")
-        limit = int(limit) if limit is not None else None
-        lines = lines[offset:]
-        if limit is not None and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)
+    def _read_window(self, path: Path, offset: int, limit: int,
+                     char_offset: int) -> str:
+        """Stream a bounded range and leave a read_file cursor if more remains."""
+        parts: list[str] = []
+        content_chars = 0
+        complete_lines = 0
+        next_line: int | None = None
+        next_char = 0
+        max_content = self._MAX_OUTPUT_CHARS - self._OUTPUT_METADATA_RESERVE
+
+        with path.open("r", encoding="utf-8") as stream:
+            for _ in range(offset):
+                if not self._discard_line(stream):
+                    return ""
+            line_number = offset
+            while True:
+                if complete_lines >= limit:
+                    if stream.read(1):
+                        next_line = line_number
+                    break
+                start_char = char_offset if line_number == offset else 0
+                if start_char and not self._discard_chars(stream, start_char):
+                    return f"Error: char_offset exceeds line {line_number}"
+                raw_line = stream.readline(self._MAX_LINE_CHARS + 1)
+                if not raw_line:
+                    break
+                line = raw_line.removesuffix("\n")
+                separator_chars = 1 if parts else 0
+                available = max_content - content_chars - separator_chars
+                if available <= 0:
+                    next_line, next_char = line_number, start_char
+                    break
+                if len(line) > self._MAX_LINE_CHARS:
+                    chunk = line[:min(self._MAX_LINE_CHARS, available)]
+                    parts.append(chunk)
+                    next_line, next_char = line_number, start_char + len(chunk)
+                    break
+                if len(line) > available:
+                    next_line, next_char = line_number, start_char
+                    break
+                parts.append(line)
+                content_chars += separator_chars + len(line)
+                complete_lines += 1
+                line_number += 1
+
+        body = "\n".join(parts)
+        if next_line is None:
+            return body
+        marker = (
+            f"\n\n[read_file partial; lines={offset}:{offset + complete_lines}; "
+            f"next_line={next_line}; next_char={next_char}; "
+            "continue with read_file using the same path]"
+        )
+        return body + marker
+
+    @staticmethod
+    def _discard_line(stream) -> bool:
+        """Skip one line without constructing an unbounded string."""
+        while chunk := stream.readline(8192):
+            if chunk.endswith("\n"):
+                return True
+        return False
+
+    @staticmethod
+    def _discard_chars(stream, count: int) -> bool:
+        """Move within one line using bounded chunks."""
+        while count:
+            chunk = stream.readline(min(count, 8192))
+            if not chunk or chunk.endswith("\n"):
+                return False
+            count -= len(chunk)
+        return True
 
     def _missing_file_message(self, requested: object) -> str:
         """Return a bounded, actionable error without guessing a target path."""
@@ -269,7 +365,7 @@ class ReadFileTool(AsyncTool):
 
         found: list[str] = []
         seen: set[str] = set()
-        ignored = {".git", "node_modules", "__pycache__", ".pytest_cache"}
+        ignored = {".git", ".architectcoder", "node_modules", "__pycache__", ".pytest_cache"}
         for root in roots:
             try:
                 for candidate in root.rglob(name):
@@ -317,7 +413,8 @@ class ReadFileTool(AsyncTool):
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "offset": {"type": "integer", "description": "Start line (0-based)."},
-                        "limit": {"type": "integer", "description": "Max lines to return."},
+                        "limit": {"type": "integer", "description": "Max lines to return, at most 2000."},
+                        "char_offset": {"type": "integer", "description": "Character position within the first line, for continuing an oversized line."},
                     },
                     "required": ["path"],
                 },
@@ -325,16 +422,22 @@ class ReadFileTool(AsyncTool):
         }
 
 
-class ListFilesTool(AsyncTool):
-    """按 glob 模式在 workspace 内查找文件。"""
+class BaseListFilesTool(AsyncTool):
+    """Shared glob listing and file metrics for workspace tools."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(
             name="list_files",
             description=(
-                "Find files in the workspace matching a glob pattern "
-                "(e.g. '**/*.py', 'src/*.ts'). Returns relative paths."
+                "List workspace files with compact metrics. B=bytes, L=physical lines, "
+                "S=symbol hints, I=interface hints, D=dependency-statement hints; "
+                "S/I/D are approximate. A nested relative path is relative to its "
+                "configured root (e.g. path='trade_sys/services'); alternatively use "
+                "path='source', pattern='trade_sys/services/**'. Do not prefix a "
+                "nested path with the alias (avoid path='source/trade_sys/services'). "
+                "When asked for an overview, summarize counts and largest files; group "
+                "full inventories by directory when the user asks for all files."
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
@@ -345,22 +448,58 @@ class ListFilesTool(AsyncTool):
         pattern = params.get("pattern", "")
         if not self._roots:
             return "(no workspace)"
-        return self._format_matches(self._roots, pattern)
+        return await asyncio.to_thread(
+            self._format_matches, self._roots, pattern,
+            details=params.get("details") is not False,
+            limit=self._result_limit(params.get("limit")),
+        )
 
-    def _format_matches(self, roots: list[str], pattern: str) -> str:
-        results: list[str] = []
+    @staticmethod
+    def _result_limit(value: object) -> int:
+        try:
+            return max(1, min(int(value), 1000)) if value is not None else 200
+        except (TypeError, ValueError):
+            return 200
+
+    def _format_matches(self, roots: list[str], pattern: str, *,
+                        details: bool = True, limit: int = 200) -> str:
+        selected: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        total = 0
         for root in roots:
             rp = Path(root).resolve()
             try:
-                matches = _glob.glob(pattern, root_dir=rp, recursive=True)
+                matches = _glob.iglob(pattern, root_dir=rp, recursive=True)
             except Exception:
                 continue
             for match in matches:
-                if (rp / match).resolve().is_relative_to(rp):
-                    results.append(str(match))
-        seen: set[str] = set()
-        uniq = [r for r in results if not (r in seen or seen.add(r))]
-        return "\n".join(uniq) if uniq else "(no matches)"
+                candidate = (rp / match).resolve()
+                name = str(match)
+                if not candidate.is_relative_to(rp) or name in seen:
+                    continue
+                seen.add(name)
+                total += 1
+                if len(selected) < limit:
+                    selected.append((name, candidate))
+        if not total:
+            return "(no matches)"
+        header = (
+            "B=bytes L=physical lines S=symbol hints I=interface hints "
+            "D=dependency-statement hints; S/I/D are approximate."
+            if details else ""
+        )
+        rows = [header] if header else []
+        for name, path in selected:
+            metrics = file_metrics(path) if details else ""
+            row = f"{name}\t{metrics}" if metrics else name
+            rows.append(row)
+        shown = len(rows) - int(bool(header))
+        if total > shown:
+            rows.append(
+                f"[truncated: showing {shown} of {total} entries (entry limit); "
+                "narrow path/pattern]"
+            )
+        return "\n".join(rows)
 
     def to_openai_schema(self) -> dict:
         return {
@@ -372,6 +511,8 @@ class ListFilesTool(AsyncTool):
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'."},
+                        "details": {"type": "boolean", "description": "Include file metrics (default true)."},
+                        "limit": {"type": "integer", "description": "Maximum entries (default 200, maximum 1000)."},
                     },
                     "required": ["pattern"],
                 },
@@ -407,7 +548,7 @@ class ShellTool(AsyncTool):
         self._progress = progress
         self._review_timeout = review_timeout
         self._timeout = max(0.1, min(float(timeout), 3600.0))
-        self._output_cap = max(1024, min(int(output_cap), 1_000_000))
+        self._output_cap = normalize_output_limit(output_cap)
         self._risk_policy = risk_policy or RiskPolicy(
             deny_patterns=DENY_LIST,
             deny_regex_patterns=DENY_REGEX_LIST,
@@ -595,11 +736,11 @@ class ShellTool(AsyncTool):
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
         return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
 
-    async def _run_command(self, command: str, cwd: str | None = None) -> str:
+    async def _run_command(self, command: str, cwd: str | None = None) -> str | ToolResult:
         cwd = cwd if cwd is not None else (self._cwd or None)
         return await self._run_command_cancellable(command, cwd)
 
-    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str:
+    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str | ToolResult:
         def _start():
             return self._command_executor.start(command, cwd)
 
@@ -608,32 +749,29 @@ class ShellTool(AsyncTool):
         except (OSError, ExecutionEnvironmentError) as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
-        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
-            while not communicate.done():
-                if get_runtime().stop_check():
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return "Error: command canceled"
-                if asyncio.get_running_loop().time() >= deadline:
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return f"Error: command timed out after {self._timeout:g}s"
-                await asyncio.sleep(0.05)
-            stdout, stderr = await communicate
-        except asyncio.CancelledError:
-            self._command_executor.terminate(proc)
-            await asyncio.shield(communicate)
-            raise
+            captured = await collect_process_output(
+                proc, terminate=self._command_executor.terminate,
+                timeout=self._timeout, stop_check=get_runtime().stop_check,
+                output_limit=self._output_cap,
+            )
         except OSError as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        out = (_decode_output(stdout) + _decode_output(stderr)).strip()
-        out = out[:self._output_cap] if len(out) > self._output_cap else out
+        if captured.reason == "canceled":
+            return "Error: command canceled"
+        if captured.reason == "timeout":
+            return f"Error: command timed out after {self._timeout:g}s"
+        out = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
+        if captured.reason == "output_limit":
+            return ToolResult.error(
+                f"Error: OUTPUT_LIMIT: command output is incomplete; collected "
+                f"{captured.collected_bytes} of at least {captured.limit_bytes + 1} bytes "
+                f"(limit {captured.limit_bytes}). Process stopped.\n{out}",
+                "OUTPUT_LIMIT",
+            )
         if proc.returncode:
             out = f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
-        from app.agent_base.tools.result import command_result
         return command_result(command, cwd, proc.returncode, out or "(no output)")
 
     def to_openai_schema(self) -> dict:
@@ -665,106 +803,32 @@ class SearchTextTool(GrepFileTool):
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
-        # The foundation factory receives the design directory rather
-        # than the project file. Keep the inherited bounded scanner and add
-        # the design root explicitly, without widening its path boundary.
         project_file = design_dir if os.path.isfile(design_dir) else ""
-        super().__init__(workspace_root or source_dir, "" if workspace_root else test_dir, project_file)
+        if project_file:
+            design_dir = os.path.dirname(os.path.abspath(project_file))
+        super().__init__(
+            source_dir=source_dir, test_dir=test_dir,
+            project_file=project_file, design_dir=design_dir,
+            workspace_root=workspace_root,
+        )
         self.design_dir = design_dir
         self.workspace_root = workspace_root
         self.source_dir = source_dir
         self.test_dir = test_dir
         self.name = "search_text"
         self.description = (
-            "Search project source, tests, and design files by text or regular expression. "
-            "The optional path accepts a file or directory scope such as source, src, "
-            "test, design, or workspace. Returns file names, line numbers, and short "
-            "matching snippets."
+            "Search text files across the configured project roots, regardless of "
+            "programming language or file extension. Uses a case-sensitive regex, "
+            "falling back to a literal substring when the regex is invalid. The optional "
+            "path accepts one file or a recursive directory scope such as source, test, "
+            "design, or workspace. Results include workspace-relative path, line, and "
+            "column. Binary files and common dependency/build/cache directories are skipped; "
+            "workspace .searchignore can add exclusions."
         )
         self.read_only = True
         self.can_parallel = True
 
     async def _execute(self, parameters):
         # Keep the same async testing/dispatch shape as the other filesystem
-        # tools while retaining GrepFileTool's bounded synchronous scanner.
-        return self.run(parameters)
-
-    def _candidate_files(self) -> list[str]:
-        files = super()._candidate_files()
-        root = self.design_dir
-        if root and os.path.isdir(root):
-            for dirpath, _dirs, names in os.walk(root):
-                files.extend(
-                    os.path.join(dirpath, name) for name in names
-                    if name.endswith((".umlproj", ".uml", ".json"))
-                )
-        return list(dict.fromkeys(files))
-
-    def _resolve_allowed_path(self, raw_path: str) -> str | None:
-        raw_path = _expand_workspace_alias(
-            raw_path, self.workspace_root, self.source_dir,
-            self.test_dir, self.design_dir,
-        )
-        resolved = super()._resolve_allowed_path(raw_path)
-        if resolved:
-            return resolved
-        root = self.design_dir
-        if not root:
-            return None
-        candidate = os.path.abspath(raw_path) if os.path.isabs(raw_path) else os.path.abspath(os.path.join(root, raw_path))
-        if not os.path.isfile(candidate):
-            return None
-        try:
-            if os.path.commonpath([candidate, os.path.abspath(root)]) != os.path.abspath(root):
-                return None
-        except ValueError:
-            return None
-        return candidate
-
-
-    def _resolve_search_paths(self, raw_path: str) -> list[str] | None:
-        """Resolve a file or directory scope using the shared workspace aliases."""
-        expanded = _expand_workspace_alias(
-            raw_path, self.workspace_root, self.source_dir,
-            self.test_dir, self.design_dir,
-        )
-        roots = [
-            root for root in (
-                self.workspace_root, self.source_dir,
-                self.test_dir, self.design_dir,
-            ) if root
-        ]
-        candidate = os.path.abspath(expanded) if os.path.isabs(expanded) else None
-        if candidate is None:
-            for root in roots:
-                possible = os.path.abspath(os.path.join(root, expanded))
-                if os.path.exists(possible):
-                    candidate = possible
-                    break
-        if candidate is None or not os.path.exists(candidate):
-            return None
-
-        resolved_roots = [os.path.abspath(root) for root in roots]
-        try:
-            if not any(
-                os.path.commonpath([candidate, root]) == root
-                for root in resolved_roots
-            ):
-                return None
-        except ValueError:
-            return None
-
-        if os.path.isfile(candidate):
-            return [candidate]
-        if not os.path.isdir(candidate):
-            return None
-
-        suffixes = (".py", ".umlproj", ".uml", ".json")
-        files: list[str] = []
-        for dirpath, _dirs, names in os.walk(candidate):
-            files.extend(
-                os.path.join(dirpath, name)
-                for name in names
-                if name.lower().endswith(suffixes)
-            )
-        return sorted(files)
+        # tools while retaining GrepFileTool's portable synchronous scanner.
+        return await asyncio.to_thread(self.run, parameters)

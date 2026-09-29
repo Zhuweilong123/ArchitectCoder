@@ -42,9 +42,8 @@ class _LoopLLM:
         }
 
 
-def test_trace_close_writes_session_end(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
-    tracer = ChatTraceLogger("trace-test")
+def test_trace_close_writes_session_end(tmp_path):
+    tracer = ChatTraceLogger("trace-test", log_dir=str(tmp_path))
     tracer.start()
     tracer.close()
     events = [json.loads(line) for line in (tmp_path / "trace_trace-test.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -99,9 +98,8 @@ def test_trace_user_message_accepts_design_dir_and_preserves_workspace_metadata(
     assert user_event["design_dir"] == str(tmp_path / "design")
 
 
-def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
-    tracer = ChatTraceLogger("strict-json-test")
+def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path):
+    tracer = ChatTraceLogger("strict-json-test", log_dir=str(tmp_path))
     tracer.llm_request(
         provider="test", model="test",
         messages=[
@@ -134,9 +132,8 @@ def test_trace_keeps_runtime_system_messages_and_strict_jsonl(tmp_path, monkeypa
 
 
 def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
-    tracer = ChatTraceLogger("checkpoint-test")
+    tracer = ChatTraceLogger("checkpoint-test", log_dir=str(tmp_path))
     tracer.start()
     tracer.user_message("old question")
     tracer.context_compacted(
@@ -160,9 +157,8 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
 
 
 def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
-    tracer = ChatTraceLogger("task-summary-test")
+    tracer = ChatTraceLogger("task-summary-test", log_dir=str(tmp_path))
     tracer.start()
     tracer.user_message("continue the task")
     tracer.task_summary(
@@ -192,9 +188,8 @@ def test_task_execution_summary_is_restored_from_trace(tmp_path, monkeypatch):
 
 
 def test_task_execution_summaries_stay_with_their_task(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
     monkeypatch.setattr("extensions.trace.trace_reader._trace_dir", lambda: str(tmp_path))
-    tracer = ChatTraceLogger("task-summary-association-test")
+    tracer = ChatTraceLogger("task-summary-association-test", log_dir=str(tmp_path))
     tracer.start()
     tracer.user_message("first task")
     tracer.task_summary(

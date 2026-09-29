@@ -85,6 +85,12 @@ export interface AgentUmlReviewEvent {
   auto?: boolean;                  // true = 框架兜底补推（Agent 漏调 submit_uml_review）
 }
 
+export interface AgentProjectCommittedEvent {
+  event: 'project_committed';
+  filepath: string;
+  revision: number;
+}
+
 export interface AgentReviewTimeoutEvent {
   event: 'review_timeout';
   review_id: number;
@@ -134,6 +140,7 @@ export type AgentEvent =
   | AgentContractCheckEvent
   | AgentContractRecoveryEvent
   | AgentUmlReviewEvent
+  | AgentProjectCommittedEvent
   | AgentReviewTimeoutEvent
   | AgentReviewExpiredEvent
   | AgentDoneEvent

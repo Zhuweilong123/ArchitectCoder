@@ -7,17 +7,18 @@ import threading
 from datetime import datetime
 from app.models.uml import UmlDiagram, Project
 from backend.config import get_settings
-from app.agent_base.core.knowledge_graph import get_knowledge_graph
+from backend.config.project_storage import project_id_for
+from backend.config.project_storage import project_storage
+from app.agent_base.core.knowledge_graph import load_knowledge_graph
 from app.services.project_repository import ProjectRepository, ProjectSaveResult
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 project_repository = ProjectRepository()
-knowledge_graph_provider = get_knowledge_graph(settings=settings)
 
 
 def ensure_dirs():
-    os.makedirs(settings.uml_dir, exist_ok=True)
+    os.makedirs(settings.project_dir, exist_ok=True)
 
 
 def save_diagram(diagram: UmlDiagram, filepath: str | None = None) -> str:
@@ -25,7 +26,7 @@ def save_diagram(diagram: UmlDiagram, filepath: str | None = None) -> str:
     ensure_dirs()
     if not filepath:
         filepath = os.path.join(
-            settings.uml_dir,
+            settings.project_dir,
             f"{diagram.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.uml",
         )
     with open(filepath, "w", encoding="utf-8") as f:
@@ -62,10 +63,10 @@ def list_diagrams() -> list[dict]:
     """List all saved UML diagrams."""
     ensure_dirs()
     files = []
-    if os.path.exists(settings.uml_dir):
-        for fname in os.listdir(settings.uml_dir):
+    if os.path.exists(settings.project_dir):
+        for fname in os.listdir(settings.project_dir):
             if fname.endswith(".uml"):
-                fpath = os.path.join(settings.uml_dir, fname)
+                fpath = os.path.join(settings.project_dir, fname)
                 stat = os.stat(fpath)
                 files.append({
                     "name": fname,
@@ -227,6 +228,15 @@ def load_project(filepath: str) -> Project:
     return project
 
 
+def ensure_project_graph(project: Project, filepath: str) -> None:
+    """Build a fresh project-owned graph when an existing project is opened."""
+    if not settings.agent_knowledge_graph_enabled:
+        return
+    storage = project_storage(filepath)
+    if storage is not None and not storage.graph_db.is_file():
+        _rebuild_kg_async(project, filepath)
+
+
 def list_projects() -> list[dict]:
     """List projects through the repository boundary."""
     files = project_repository.list_projects()
@@ -245,11 +255,12 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
     因 builder 使用独立 DB 连接 + WAL 模式 + executemany 批量写入，
     并发保存同一项目时后者覆盖前者 (upsert 语义), 不会丢数据。
     """
-    project_id = os.path.splitext(os.path.basename(filepath))[0]
-
     def _run():
         try:
-            stats = knowledge_graph_provider.rebuild_project(
+            project_id = project_id_for(filepath)
+            stats = load_knowledge_graph(
+                settings=settings, project_file=filepath,
+            ).rebuild_project(
                 project, project_id, filepath=filepath,
             )
             if stats is not None:
@@ -263,6 +274,9 @@ def _rebuild_kg_async(project: Project, filepath: str) -> None:
                     getattr(stats, "elapsed_ms", "?"),
                 )
         except Exception:
-            logger.exception(f"[KG] Rebuild failed for project '{project_id}'")
+            logger.exception("[KG] Rebuild failed for project at '%s'", filepath)
 
-    threading.Thread(target=_run, daemon=True, name=f"kg-rebuild-{project_id}").start()
+    threading.Thread(
+        target=_run, daemon=True,
+        name=f"kg-rebuild-{os.path.splitext(os.path.basename(filepath))[0]}",
+    ).start()

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
 from app.runtime.command import ExecutionEnvironmentError
+from app.runtime.process_output import collect_process_output
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import (
     CommandEvidence,
@@ -27,9 +28,10 @@ from app.agent_base.tools.result import (
 )
 from app.agent_base.tools.my_tools.foundation_runtime import (
     ShellTool,
-    ListFilesTool as FoundationListFilesRuntime,
+    BaseListFilesTool,
     ReadFileTool,
     SearchTextTool,
+    SHELL_OUTPUT_CAP,
     _decode_output,
     _expand_workspace_alias,
     _resolve_roots,
@@ -69,7 +71,7 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-class ListFilesTool(FoundationListFilesRuntime):
+class ListFilesTool(BaseListFilesTool):
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  workspace_root: str = ""):
         super().__init__(source_dir, test_dir, design_dir, workspace_root=workspace_root)
@@ -81,7 +83,13 @@ class ListFilesTool(FoundationListFilesRuntime):
         self.description = (
             "List files in the workspace matching a glob pattern. "
             "The default path is the source working directory; use source, test, "
-            "design, or workspace aliases to select another scope."
+            "design, or workspace aliases to select another scope. Results use "
+            "compact metrics: B=bytes, L=physical lines, S=symbol hints, "
+            "I=interface hints, D=dependency-statement hints; S/I/D are estimates. "
+            "A nested relative path is root-relative, e.g. path='trade_sys/services'; "
+            "or use path='source', pattern='trade_sys/services/**'. Avoid combining "
+            "the source alias and subpath. Broad inventories are grouped by directory "
+            "in the final answer; overview requests should summarize counts and largest files."
         )
 
     async def _execute(self, params: dict) -> str:
@@ -90,7 +98,11 @@ class ListFilesTool(FoundationListFilesRuntime):
         roots, scoped_pattern, error = self._resolve_scope(path, pattern)
         if error:
             return error
-        return self._format_matches(roots, scoped_pattern)
+        return await asyncio.to_thread(
+            self._format_matches, roots, scoped_pattern,
+            details=params.get("details") is not False,
+            limit=self._result_limit(params.get("limit")),
+        )
 
     def _resolve_scope(self, path: str, pattern: str) -> tuple[list[str], str, str | None]:
         """Resolve a list scope without mixing an absolute path into a glob root."""
@@ -699,7 +711,7 @@ class RunProgramTool(ShellTool):
 
     async def _run_program_cancellable(
         self, program: str, args: list[str], cwd: str | None,
-    ) -> str:
+    ) -> str | ToolResult:
         def _start():
             return self._command_executor.start_program(program, args, cwd)
 
@@ -708,29 +720,27 @@ class RunProgramTool(ShellTool):
         except (OSError, ExecutionEnvironmentError) as exc:
             return f"Error: {type(exc).__name__}: {exc}"
 
-        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
-        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
-            while not communicate.done():
-                if get_runtime().stop_check():
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return "Error: program canceled"
-                if asyncio.get_running_loop().time() >= deadline:
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return f"Error: program timed out after {self._timeout:g}s"
-                await asyncio.sleep(0.05)
-            stdout, stderr = await communicate
-        except asyncio.CancelledError:
-            self._command_executor.terminate(proc)
-            await asyncio.shield(communicate)
-            raise
+            captured = await collect_process_output(
+                proc, terminate=self._command_executor.terminate,
+                timeout=self._timeout, stop_check=get_runtime().stop_check,
+                output_limit=self._output_cap,
+            )
         except OSError as exc:
             return f"Error: {type(exc).__name__}: {exc}"
 
-        output = (_decode_output(stdout) + _decode_output(stderr)).strip()
-        output = output[:self._output_cap] if len(output) > self._output_cap else output
+        if captured.reason == "canceled":
+            return "Error: program canceled"
+        if captured.reason == "timeout":
+            return f"Error: program timed out after {self._timeout:g}s"
+        output = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
+        if captured.reason == "output_limit":
+            return ToolResult.error(
+                f"Error: OUTPUT_LIMIT: program output is incomplete; collected "
+                f"{captured.collected_bytes} of at least {captured.limit_bytes + 1} bytes "
+                f"(limit {captured.limit_bytes}). Process stopped.\n{output}",
+                "OUTPUT_LIMIT",
+            )
         if proc.returncode:
             output = f"Error: program exited with code {proc.returncode}: {output or '(no output)'}"
         return command_result(
@@ -1140,12 +1150,16 @@ def create_foundation_tools(
     source_dir: str = "", test_dir: str = "", design_dir: str = "",
     review_manager=None, progress=None, change_set=None, command_executor=None,
     workspace_root: str = "", execution_broker=None,
+    output_cap: int = SHELL_OUTPUT_CAP,
 ) -> list[Tool]:
+    from app.agent_base.tools.tool_output import ReadToolOutputTool
+
     common = dict(
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
         review_manager=review_manager, progress=progress,
         command_executor=command_executor,
         workspace_root=workspace_root,
+        output_cap=output_cap,
     )
     return [
         ListFilesTool(source_dir, test_dir, design_dir, workspace_root=workspace_root),
@@ -1161,6 +1175,7 @@ def create_foundation_tools(
         RunProgramTool(**common),
         RunTaskTool(**common, execution_broker=execution_broker),
         ShellTool(**common),
+        ReadToolOutputTool(),
     ]
 
 

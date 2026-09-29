@@ -1104,7 +1104,21 @@ class EvalRunner:
                 "source_dir": manifest.source_dir,
                 "test_dir": manifest.test_dir,
             }
-        return EvalRunner._capture_baseline_hashes(case, workspace)
+        baseline_hashes = EvalRunner._capture_baseline_hashes(case, workspace)
+        if case.metadata.get("preindex_knowledge_graph"):
+            if manifest is None:
+                raise ValueError("graph preindex requires a project manifest")
+            try:
+                from .graph_fixture import preindex_project_graph
+
+                result.metadata["graph_preindex"] = preindex_project_graph(
+                    workspace, manifest,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"graph preindex failed: {type(exc).__name__}: {exc}"
+                ) from exc
+        return baseline_hashes
 
     @staticmethod
     def _capture_baseline_hashes(

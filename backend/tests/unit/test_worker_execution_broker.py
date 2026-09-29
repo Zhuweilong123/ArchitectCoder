@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 from types import SimpleNamespace
 
@@ -106,13 +107,21 @@ def test_worker_broker_uses_worker_owned_executor_and_sandbox_name(tmp_path):
 def test_worker_broker_attaches_worker_attestation_to_execution_evidence(tmp_path):
     class Process:
         returncode = 0
+        stdout = io.BytesIO(b"ok")
+        stderr = io.BytesIO(b"")
 
         def communicate(self):
             return b"ok", b""
 
+        def wait(self):
+            return self.returncode
+
     class Executor(_Executor):
         def start_program(self, program, args, cwd):
             return Process()
+
+        def terminate(self, process):
+            pass
 
     class Worker(_Worker):
         capabilities = WorkerCapabilities("container", True, True, True, True)

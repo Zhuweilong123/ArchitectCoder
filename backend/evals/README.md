@@ -113,3 +113,44 @@ run; it writes the raw JSONL output and, after the run completes, registers the
 same result rows as a `performance-*.jsonl` artifact under `temp/evals/results`.
 The latter is what the frontend Performance Results view indexes, so CLI runs
 are visible there without a separate manual merge step.
+
+## Trade orchestration comparison
+
+The `trade-orchestration-paid-cancel-001` and `trade-orchestration-demand-001`
+variants share one fixed snapshot of `project/project_trade`. The first measures
+natural demand selection; the second explicitly requests architecture exploration
+when the tool is available. Both are non-baseline cases and check paid-order
+cancellation across sales, inventory, payment, and reporting with hidden
+regression tests. Its fixture graph is rebuilt synchronously in each isolated
+workspace before the Agent starts; the index time is recorded separately.
+
+Run the A/C comparison with a fresh Python process for each arm, so cached
+Settings cannot leak between modes:
+
+```text
+python -m extensions.evals.orchestration_compare --repeats 1
+python -m extensions.evals.orchestration_compare --case-id trade-orchestration-demand-001 --repeats 1 --arms C
+python -m extensions.evals.orchestration_compare --repeats 10
+python -m extensions.evals.orchestration_compare --case-id trade-orchestration-demand-001 --repeats 10
+```
+
+Use an environment with `backend` and the repository root on `PYTHONPATH`.
+The first command is a pilot; the later commands can repeat the comparison. Results,
+traces, a configuration manifest with fixture and implementation hashes, and `summary.json` go under
+`temp/evals/orchestration_compare/<timestamp>/`. A disables orchestration and
+main-Agent subagents; C enables demand-driven architecture scheduling. The
+generic main-Agent subagent tool stays disabled in both arms. C offers a bounded
+graph routing map and records `route_architecture` decisions separately from
+actual exploration calls. The report keeps graph indexing time and Agent
+execution time separate, and includes route decisions, scheduler activation,
+one-time checkpoint delivery, read-range-backed structured worker findings,
+load balance, and worker token counts. This case does not
+alter the 16-case baseline.
+
+Each comparison batch also writes `cost_model_audits.jsonl`. It contains linked
+`planned` and final outcome snapshots for each architecture-cost estimate,
+keyed by `audit_id`: model version and formula, node feature inputs and
+measurement sources, normalized scores, relation cuts, partition ownership,
+assigned token budgets, actual worker tokens and time, evidence status, and
+scheduler revision events. The same snapshots are recorded in the run Trace as
+`architecture_cost_audit`; they are not returned to the Agent as tool output.

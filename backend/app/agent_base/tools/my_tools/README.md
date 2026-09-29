@@ -40,7 +40,7 @@
 |---|---|---|
 | `conversation_tools.py` | `AsyncTool` 基类 + `ProgressRelay` + `create_conversation_tools()` | 工具基类、子 Agent 进度转发、会话工具工厂 |
 | `foundation_tools.py` | `list_files` / `read_file` / `search_text` / `apply_changes` / `run_program` / `run_task` / `shell` | DevAgent 与子代理共享的能力契约；统一路径、执行与审核策略 |
-| `foundation_runtime.py` | `ReadFileTool` / `ListFilesTool` / `SearchTextTool` / `ShellTool` | foundation 工具的路径、搜索和执行实现 |
+| `foundation_runtime.py` | `ReadFileTool` / `BaseListFilesTool` / `SearchTextTool` / `ShellTool` | foundation 工具的路径、搜索和执行实现；`BaseListFilesTool` 提供文件枚举与指标计算 |
 | `todo_tools.py` | `TodoWriteTool` | 会话级任务列表（`todo_write`） |
 | `skill_loader.py` | `SkillTool` + L1/L2/L3 渐进式披露 | 按需加载 `skills/` 下的领域知识包（`skill`） |
 | `subagent_tool.py` | `SpawnSubagentTool` | 通用子代理（受限工具集，复用主代理模型） |
@@ -51,8 +51,8 @@
 
 | 工具 | 内部实现 | 功能 |
 |---|---|---|
-| `read_file` | `ReadFileTool` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `list_files` | `ListFilesTool` | 按路径和 glob 模式列出工作区文件 |
+| `read_file` | `ReadFileTool` | 按行读当前文件，最多 2000 行；支持 `offset`/`limit`，超长单行支持 `char_offset` 续读 |
+| `list_files` | `ListFilesTool` | 按路径和 glob 模式列出文件及 `bytes`、`lines`、`symbol_hints`、`interface_hints`、`dependency_hints`；`details=false` 仅返回路径 |
 | `search_text` | `SearchTextTool` | 在工作区内搜索文本 |
 | `apply_changes` | `ApplyChangesTool` | 应用结构化文件修改并返回变更证据 |
 | `run_program` | `RunProgramTool` | 运行受约束的程序并返回结果 |
@@ -65,6 +65,8 @@
 | `submit_uml_review` | `SubmitUmlReviewTool` | UML diff 人工审核（暂停等待 accept/reject） |
 
 删除操作不再单独暴露 `delete_path`；需要删除明确目标时使用受安全策略约束的 `apply_changes` 或 `shell`。
+
+`list_files` 每行使用紧凑字段，开头只解释一次 `B=bytes L=physical lines S=symbol hints I=interface hints D=dependency-statement hints`。S/I/D 是跨语言文本估计，不代表完整符号表、接口定义或依赖边。默认最多返回 200 项，可用 `limit` 调整至 1000；超出条目上限时明确报告展示数与总数，长结果通过通用工具结果分页继续读取。单个文件超过 2 MB 或无法安全读取时，除字节数外的指标显示 `?`。结果按文件大小和修改时间缓存，不调用模型或知识图谱。嵌套目录路径相对于源码/测试/设计根目录，例如 `trade_sys/services`；也可用 `path=source` 配合 `pattern=trade_sys/services/**`。
 
 > `create_conversation_tools()` 返回 `(tools, review_manager)`。`review_manager`
 > 供 shell 敏感命令与 `submit_uml_review` 共用同一审核通道。
@@ -82,9 +84,37 @@ DevAgent 与子代理共享同一组面向能力的工具契约。所有文件�
 - **敏感命令**（强制删除、提权、注册表、进程强杀、`git reset --hard` 等）→ 经
   `ReviewManager` 请求人工批准，批准才执行；拒绝/超时/无审核通道均不执行
   （fail closed）。超时上限 `SHELL_REVIEW_TIMEOUT`。
-- 其余命令带 120s 超时直接放行；输出经 `TruncateHook` 截断。
+- 其余命令带 120s 超时直接放行；较长输出按统一工具结果协议分页。
+- `shell`、`run_program` 和 `run_task` 在读取 stdout/stderr 时执行合计字节硬上限，
+  默认 10 MiB，可由 `agent_command_output_limit_bytes` 调整。触顶即停止进程并返回
+  `OUTPUT_LIMIT` 和已采集字节数；这表示命令结果不完整，不视为验证成功。
 
-### 知识图谱理解（`knowledge_graph_v2_tools.py`，当前默认禁用）
+### 工具结果分页
+
+`read_file` 直接读取当前文件，一次最多 2000 行，不受 3000 字符的通用首段限制。
+单次结果超过约 100000 字符时在完整行边界停止；单行超过 16000 字符时按行内
+字符位置分段。未读完的结果附有 `next_line` / `next_char`，继续用同一路径调用
+`read_file(path, offset=next_line, char_offset=next_char)`。读取时按行流式处理。
+
+`search_text` 使用 Python 标准库递归扫描配置工作区内的文本文件，不按代码语言或
+扩展名筛选；通过 BOM 与二进制字节检测跳过常见二进制文件。默认排除 `.git`、
+依赖目录、构建目录、缓存与运行日志目录。`path` 可指定工作区内的文件或目录，
+目录会递归搜索；结果返回 `source/...`、`test/...`、`design/...` 或 `workspace/...`
+相对路径，以及 1-based 行号和列号。每次最多展示 40 条匹配行，并报告其余命中数；
+匹配行通常完整返回，超过 16000 字符时会标记摘录区间并给出 `read_file` 续读位置。
+项目根目录可用 `.searchignore` 添加排除 glob，每行一条，空行和 `#` 注释会忽略；
+不支持重新包含规则。
+
+除 `read_file` 外，完整工具结果写入当前会话 trace。`skill` 单独使用 20000
+字符的首段预算，现有主指南和引用文件可一次完整返回；超过时附续读标记。
+其余对话工具的首段预算为 3000 字符。
+超长结果附有 `output_id`、`total_chars` 和 `next_offset`，模型可调用
+`read_tool_output(output_id, offset, limit)` 继续读取原文，直到 `next_offset=none`。
+偏移量按 Python 字符位置计算，每次续读最多返回 2600 个原文字符；短结果保持原样。
+续读仅能访问当前会话 trace 中的非 `read_file` 工具结果，不会重新执行原工具。
+子代理的完整回复也遵循此分页协议，不再在工具内部裁掉报告中段。
+
+### 知识图谱理解（`extensions/knowledge_graph/tools.py`，主 Agent 默认不注册）
 
 KG 提供**文件原语给不了**的结构化答案：类型化关系、设计-代码一致性、大项目的
 有界地图。分工：KG 回答「有没有/谁依赖谁/设计实现没」，`read_file`/`shell` 回答

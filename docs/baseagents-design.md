@@ -148,7 +148,7 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 | 工具 | 功能 |
 |------|------|
 | `read_file` | 按行读文件，支持 `offset`/`limit` 切片 |
-| `list_files` | 按路径和 glob 模式查找文件 |
+| `list_files` | 按路径和 glob 模式查找文件，使用紧凑字段返回字节数、物理行数和跨语言的声明/接口/依赖文本线索；`details=false` 仅返回路径 |
 | `search_text` | 在工作区内搜索文本 |
 | `apply_changes` | 原子应用文件创建、修改、移动、复制和删除 |
 | `run_program` / `run_task` | 执行直接程序或固定项目任务 |
@@ -173,9 +173,9 @@ Planner 生成步骤列表 → Executor 逐步执行，历史结果传递给后�
 ### 6.4 知识图谱与可选工具
 
 - **`file_search_tools.py`**：文件搜索能力由 foundation 工具工厂按场景复用。
-- **`extensions/knowledge_graph/tools.py`**：主 Agent 通过插件贡献接口按开关注入
-  `get_project_map`、`find_nodes`、`expand_neighbors`；`compare_design_code` 默认不注入，
-  由显式能力场景按需开启。Provider 不可用或插件关闭时不注册任何 KG 工具。
+- **`extensions/knowledge_graph/tools.py`**：保留独立的图谱工具工厂，供显式图谱场景使用。
+  主 Agent 默认不注册 `get_project_map`、`find_nodes`、`expand_neighbors`；
+  架构调度组件通过 `KnowledgeGraphProvider` 内部读取地图、定位节点和扩展影响范围。
 
 ## 7. 运行时架构
 
@@ -260,13 +260,13 @@ Project Memory    跨任务的偏好、决策、约定、拒绝和洞察
 任务结束 → 工具过程摘要 + 最终结论 → MemoryManager.remember() → 异步归档
 ```
 
-记忆存储于 `data/memories.db`（SQLite + FTS5 + jieba）。记忆系统已引入
+记忆存储于项目内的 `.architectcoder/memories.db`（SQLite + FTS5 + jieba）。记忆系统已引入
 **subject 后写覆盖 + recency 检索 + 类型化衰退 + 检索别名 + 写入门禁 + 召回治理**，详见
 `docs/memory-system-design.md`。
 
 ## 10. 会话日志（trace）
 
-每次 WebSocket 连接生成结构化 trace 日志，落盘 `temp/chat_log/`：
+每次 WebSocket 连接生成结构化 trace 日志，按日期落盘 `temp/chat_log/YYYY-MM-DD/`：
 
 | 日志 | 格式 | 内容 |
 |------|------|------|

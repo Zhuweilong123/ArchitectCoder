@@ -1,4 +1,5 @@
 import asyncio
+import io
 import threading
 from pathlib import Path
 
@@ -14,13 +15,16 @@ from app.runtime.task_contracts import (
 
 class _Process:
     def __init__(self, stdout=b"ok", stderr=b"", returncode=0):
-        self.stdout = stdout
-        self.stderr = stderr
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
         self.returncode = returncode
         self.terminated = False
 
     def communicate(self):
-        return self.stdout, self.stderr
+        return self.stdout.getvalue(), self.stderr.getvalue()
+
+    def wait(self):
+        return self.returncode
 
 
 class _BlockingProcess(_Process):
@@ -30,7 +34,11 @@ class _BlockingProcess(_Process):
 
     def communicate(self):
         self.release.wait(2)
-        return self.stdout, self.stderr
+        return self.stdout.getvalue(), self.stderr.getvalue()
+
+    def wait(self):
+        self.release.wait(2)
+        return self.returncode
 
 
 class _Executor:

@@ -13,10 +13,10 @@ _tools = knowledge_graph_tools
 
 
 def test_kg_map(tmp_path):
-    db_path, source_dir, _ = _build_kg(tmp_path)
+    db_path, source_dir, project_id = _build_kg(tmp_path)
     result = _run(_tool_by_name(_tools(db_path, source_dir), "get_project_map"), {})
     assert "error" not in result
-    assert result["project_id"] == "proj"
+    assert result["project_id"] == project_id
     assert result["stats"]["total_nodes"] > 0
     diagrams = result["diagrams"]
     assert len(diagrams) == 1
@@ -137,6 +137,8 @@ def test_kg_diff_method_level_locations(tmp_path):
     )
 
     project_file = str(tmp_path / "proj.umlproj")
+    from backend.config.project_storage import project_id_for
+    project_id = project_id_for(project_file)
     project = Project(name="proj", diagrams=[UmlDiagram(
         name="Domain",
         diagram_type="class",
@@ -151,8 +153,8 @@ def test_kg_diff_method_level_locations(tmp_path):
         )],
     )])
     builder = GraphBuilder(db_path=db_path)
-    builder.build_from_project(project, "proj", filepath=project_file)
-    builder.build_from_source_dir(str(source_dir), "proj")
+    builder.build_from_project(project, project_id, filepath=project_file)
+    builder.build_from_source_dir(str(source_dir), project_id)
     builder.close()
 
     result = _run(_tool_by_name(

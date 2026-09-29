@@ -298,7 +298,7 @@ async def _run_checkers(workspace, configs):
 def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
-    assert len(cases) == 19
+    assert len(cases) == 21
     assert len(_baseline_case_ids()) == 16
     assert "radar-source-only-contract-intercept-001" not in _baseline_case_ids()
     assert all(case.schema_version == EVAL_CASE_SCHEMA_VERSION for case in cases.values())
@@ -364,7 +364,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
         list_tool = next(tool for tool in tools if tool.name == "list_files")
         read_tool = next(tool for tool in tools if tool.name == "read_file")
         task_tool = next(tool for tool in tools if tool.name == "run_task")
-        listed = await list_tool._execute({"path": "design", "pattern": "*.umlproj"})
+        listed = await list_tool._execute({"path": "design", "pattern": "*.umlproj", "details": False})
         content = await read_tool._execute({"path": "design/radar_design_0730.umlproj"})
         validated = await task_tool._execute({
             "task": "validate", "target": "design/radar_design_0730.umlproj",

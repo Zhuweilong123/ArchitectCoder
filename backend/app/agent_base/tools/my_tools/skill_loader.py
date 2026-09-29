@@ -11,8 +11,7 @@ L3 必须由本工具投递而非让 agent 走 read_file —— ``foundation_run
 skills/ 在仓库根目录、不在用户被分析项目里，read_file 必然抛
 ``Path escapes workspace``。
 
-注意：本工具输出远超 ``TruncateHook`` 默认的 2000 字符上限，已在
-``core/hooks.py`` 中为 "skill" 单独放宽，否则正文会被静默腰斩。
+skill 结果单独使用 20000 字符的首段预算；超出后可通过 ``read_tool_output`` 续读。
 """
 
 from __future__ import annotations
@@ -27,9 +26,7 @@ from app.agent_base.tools.base import Tool, ToolParameter
 SKILL_ENTRY = "SKILL.md"
 
 # skills/ 位于仓库根：my_tools → tools → agent_base → app → backend → <repo root>。
-# 不复用 os.path.join(settings.uml_dir, "..", "..")（services/tools.py:354 等处的
-# 仓库根推导）：uml_dir 默认值是相对路径 "../temp/uml_files"，依赖进程 CWD=backend/，
-# 换目录启动就全歪。skill 目录用 __file__ 锚定，与启动方式无关。
+# skill 目录用 __file__ 锚定，与启动方式无关。
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 
 
@@ -138,7 +135,9 @@ class SkillTool(Tool):
             description=(
                 "Load a knowledge pack listed under '## Skills' in the system "
                 "prompt. Call with name only to get the skill's main guide plus "
-                "its reference file list; pass file to load one reference file."
+                "its reference file list; pass file to load one reference file. "
+                "Read the complete returned guide before following it; if a "
+                "continuation marker appears, use read_tool_output for the rest."
             ),
         )
         self._root = root

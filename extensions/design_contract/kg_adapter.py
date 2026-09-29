@@ -20,11 +20,15 @@ class KnowledgeGraphContractAdapter:
         self.settings = settings
         self.provider = provider
 
-    def collect(self, project_id: str, max_items: int = 5000) -> dict[str, Any]:
+    def collect(self, project_id: str, max_items: int = 5000, *,
+                project_file: str = "", workspace_root: str = "") -> dict[str, Any]:
         """Return neutral graph facts, never making graph availability fatal."""
         provider = self.provider
         if provider is None:
-            provider = load_knowledge_graph(settings=self.settings)
+            provider = load_knowledge_graph(
+                settings=self.settings, project_file=project_file,
+                workspace_root=workspace_root,
+            )
         exporter = getattr(provider, "contract_facts", None)
         if not callable(exporter):
             return {"available": False, "nodes": [], "edges": [], "error": "provider has no contract_facts"}

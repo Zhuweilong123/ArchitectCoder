@@ -90,6 +90,57 @@ def build_task_execution_summary(
         lines.append("- Pending items: " + "; ".join(pending[-8:]))
     if checkpoint.get("stop_reason"):
         lines.append("- Stop reason: " + _excerpt(checkpoint.get("stop_reason"), 260))
+
+    contract_check = checkpoint.get("contract_check")
+    if isinstance(contract_check, dict):
+        contract_status = str(contract_check.get("status") or "unknown")
+        violations = [
+            item for item in (contract_check.get("violations") or [])
+            if isinstance(item, dict)
+        ]
+        counts_by_severity: dict[str, int] = {}
+        counts_by_code: dict[str, int] = {}
+        for item in violations:
+            severity = str(item.get("severity") or "unknown")
+            code = str(item.get("code") or "unknown")
+            counts_by_severity[severity] = counts_by_severity.get(severity, 0) + 1
+            counts_by_code[code] = counts_by_code.get(code, 0) + 1
+
+        details = [f"{len(violations)} finding(s)"]
+        if counts_by_severity:
+            details.append(
+                "severity: " + ", ".join(
+                    f"{key}={value}" for key, value in sorted(counts_by_severity.items())
+                )
+            )
+        if counts_by_code:
+            details.append(
+                "codes: " + ", ".join(
+                    f"{key}={value}" for key, value in sorted(counts_by_code.items())
+                )
+            )
+        if "allowed" in contract_check:
+            details.append(f"gate={'allowed' if contract_check['allowed'] else 'blocked'}")
+        lines.append(f"- Contract check: {contract_status} (" + "; ".join(details) + ")")
+
+        decision_message = _excerpt(contract_check.get("decision_message"), 260)
+        if decision_message:
+            lines.append("- Contract decision: " + decision_message)
+        if violations:
+            lines.append("- Contract feedback:")
+            for item in violations[:24]:
+                severity = str(item.get("severity") or "unknown")
+                code = str(item.get("code") or "unknown")
+                message = _excerpt(item.get("message"), 200)
+                path = _excerpt(item.get("path"), 160)
+                location = f" [{path}]" if path else ""
+                lines.append(
+                    f"- {severity} [{code}]: {message}{location}"
+                )
+            if len(violations) > 24:
+                lines.append(
+                    f"- Additional contract findings omitted: {len(violations) - 24}; see Trace."
+                )
     return "\n".join(lines)
 
 

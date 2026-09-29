@@ -119,7 +119,7 @@ export function createDefaultDiagram(name = 'Untitled'): UmlDiagram {
     comp_relations: [],
     grid_visible: true,
     grid_size: 20,
-    grid_color: '#e0e0e0',
+    grid_color: '#f59e0b',
     grid_thickness: 1,
     snap_to_grid: true,
     zoom: 1.0,
@@ -163,15 +163,33 @@ export interface Project {
   /** Monotonic server-side revision used for optimistic saves. */
   revision?: number;
   name: string;
+  grid_settings: GridSettings;
   diagrams: UmlDiagram[];
   active_diagram_index: number;
 }
+
+export interface GridSettings {
+  grid_visible: boolean;
+  grid_size: number;
+  grid_color: string;
+  grid_thickness: number;
+  snap_to_grid: boolean;
+}
+
+export const DEFAULT_GRID_SETTINGS: GridSettings = {
+  grid_visible: true,
+  grid_size: 20,
+  grid_color: '#f59e0b',
+  grid_thickness: 1,
+  snap_to_grid: true,
+};
 
 export function createDefaultProject(name = 'Untitled'): Project {
   return {
     version: '1.0',
     revision: 0,
     name,
+    grid_settings: { ...DEFAULT_GRID_SETTINGS },
     diagrams: [],
     active_diagram_index: 0,
   };

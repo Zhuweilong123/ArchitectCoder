@@ -34,7 +34,6 @@ from app.agent_base.core.hooks import (
 from app.agent_base.core.memory import MemoryArchiveRequest, MemoryPort
 from app.agent_base.core.orchestration import (
     OrchestrationRequest,
-    apply_runtime_directives,
     exclude_tools,
     load_orchestrator,
 )
@@ -260,6 +259,43 @@ def _finalize_terminal_checkpoint(
         })
     return terminal_status, todos
 
+
+def recent_conversation_history(
+    agent: ReActAgent,
+    *,
+    turns: int = 4,
+    exclude_latest_turn: bool = False,
+) -> tuple[dict[str, str], ...]:
+    """Return the latest complete user/assistant turns without truncating text."""
+    messages: list[tuple[str, str]] = []
+    for item in getattr(agent, "_history", ()) or ():
+        if isinstance(item, dict):
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "")
+        else:
+            role = str(getattr(item, "role", "") or "")
+            content = str(getattr(item, "content", "") or "")
+        if role in {"user", "assistant"}:
+            messages.append((role, content))
+
+    completed_turns: list[tuple[tuple[str, str], tuple[str, str]]] = []
+    pending_user: tuple[str, str] | None = None
+    for message in messages:
+        if message[0] == "user":
+            pending_user = message
+        elif pending_user is not None:
+            completed_turns.append((pending_user, message))
+            pending_user = None
+
+    if exclude_latest_turn and completed_turns:
+        completed_turns = completed_turns[:-1]
+    selected = completed_turns[-max(0, turns):] if turns > 0 else []
+    return tuple(
+        {"role": role, "content": content}
+        for turn in selected
+        for role, content in turn
+    )
+
 async def _archive_task_to_memory(
     memory: MemoryPort,
     project_id: str,
@@ -268,6 +304,7 @@ async def _archive_task_to_memory(
     tool_calls_detail: list[dict],
     run_id: str = "",
     trace_id: str = "",
+    conversation_history: tuple[dict[str, str], ...] = (),
 ) -> None:
     try:
         result = await memory.archive(MemoryArchiveRequest(
@@ -277,6 +314,7 @@ async def _archive_task_to_memory(
             tool_steps=tuple(tool_calls_detail or ()),
             run_id=run_id,
             trace_id=trace_id,
+            conversation_history=conversation_history,
         ))
         logger.info(
             "[Memory] Archived task to memory (project=%s, stored=%d)",
@@ -366,11 +404,14 @@ async def _prepare_orchestration(
     trace_log: TraceSink | None,
     run_id: str,
 ) -> tuple[str, Any, str]:
-    """Plan an Agent run and return its augmented context and tool allowlist."""
+    """Prepare optional architecture routing and return its tool allowlist."""
     logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
+    settings = get_settings()
+    if resume_checkpoint.get("architecture_scheduling_mode") is False:
+        settings = settings.model_copy(update={"agent_orchestration_enabled": False})
     orchestrator = load_orchestrator(
         llm=agent.llm,
-        settings=get_settings(),
+        settings=settings,
         project_file=project_file,
         source_dir=source_dir,
         test_dir=test_dir,
@@ -381,8 +422,6 @@ async def _prepare_orchestration(
         run_id,
         type(orchestrator).__name__,
     )
-    if trace_log:
-        trace_log.event("orchestrator_phase", phase="plan", status="started")
     result = await orchestrator.prepare(OrchestrationRequest(
         user_message=user_message,
         project_file=project_file,
@@ -390,28 +429,42 @@ async def _prepare_orchestration(
         test_dir=test_dir,
         previous_checkpoint=resume_checkpoint,
         available_tools=tuple(agent.tool_registry.list_tools()),
+        run_id=run_id,
     ))
     if trace_log:
         trace_log.event(
-            "orchestrator_plan",
+            "orchestration_preparation",
             **result.metadata,
             phase=result.phase,
-            token_overhead=result.token_overhead,
         )
-        if result.phase == "explore":
-            trace_log.event(
-                "orchestrator_phase",
-                phase="explore",
-                status="completed",
-                worker_tokens=result.metadata.get("worker_tokens", 0),
-            )
-    apply_runtime_directives(result.runtime_directives)
+    scheduling_available = (
+        result.metadata.get("architecture_scheduling") == "demand_driven_ready"
+    )
+    get_runtime().policy_metadata["architecture_scheduling_enabled"] = scheduling_available
+    if not scheduling_available:
+        reason = str(
+            result.metadata.get("architecture_scheduling_reason")
+            or result.metadata.get("architecture_scheduling")
+            or "orchestration is disabled"
+        )
+        log = (
+            logger.warning
+            if result.metadata.get("architecture_scheduling") == "unavailable"
+            else logger.info
+        )
+        log(
+            "[AgentExecution] architecture scheduling unavailable; using single-agent path: %s",
+            reason,
+        )
     if result.context:
         context = "\n\n".join(filter(None, [context, result.context]))
+    excluded_tools = result.excluded_tools
+    if not getattr(settings, "agent_orchestration_enabled", False):
+        excluded_tools = (*excluded_tools, "route_architecture", "explore_architecture")
     allowed_tools = None
-    if result.excluded_tools:
+    if excluded_tools:
         allowed_tools = exclude_tools(
-            agent.tool_registry.list_tools(), result.excluded_tools,
+            agent.tool_registry.list_tools(), excluded_tools,
         )
     return context, allowed_tools, result.phase
 
@@ -494,6 +547,7 @@ async def _publish_terminal_execution(
     run_id: str,
     run_owner: str,
     session_id: str,
+    conversation_history: tuple[dict[str, str], ...],
     trace_log: TraceSink | None,
     send: Callable[[dict], Awaitable[bool]],
     write_task_summary: Callable[[str], None],
@@ -548,7 +602,8 @@ async def _publish_terminal_execution(
         )
     write_task_summary(summary_status)
 
-    project_id = os.path.splitext(os.path.basename(project_file))[0] if project_file else ""
+    from backend.config.project_storage import project_id_for
+    project_id = project_id_for(project_file) if project_file else ""
     if project_id and _should_archive_task_memory(
         terminal_status, task_tool_calls, agent.last_run_checkpoint,
     ):
@@ -562,6 +617,7 @@ async def _publish_terminal_execution(
                 tool_calls_detail=task_tool_calls,
                 run_id=run_id,
                 trace_id=trace_log.trace_id if trace_log else "",
+                conversation_history=conversation_history,
             ))
 
     if trace_log:
@@ -764,6 +820,16 @@ async def handle_agent_execution(
         "resume_available": False,
         "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
+        "architecture_schedule_root": (
+            resume_checkpoint.get("architecture_schedule_root")
+            or resume_checkpoint.get("run_id") or run_id
+        ),
+        "architecture_scheduling_mode": bool(
+            getattr(get_settings(), "agent_orchestration_enabled", False)
+            and getattr(get_settings(), "agent_knowledge_graph_enabled", False)
+            and resume_checkpoint.get("architecture_scheduling_mode") is not False
+        ),
+        "architecture_schedule_version": 2,
         "candidate_artifact": resume_checkpoint.get("candidate_artifact"),
         "candidate_recovery": bool(resume_checkpoint.get("candidate_artifact")),
         "project_file": project_file,
@@ -786,6 +852,15 @@ async def handle_agent_execution(
     logger.info("[AgentExecution] installing runtime context run=%s", run_id)
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
+        run_id=run_id,
+        policy_metadata={
+            "architecture_schedule_root": agent.last_run_checkpoint.get(
+                "architecture_schedule_root", run_id,
+            ),
+            "architecture_scheduling_enabled": agent.last_run_checkpoint.get(
+                "architecture_scheduling_mode", False,
+            ),
+        },
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None
@@ -970,6 +1045,7 @@ async def handle_agent_execution(
             run_id,
             orchestration_phase,
         )
+        archive_conversation_history = recent_conversation_history(agent, turns=4)
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
             agent.on_context_compacted = lambda report: trace_log.context_compacted(
@@ -1048,9 +1124,19 @@ async def handle_agent_execution(
                     message=contract_message,
                     phase="pre_commit",
                 )
-                if contract_result is not None:
-                    agent.last_run_checkpoint["contract_check"] = contract_result.to_dict()
-                    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                contract_checkpoint = (
+                    contract_result.to_dict() if contract_result is not None else {
+                        "status": "skipped",
+                        "changed_paths": [],
+                        "violations": [],
+                    }
+                )
+                contract_checkpoint.update({
+                    "allowed": bool(contract_ok),
+                    "decision_message": contract_message or "",
+                })
+                agent.last_run_checkpoint["contract_check"] = contract_checkpoint
+                _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 if not contract_ok:
                     rollback_completed = False
                     candidate_artifact = None
@@ -1139,6 +1225,7 @@ async def handle_agent_execution(
                         run_id=run_id,
                         run_owner=run_owner,
                         session_id=session_id,
+                        conversation_history=archive_conversation_history,
                         trace_log=trace_log,
                         send=send,
                         write_task_summary=_write_task_summary,
@@ -1148,6 +1235,16 @@ async def handle_agent_execution(
                 if change_set is not None and change_set.has_changes:
                     manifest = change_set.commit()
                     logger.info("[ChangeSet] committed %d file changes", len(manifest))
+                    from app.services.project_repository import ProjectRepository
+                    project_repository = ProjectRepository()
+                    for item in manifest:
+                        committed_path = str(item.get("path", ""))
+                        if committed_path.lower().endswith(".umlproj") and os.path.isfile(committed_path):
+                            await send({
+                                "event": "project_committed",
+                                "filepath": committed_path,
+                                "revision": project_repository.revision(committed_path),
+                            })
                     if trace_log:
                         trace_log.event(
                             "changes_committed",
@@ -1213,6 +1310,7 @@ async def handle_agent_execution(
                     run_id=run_id,
                     run_owner=run_owner,
                     session_id=session_id,
+                    conversation_history=archive_conversation_history,
                     trace_log=trace_log,
                     send=send,
                     write_task_summary=_write_task_summary,

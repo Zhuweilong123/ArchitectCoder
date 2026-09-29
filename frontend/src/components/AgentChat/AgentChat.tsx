@@ -321,6 +321,14 @@ const AgentChat: React.FC = () => {
 
   // ── 新对话（新 session）──
   const handleNewSession = useCallback(() => {
+    const hasConversation = messages.length > 0
+      || currentSteps.length > 0
+      || currentTodos.length > 0
+      || review.status === 'pending';
+    if (!hasConversation) {
+      inputRef.current?.focus?.();
+      return;
+    }
     startNewSession();  // 生成新 id + 断开
     setMessages([]);
     liveStepsRef.current = [];
@@ -335,7 +343,7 @@ const AgentChat: React.FC = () => {
     setInputValue('');
     setBusy(false);
     connect();
-  }, [connect]);
+  }, [connect, currentSteps.length, currentTodos.length, messages, review.status]);
 
   // ── 历史会话（恢复继续聊，结论级）──
   const [sessions, setSessions] = useState<TraceMeta[]>([]);

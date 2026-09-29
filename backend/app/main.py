@@ -105,7 +105,7 @@ if settings.strict_production:
         ) from exc
 
 # Ensure required directories exist
-os.makedirs(settings.uml_dir, exist_ok=True)
+os.makedirs(settings.project_dir, exist_ok=True)
 
 
 @app.get("/api/health")

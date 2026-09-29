@@ -33,6 +33,7 @@ from typing import Any, Callable
 from fastapi import WebSocket, WebSocketDisconnect
 from app.core.security import validate_agent_workspace_path
 from backend.config import get_settings
+from backend.config.project_storage import project_id_for
 
 from app.agent_base.assembly import create_dev_agent
 from app.agent_base.core.llm import BaseAgentsLLM
@@ -48,6 +49,8 @@ from app.trace.tracing import (
     load_trace,
     pop_trace_hook,
     push_trace_hook,
+    reset_current_trace_sink,
+    set_current_trace_sink,
 )
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.run_state import RunStateError, RunStatus, get_run_store
@@ -135,6 +138,7 @@ from app.services.agent_execution import (
     _archive_task_to_memory,
     _should_archive_task_memory,
     handle_agent_execution,
+    recent_conversation_history,
 )
 
 
@@ -439,6 +443,14 @@ async def _start_agent_chat_run(
                 metadata_patch={"checkpoint": consumed},
             )
         trace_log.set_run_id(run.run_id)
+        trace_log.start(
+            user_message=raw_user_message if raw_user_message is not None else message,
+            project_file=project_file,
+            source_dir=source_dir,
+            test_dir=test_dir,
+            workspace_root=workspace_root,
+            design_dir=design_dir,
+        )
         trace_log.user_message(
             raw_user_message if raw_user_message is not None else message,
             project_file=project_file,
@@ -566,7 +578,6 @@ class ChatSessionCoordinator:
         if session.trace_log is None:
             assert trace_provider is not None
             trace_log = trace_provider.create(TraceSessionRequest(session_id=session_id))
-            trace_log.start()  # 首次连接时写入会话开始边界（session_end 由 TTL 回收时 close 写入）
         else:
             trace_log = session.trace_log
         session.trace_log = trace_log
@@ -590,6 +601,7 @@ class ChatSessionCoordinator:
         design_dir = ""
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
+        trace_sink_token = set_current_trace_sink(trace_log)
         push_trace_hook(trace_hook_handler)
 
         def _stop_check():
@@ -915,11 +927,14 @@ class ChatSessionCoordinator:
                                 ):
                                     asyncio.create_task(_archive_task_to_memory(
                                         memory=memory,
-                                        project_id=os.path.splitext(os.path.basename(reviewed_project))[0],
+                                        project_id=project_id_for(reviewed_project),
                                         user_message=checkpoint.get("request_summary", ""),
                                         final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
                                         tool_calls_detail=checkpoint.get("tool_calls", []),
                                         run_id=reviewed_run_id, trace_id=trace_log.trace_id,
+                                        conversation_history=recent_conversation_history(
+                                            dev_agent, turns=4, exclude_latest_turn=True,
+                                        ),
                                     ))
                                 answer = (
                                     "设计变更已通过审核，任务已完成。"
@@ -1001,4 +1016,5 @@ class ChatSessionCoordinator:
             session.touch()
             agent_runtime.release_run(session_id, connection_owner)
             pop_trace_hook(trace_hook_handler)
+            reset_current_trace_sink(trace_sink_token)
             _set_trace_bridge(None)

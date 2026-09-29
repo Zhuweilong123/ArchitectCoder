@@ -20,6 +20,7 @@ import {
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useUiStore } from '../../stores/uiStore';
+import { useReviewStore } from '../../stores/reviewStore';
 import { createDefaultDiagram, type UmlDiagram } from '../../types/uml';
 import {
   saveDiagram, openDiagram, openProject, saveProject, listDiagrams,
@@ -170,6 +171,10 @@ const Toolbar: React.FC = () => {
     setCurrentWorkspacePath: s.setCurrentWorkspacePath,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
+  const gridSettings = useDiagramStore((s) => s.project.grid_settings);
+  const umlReviewBlocksSave = useReviewStore((s) =>
+    s.reviewType === 'uml_diff' && (s.status === 'pending' || s.status === 'accepted' || s.status === 'rejected')
+  );
 
   const {
     selectedLanguage,
@@ -288,7 +293,7 @@ const Toolbar: React.FC = () => {
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [currentFilepath, project, isModified]); // eslint-disable-line
+  }, [currentFilepath, project, isModified, umlReviewBlocksSave]); // eslint-disable-line
 
   // ── File operations ─────────────────────────────────
   const handleNew = () => {
@@ -481,6 +486,8 @@ const Toolbar: React.FC = () => {
         const safe = !browseUnsafe.current;
         const proj = await openProject(path, safe);
         setProject(proj);
+        const review = useReviewStore.getState();
+        if (review.status !== 'pending' && review.reviewId !== null) review.clear();
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
         setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
@@ -495,6 +502,13 @@ const Toolbar: React.FC = () => {
         const proj = {
           version: '1.0',
           name: d.name,
+          grid_settings: {
+            grid_visible: d.grid_visible,
+            grid_size: d.grid_size,
+            grid_color: d.grid_color,
+            grid_thickness: d.grid_thickness,
+            snap_to_grid: d.snap_to_grid,
+          },
           diagrams: [d],
           active_diagram_index: 0,
         };
@@ -591,6 +605,10 @@ const Toolbar: React.FC = () => {
 
   // Quick save (always saves as .umlproj project)
   const handleSave = async () => {
+    if (umlReviewBlocksSave) {
+      message.warning('设计审核尚未提交完成，请等待结果或先另存为');
+      return;
+    }
     if (!currentFilepath && !currentWorkspacePath) {
       openSaveAs();
       return;
@@ -641,8 +659,7 @@ const Toolbar: React.FC = () => {
       if (projName !== project.name) {
         setProject({ ...project, name: projName });
       }
-      // Save in the active workspace when one was selected; otherwise retain
-      // the historical default uml_dir behavior.
+      // Save in the active workspace, or let the API create a project folder.
       const filename = fname.toLowerCase().endsWith('.umlproj') ? fname : `${fname}.umlproj`;
       const targetPath = currentWorkspacePath
         ? `${normalizePath(currentWorkspacePath)}/${filename}`
@@ -834,7 +851,7 @@ const Toolbar: React.FC = () => {
   const handleZoomReset = () => useDiagramStore.getState().setZoom(1.0);
 
   const saveMenuItems = [
-    { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), onClick: handleSave },
+    { key: 'save', label: copy('save') + (isModified ? ' ●' : ''), disabled: umlReviewBlocksSave, onClick: handleSave },
     { key: 'saveas', label: copy('saveAs'), onClick: openSaveAs },
   ];
 
@@ -1054,7 +1071,7 @@ const Toolbar: React.FC = () => {
         <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
         <Tooltip title={copy('grid')}>
           <Button
-            icon={diagram.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
+            icon={gridSettings.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
             onClick={toggleGrid}
           />
         </Tooltip>
@@ -1064,7 +1081,7 @@ const Toolbar: React.FC = () => {
             icon={<SettingOutlined />}
             onClick={() => setGridSettingsVisible(true)}
           >
-            {diagram.grid_size}px
+            {gridSettings.grid_size}px
           </Button>
         </Tooltip>
 
@@ -1253,7 +1270,7 @@ const Toolbar: React.FC = () => {
         </Form>
 
         <Divider orientation="left" plain style={{ fontSize: 12 }}>
-          已有项目文件（保存在 {currentFilepath || 'uml_files/'}）
+          已有项目文件（保存在 {currentFilepath || 'project/'}）
         </Divider>
 
         <List
@@ -1289,10 +1306,13 @@ const Toolbar: React.FC = () => {
         cancelText="取消"
         width={420}
       >
+        <div style={{ color: '#888', fontSize: 12 }}>
+          {interfaceLanguage === 'en' ? 'Applies to every diagram in this project.' : '应用于本项目的所有图。'}
+        </div>
         <Form layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item label="网格大小">
             <Select
-              value={diagram.grid_size}
+              value={gridSettings.grid_size}
               onChange={(v) => setGridSize(v)}
               options={[
                 { value: 5, label: '5px' },
@@ -1307,15 +1327,15 @@ const Toolbar: React.FC = () => {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 type="color"
-                value={diagram.grid_color || '#e0e0e0'}
+                value={gridSettings.grid_color}
                 onChange={(e) => setGridColor(e.target.value)}
                 style={{ width: 40, height: 32, border: '1px solid #d9d9d9', borderRadius: 4, cursor: 'pointer' }}
               />
               <Input
-                value={diagram.grid_color || '#e0e0e0'}
+                value={gridSettings.grid_color}
                 onChange={(e) => setGridColor(e.target.value)}
                 style={{ width: 100 }}
-                placeholder="#e0e0e0"
+                placeholder="#f59e0b"
               />
               <span style={{ fontSize: 12, color: '#888' }}>选择或输入颜色</span>
             </div>
@@ -1325,7 +1345,7 @@ const Toolbar: React.FC = () => {
             <Slider
               min={1}
               max={5}
-              value={diagram.grid_thickness || 1}
+              value={gridSettings.grid_thickness}
               onChange={(v) => setGridThickness(v)}
               marks={{ 1: '细', 3: '中', 5: '粗' }}
             />

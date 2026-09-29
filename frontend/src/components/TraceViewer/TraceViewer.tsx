@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as Diff from 'diff';
 import {
-  Drawer, Button, Input, List, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented, Timeline, Row, Col,
+  Drawer, Button, Input, List, Select, Tag, Typography, Collapse, Spin, Empty, Modal, Alert, message, Segmented, Timeline, Row, Col,
 } from 'antd';
 import {
   ReloadOutlined, CaretRightOutlined, PauseOutlined, StepBackwardOutlined,
@@ -372,7 +372,7 @@ function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.React
   const call = item.call;
   const res = item.result;
   const obsLabel = res?.fed_truncated
-    ? `${tx(language, '返回', 'Response')} · ${tx(language, `完整(模型仅看前${res.fed_length}字)`, `full (model saw only the first ${res.fed_length} characters)`)}`
+    ? `${tx(language, '返回', 'Response')} · ${tx(language, `完整记录（模型收到${res.fed_length}字）`, `full record (model received ${res.fed_length} characters)`)}`
     : tx(language, '返回', 'Response');
   const argsPanel = {
     key: 'args', label: tx(language, '参数', 'Arguments'), children: <pre className="trace-pre">{truncate(pretty(call.arguments), 4000, language)}</pre>,
@@ -394,7 +394,7 @@ function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.React
         <span className="trace-title">{call.tool_name || 'tool'}</span>
         {call.tool_name === 'spawn_subagent' ? <Tag color="purple">{tx(language, '子代理委派', 'Subagent delegation')}</Tag> : null}
         {res?.fed_truncated ? (
-          <Tag color="orange">{tx(language, `模型仅收到前 ${res.fed_length} 字`, `Model received only the first ${res.fed_length} characters`)}</Tag>
+          <Tag color="orange">{tx(language, `模型收到 ${res.fed_length} 字`, `Model received ${res.fed_length} characters`)}</Tag>
         ) : null}
         {res?.duration_ms != null ? <span className="trace-meta">{res.duration_ms}ms</span> : null}
       </div>
@@ -797,6 +797,7 @@ const TraceViewer: React.FC = () => {
   const [traces, setTraces] = useState<TraceMeta[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [traceQuery, setTraceQuery] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
   const [traceScope, setTraceScope] = useState<TraceScope>('chat');
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
@@ -841,7 +842,11 @@ const TraceViewer: React.FC = () => {
           ? 'chat'
           : traceScope;
       setTraceScope(nextScope);
+      if (requested) setSelectedDate(requested.date || requested.modified.slice(0, 10));
       const scoped = list.filter((item) => (item.trace_type || 'chat') === nextScope);
+      if (!requested && selectedDate && !scoped.some(
+        (item) => (item.date || item.modified.slice(0, 10)) === selectedDate,
+      )) setSelectedDate('');
       const preferred = requested?.session_id
         || (selected && scoped.some((item) => item.session_id === selected) ? selected : undefined)
         || scoped[0]?.session_id;
@@ -889,13 +894,27 @@ const TraceViewer: React.FC = () => {
     () => traces.filter((item) => (item.trace_type || 'chat') === traceScope),
     [traceScope, traces],
   );
+  const traceDates = useMemo(() => Array.from(new Set(
+    scopedTraces.map((item) => item.date || item.modified.slice(0, 10)),
+  )).sort().reverse(), [scopedTraces]);
   const filteredTraces = useMemo(() => {
     const query = traceQuery.trim().toLowerCase();
-    if (!query) return scopedTraces;
-    return scopedTraces.filter((item) => (
-      `${item.session_id} ${item.title || ''} ${item.events} ${item.size}`
-    ).toLowerCase().includes(query));
-  }, [scopedTraces, traceQuery]);
+    return scopedTraces.filter((item) => {
+      const date = item.date || item.modified.slice(0, 10);
+      return (!selectedDate || date === selectedDate)
+        && (!query || `${item.session_id} ${item.title || ''} ${item.events} ${item.size}`
+          .toLowerCase().includes(query));
+    });
+  }, [scopedTraces, traceQuery, selectedDate]);
+  const groupedTraces = useMemo(() => {
+    const groups = new Map<string, TraceMeta[]>();
+    filteredTraces.forEach((item) => {
+      const date = item.date || item.modified.slice(0, 10);
+      groups.set(date, [...(groups.get(date) || []), item]);
+    });
+    return Array.from(groups, ([date, items]) => ({ date, items }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [filteredTraces]);
 
   const traceCounts = useMemo(() => ({
     chat: traces.filter((item) => (item.trace_type || 'chat') === 'chat').length,
@@ -905,6 +924,7 @@ const TraceViewer: React.FC = () => {
   const switchTraceScope = (value: string | number) => {
     const nextScope = value as TraceScope;
     setTraceScope(nextScope);
+    setSelectedDate('');
     const nextTraces = traces.filter((item) => (item.trace_type || 'chat') === nextScope);
     const next = nextTraces[0];
     if (next) {
@@ -1108,6 +1128,17 @@ const TraceViewer: React.FC = () => {
         {/* Left: session list */}
         <div className="trace-session-list">
           <div className="trace-session-toolbar">
+            <Select
+              size="small"
+              value={selectedDate}
+              onChange={setSelectedDate}
+              className="trace-date-select"
+              aria-label={tx(interfaceLanguage, '选择日期', 'Select date')}
+              options={[
+                { value: '', label: tx(interfaceLanguage, '全部日期', 'All dates') },
+                ...traceDates.map((date) => ({ value: date, label: date })),
+              ]}
+            />
             <Input.Search
               allowClear
               size="small"
@@ -1125,11 +1156,16 @@ const TraceViewer: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               style={{ marginTop: 24 }}
             />
+          ) : filteredTraces.length === 0 ? (
+            <Empty
+              description={tx(interfaceLanguage, '没有符合条件的会话', 'No matching sessions')}
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              style={{ marginTop: 24 }}
+            />
           ) : (
-            <List
-              size="small"
-              dataSource={filteredTraces}
-              renderItem={(t) => (
+            groupedTraces.map(({ date, items }) => <div className="trace-date-group" key={date}>
+              <div className="trace-date-header">{date} <span>{items.length}</span></div>
+              <List size="small" dataSource={items} renderItem={(t) => (
                 <List.Item
                   className={selected === t.session_id ? 'trace-session-item active' : 'trace-session-item'}
                   onClick={() => selectSession(t.session_id, (t.trace_type || 'chat') as TraceScope)}
@@ -1137,7 +1173,7 @@ const TraceViewer: React.FC = () => {
                   <List.Item.Meta
                     title={
                       <div className="trace-session-title">
-                        <span>{t.session_id}</span>
+                        <span title={t.relative_path || t.filename}>{t.session_id}</span>
                         <Tag color={t.trace_type === 'evaluation' ? 'purple' : 'blue'}>
                           {t.trace_type === 'evaluation' ? tx(interfaceLanguage, '评测', 'Evaluation') : tx(interfaceLanguage, '交互', 'Chat')}
                         </Tag>
@@ -1151,8 +1187,8 @@ const TraceViewer: React.FC = () => {
                     }
                   />
                 </List.Item>
-              )}
-            />
+              )} />
+            </div>)
           )}
         </div>
 

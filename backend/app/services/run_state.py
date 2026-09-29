@@ -127,7 +127,8 @@ def default_run_state_path() -> Path:
     """Return the application data path without creating directories."""
     from backend.config import get_settings
 
-    return Path(get_settings().uml_dir).resolve().parent / "data" / "runs.db"
+    from backend.config.paths import runtime_root
+    return runtime_root() / "data" / "runs.db"
 
 
 def _now() -> str:

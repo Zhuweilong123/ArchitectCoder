@@ -13,6 +13,8 @@ def test_repo_workspace_remains_allowed_when_external_roots_are_configured(monke
     monkeypatch.setattr(security, "get_settings", lambda: SimpleNamespace(
         workspace_roots=str(external_root),
         uml_dir=str(uml_dir),
+        project_dir=str(tmp_path / "projects"),
+        runtime_dir=str(tmp_path / "runtime"),
     ))
 
     # Use a tracked repository directory.  ``project/`` is a runtime output

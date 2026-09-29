@@ -11,9 +11,11 @@ from app.models.uml import UmlDiagram, Project, ExportRequest
 from app.services.file_service import (
     save_diagram, load_diagram, list_diagrams, export_markdown,
     save_project_with_result, load_project, list_projects,
+    ensure_project_graph,
 )
-from app.services.project_repository import ProjectConflictError
+from app.services.project_repository import ProjectConflictError, ProjectRepository
 from backend.config import get_settings
+from backend.config.paths import runtime_root
 from app.core.auth import require_auth
 from app.core.security import (
     safe_path,
@@ -54,7 +56,7 @@ async def save_file(diagram: UmlDiagram, filename: str = ""):
         safe_name = sanitize_path_segment(filename.replace(".uml", ""))
         if safe_name:
             safe_name += ".uml"
-            filepath = os.path.join(get_settings().uml_dir, safe_name)
+            filepath = os.path.join(get_settings().project_dir, safe_name)
     filepath = save_diagram(diagram, filepath)
     return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath)}
 
@@ -123,7 +125,7 @@ async def browse_directory(path: str = "", safe: bool = True):
     path_resolver = safe_path if safe else resolve_path
 
     if not path:
-        base = os.path.abspath(settings.uml_dir)
+        base = os.path.abspath(settings.project_dir)
     else:
         try:
             base = path_resolver(path)
@@ -133,7 +135,7 @@ async def browse_directory(path: str = "", safe: bool = True):
             raise HTTPException(status_code=400, detail="Invalid path")
 
     if not os.path.exists(base) or not os.path.isdir(base):
-        base = os.path.abspath(settings.uml_dir)
+        base = os.path.abspath(settings.project_dir)
 
     try:
         items = os.listdir(base)
@@ -159,8 +161,8 @@ async def browse_directory(path: str = "", safe: bool = True):
     # Parent navigation: always allowed when unrestricted; checked when restricted
     parent = ""
     if safe:
-        project_root = os.path.abspath(os.path.join(settings.uml_dir, "..", ".."))
-        if base != project_root and base != os.path.abspath(settings.uml_dir):
+        project_root = os.path.abspath(os.path.join(settings.project_dir, ".."))
+        if base != project_root and base != os.path.abspath(settings.project_dir):
             parent_dir = os.path.dirname(base)
             try:
                 safe_path(parent_dir)
@@ -215,7 +217,7 @@ class ReviewRequest(BaseModel):
 async def save_review(req: ReviewRequest):
     """Save review record to dev_review.txt (unified UML + case review log)."""
     settings = get_settings()
-    review_file = os.path.join(settings.uml_dir, "..", "dev_review.txt")
+    review_file = str(runtime_root(settings) / "dev_review.txt")
     review_file = os.path.abspath(review_file)
 
     ts = req.timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -264,7 +266,7 @@ async def save_project_endpoint(
     """Save a Project to a .umlproj file.
 
     If filename looks like a full path (contains : or /), use it directly after
-    path-safety validation.  Otherwise treat it as a short name in uml_dir.
+    path-safety validation. Otherwise create a new project directory.
 
     Pass ``safe=false`` to allow saving outside the project root
     (e.g. overwriting an external file that was opened with safe=false).
@@ -282,8 +284,7 @@ async def save_project_endpoint(
         else:
             safe_name = sanitize_path_segment(filename.replace(".umlproj", ""))
             if safe_name:
-                safe_name += ".umlproj"
-                filepath = os.path.join(get_settings().uml_dir, safe_name)
+                filepath = str(ProjectRepository().new_project_path(safe_name))
     try:
         result = save_project_with_result(
             project,
@@ -320,6 +321,7 @@ async def open_project(filepath: str, safe: bool = True):
         raise HTTPException(status_code=404, detail="File not found")
     try:
         project = load_project(resolved)
+        ensure_project_graph(project, resolved)
         logger.info(f"[API] Project opened: {project.name} ({len(project.diagrams)} diagrams)")
         return {"project": project.model_dump()}
     except Exception as e:

@@ -39,6 +39,7 @@ class MemoryArchiveRequest:
     tool_steps: tuple[dict[str, Any], ...] = ()
     run_id: str = ""
     trace_id: str = ""
+    conversation_history: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

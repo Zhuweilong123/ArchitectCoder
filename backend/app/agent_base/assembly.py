@@ -52,7 +52,10 @@ def enabled_tools_context() -> str:
         "allowlisted executable with literal argv (never powershell/cmd/bash or shell "
         "syntax); shell only for one simple allowlisted native command with no pipes, "
         "chaining, redirection, substitution, or nested shell. Use apply_changes for "
-        "all file creation, editing, deletion, moving, and copying."
+        "all file creation, editing, deletion, moving, and copying. Use read_file "
+        "for current workspace file content and its line-based continuation. "
+        "Use read_tool_output only when another tool provides an output_id and "
+        "next_offset for a truncated result."
     )
 
 
@@ -157,10 +160,8 @@ class DevPromptBuilder:
             if value:
                 sections.append((name, value))
 
-        project_id = (
-            os.path.splitext(os.path.basename(project_file))[0]
-            if project_file else ""
-        )
+        from backend.config.project_storage import project_id_for
+        project_id = project_id_for(project_file) if project_file else ""
         memory_block = await self._recall_memory_block(project_id, user_message)
         if memory_block:
             add_section("memory", memory_block)
@@ -217,10 +218,9 @@ async def create_dev_agent(
 ):
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
-    # Keep the legacy global UML directory for explicit source/test-only
-    # callers, while project-root callers derive ``design/`` from the root.
+    # Project-root callers derive ``design/`` from the root.
     design_hint = design_dir or (
-        settings.uml_dir if not project_file and not workspace_root else ""
+        settings.project_dir if not project_file and not workspace_root else ""
     )
     manifest = WorkspaceManifest.from_paths(
         project_file=project_file,
@@ -262,7 +262,10 @@ async def create_dev_agent(
     for tool in tools:
         registry.register_tool(tool)
 
-    memory_provider = load_memory(llm=llm, settings=settings)
+    memory_provider = load_memory(
+        llm=llm, settings=settings,
+        project_file=project_file, workspace_root=workspace_root,
+    )
     environment_context = build_environment_context(
         executor=command_executor,
         cwd=workspace_root or source_dir or design_dir or None,

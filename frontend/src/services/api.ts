@@ -202,6 +202,8 @@ export async function listProjects(): Promise<Array<{
 export interface TraceMeta {
   session_id: string;
   filename: string;
+  date?: string;
+  relative_path?: string;
   size: number;
   modified: string;
   events: number;

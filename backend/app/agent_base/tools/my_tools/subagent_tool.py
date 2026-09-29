@@ -55,7 +55,6 @@ VERIFICATION_SUBAGENT_SYSTEM = (
 #   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
 TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
-SUBAGENT_RELAY_MAX_CHARS = 6000
 SUBAGENT_TRACE_SPAN = "child_agent"
 
 
@@ -142,6 +141,7 @@ def _build_toolkit_tools(
         by_name["list_files"],
         by_name["read_file"],
         by_name["search_text"],
+        by_name["read_tool_output"],
     ]
     if kind == "read_only":
         return inspection_tools
@@ -193,6 +193,8 @@ class SpawnSubagentTool(AsyncTool):
         workspace_root: str = "",
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
+        max_cumulative_tokens: int | None = None,
+        child_run_name: str = "subagent",
     ):
         super().__init__(
             name="spawn_subagent",
@@ -240,6 +242,13 @@ class SpawnSubagentTool(AsyncTool):
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
         self._single_use_used = False
+        # Optional task-level ceiling for scheduled explorers. The existing
+        # per-request budget semantics remain unchanged for other callers.
+        self.max_cumulative_tokens = (
+            max(1, int(max_cumulative_tokens))
+            if max_cumulative_tokens is not None else None
+        )
+        self.child_run_name = child_run_name
         unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
         if not self.toolkits or unknown_toolkits:
             raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
@@ -386,24 +395,6 @@ class SpawnSubagentTool(AsyncTool):
             + (f"\nVerified evidence gathered before stopping:\n{evidence_text}" if evidence_text else "")
         )
 
-    @staticmethod
-    def _bound_parent_summary(content: str) -> str:
-        """Keep delegated results useful without copying a full report upstream.
-
-        The complete model response remains in the trace.  The parent receives a
-        bounded head/tail excerpt so large specialist reports do not force a
-        second broad source scan or consume the main context window.
-        """
-        if len(content) <= SUBAGENT_RELAY_MAX_CHARS:
-            return content
-        marker = (
-            "\n\n[Subagent report shortened for parent context; "
-            "the complete report remains in the trace.]\n"
-        )
-        head = 4500
-        tail = max(0, SUBAGENT_RELAY_MAX_CHARS - head - len(marker))
-        return content[:head] + marker + content[-tail:]
-
     async def _execute(self, params: dict) -> str:
         description = params.get("description", "")
         if not isinstance(description, str) or not description.strip():
@@ -422,7 +413,10 @@ class SpawnSubagentTool(AsyncTool):
         parent_runtime = get_runtime()
         child_runtime = AgentRuntime(
             stop_check=parent_runtime.stop_check,
-            run_id=f"{parent_runtime.run_id}/subagent" if parent_runtime.run_id else "subagent",
+            run_id=(
+                f"{parent_runtime.run_id}/{self.child_run_name}"
+                if parent_runtime.run_id else self.child_run_name
+            ),
         )
         budget = ExecutionBudget(
             max_tool_calls=self.max_tool_calls,
@@ -579,6 +573,25 @@ class SpawnSubagentTool(AsyncTool):
                     "task_total_tokens_observed": budget.total_tokens,
                 }
                 self.last_context_report["last_request_context"] = request_context
+                if (
+                    self.max_cumulative_tokens is not None
+                    and not finalization_mode
+                    and budget.total_tokens
+                    + request_context["estimated_context_tokens"]
+                    + max(2500, self.token_finalization_reserve_tokens)
+                    >= self.max_cumulative_tokens
+                ):
+                    forced_finalization_reason = "task token budget approaching"
+                    continue
+                if (
+                    self.max_cumulative_tokens is not None
+                    and budget.total_tokens
+                    + request_context["estimated_context_tokens"]
+                    + 600 >= self.max_cumulative_tokens
+                ):
+                    self.last_token_usage = budget.total_tokens
+                    self.last_context_report["token_budget_stop_reason"] = "task_token_limit"
+                    return stopped_message("task token limit")
                 if request_context["estimated_context_tokens"] >= self.context_budget.budget.max_context_tokens:
                     self.last_token_usage = budget.total_tokens
                     self.last_context_report.update({
@@ -647,7 +660,7 @@ class SpawnSubagentTool(AsyncTool):
 
                 if not tool_calls:
                     if content.strip():
-                        return self._bound_parent_summary(content.strip())
+                        return content.strip()
                     child_runtime.control_decision = None
                     get_hooks().emit(
                         HookEvent.TOOL_BATCH_AFTER,
