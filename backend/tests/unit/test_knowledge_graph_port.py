@@ -129,15 +129,16 @@ def test_local_provider_adapts_build_and_diagram_search(tmp_path):
     assert any("User" in reason for reason in matches["Domain"])
 
 
-def test_v2_tools_can_be_created_with_a_custom_provider():
+def test_v2_tools_can_be_created_with_a_custom_provider(tmp_path):
     import asyncio
     import json
 
     from extensions.knowledge_graph.tools import create_kg_v2_tools
 
     provider = _Provider()
+    project_file = str(tmp_path / "demo.umlproj")
     tools = create_kg_v2_tools(
-        project_file="demo.umlproj",
+        project_file=project_file,
         provider=provider,
         include_compare=True,
     )
@@ -149,4 +150,7 @@ def test_v2_tools_can_be_created_with_a_custom_provider():
         "compare_design_code",
     ]
     assert all(tool.provider is provider for tool in tools)
-    assert json.loads(asyncio.run(tools[0]._execute({}))) == {"project_id": "demo"}
+    from backend.config.project_storage import project_id_for
+    assert json.loads(asyncio.run(tools[0]._execute({}))) == {
+        "project_id": project_id_for(project_file),
+    }

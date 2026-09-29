@@ -106,7 +106,7 @@ def test_prompt_builder_keeps_design_workspace_without_project_file_prompting():
     assert "Current project file:" not in context
 
 
-def test_prompt_builder_uses_injected_memory_port_without_manager_dependency():
+def test_prompt_builder_uses_injected_memory_port_without_manager_dependency(tmp_path):
     class FakeMemory:
         def __init__(self):
             self.recalled = []
@@ -125,11 +125,14 @@ def test_prompt_builder_uses_injected_memory_port_without_manager_dependency():
     import asyncio
     memory = FakeMemory()
     builder = DevPromptBuilder(memory=memory)
-    context = asyncio.run(builder.build_context("project.umlproj", "src", "tests", "continue"))
+    project_file = str(tmp_path / "project.umlproj")
+    context = asyncio.run(builder.build_context(project_file, "src", "tests", "continue"))
 
     assert "verified design decision" in context
-    assert memory.recalled[0].project_id == "project"
-    assert memory.reinforced == [(("memory-1",), "project")]
+    from backend.config.project_storage import project_id_for
+    project_id = project_id_for(project_file)
+    assert memory.recalled[0].project_id == project_id
+    assert memory.reinforced == [(("memory-1",), project_id)]
 
 
 def test_memory_archive_helper_only_depends_on_memory_port():

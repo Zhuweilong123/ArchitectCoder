@@ -19,9 +19,8 @@ def test_audit_log_is_durable_and_redacts_sensitive_values(tmp_path):
     assert events[0]["details"]["value"] == "safe"
 
 
-def test_trace_events_include_active_run_id(tmp_path, monkeypatch):
-    monkeypatch.setattr("extensions.trace.format.chat_log_dir", lambda: str(tmp_path))
-    trace = ChatTraceLogger("session-1")
+def test_trace_events_include_active_run_id(tmp_path):
+    trace = ChatTraceLogger("session-1", log_dir=str(tmp_path))
     trace.set_run_id("run-1")
     trace.start()
     trace.agent_step(step=1, actions=["read_file"])

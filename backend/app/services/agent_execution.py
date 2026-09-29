@@ -825,8 +825,8 @@ async def handle_agent_execution(
             or resume_checkpoint.get("run_id") or run_id
         ),
         "architecture_scheduling_mode": bool(
-            get_settings().agent_orchestration_enabled
-            and get_settings().agent_knowledge_graph_enabled
+            getattr(get_settings(), "agent_orchestration_enabled", False)
+            and getattr(get_settings(), "agent_knowledge_graph_enabled", False)
             and resume_checkpoint.get("architecture_scheduling_mode") is not False
         ),
         "architecture_schedule_version": 2,

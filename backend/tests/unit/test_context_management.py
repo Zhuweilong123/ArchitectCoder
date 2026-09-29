@@ -160,7 +160,7 @@ def test_fit_messages_drops_function_call_and_results_as_one_group():
     assert not any(message.get("role") in {"assistant", "tool"} for message in fitted)
 
 
-def test_react_step_compaction_keeps_recent_pairs_and_checkpoint():
+def test_react_step_compaction_checkpoints_pairs_when_target_cannot_fit_one():
     manager = ContextBudgetManager()
     messages = [
         {"role": "system", "content": "system"},
@@ -180,9 +180,10 @@ def test_react_step_compaction_keeps_recent_pairs_and_checkpoint():
     )
 
     assert current_index == 1
-    assert dropped == 8
+    assert dropped == 10
     assert compacted[2]["role"] == "system"
-    assert sum(1 for message in compacted if message.get("role") == "assistant") == 1
+    assert "read_file" in compacted[2]["content"]
+    assert sum(1 for message in compacted if message.get("role") == "assistant") == 0
     assert all(
         message.get("role") != "tool" or any(
             call.get("id") == message.get("tool_call_id")

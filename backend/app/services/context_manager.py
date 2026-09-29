@@ -478,7 +478,9 @@ class ContextBudgetManager:
         )
         for group in reversed(groups):
             group_tokens = sum(self._message_tokens_for(messages[pos]) for pos in group)
-            if retained_groups and retained_tokens + group_tokens > target_tokens:
+            # Even the newest step must become a checkpoint if it alone
+            # exceeds the history target; otherwise fit_messages drops it.
+            if retained_tokens + group_tokens > target_tokens:
                 break
             retained_groups.append(group)
             retained_tokens += group_tokens

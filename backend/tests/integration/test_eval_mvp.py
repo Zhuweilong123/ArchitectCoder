@@ -298,7 +298,7 @@ async def _run_checkers(workspace, configs):
 def test_radar_eval_catalog_and_uml_checkers():
     cases = load_cases()
     projects = load_projects()
-    assert len(cases) == 19
+    assert len(cases) == 21
     assert len(_baseline_case_ids()) == 16
     assert "radar-source-only-contract-intercept-001" not in _baseline_case_ids()
     assert all(case.schema_version == EVAL_CASE_SCHEMA_VERSION for case in cases.values())
