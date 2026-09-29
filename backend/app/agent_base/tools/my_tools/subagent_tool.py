@@ -142,6 +142,7 @@ def _build_toolkit_tools(
         by_name["list_files"],
         by_name["read_file"],
         by_name["search_text"],
+        by_name["read_tool_output"],
     ]
     if kind == "read_only":
         return inspection_tools

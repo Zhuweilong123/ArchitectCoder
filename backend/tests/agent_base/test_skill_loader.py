@@ -95,14 +95,15 @@ def test_schema_enum_restricts_names(tmp_path):
 
 
 def test_truncate_hook_exempts_skill_tool(tmp_path):
+    from app.agent_base.core.hooks import TruncateHook
+
+    hook = TruncateHook(max_chars=1200, per_tool={"skill": 20000})
     big = "x" * 15000
-    out = get_hooks().trigger(
-        HookEvent.TOOL_AFTER,
+    out = hook(
         HookContext(event=HookEvent.TOOL_AFTER, agent_name="t", tool_name="skill", tool_output=big),
     )
-    assert out is None  # 不截断
-    out = get_hooks().trigger(
-        HookEvent.TOOL_AFTER,
+    assert out is None
+    out = hook(
         HookContext(event=HookEvent.TOOL_AFTER, agent_name="t", tool_name="read_file", tool_output=big),
     )
     assert out is not None and "truncated" in out

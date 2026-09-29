@@ -447,6 +447,34 @@ class ChatTraceLogger:
             "span_path": span_path,
         })
 
+    def read_tool_output(self, output_id: str, *,
+                         excluded_tool_names: frozenset[str] = frozenset()) -> str | None:
+        """Read one complete tool result from this session's JSONL trace."""
+        if (len(output_id) != 16 or
+                any(char not in "0123456789abcdef" for char in output_id)):
+            return None
+        if not self._path:
+            return None
+        try:
+            with open(self._path, "r", encoding="utf-8") as stream:
+                for line in stream:
+                    if output_id not in line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (event.get("event_type") == EVT_TOOL_RESULT
+                            and event.get("span_id") == output_id):
+                        if event.get("tool_name") in excluded_tool_names:
+                            return None
+                        observation = event.get("observation")
+                        return observation if isinstance(observation, str) else None
+        except OSError:
+            logger.warning("[Trace] Could not read tool output from %s", self._path,
+                           exc_info=True)
+        return None
+
     def review_request(self, *, review_id: int, review_type: str,
                        title: str, question: str, content: str = "",
                        metadata: dict | None = None) -> None:

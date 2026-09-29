@@ -1151,6 +1151,8 @@ def create_foundation_tools(
     review_manager=None, progress=None, change_set=None, command_executor=None,
     workspace_root: str = "", execution_broker=None,
 ) -> list[Tool]:
+    from app.agent_base.tools.tool_output import ReadToolOutputTool
+
     common = dict(
         source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
         review_manager=review_manager, progress=progress,
@@ -1171,6 +1173,7 @@ def create_foundation_tools(
         RunProgramTool(**common),
         RunTaskTool(**common, execution_broker=execution_broker),
         ShellTool(**common),
+        ReadToolOutputTool(),
     ]
 
 

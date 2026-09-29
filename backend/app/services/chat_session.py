@@ -49,6 +49,8 @@ from app.trace.tracing import (
     load_trace,
     pop_trace_hook,
     push_trace_hook,
+    reset_current_trace_sink,
+    set_current_trace_sink,
 )
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.run_state import RunStateError, RunStatus, get_run_store
@@ -599,6 +601,7 @@ class ChatSessionCoordinator:
         design_dir = ""
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
+        trace_sink_token = set_current_trace_sink(trace_log)
         push_trace_hook(trace_hook_handler)
 
         def _stop_check():
@@ -1013,4 +1016,5 @@ class ChatSessionCoordinator:
             session.touch()
             agent_runtime.release_run(session_id, connection_owner)
             pop_trace_hook(trace_hook_handler)
+            reset_current_trace_sink(trace_sink_token)
             _set_trace_bridge(None)

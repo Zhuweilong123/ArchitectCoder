@@ -52,7 +52,10 @@ def enabled_tools_context() -> str:
         "allowlisted executable with literal argv (never powershell/cmd/bash or shell "
         "syntax); shell only for one simple allowlisted native command with no pipes, "
         "chaining, redirection, substitution, or nested shell. Use apply_changes for "
-        "all file creation, editing, deletion, moving, and copying."
+        "all file creation, editing, deletion, moving, and copying. Use read_file "
+        "for current workspace file content and its line-based continuation. "
+        "Use read_tool_output only when another tool provides an output_id and "
+        "next_offset for a truncated result."
     )
 
 

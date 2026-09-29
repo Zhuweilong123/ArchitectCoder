@@ -372,7 +372,7 @@ function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.React
   const call = item.call;
   const res = item.result;
   const obsLabel = res?.fed_truncated
-    ? `${tx(language, '返回', 'Response')} · ${tx(language, `完整(模型仅看前${res.fed_length}字)`, `full (model saw only the first ${res.fed_length} characters)`)}`
+    ? `${tx(language, '返回', 'Response')} · ${tx(language, `完整记录（模型收到${res.fed_length}字）`, `full record (model received ${res.fed_length} characters)`)}`
     : tx(language, '返回', 'Response');
   const argsPanel = {
     key: 'args', label: tx(language, '参数', 'Arguments'), children: <pre className="trace-pre">{truncate(pretty(call.arguments), 4000, language)}</pre>,
@@ -394,7 +394,7 @@ function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.React
         <span className="trace-title">{call.tool_name || 'tool'}</span>
         {call.tool_name === 'spawn_subagent' ? <Tag color="purple">{tx(language, '子代理委派', 'Subagent delegation')}</Tag> : null}
         {res?.fed_truncated ? (
-          <Tag color="orange">{tx(language, `模型仅收到前 ${res.fed_length} 字`, `Model received only the first ${res.fed_length} characters`)}</Tag>
+          <Tag color="orange">{tx(language, `模型收到 ${res.fed_length} 字`, `Model received ${res.fed_length} characters`)}</Tag>
         ) : null}
         {res?.duration_ms != null ? <span className="trace-meta">{res.duration_ms}ms</span> : null}
       </div>

@@ -3,7 +3,7 @@
 借鉴 Claude Code 范式的 A 层工具，为「AI 开发助手」补齐底层动手能力：
 读现有代码、精确修改、跑命令。所有文件操作经 ``safe_path`` 守卫在 workspace 内；
 shell 两级防护：高危命令直接拒绝，敏感命令经 ReviewManager 请求人工批准，
-其余命令带超时直接放行；输出截断由默认 ``TruncateHook``（core/hooks.py）负责。
+其余命令带超时直接放行；长工具结果由运行时分页后喂给模型。
 
 Usage::
 
@@ -86,9 +86,8 @@ _DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
 _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
 SHELL_TIMEOUT = 120  # 秒
-SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；喂给模型前再由 TruncateHook 截断
+SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；模型输出由运行时分页
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
-LIST_FILES_OUTPUT_CAP = 3500  # Keep broad inventories below the shared tool-output truncation limit.
 
 
 def _decode_output(data: bytes) -> str:
@@ -201,14 +200,21 @@ class ReadFileTool(AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
     _MAX_PATH_SUGGESTIONS = 5
+    _MAX_LINES = 2000
+    _MAX_OUTPUT_CHARS = 100_000
+    _MAX_LINE_CHARS = 16_000
+    _OUTPUT_METADATA_RESERVE = 256
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
                  workspace_root: str = ""):
         super().__init__(
             name="read_file",
             description=(
-                "Read a file from the workspace and return its text content. "
-                "Use offset (start line) and limit (max lines) to read a specific range."
+                "Read current workspace file content by path. Use offset (0-based "
+                "start line) and limit (max 2000 lines) to target a range; omitted "
+                "limit reads up to 2000 lines. If the result reports next_line, "
+                "continue with read_file at that line. For an oversized line, "
+                "also pass its next_char as char_offset."
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
@@ -230,19 +236,96 @@ class ReadFileTool(AsyncTool):
         except ValueError as e:
             return f"Error: {e}"
         try:
-            lines = fp.read_text(encoding="utf-8").splitlines()
+            offset = max(int(params.get("offset") or 0), 0)
+            requested_limit = params.get("limit")
+            limit = (self._MAX_LINES if requested_limit is None else
+                     min(int(requested_limit), self._MAX_LINES))
+            char_offset = int(params.get("char_offset") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return "Error: offset, limit, and char_offset must be integers"
+        if limit < 1 or char_offset < 0:
+            return "Error: limit must be positive and char_offset nonnegative"
+        try:
+            return await asyncio.to_thread(
+                self._read_window, fp, offset, limit, char_offset,
+            )
         except FileNotFoundError:
             return self._missing_file_message(path)
         except Exception as e:
             return f"Error: {e}"
 
-        offset = max(int(params.get("offset") or 0), 0)
-        limit = params.get("limit")
-        limit = int(limit) if limit is not None else None
-        lines = lines[offset:]
-        if limit is not None and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)
+    def _read_window(self, path: Path, offset: int, limit: int,
+                     char_offset: int) -> str:
+        """Stream a bounded range and leave a read_file cursor if more remains."""
+        parts: list[str] = []
+        content_chars = 0
+        complete_lines = 0
+        next_line: int | None = None
+        next_char = 0
+        max_content = self._MAX_OUTPUT_CHARS - self._OUTPUT_METADATA_RESERVE
+
+        with path.open("r", encoding="utf-8") as stream:
+            for _ in range(offset):
+                if not self._discard_line(stream):
+                    return ""
+            line_number = offset
+            while True:
+                if complete_lines >= limit:
+                    if stream.read(1):
+                        next_line = line_number
+                    break
+                start_char = char_offset if line_number == offset else 0
+                if start_char and not self._discard_chars(stream, start_char):
+                    return f"Error: char_offset exceeds line {line_number}"
+                raw_line = stream.readline(self._MAX_LINE_CHARS + 1)
+                if not raw_line:
+                    break
+                line = raw_line.removesuffix("\n")
+                separator_chars = 1 if parts else 0
+                available = max_content - content_chars - separator_chars
+                if available <= 0:
+                    next_line, next_char = line_number, start_char
+                    break
+                if len(line) > self._MAX_LINE_CHARS:
+                    chunk = line[:min(self._MAX_LINE_CHARS, available)]
+                    parts.append(chunk)
+                    next_line, next_char = line_number, start_char + len(chunk)
+                    break
+                if len(line) > available:
+                    next_line, next_char = line_number, start_char
+                    break
+                parts.append(line)
+                content_chars += separator_chars + len(line)
+                complete_lines += 1
+                line_number += 1
+
+        body = "\n".join(parts)
+        if next_line is None:
+            return body
+        marker = (
+            f"\n\n[read_file partial; lines={offset}:{offset + complete_lines}; "
+            f"next_line={next_line}; next_char={next_char}; "
+            "continue with read_file using the same path]"
+        )
+        return body + marker
+
+    @staticmethod
+    def _discard_line(stream) -> bool:
+        """Skip one line without constructing an unbounded string."""
+        while chunk := stream.readline(8192):
+            if chunk.endswith("\n"):
+                return True
+        return False
+
+    @staticmethod
+    def _discard_chars(stream, count: int) -> bool:
+        """Move within one line using bounded chunks."""
+        while count:
+            chunk = stream.readline(min(count, 8192))
+            if not chunk or chunk.endswith("\n"):
+                return False
+            count -= len(chunk)
+        return True
 
     def _missing_file_message(self, requested: object) -> str:
         """Return a bounded, actionable error without guessing a target path."""
@@ -326,7 +409,8 @@ class ReadFileTool(AsyncTool):
                     "properties": {
                         "path": {"type": "string", "description": "File path relative to the workspace."},
                         "offset": {"type": "integer", "description": "Start line (0-based)."},
-                        "limit": {"type": "integer", "description": "Max lines to return."},
+                        "limit": {"type": "integer", "description": "Max lines to return, at most 2000."},
+                        "char_offset": {"type": "integer", "description": "Character position within the first line, for continuing an oversized line."},
                     },
                     "required": ["path"],
                 },
@@ -401,24 +485,16 @@ class BaseListFilesTool(AsyncTool):
             if details else ""
         )
         rows = [header] if header else []
-        truncated_by_chars = False
         for name, path in selected:
             metrics = file_metrics(path) if details else ""
             row = f"{name}\t{metrics}" if metrics else name
-            candidate_rows = rows + [row]
-            if len("\n".join(candidate_rows)) > LIST_FILES_OUTPUT_CAP:
-                truncated_by_chars = True
-                break
             rows.append(row)
         shown = len(rows) - int(bool(header))
         if total > shown:
-            reason = "output size" if truncated_by_chars else "entry limit"
-            notice = f"[truncated: showing {shown} of {total} entries ({reason}); narrow path/pattern]"
-            while rows and len("\n".join(rows + [notice])) > LIST_FILES_OUTPUT_CAP:
-                rows.pop()
-                shown -= 1
-                notice = f"[truncated: showing {shown} of {total} entries ({reason}); narrow path/pattern]"
-            rows.append(notice)
+            rows.append(
+                f"[truncated: showing {shown} of {total} entries (entry limit); "
+                "narrow path/pattern]"
+            )
         return "\n".join(rows)
 
     def to_openai_schema(self) -> dict:

@@ -59,6 +59,9 @@ class TraceSink(Protocol):
 
     def tool_result(self, **kwargs: Any) -> None: ...
 
+    def read_tool_output(self, output_id: str, *,
+                         excluded_tool_names: frozenset[str] = frozenset()) -> str | None: ...
+
     def review_request(self, **kwargs: Any) -> None: ...
 
     def review_response(self, **kwargs: Any) -> None: ...
@@ -130,6 +133,10 @@ class NoOpTraceSink:
         return ""
 
     def tool_result(self, **kwargs: Any) -> None:
+        return None
+
+    def read_tool_output(self, output_id: str, *,
+                         excluded_tool_names: frozenset[str] = frozenset()) -> str | None:
         return None
 
     def review_request(self, **kwargs: Any) -> None:
@@ -308,6 +315,9 @@ _TRACE_HOOK_STACK: contextvars.ContextVar[tuple] = contextvars.ContextVar(
 _TRACE_SPANS: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
     "trace_spans", default=[]
 )
+_ACTIVE_TRACE_SINK: contextvars.ContextVar[TraceSink | None] = contextvars.ContextVar(
+    "active_trace_sink", default=None
+)
 
 
 def push_trace_hook(handler) -> None:
@@ -331,6 +341,20 @@ def set_trace_hook(handler=None):
 def get_trace_hook():
     stack = _TRACE_HOOK_STACK.get()
     return stack[-1] if stack else None
+
+
+def current_trace_sink() -> TraceSink | None:
+    """Return only the trace belonging to the current coroutine's session."""
+    return _ACTIVE_TRACE_SINK.get()
+
+
+def set_current_trace_sink(sink: TraceSink):
+    """Bind a trace sink for runtimes that manage its lifecycle directly."""
+    return _ACTIVE_TRACE_SINK.set(sink)
+
+
+def reset_current_trace_sink(token) -> None:
+    _ACTIVE_TRACE_SINK.reset(token)
 
 
 def emit_trace(kind: str, *args, **kwargs):
@@ -404,6 +428,7 @@ class TraceSession:
         self._provider = provider
         self._tracer = sink
         self._bridge = None
+        self._sink_token = None
 
     @property
     def tracer(self) -> TraceSink:
@@ -486,6 +511,7 @@ class TraceSession:
             env_snapshot=self._request.env_snapshot,
         )
         self._bridge = self._make_bridge()
+        self._sink_token = set_current_trace_sink(self._tracer)
         push_trace_hook(self._bridge)
         return self._tracer
 
@@ -493,6 +519,9 @@ class TraceSession:
         try:
             if self._bridge is not None:
                 pop_trace_hook(self._bridge)
+            if self._sink_token is not None:
+                reset_current_trace_sink(self._sink_token)
+                self._sink_token = None
             if exc_type is not None and self._tracer is not None:
                 self._tracer.error(
                     event_type="exception",

@@ -128,11 +128,11 @@ def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
-def test_foundation_tool_surface_has_seven_stable_tools(tmp_path):
+def test_foundation_tool_surface_includes_output_continuation(tmp_path):
     names = [tool.name for tool in create_foundation_tools(str(tmp_path))]
     assert names == [
         "list_files", "read_file", "search_text", "apply_changes",
-        "run_program", "run_task", "shell",
+        "run_program", "run_task", "shell", "read_tool_output",
     ]
 
 

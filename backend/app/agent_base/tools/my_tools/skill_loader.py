@@ -11,8 +11,7 @@ L3 必须由本工具投递而非让 agent 走 read_file —— ``foundation_run
 skills/ 在仓库根目录、不在用户被分析项目里，read_file 必然抛
 ``Path escapes workspace``。
 
-注意：本工具输出远超 ``TruncateHook`` 默认的 2000 字符上限，已在
-``core/hooks.py`` 中为 "skill" 单独放宽，否则正文会被静默腰斩。
+skill 结果单独使用 20000 字符的首段预算；超出后可通过 ``read_tool_output`` 续读。
 """
 
 from __future__ import annotations
@@ -136,7 +135,9 @@ class SkillTool(Tool):
             description=(
                 "Load a knowledge pack listed under '## Skills' in the system "
                 "prompt. Call with name only to get the skill's main guide plus "
-                "its reference file list; pass file to load one reference file."
+                "its reference file list; pass file to load one reference file. "
+                "Read the complete returned guide before following it; if a "
+                "continuation marker appears, use read_tool_output for the rest."
             ),
         )
         self._root = root

@@ -239,7 +239,7 @@ def test_standard_toolkit_full_editing(tmp_path):
     names = tool.sub_registries["standard"].list_tools()
     assert {
         "list_files", "read_file", "search_text", "apply_changes",
-        "run_program", "run_task", "shell", "skill",
+        "run_program", "run_task", "shell", "skill", "read_tool_output",
     } <= set(names)
     assert not ({"write_file", "edit_file", "glob", "bash"} & set(names))
     # 安全不变量：子代理永不递归、永不经由委派绕过审核
@@ -250,7 +250,7 @@ def test_standard_toolkit_full_editing(tmp_path):
 def test_read_only_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["read_only"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text"}
+    assert set(names) == {"list_files", "read_file", "search_text", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -258,7 +258,7 @@ def test_read_only_toolkit_no_writes(tmp_path):
 def test_kg_analysis_toolkit_no_writes(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["kg_analysis"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
 
@@ -271,7 +271,7 @@ def test_strategy_toolkit_is_read_only_and_can_be_single_use(tmp_path):
         toolkits=("strategy",), single_use=True,
     )
     names = tool.sub_registries["strategy"].list_tools()
-    assert set(names) == {"list_files", "read_file", "search_text", "skill"}
+    assert set(names) == {"list_files", "read_file", "search_text", "skill", "read_tool_output"}
     assert not ({"get_project_map", "find_nodes", "expand_neighbors"} & set(names))
     assert not ({"apply_changes", "run_program", "run_task", "shell"} & set(names))
     schema = tool.to_openai_schema()
@@ -289,7 +289,7 @@ def test_verification_toolkit_runs_only_fixed_checks(tmp_path):
     tool = _build_spawn(tmp_path)
     names = tool.sub_registries["verification"].list_tools()
     assert set(names) == {
-        "list_files", "read_file", "search_text", "skill", "run_task",
+        "list_files", "read_file", "search_text", "skill", "run_task", "read_tool_output",
     }
     assert not ({"apply_changes", "run_program", "shell"} & set(names))
     schema = next(
@@ -423,10 +423,15 @@ def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
         )),
     )
 
-    result = asyncio.run(tool._execute({
-        "description": "collect evidence",
-        "toolkit": "read_only",
-    }))
+    from app.trace.tracing import TraceSession
+    from extensions.trace.chat_trace import ChatTraceLogger
+
+    with TraceSession(session_id="subagent_context", sink=ChatTraceLogger(
+            "subagent_context", log_dir=str(tmp_path))):
+        result = asyncio.run(tool._execute({
+            "description": "collect evidence",
+            "toolkit": "read_only",
+        }))
 
     assert result == "context summary"
     assert llm.count == 6
