@@ -85,6 +85,9 @@ DevAgent 与子代理共享同一组面向能力的工具契约。所有文件�
   `ReviewManager` 请求人工批准，批准才执行；拒绝/超时/无审核通道均不执行
   （fail closed）。超时上限 `SHELL_REVIEW_TIMEOUT`。
 - 其余命令带 120s 超时直接放行；较长输出按统一工具结果协议分页。
+- `shell`、`run_program` 和 `run_task` 在读取 stdout/stderr 时执行合计字节硬上限，
+  默认 10 MiB，可由 `agent_command_output_limit_bytes` 调整。触顶即停止进程并返回
+  `OUTPUT_LIMIT` 和已采集字节数；这表示命令结果不完整，不视为验证成功。
 
 ### 工具结果分页
 
@@ -100,6 +103,7 @@ DevAgent 与子代理共享同一组面向能力的工具契约。所有文件�
 `read_tool_output(output_id, offset, limit)` 继续读取原文，直到 `next_offset=none`。
 偏移量按 Python 字符位置计算，每次续读最多返回 2600 个原文字符；短结果保持原样。
 续读仅能访问当前会话 trace 中的非 `read_file` 工具结果，不会重新执行原工具。
+子代理的完整回复也遵循此分页协议，不再在工具内部裁掉报告中段。
 
 ### 知识图谱理解（`extensions/knowledge_graph/tools.py`，主 Agent 默认不注册）
 

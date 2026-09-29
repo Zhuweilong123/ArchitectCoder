@@ -196,7 +196,7 @@ def test_spawn_subagent_rejects_malformed_tool_calls_without_raising(tmp_path):
     assert "malformed tool calls" in result
 
 
-def test_spawn_subagent_bounds_large_parent_report(tmp_path):
+def test_spawn_subagent_preserves_large_parent_report(tmp_path):
     class _VerboseLLM:
         async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
             return {"content": "HEAD\n" + ("detail\n" * 2000) + "TAIL", "tool_calls": None}
@@ -205,10 +205,10 @@ def test_spawn_subagent_bounds_large_parent_report(tmp_path):
 
     result = asyncio.run(tool._execute({"description": "summarize the project"}))
 
-    assert len(result) <= 6000
+    assert len(result) > 6000
     assert result.startswith("HEAD")
     assert result.endswith("TAIL")
-    assert "complete report remains in the trace" in result
+    assert result.count("detail\n") == 2000
 
 
 def test_spawn_subagent_requires_description(tmp_path):

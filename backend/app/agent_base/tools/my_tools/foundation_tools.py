@@ -17,6 +17,7 @@ from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
 from app.runtime.command import ExecutionEnvironmentError
+from app.runtime.process_output import collect_process_output
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import (
     CommandEvidence,
@@ -30,6 +31,7 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
     BaseListFilesTool,
     ReadFileTool,
     SearchTextTool,
+    SHELL_OUTPUT_CAP,
     _decode_output,
     _expand_workspace_alias,
     _resolve_roots,
@@ -709,7 +711,7 @@ class RunProgramTool(ShellTool):
 
     async def _run_program_cancellable(
         self, program: str, args: list[str], cwd: str | None,
-    ) -> str:
+    ) -> str | ToolResult:
         def _start():
             return self._command_executor.start_program(program, args, cwd)
 
@@ -718,29 +720,27 @@ class RunProgramTool(ShellTool):
         except (OSError, ExecutionEnvironmentError) as exc:
             return f"Error: {type(exc).__name__}: {exc}"
 
-        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
-        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
-            while not communicate.done():
-                if get_runtime().stop_check():
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return "Error: program canceled"
-                if asyncio.get_running_loop().time() >= deadline:
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return f"Error: program timed out after {self._timeout:g}s"
-                await asyncio.sleep(0.05)
-            stdout, stderr = await communicate
-        except asyncio.CancelledError:
-            self._command_executor.terminate(proc)
-            await asyncio.shield(communicate)
-            raise
+            captured = await collect_process_output(
+                proc, terminate=self._command_executor.terminate,
+                timeout=self._timeout, stop_check=get_runtime().stop_check,
+                output_limit=self._output_cap,
+            )
         except OSError as exc:
             return f"Error: {type(exc).__name__}: {exc}"
 
-        output = (_decode_output(stdout) + _decode_output(stderr)).strip()
-        output = output[:self._output_cap] if len(output) > self._output_cap else output
+        if captured.reason == "canceled":
+            return "Error: program canceled"
+        if captured.reason == "timeout":
+            return f"Error: program timed out after {self._timeout:g}s"
+        output = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
+        if captured.reason == "output_limit":
+            return ToolResult.error(
+                f"Error: OUTPUT_LIMIT: program output is incomplete; collected "
+                f"{captured.collected_bytes} of at least {captured.limit_bytes + 1} bytes "
+                f"(limit {captured.limit_bytes}). Process stopped.\n{output}",
+                "OUTPUT_LIMIT",
+            )
         if proc.returncode:
             output = f"Error: program exited with code {proc.returncode}: {output or '(no output)'}"
         return command_result(
@@ -1150,6 +1150,7 @@ def create_foundation_tools(
     source_dir: str = "", test_dir: str = "", design_dir: str = "",
     review_manager=None, progress=None, change_set=None, command_executor=None,
     workspace_root: str = "", execution_broker=None,
+    output_cap: int = SHELL_OUTPUT_CAP,
 ) -> list[Tool]:
     from app.agent_base.tools.tool_output import ReadToolOutputTool
 
@@ -1158,6 +1159,7 @@ def create_foundation_tools(
         review_manager=review_manager, progress=progress,
         command_executor=command_executor,
         workspace_root=workspace_root,
+        output_cap=output_cap,
     )
     return [
         ListFilesTool(source_dir, test_dir, design_dir, workspace_root=workspace_root),

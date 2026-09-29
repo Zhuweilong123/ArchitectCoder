@@ -135,6 +135,7 @@ def create_conversation_tools(
         command_executor=command_executor,
         workspace_root=workspace_root,
         execution_broker=execution_broker,
+        output_cap=get_settings().agent_command_output_limit_bytes,
     ))
 
     # todo_write：会话任务列表

@@ -351,7 +351,7 @@ class WorktreeStore:
         except (OSError, subprocess.TimeoutExpired) as exc:
             return False, f"{type(exc).__name__}: {exc}"
         output = (decode_process_output(result.stdout) + decode_process_output(result.stderr)).strip()
-        return result.returncode == 0, output[:5000] or "(no output)"
+        return result.returncode == 0, output or "(no output)"
 
     def _registered_worktrees(self) -> tuple[dict, str | None]:
         ok, output = self._run_git(["worktree", "list", "--porcelain"], cwd=self.workdir)

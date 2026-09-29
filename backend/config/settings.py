@@ -140,6 +140,8 @@ class Settings(BaseSettings):
     # and fails closed unless isolation capabilities are explicitly provided
     # by a future worker implementation.
     agent_execution_worker: Literal["local", "wsl", "container"] = "local"
+    # Combined stdout/stderr collection limit per command, enforced while reading.
+    agent_command_output_limit_bytes: int = 10 * 1024 * 1024
     agent_container_image: str = "ubuntu:24.04"
     agent_container_executable: str = "docker"
     agent_container_preflight_timeout_seconds: float = 10.0

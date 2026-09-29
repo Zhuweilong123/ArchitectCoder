@@ -18,6 +18,9 @@ from typing import Callable, Protocol
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, WslBashExecutor
 from app.runtime.encoding import decode_process_output
+from app.runtime.process_output import (
+    DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
+)
 from app.runtime.task_contracts import (
     ApprovalClass,
     ExecutionEvidence,
@@ -70,7 +73,7 @@ class LocalExecutionBroker:
         executor: CommandExecutor,
         roots: list[str] | tuple[str, ...],
         *,
-        output_cap: int = 1_000_000,
+        output_cap: int = DEFAULT_OUTPUT_LIMIT_BYTES,
         stop_check: Callable[[], bool] | None = None,
         toolchain_version_policy: str = "observe",
         toolchain_version_match_mode: str = "compatible",
@@ -78,7 +81,7 @@ class LocalExecutionBroker:
         self.executor = executor
         self.sandbox_name = "workspace"
         self.roots = tuple(Path(root).resolve() for root in roots if root)
-        self.output_cap = max(1024, min(int(output_cap), 1_000_000))
+        self.output_cap = normalize_output_limit(output_cap)
         self.stop_check = stop_check or (lambda: False)
         self.toolchain_version_policy = (
             str(toolchain_version_policy or "observe").strip().lower()
@@ -188,43 +191,50 @@ class LocalExecutionBroker:
             )
 
         started = time.monotonic()
-        communication = asyncio.create_task(asyncio.to_thread(proc.communicate))
         timeout = task.resources.timeout_seconds
         try:
-            while not communication.done():
-                if self.stop_check():
-                    self.executor.terminate(proc)
-                    await asyncio.shield(communication)
-                    return ExecutionEvidence(
-                        status="canceled", output="task canceled",
-                        duration_ms=(time.monotonic() - started) * 1000,
-                        diagnostics={"category": "canceled"}, cwd=resolved_cwd,
-                        **{key: value for key, value in base.items() if key != "cwd"},
-                    )
-                if time.monotonic() - started >= timeout:
-                    self.executor.terminate(proc)
-                    await asyncio.shield(communication)
-                    return ExecutionEvidence(
-                        status="timeout", output=f"task timed out after {timeout:g}s",
-                        duration_ms=(time.monotonic() - started) * 1000,
-                        timeout_reason="process_timeout", diagnostics={"category": "timeout"},
-                        cwd=resolved_cwd,
-                        **{key: value for key, value in base.items() if key != "cwd"},
-                    )
-                await asyncio.sleep(0.05)
-            stdout, stderr = await communication
-        except asyncio.CancelledError:
-            self.executor.terminate(proc)
-            await asyncio.shield(communication)
-            raise
-        output = (decode_process_output(stdout) + decode_process_output(stderr)).strip()
-        if len(output) > self.output_cap:
-            output = output[: self.output_cap]
-        exit_code = proc.returncode
+            captured = await collect_process_output(
+                proc, terminate=self.executor.terminate,
+                timeout=timeout, stop_check=self.stop_check,
+                output_limit=self.output_cap,
+            )
+        except OSError as exc:
+            return ExecutionEvidence(
+                status="failed", output=f"{type(exc).__name__}: {exc}",
+                duration_ms=(time.monotonic() - started) * 1000,
+                diagnostics={"category": "capture_failure"}, cwd=resolved_cwd,
+                **{key: value for key, value in base.items() if key != "cwd"},
+            )
+        duration_ms = (time.monotonic() - started) * 1000
+        if captured.reason in {"canceled", "timeout"}:
+            return ExecutionEvidence(
+                status=captured.reason,
+                output=("task canceled" if captured.reason == "canceled"
+                        else f"task timed out after {timeout:g}s"),
+                duration_ms=duration_ms,
+                timeout_reason="process_timeout" if captured.reason == "timeout" else None,
+                diagnostics={"category": captured.reason}, cwd=resolved_cwd,
+                **{key: value for key, value in base.items() if key != "cwd"},
+            )
+        output = (decode_process_output(captured.stdout) + decode_process_output(captured.stderr)).strip()
+        exit_code = captured.exit_code
+        if captured.reason == "output_limit":
+            return ExecutionEvidence(
+                status="output_limit",
+                output=(f"OUTPUT_LIMIT: task output is incomplete; collected "
+                        f"{captured.collected_bytes} of at least {captured.limit_bytes + 1} "
+                        f"bytes (limit {captured.limit_bytes}). Process stopped.\n{output}"),
+                exit_code=exit_code, duration_ms=duration_ms,
+                diagnostics={"category": "output_limit",
+                             "collected_bytes": captured.collected_bytes,
+                             "limit_bytes": captured.limit_bytes},
+                cwd=resolved_cwd,
+                **{key: value for key, value in base.items() if key != "cwd"},
+            )
         return ExecutionEvidence(
             status="success" if exit_code == 0 else "failed",
             output=output or "(no output)", exit_code=exit_code,
-            duration_ms=(time.monotonic() - started) * 1000,
+            duration_ms=duration_ms,
             diagnostics={"category": "process_exit"}, cwd=resolved_cwd,
             **{key: value for key, value in base.items() if key != "cwd"},
         )
@@ -349,7 +359,7 @@ class WorkerExecutionBroker:
         roots: list[str] | tuple[str, ...],
         *,
         worker: SandboxWorker,
-        output_cap: int = 1_000_000,
+        output_cap: int = DEFAULT_OUTPUT_LIMIT_BYTES,
         stop_check: Callable[[], bool] | None = None,
         toolchain_version_policy: str = "observe",
         toolchain_version_match_mode: str = "compatible",
@@ -455,6 +465,7 @@ def build_execution_broker(
     guarantees.
     """
     mode = str(getattr(settings, "agent_execution_worker", "local") or "local").lower()
+    output_cap = getattr(settings, "agent_command_output_limit_bytes", DEFAULT_OUTPUT_LIMIT_BYTES)
     if mode == "container":
         if not roots:
             raise ValueError("container worker requires a workspace root")
@@ -469,6 +480,7 @@ def build_execution_broker(
         )
         return WorkerExecutionBroker(
             worker.executor, roots, worker=worker, stop_check=stop_check,
+            output_cap=output_cap,
             toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
             toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
         )
@@ -484,13 +496,14 @@ def build_execution_broker(
         )
         return WorkerExecutionBroker(
             worker.executor, roots, worker=worker, stop_check=stop_check,
+            output_cap=output_cap,
             toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
             toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
         )
     if mode != "local":
         raise ValueError(f"unsupported execution worker: {mode}")
     return LocalExecutionBroker(
-        executor, roots, stop_check=stop_check,
+        executor, roots, stop_check=stop_check, output_cap=output_cap,
         toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
         toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
     )

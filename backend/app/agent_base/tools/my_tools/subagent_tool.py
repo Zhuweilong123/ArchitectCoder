@@ -55,7 +55,6 @@ VERIFICATION_SUBAGENT_SYSTEM = (
 #   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
 #   * 子代理工具集是主 agent 允许集的子集（无提权）
 TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
-SUBAGENT_RELAY_MAX_CHARS = 6000
 SUBAGENT_TRACE_SPAN = "child_agent"
 
 
@@ -396,24 +395,6 @@ class SpawnSubagentTool(AsyncTool):
             + (f"\nVerified evidence gathered before stopping:\n{evidence_text}" if evidence_text else "")
         )
 
-    @staticmethod
-    def _bound_parent_summary(content: str) -> str:
-        """Keep delegated results useful without copying a full report upstream.
-
-        The complete model response remains in the trace.  The parent receives a
-        bounded head/tail excerpt so large specialist reports do not force a
-        second broad source scan or consume the main context window.
-        """
-        if len(content) <= SUBAGENT_RELAY_MAX_CHARS:
-            return content
-        marker = (
-            "\n\n[Subagent report shortened for parent context; "
-            "the complete report remains in the trace.]\n"
-        )
-        head = 4500
-        tail = max(0, SUBAGENT_RELAY_MAX_CHARS - head - len(marker))
-        return content[:head] + marker + content[-tail:]
-
     async def _execute(self, params: dict) -> str:
         description = params.get("description", "")
         if not isinstance(description, str) or not description.strip():
@@ -679,7 +660,7 @@ class SpawnSubagentTool(AsyncTool):
 
                 if not tool_calls:
                     if content.strip():
-                        return self._bound_parent_summary(content.strip())
+                        return content.strip()
                     child_runtime.control_decision = None
                     get_hooks().emit(
                         HookEvent.TOOL_BATCH_AFTER,

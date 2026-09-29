@@ -25,8 +25,12 @@ from pathlib import Path
 from typing import Optional
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.runtime.process_output import (
+    DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
+)
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.async_tool import AsyncTool
+from app.agent_base.tools.result import ToolResult, command_result
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
 from app.agent_base.tools.my_tools.file_inventory import file_metrics
 from app.core.risk_policy import RiskDecision, RiskPolicy
@@ -86,7 +90,7 @@ _DENY_LIST_LOWER = [p.lower() for p in DENY_LIST]
 _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 
 SHELL_TIMEOUT = 120  # 秒
-SHELL_OUTPUT_CAP = 50000  # 内部输出上限，避免大输出占内存；模型输出由运行时分页
+SHELL_OUTPUT_CAP = DEFAULT_OUTPUT_LIMIT_BYTES  # 采集时的字节硬上限；模型输出由运行时分页
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
 
 
@@ -508,7 +512,7 @@ class BaseListFilesTool(AsyncTool):
                     "properties": {
                         "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'."},
                         "details": {"type": "boolean", "description": "Include file metrics (default true)."},
-                        "limit": {"type": "integer", "description": "Maximum entries (default 200, maximum 1000); response also has a character cap."},
+                        "limit": {"type": "integer", "description": "Maximum entries (default 200, maximum 1000)."},
                     },
                     "required": ["pattern"],
                 },
@@ -544,7 +548,7 @@ class ShellTool(AsyncTool):
         self._progress = progress
         self._review_timeout = review_timeout
         self._timeout = max(0.1, min(float(timeout), 3600.0))
-        self._output_cap = max(1024, min(int(output_cap), 1_000_000))
+        self._output_cap = normalize_output_limit(output_cap)
         self._risk_policy = risk_policy or RiskPolicy(
             deny_patterns=DENY_LIST,
             deny_regex_patterns=DENY_REGEX_LIST,
@@ -732,11 +736,11 @@ class ShellTool(AsyncTool):
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
         return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
 
-    async def _run_command(self, command: str, cwd: str | None = None) -> str:
+    async def _run_command(self, command: str, cwd: str | None = None) -> str | ToolResult:
         cwd = cwd if cwd is not None else (self._cwd or None)
         return await self._run_command_cancellable(command, cwd)
 
-    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str:
+    async def _run_command_cancellable(self, command: str, cwd: str | None) -> str | ToolResult:
         def _start():
             return self._command_executor.start(command, cwd)
 
@@ -745,32 +749,29 @@ class ShellTool(AsyncTool):
         except (OSError, ExecutionEnvironmentError) as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        communicate = asyncio.create_task(asyncio.to_thread(proc.communicate))
-        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
-            while not communicate.done():
-                if get_runtime().stop_check():
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return "Error: command canceled"
-                if asyncio.get_running_loop().time() >= deadline:
-                    self._command_executor.terminate(proc)
-                    await asyncio.shield(communicate)
-                    return f"Error: command timed out after {self._timeout:g}s"
-                await asyncio.sleep(0.05)
-            stdout, stderr = await communicate
-        except asyncio.CancelledError:
-            self._command_executor.terminate(proc)
-            await asyncio.shield(communicate)
-            raise
+            captured = await collect_process_output(
+                proc, terminate=self._command_executor.terminate,
+                timeout=self._timeout, stop_check=get_runtime().stop_check,
+                output_limit=self._output_cap,
+            )
         except OSError as e:
             return f"Error: {type(e).__name__}: {e}"
 
-        out = (_decode_output(stdout) + _decode_output(stderr)).strip()
-        out = out[:self._output_cap] if len(out) > self._output_cap else out
+        if captured.reason == "canceled":
+            return "Error: command canceled"
+        if captured.reason == "timeout":
+            return f"Error: command timed out after {self._timeout:g}s"
+        out = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
+        if captured.reason == "output_limit":
+            return ToolResult.error(
+                f"Error: OUTPUT_LIMIT: command output is incomplete; collected "
+                f"{captured.collected_bytes} of at least {captured.limit_bytes + 1} bytes "
+                f"(limit {captured.limit_bytes}). Process stopped.\n{out}",
+                "OUTPUT_LIMIT",
+            )
         if proc.returncode:
             out = f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
-        from app.agent_base.tools.result import command_result
         return command_result(command, cwd, proc.returncode, out or "(no output)")
 
     def to_openai_schema(self) -> dict:

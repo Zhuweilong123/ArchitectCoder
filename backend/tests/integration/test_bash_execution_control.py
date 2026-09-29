@@ -40,10 +40,13 @@ def test_bash_stop_check_terminates_command(tmp_path):
     assert result == "Error: command canceled"
 
 
-def test_bash_output_cap_is_per_tool(tmp_path):
+def test_bash_output_limit_reports_incomplete_result(tmp_path):
     _write_script(tmp_path, "output_script.py", "print('x' * 5000)\n")
     bash = ShellTool(str(tmp_path), output_cap=1024)
 
-    result = asyncio.run(bash._execute({"command": "python output_script.py"}))
+    result = asyncio.run(bash.run_result({"command": "python output_script.py"}))
 
-    assert len(result) == 1024
+    assert result.status == "error"
+    assert result.error_code == "OUTPUT_LIMIT"
+    assert "output is incomplete" in result.text
+    assert "limit 1024" in result.text
