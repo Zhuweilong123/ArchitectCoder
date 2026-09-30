@@ -13,6 +13,7 @@ require.extensions['.ts'] = (module, filename) => {
 const { layoutClasses, getClassNodeSize } = require('../src/utils/classLayout.ts');
 const { layoutComponents, getComponentHeaderHeight } = require('../src/utils/componentLayout.ts');
 const { orderArchitectureGraph } = require('../src/utils/architectureGraph.ts');
+const { getSpacedEdgePorts } = require('../src/components/Canvas/core/canvasCommon.ts');
 
 const cls = (id, x = 0) => ({
   id, name: id, stereotype: 'class', attributes: [], methods: [],
@@ -82,6 +83,46 @@ test('composition and aggregation form local families without absorbing a facade
   assert.ok(Math.abs(positions.get('lane').x - positions.get('node').x) < 300);
 });
 
+test('sparse class graph places the main chain on one straight route', () => {
+  const classes = [cls('node', 315), cls('planner', 765), cls('core', 540), cls('plan', 550)];
+  [244, 376, 400, 270].forEach((height, index) => { classes[index].size.height = height; });
+  [280, 280, 280, 260].forEach((width, index) => { classes[index].size.width = width; });
+  const relations = [
+    { ...rel('node', 'core', 'dependency'), id: 'a' },
+    { ...rel('core', 'plan', 'dependency'), id: 'b' },
+    { ...rel('planner', 'plan', 'dependency'), id: 'c' },
+  ];
+  const positions = layoutClasses({ classes, relations });
+  const center = (id) => positions.get(id).x + classes.find((item) => item.id === id).size.width / 2;
+  assert.equal(center('node'), center('core'));
+  assert.equal(center('core'), center('plan'));
+  assert.equal(positions.get('planner').y, positions.get('core').y);
+  const rects = classes.map((item) => ({ id: item.id, ...positions.get(item.id),
+    ...getClassNodeSize(item) }));
+  const ports = getSpacedEdgePorts(relations[1], relations, rects, 32, 12, true);
+  assert.equal(ports.sourcePoint.x, ports.targetPoint.x);
+});
+
+test('independent relation groups do not share layer heights; isolated classes stay together', () => {
+  const classes = [
+    cls('frenet'), cls('geometry'), cls('quintic'), cls('reference_line'),
+    cls('Projection'), cls('RouteGeometry'), cls('RouteTracker'),
+  ];
+  [298, 199, 292, 257, 254, 311, 289].forEach((height, index) => {
+    classes[index].size = { width: 260, height };
+  });
+  const positions = layoutClasses({ classes, relations: [
+    rel('reference_line', 'geometry', 'dependency'),
+    rel('RouteTracker', 'RouteGeometry', 'composition'),
+    rel('RouteGeometry', 'Projection', 'dependency'),
+  ] });
+  assert.equal(positions.get('geometry').y,
+    positions.get('reference_line').y + getClassNodeSize(classes[3]).height + 100);
+  assert.equal(positions.get('frenet').y, positions.get('quintic').y);
+  assert.equal(Math.abs(positions.get('frenet').x - positions.get('quintic').x), 324);
+  assert.ok(positions.get('geometry').y < positions.get('Projection').y);
+});
+
 test('component layout preserves containment and sorts related children', () => {
   const comp = (id, parent_id = '', x = 0) => ({ id, name: id, parent_id,
     x, y: 0, width: 180, height: 120, provided_interfaces: [], required_interfaces: [],
@@ -132,6 +173,16 @@ if (process.argv[2]) {
         }
         if (diagram.name === 'Control Module Classes' || diagram.name === 'Routing Module Classes') {
           console.log(`${diagram.name}:`, diagram.classes.map((cls) =>
+            `${cls.name}@${Math.round(positions.get(cls.id).x)},${Math.round(positions.get(cls.id).y)}`,
+          ).join('  '));
+        }
+        if (diagram.name === 'Algorithm Utilities Classes') {
+          const byName = new Map(diagram.classes.map((cls) => [cls.name, cls]));
+          const point = (name) => positions.get(byName.get(name).id);
+          assert.equal(point('geometry').y,
+            point('reference_line').y + getClassNodeSize(byName.get('reference_line')).height + 100);
+          assert.equal(point('frenet').y, point('quintic').y);
+          console.log('Algorithm Utilities:', diagram.classes.map((cls) =>
             `${cls.name}@${Math.round(positions.get(cls.id).x)},${Math.round(positions.get(cls.id).y)}`,
           ).join('  '));
         }

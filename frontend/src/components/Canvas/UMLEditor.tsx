@@ -608,7 +608,7 @@ const UMLEditor: React.FC = () => {
         diagram.relations.map(({ id, source, target }) => [id, source, target]),
       ]);
       diagram.relations.forEach((rel) => {
-        const ports = getSpacedEdgePorts(rel, diagram.relations, classRects, 32, 12);
+        const ports = getSpacedEdgePorts(rel, diagram.relations, classRects, 32, 12, true);
         const sourceRect = classRects.find((rect) => rect.id === rel.source);
         const targetRect = classRects.find((rect) => rect.id === rel.target);
         const sourceTerminal = ports && sourceRect
