@@ -6,7 +6,7 @@ import React, { lazy, Suspense, useCallback, useEffect } from 'react';
 import { Layout, Tabs, Button, Tooltip, message } from 'antd';
 import {
   SettingOutlined,
-  DiffOutlined, CloseOutlined, FileTextOutlined,
+  DiffOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import Toolbar from './components/Toolbar/Toolbar';
 import DesignChangeOverlay from './components/Canvas/DesignChangeOverlay';
@@ -24,7 +24,6 @@ const CompEditor = lazy(() => import('./components/Canvas/CompEditor'));
 const PropertyPanel = lazy(() => import('./components/PropertyPanel/PropertyPanel'));
 const DiffViewer = lazy(() => import('./components/DiffViewer/DiffViewer'));
 const TestCaseViewer = lazy(() => import('./components/TestCaseViewer/TestCaseViewer'));
-const TestCodeViewer = lazy(() => import('./components/TestCodeViewer/TestCodeViewer'));
 const AgentChat = lazy(() => import('./components/AgentChat/AgentChat'));
 const TraceViewer = lazy(() => import('./components/TraceViewer/TraceViewer'));
 const EvaluationCenter = lazy(() => import('./components/EvaluationCenter/EvaluationCenter'));
@@ -141,21 +140,12 @@ const App: React.FC = () => {
       ),
       children: <Suspense fallback={<LoadingFallback />}><DiffViewer /></Suspense>,
     },
-    {
-      key: 'testcase' as RightPanelTab,
-      label: (
-        <Tooltip title={copy('testcaseCode')}>
-          <FileTextOutlined />
-        </Tooltip>
-      ),
-      children: <Suspense fallback={<LoadingFallback />}><TestCodeViewer /></Suspense>,
-    },
   ];
 
   const statusText = showTestCaseInCanvas
     ? (interfaceLanguage === 'en'
-      ? 'Double-click a cell to edit test cases · Supports full and incremental test generation'
-      : '双击单元格编辑用例 · 支持全量和增量生成测试代码')
+      ? 'Double-click a cell to edit test cases · Save changes from the toolbar'
+      : '双击单元格编辑用例 · 在工具栏保存修改')
     : !hasDiagrams
       ? copy('noDiagramHint')
       : diagramType === 'sequence'

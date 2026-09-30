@@ -4,7 +4,7 @@ import type { InterfaceLanguage } from '../i18n';
 import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
 
-export type RightPanelTab = 'properties' | 'diff' | 'testcase';
+export type RightPanelTab = 'properties' | 'diff';
 export type CanvasTheme = 'light' | 'dark' | 'blueprint' | 'eye-care';
 export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp' | 'cpp' |
   'go' | 'rust' | 'ruby' | 'swift' | 'kotlin' | 'php';
@@ -22,9 +22,6 @@ interface UiState {
 
   interfaceLanguage: InterfaceLanguage;
   canvasTheme: CanvasTheme;
-  // Test code viewer (test case code)
-  generatedTestCode: Record<string, string> | null;
-  activeTestFile: string | null;
 
   // Diff / optimization
   diffContent: string | null;
@@ -80,8 +77,6 @@ interface UiState {
   setInterfaceLanguage: (language: InterfaceLanguage) => void;
   setCanvasTheme: (theme: CanvasTheme) => void;
 
-  setGeneratedTestCode: (code: Record<string, string> | null) => void;
-  setActiveTestFile: (file: string | null) => void;
   setDiffContent: (diff: string | null) => void;
   setOriginalCode: (code: Record<string, string> | null) => void;
   setOptimizedCode: (code: Record<string, string> | null) => void;
@@ -134,8 +129,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       ? value
       : 'eye-care';
   })(),
-  generatedTestCode: null,
-  activeTestFile: null,
   diffContent: null,
   originalCode: null,
   optimizedCode: null,
@@ -203,8 +196,6 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ canvasTheme: theme });
   },
 
-  setGeneratedTestCode: (code) => set({ generatedTestCode: code, activeTestFile: code ? Object.keys(code)[0] || null : null }),
-  setActiveTestFile: (file) => set({ activeTestFile: file }),
   setDiffContent: (diff) => set({ diffContent: diff }),
   setOriginalCode: (code) => set({ originalCode: code }),
   setOptimizedCode: (code) => set({ optimizedCode: code }),
