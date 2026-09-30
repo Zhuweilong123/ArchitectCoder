@@ -1,9 +1,8 @@
 import { useEffect, type MutableRefObject, type RefObject } from 'react';
 import type { Graph } from '@antv/x6';
 import { useDiagramStore } from '../../../stores/diagramStore';
-import { useUiStore } from '../../../stores/uiStore';
 import { attachGraphViewport } from '../graphViewport';
-import { centerCanvasContent, syncCanvasViewport, type CanvasViewport } from './canvasCommon';
+import { centerCanvasContent, fitCanvasContent, syncCanvasViewport, type CanvasViewport } from './canvasCommon';
 
 /** Center a newly populated canvas once, unless the user has a saved viewport. */
 export function centerCanvasAfterFirstSync(
@@ -17,7 +16,7 @@ export function centerCanvasAfterFirstSync(
   didFirstSync.current = true;
   setTimeout(() => {
     const current = graphRef.current;
-    if (current) centerCanvasContent(current, useUiStore.getState().rightPanelWidth);
+    if (current === graph) centerCanvasContent(current);
   }, 200);
 }
 
@@ -69,9 +68,16 @@ export function useCanvasGraphViewport(
 
   useEffect(() => {
     if (recenterCounter <= 0) return;
-    setTimeout(() => {
+    const mode = useDiagramStore.getState().recenterMode;
+    // Run after the editor has synchronized the replacement cells and layout.
+    const timer = setTimeout(() => {
       const graph = graphRef.current;
-      if (graph) centerCanvasContent(graph, useUiStore.getState().rightPanelWidth);
+      if (!graph) return;
+      const container = containerRef.current;
+      if (container) graph.resize(container.clientWidth, container.clientHeight);
+      if (mode === 'fit') fitCanvasContent(graph);
+      else centerCanvasContent(graph);
     }, 100);
+    return () => clearTimeout(timer);
   }, [recenterCounter]);
 }

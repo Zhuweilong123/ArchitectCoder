@@ -140,6 +140,7 @@ const DiffViewer: React.FC = () => {
       if (optimizedDiagram) setDiagram(optimizedDiagram);
     }
     toggleShowingVersion();
+    triggerRecenter('fit');
   };
 
   // Handle diagram-type tab switch → also switch main canvas and restore original
@@ -162,6 +163,7 @@ const DiffViewer: React.FC = () => {
       if (orig) {
         setDiagram(orig);
       }
+      triggerRecenter('fit');
     }
   };
 
