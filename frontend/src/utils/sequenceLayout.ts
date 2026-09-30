@@ -5,6 +5,43 @@ import type { SeqFragment, SeqLifeline, SeqMessage } from '../types/sequence';
 export const SEQUENCE_MESSAGE_START_Y = 190;
 export const SEQUENCE_MESSAGE_GAP = 48;
 export const SEQUENCE_LIFELINE_WIDTH = 140;
+export const SEQUENCE_LIFELINE_Y = 120;
+
+/** Match the header's 82px text area, padding and 15px line height. */
+export function sequenceLifelineHeaderHeight(name: string): number {
+  const rows = (name || '').split('\n').reduce((sum, line) => {
+    let lineCount = 1;
+    let usedWidth = 0;
+    // CSS wraps at spaces first, then breaks an oversized word. Counting
+    // only total characters misses rows such as "ctrl: ControllerNode".
+    line.trim().split(/\s+/).forEach((word) => {
+      const widths = [...word].map((char) => /[^\x00-\xff]/.test(char) ? 11 : 7);
+      const wordWidth = widths.reduce((total, width) => total + width, 0);
+      if (usedWidth > 0) {
+        if (usedWidth + 7 + wordWidth <= 82) usedWidth += 7;
+        else {
+          lineCount += 1;
+          usedWidth = 0;
+        }
+      }
+      widths.forEach((width) => {
+        if (usedWidth + width > 82) {
+          lineCount += 1;
+          usedWidth = 0;
+        }
+        usedWidth += width;
+      });
+    });
+    return sum + lineCount;
+  }, 0);
+  return Math.max(30, rows * 15 + 14);
+}
+
+export function sequenceContentStartY(lifelines: SeqLifeline[]): number {
+  const headerHeight = Math.max(30, ...lifelines.map((ll) => sequenceLifelineHeaderHeight(ll.name)));
+  // Four pixels of node padding, then a clear band before fragment titles.
+  return SEQUENCE_LIFELINE_Y + 4 + headerHeight + 20;
+}
 
 export function sequenceMessageY(message: SeqMessage): number {
   return message.y || SEQUENCE_MESSAGE_START_Y + (message.order - 1) * SEQUENCE_MESSAGE_GAP;
@@ -105,7 +142,8 @@ export function arrangeSequenceLayout(
   });
 
   const oldMessageY = new Map(orderedMessages.map((message) => [message.id, sequenceMessageY(message)]));
-  let nextY = SEQUENCE_MESSAGE_START_Y;
+  const contentStartY = sequenceContentStartY(lifelines);
+  let nextY = Math.max(SEQUENCE_MESSAGE_START_Y, contentStartY + 28);
   const arrangedMessages = orderedMessages.map((message, index) => {
     const arranged = { ...message, y: nextY, order: index + 1 };
     const following = orderedMessages[index + 1];
@@ -127,7 +165,10 @@ export function arrangeSequenceLayout(
       const y = oldMessageY.get(message.id) || 0;
       return y >= fragment.y_start && y <= fragment.y_end;
     });
-    if (contained.length === 0) return fragment;
+    if (contained.length === 0) {
+      const shift = Math.max(0, contentStartY - fragment.y_start);
+      return { ...fragment, y_start: fragment.y_start + shift, y_end: fragment.y_end + shift };
+    }
     const involved = new Set(contained.flatMap((message) => [message.from_lifeline, message.to_lifeline]));
     const positions = [...involved]
       .map((id) => positionById.get(id))
@@ -140,7 +181,7 @@ export function arrangeSequenceLayout(
       ...fragment,
       x,
       width: Math.max(220, right - x),
-      y_start: Math.max(80, minMessageY - 28),
+      y_start: Math.max(contentStartY, minMessageY - 28),
       y_end: Math.max(minMessageY + 72, maxMessageY + 36),
     };
   });

@@ -1,4 +1,5 @@
-import { RelationType, Stereotype, type Position, type UmlClass, type UmlDiagram } from '../types/uml';
+import { RelationType, type Position, type UmlClass, type UmlDiagram } from '../types/uml';
+import { getClassContentLayout } from './classContentLayout';
 
 /**
  * Geometry used by both the persisted class auto-layout and the canvas renderer.
@@ -7,33 +8,9 @@ import { RelationType, Stereotype, type Position, type UmlClass, type UmlDiagram
  */
 export function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
   const width = cls.size.width || 200;
-  const maxChars = Math.max(18, Math.floor((width - 20) / 7));
-  const wrappedRows = (rows: string[]) => rows.reduce((sum, row) => (
-    sum + Math.max(1, Math.ceil(row.replace(/\s+/g, ' ').trim().length / maxChars))
-  ), 0);
-  const attributeRows = cls.attributes.map((attribute) => (
-    `${attribute.visibility} ${attribute.name}: ${attribute.type}${attribute.default_value ? ` = ${attribute.default_value}` : ''}`
-  ));
-  const operationRows = cls.methods.map((method) => (
-    `${method.visibility} ${method.name}(${method.params}): ${method.return_type}`
-  ));
-  const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
-    + (cls.required_interfaces?.length ? 1 : 0);
-  const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
-  const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
-  const attributesHeight = 28 + Math.max(1, wrappedRows(attributeRows)) * 19;
-  const operationsHeight = 28 + Math.max(1, wrappedRows(operationRows)) * 19;
-  const noteLines = cls.note
-    ? Math.max(1, Math.ceil(cls.note.replace(/\s+/g, ' ').trim().length / maxChars))
-    : 0;
-  const noteHeight = noteLines ? 12 + noteLines * 14 : 0;
-
   return {
     width,
-    height: Math.max(
-      cls.size.height || 150,
-      headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
-    ),
+    height: Math.max(cls.size.height || 150, getClassContentLayout(cls, width).height),
   };
 }
 

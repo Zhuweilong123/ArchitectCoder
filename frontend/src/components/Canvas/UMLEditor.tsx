@@ -21,6 +21,7 @@ import {
   resolveEdgeSelection, syncCanvasGrid,
 } from './core/canvasCommon';
 import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
+import { CLASS_MEMBER_PREVIEW_COUNT, getClassContentLayout } from '../../utils/classContentLayout';
 import {
   type UmlClass,
   Stereotype, RelationType,
@@ -155,70 +156,47 @@ function ensureShapeRegistered() {
 // ── Helper: Generate HTML for a UML class ──────────────
 function buildClassHTML(cls: UmlClass, selected: boolean, theme: CanvasTheme, language: Parameters<typeof getCanvasLabels>[0]): string {
   const labels = getCanvasLabels(language).classDiagram;
-  const visibilityClass = (visibility: string) => ({
-    '+': 'public',
-    '-': 'private',
-    '#': 'protected',
-  }[visibility] || 'package');
-  const stereotypeLabel = cls.stereotype !== Stereotype.CLASS
-    ? `<div class="uml-stereotype">«${escapeHtml(cls.stereotype)}»</div>` : '';
+  const content = getClassContentLayout(cls);
+  const linesHTML = (lines: string[]) => lines.map(escapeHtml).join('<br>');
+  const visibilityClass = (visibility: string) => ({ '+': 'public', '-': 'private', '#': 'protected' }[visibility] || 'package');
+  const toggleHTML = (section: 'attributes' | 'methods') => {
+    const count = cls[section].length;
+    if (count <= CLASS_MEMBER_PREVIEW_COUNT) return '';
+    const expanded = section === 'attributes' ? !!cls.expanded_attributes : !!cls.expanded_methods;
+    const label = language === 'zh'
+      ? (expanded ? '收起' : `展开全部（${count}）`)
+      : (expanded ? 'Collapse' : `Show all (${count})`);
+    return '<button type="button" class="uml-member-toggle" data-class-id="' + escapeHtml(cls.id) + '" data-member-section="' + section + '" aria-expanded="' + expanded + '">' + escapeHtml(label) + '</button>';
+  };
+  const renderMembers = (kind: 'attr' | 'method') => {
+    const rows = kind === 'attr' ? content.attributes : content.methods;
+    const members = kind === 'attr' ? cls.attributes : cls.methods;
+    if (!members.length) return '<div class="uml-empty" style="height:19px">—</div>';
+    return rows.map((row, index) => {
+      const member = members[index];
+      const abstract = 'is_abstract' in member && member.is_abstract;
+      const modifiers = [member.is_static ? 'static' : '', abstract ? 'abstract' : ''].filter(Boolean).join(' ');
+      const text = linesHTML([row.lines[0].slice(1), ...row.lines.slice(1)]);
+      return '<div class="uml-member uml-' + kind + ' ' + modifiers + '" data-member-text="' + escapeHtml(row.text) + '" style="height:' + row.height + 'px"><span class="visibility-' + visibilityClass(member.visibility) + '">' + escapeHtml(member.visibility) + '</span>' + text + '</div>';
+    }).join('');
+  };
+  const hasStereotype = cls.stereotype !== Stereotype.CLASS;
+  const stereotype = hasStereotype ? '<div class="uml-stereotype">«' + escapeHtml(cls.stereotype) + '»</div>' : '';
   const isAbstract = cls.stereotype === Stereotype.ABSTRACT;
-  const nameStyle = isAbstract ? 'font-style: italic; text-decoration: underline;' : '';
-  const selClass = [
-    selected ? 'selected' : '',
-    `stereotype-${escapeHtml(cls.stereotype || Stereotype.CLASS)}`,
-  ].filter(Boolean).join(' ');
-
-  const attrLines = cls.attributes.map((a) => {
-    const staticClass = a.is_static ? ' static' : '';
-    const defaultValue = a.default_value ? ` = ${escapeHtml(a.default_value)}` : '';
-    return `<div class="uml-member uml-attr${staticClass}">
-      <span class="uml-visibility visibility-${visibilityClass(a.visibility)}">${escapeHtml(a.visibility)}</span>
-      <span class="uml-member-name">${escapeHtml(a.name)}</span><span class="uml-member-type">: ${escapeHtml(a.type)}${defaultValue}</span>
-    </div>`;
+  const nameStyle = isAbstract ? 'font-style:italic;text-decoration:underline;' : '';
+  const classes = [selected ? 'selected' : '', 'stereotype-' + escapeHtml(cls.stereotype || Stereotype.CLASS)].filter(Boolean).join(' ');
+  const interfaceHTML = content.interfaces.map((lines, index) => {
+    const provided = !!cls.provided_interfaces?.length && index === 0;
+    return '<div class="uml-iface-row" data-interface-text="' + escapeHtml(content.interfaceTexts[index]) + '"><span class="uml-iface ' + (provided ? 'provided' : 'required') + '">' + linesHTML(lines) + '</span></div>';
   }).join('');
-
-  const methodLines = cls.methods.map((m) => {
-    const modifiers = [m.is_static ? 'static' : '', m.is_abstract ? 'abstract' : '']
-      .filter(Boolean).join(' ');
-    return `<div class="uml-member uml-method ${modifiers}">
-      <span class="uml-visibility visibility-${visibilityClass(m.visibility)}">${escapeHtml(m.visibility)}</span>
-      <span class="uml-member-name">${escapeHtml(m.name)}</span><span class="uml-member-type">(${escapeHtml(m.params)}): ${escapeHtml(m.return_type)}</span>
-    </div>`;
-  }).join('');
-
-  const providedLines = (cls.provided_interfaces || []).map((i) =>
-    `<span class="uml-iface provided">◉ ${escapeHtml(i)}</span>`
-  ).join(' ');
-  const requiredLines = (cls.required_interfaces || []).map((i) =>
-    `<span class="uml-iface required">◡ ${escapeHtml(i)}</span>`
-  ).join(' ');
-  const ifaceHTML = (providedLines || requiredLines) ? `
-    <div class="uml-class-ifaces">
-      ${providedLines ? `<div class="uml-iface-row">${providedLines}</div>` : ''}
-      ${requiredLines ? `<div class="uml-iface-row">${requiredLines}</div>` : ''}
-    </div>
-    <div class="uml-class-divider"></div>` : '';
-
-  return `
-    <div class="uml-class-node theme-${theme} ${selClass}">
-      <div class="uml-class-header" style="${nameStyle}">
-        ${stereotypeLabel}
-        <div class="uml-class-name">${escapeHtml(cls.name)}</div>
-      </div>
-      ${ifaceHTML}
-      <div class="uml-class-attrs">
-        <div class="uml-section-label">${labels.attributes}</div>
-        ${attrLines || '<div class="uml-empty">—</div>'}
-      </div>
-      <div class="uml-class-divider"></div>
-      <div class="uml-class-methods">
-        <div class="uml-section-label">${labels.operations}</div>
-        ${methodLines || '<div class="uml-empty">—</div>'}
-      </div>
-      ${cls.note ? `<div class="uml-class-note">${escapeHtml(cls.note)}</div>` : ''}
-    </div>
-  `;
+  return '<div class="uml-class-node theme-' + theme + ' ' + classes + '">' +
+    '<div class="uml-class-header" style="' + nameStyle + 'height:' + content.headerHeight + 'px">' + stereotype +
+    '<div class="uml-class-name" data-name="' + escapeHtml(cls.name) + '">' + linesHTML(content.nameLines) + '</div></div>' +
+    (interfaceHTML ? '<div class="uml-class-ifaces" style="height:' + content.interfaceHeight + 'px">' + interfaceHTML + '</div><div class="uml-class-divider"></div>' : '') +
+    '<div class="uml-class-attrs" style="height:' + content.attributesHeight + 'px"><div class="uml-section-label">' + labels.attributes + '</div>' + renderMembers('attr') + toggleHTML('attributes') + '</div>' +
+    '<div class="uml-class-divider"></div>' +
+    '<div class="uml-class-methods" style="height:' + content.methodsHeight + 'px"><div class="uml-section-label">' + labels.operations + '</div>' + renderMembers('method') + toggleHTML('methods') + '</div>' +
+    (cls.note ? '<div class="uml-class-note" data-note="' + escapeHtml(cls.note) + '" style="height:' + content.noteHeight + 'px">' + linesHTML(content.noteLines) + '</div>' : '') + '</div>';
 }
 
 const UMLEditor: React.FC = () => {
@@ -333,6 +311,9 @@ const UMLEditor: React.FC = () => {
         moveClass(node.id, nextPosition);
       },
       onNodeResized: (node) => {
+        // A drag can temporarily shrink below the content minimum. Even when
+        // the clamped state matches the previous size, refresh the actual node.
+        nodeSignatureCache.current.delete(node.id);
         resizeClass(node.id, {
           width: node.size().width,
           height: node.size().height,
@@ -885,7 +866,26 @@ const UMLEditor: React.FC = () => {
           <Button size="small" type="dashed" title={labels.showToolbar} onClick={() => setShowToolbar(true)}>🔧</Button>
         </div>
       )}
-      <div ref={containerRef} className={`uml-canvas-container theme-${canvasTheme}`} />
+      <div ref={containerRef} className={`uml-canvas-container theme-${canvasTheme}`}
+        onPointerDownCapture={(event) => {
+          if ((event.target as Element).closest('.uml-member-toggle')) event.stopPropagation();
+        }}
+        onMouseDownCapture={(event) => {
+          if ((event.target as Element).closest('.uml-member-toggle')) event.stopPropagation();
+        }}
+        onDoubleClickCapture={(event) => {
+          if ((event.target as Element).closest('.uml-member-toggle')) event.stopPropagation();
+        }}
+        onClickCapture={(event) => {
+          const button = (event.target as Element).closest<HTMLButtonElement>('.uml-member-toggle');
+          if (!button) return;
+          event.stopPropagation();
+          const section = button.dataset.memberSection;
+          if (section === 'attributes' || section === 'methods') {
+            useDiagramStore.getState().toggleClassMembers(button.dataset.classId!, section);
+          }
+        }}
+      />
     </div>
   );
 };

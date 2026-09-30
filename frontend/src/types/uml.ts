@@ -55,6 +55,8 @@ export interface UmlClass {
   stereotype: Stereotype;
   attributes: UmlAttribute[];
   methods: UmlMethod[];
+  expanded_attributes?: boolean;
+  expanded_methods?: boolean;
   position: Position;
   size: Size;
   note: string;
@@ -135,6 +137,8 @@ export function createDefaultClass(position?: Position): UmlClass {
     stereotype: Stereotype.CLASS,
     attributes: [],
     methods: [],
+    expanded_attributes: false,
+    expanded_methods: false,
     position: position || { x: 100, y: 100 },
     size: { width: 200, height: 150 },
     note: '',
