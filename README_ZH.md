@@ -6,7 +6,7 @@
 
 [English](README.md) | **中文**
 
-[快速开始](#快速开始) · [产品演示](#产品演示) · [快启案例](examples/quickstart/)
+[快速开始](#快速开始) · [产品演示](#产品演示) · [真实工程案例](#真实工程案例轻量级车辆仿真) · [快启案例](examples/quickstart/)
 
 </div>
 
@@ -62,6 +62,32 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 </table>
 
 > 截图和视频预览统一放在 `docs/media/`，后续更新产品素材时无需调整 README 的展示结构。
+
+## 真实工程案例：轻量级车辆仿真
+
+我们在一个包含 **93 个 Python 文件、约 1.2 万行 Python 代码**的车辆仿真工程中使用 DevAgent。它对照源码检查现有 UML，发现设计覆盖缺口，并更新组件图与类图。设计从 **8 张图扩展到 11 张图**，新增路线规划、参考线和分析模块的类图。更新通过 UML 结构校验和人工审核后，提交到仿真工程仓库。
+
+[查看设计提交](https://github.com/Zhuweilong123/my_carla_sim/commit/998a6c813683dd76234a85432b29a807d694c9e3)
+
+**整体架构 · Engine Architecture**
+
+组件图展示仿真内核、规划、控制、路由、参考线、分析及 ROS 2 适配模块，以及它们的接口、依赖和子组件。
+
+[![轻量级车辆仿真的组件架构图](docs/media/lightweight-sim/engine-architecture.png)](docs/media/lightweight-sim/engine-architecture.png)
+
+**核心结构 · Simulator Core Classes**
+
+类图展开 `SimulationEngine` 与 `World`、`EgoVehicle`、`ObstacleManager`、`SteeringActuator` 的组合关系，以及反向仿真引擎的继承关系。
+
+[![仿真核心类图：类成员、组合与继承关系](docs/media/lightweight-sim/simulator-core-classes.png)](docs/media/lightweight-sim/simulator-core-classes.png)
+
+**运行流程 · Autonomous Driving Loop**
+
+时序图串起路由与参考线生成、仿真状态发布、路径规划、车辆控制和指令回传，并展示控制指令过期时的处理分支。
+
+[![自动驾驶循环时序图：规划、控制与仿真协作](docs/media/lightweight-sim/autonomous-driving-loop.png)](docs/media/lightweight-sim/autonomous-driving-loop.png)
+
+点击图片查看完整尺寸，或打开 SVG 放大查看：[组件图](docs/media/lightweight-sim/engine-architecture.svg) · [类图](docs/media/lightweight-sim/simulator-core-classes.svg) · [时序图](docs/media/lightweight-sim/autonomous-driving-loop.svg)。
 
 ## 为什么选择 ArchitectCoder？
 

@@ -6,7 +6,7 @@
 
 **English** | [中文](README_ZH.md)
 
-[Quick start](#quick-start) · [Product tour](#product-tour) · [Quickstart case](examples/quickstart/)
+[Quick start](#quick-start) · [Product tour](#product-tour) · [Real project case](#real-project-case-lightweight-vehicle-simulation) · [Quickstart case](examples/quickstart/)
 
 </div>
 
@@ -62,6 +62,32 @@ The result is an engineering workflow that is easy to understand, review, and re
 </table>
 
 > The screenshots and videos are intentionally kept under `docs/media/`, so maintainers can replace them with updated product captures without changing the README layout.
+
+## Real project case: lightweight vehicle simulation
+
+We used DevAgent on a vehicle simulation project with **93 Python files and about 12,000 lines of Python**. It compared the existing UML project with the source, identified missing design coverage, and updated the component and class diagrams. The design grew from **8 to 11 diagrams**, adding class diagrams for routing, reference lines, and analysis. The update passed UML structure validation and human review before it was committed to the simulation repository.
+
+[Inspect the design commit](https://github.com/Zhuweilong123/my_carla_sim/commit/998a6c813683dd76234a85432b29a807d694c9e3)
+
+**System architecture · Engine Architecture**
+
+The component diagram shows the simulation core, planning, control, routing, reference line, analysis, and ROS 2 adapter modules, with their interfaces, dependencies, and child components.
+
+[![Component architecture of the lightweight vehicle simulator](docs/media/lightweight-sim/engine-architecture.png)](docs/media/lightweight-sim/engine-architecture.png)
+
+**Core structure · Simulator Core Classes**
+
+The class diagram details how `SimulationEngine` composes `World`, `EgoVehicle`, `ObstacleManager`, and `SteeringActuator`, and how the reverse simulation engine inherits from it.
+
+[![Simulator core classes with members, composition, and inheritance](docs/media/lightweight-sim/simulator-core-classes.png)](docs/media/lightweight-sim/simulator-core-classes.png)
+
+**Runtime flow · Autonomous Driving Loop**
+
+The sequence diagram connects routing and reference line generation, simulation state publication, path planning, vehicle control, and command feedback. It also shows the branch for stale control commands.
+
+[![Autonomous driving loop showing planning, control, and simulation interactions](docs/media/lightweight-sim/autonomous-driving-loop.png)](docs/media/lightweight-sim/autonomous-driving-loop.png)
+
+Click an image for its full size, or open an SVG to zoom in: [component diagram](docs/media/lightweight-sim/engine-architecture.svg) · [class diagram](docs/media/lightweight-sim/simulator-core-classes.svg) · [sequence diagram](docs/media/lightweight-sim/autonomous-driving-loop.svg).
 
 ## Why ArchitectCoder?
 
