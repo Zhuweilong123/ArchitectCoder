@@ -268,7 +268,8 @@ export interface DiagramState {
   // ── View ──────────────────────────────────────
 
   recenterCounter: number;
-  triggerRecenter: () => void;
+  recenterMode: 'center' | 'fit';
+  triggerRecenter: (mode?: 'center' | 'fit') => void;
 
   setZoom: (zoom: number) => void;
   setPan: (x: number, y: number) => void;
@@ -318,6 +319,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   isBatching: false,
   batchSnapshot: null,
   recenterCounter: 0,
+  recenterMode: 'center',
 
   // ── Project actions ───────────────────────────────────
 
@@ -338,6 +340,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       recenterCounter: hasStoredViewport
         ? get().recenterCounter
         : get().recenterCounter + 1,
+      recenterMode: 'center',
     });
   },
 
@@ -1109,8 +1112,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   // ── View ──────────────────────────────────────────────
 
-  triggerRecenter: () => {
-    set((s) => ({ recenterCounter: s.recenterCounter + 1 }));
+  triggerRecenter: (mode = 'center') => {
+    set((s) => ({ recenterCounter: s.recenterCounter + 1, recenterMode: mode }));
   },
 
   setZoom: (zoom) => {

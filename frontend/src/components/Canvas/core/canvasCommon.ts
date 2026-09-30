@@ -529,16 +529,15 @@ export function syncCanvasViewport(graph: Graph, viewport: CanvasViewport): void
   }
 }
 
-/** Center content while accounting for the visible right-side property panel. */
-export function centerCanvasContent(graph: Graph, sidebarWidth = 0): void {
-  const bbox = graph.getAllCellsBBox?.() || graph.getContentBBox?.() || {
-    x: 0, y: 0, width: 0, height: 0,
-  };
+/** The graph container already excludes the side panels in the flex layout. */
+export function centerCanvasContent(graph: Graph): void {
   graph.centerContent({ padding: { top: 20, right: 20, bottom: 20, left: 20 } });
-  const visibleWidth = graph.options.width - sidebarWidth;
-  if (bbox.width < visibleWidth - 40) {
-    graph.translate(graph.translate().tx - sidebarWidth / 2, graph.translate().ty);
-  }
+}
+
+/** Fit a replacement diagram to the actual canvas, then center it. */
+export function fitCanvasContent(graph: Graph): void {
+  if (graph.getCells().length === 0) return;
+  graph.zoomToFit({ padding: 32, minScale: 0.1, maxScale: 1 });
 }
 
 /** Apply grid visibility and visual settings consistently across all editors. */
