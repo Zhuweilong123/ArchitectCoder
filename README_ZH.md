@@ -22,7 +22,7 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 
 <p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
 
-<p align="center"><sub>真实浏览器录屏：切换 UML 图 → 查看 Trace 与评测中心 → DevAgent 只读总结项目。</sub></p>
+<p align="center"><sub>真实浏览器画面剪辑：打开工作目录、加载设计与源码 → 检查并更新 UML → 对比优化前后设计并审核 → 查看 Trace。</sub></p>
 </td>
 <td width="36%" valign="top">
 
@@ -45,23 +45,6 @@ ArchitectCoder 是一个以 UML 为设计入口的 AI 协同开发工作台：�
 <p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
 
 <p align="center"><sub>真实浏览器录屏：性能结果 → 三版本趋势对比 → 用例级 Trace 回放 → 归档中心。</sub></p>
-
-### 看清每个关键界面
-
-<table>
-<tr>
-<td width="48%"><img src="docs/media/workspace-canvas.png" alt="ArchitectCoder 时序图画布" width="100%"></td>
-<td width="26%"><img src="docs/media/workspace-agent.png" alt="ArchitectCoder DevAgent 助手" width="100%"></td>
-<td width="26%"><img src="docs/media/workspace-toolbar.png" alt="ArchitectCoder 项目与图工具栏" width="100%"></td>
-</tr>
-<tr>
-<td align="center"><sub>UML 建模：时序图、类图和组件图</sub></td>
-<td align="center"><sub>在上下文中与 DevAgent 协作</sub></td>
-<td align="center"><sub>从设计进入 Trace、评测和导出</sub></td>
-</tr>
-</table>
-
-> 截图和视频预览统一放在 `docs/media/`，后续更新产品素材时无需调整 README 的展示结构。
 
 ## 真实工程案例：轻量级车辆仿真
 

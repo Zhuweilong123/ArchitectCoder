@@ -22,7 +22,7 @@ ArchitectCoder is an AI-assisted development workbench with UML as its design en
 
 <p align="center"><sub>Animated browser preview. <a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-demo.mp4">Open the full MP4 demo</a>.</sub></p>
 
-<p align="center"><sub>Real browser recording: UML switching → Trace and Evaluation Center → DevAgent read-only project summary.</sub></p>
+<p align="center"><sub>Edited real browser captures: open the workspace and load design/source → check and update UML → compare before/after designs and review → inspect Trace.</sub></p>
 </td>
 <td width="36%" valign="top">
 
@@ -45,23 +45,6 @@ The result is an engineering workflow that is easy to understand, review, and re
 <p align="center"><sub>Animated browser preview. <a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">Open the full MP4 demo</a>.</sub></p>
 
 <p align="center"><sub>Real browser recording: performance results → three-version trend comparison → case-level Trace replay → archive center.</sub></p>
-
-### See the workflow up close
-
-<table>
-<tr>
-<td width="48%"><img src="docs/media/workspace-canvas.png" alt="ArchitectCoder sequence diagram canvas" width="100%"></td>
-<td width="26%"><img src="docs/media/workspace-agent.png" alt="ArchitectCoder DevAgent assistant" width="100%"></td>
-<td width="26%"><img src="docs/media/workspace-toolbar.png" alt="ArchitectCoder project and diagram toolbar" width="100%"></td>
-</tr>
-<tr>
-<td align="center"><sub>Design in UML: sequence, class, and component diagrams</sub></td>
-<td align="center"><sub>Collaborate with DevAgent in context</sub></td>
-<td align="center"><sub>Move from design to trace, benchmark, and export</sub></td>
-</tr>
-</table>
-
-> The screenshots and videos are intentionally kept under `docs/media/`, so maintainers can replace them with updated product captures without changing the README layout.
 
 ## Real project case: lightweight vehicle simulation
 
