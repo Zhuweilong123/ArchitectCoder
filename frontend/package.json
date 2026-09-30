@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:layout": "node --test tests/architectureLayout.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

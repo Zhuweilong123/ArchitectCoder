@@ -1,4 +1,5 @@
 import type { Cell, Edge, Graph, Node } from '@antv/x6';
+import { attachBlankCanvasTap } from './blankCanvasTap';
 
 interface MutableFlag {
   current: boolean;
@@ -74,7 +75,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   const handleSelectionChanged = ({ selected }: { selected: Cell[] }) => {
     onSelectionChanged?.(selected || []);
   };
-  const handleBlankClick = () => onBlankClick?.();
+  const detachBlankCanvasTap = attachBlankCanvasTap(graph, () => onBlankClick?.());
   const handleNodeMoved = ({ node }: { node: Node }) => {
     if (!isInternalUpdate.current) onNodeMoved?.(node);
   };
@@ -140,7 +141,6 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
 
   graph.on('node:click', handleNodeClick);
   graph.on('selection:changed', handleSelectionChanged);
-  graph.on('blank:click', handleBlankClick);
   graph.on('node:moved', handleNodeMoved);
   graph.on('node:resized', handleNodeResized);
   graph.on('edge:click', handleEdgeClick);
@@ -157,7 +157,7 @@ export function attachCanvasEventAdapter(options: CanvasEventAdapterOptions): ()
   return () => {
     graph.off('node:click', handleNodeClick);
     graph.off('selection:changed', handleSelectionChanged);
-    graph.off('blank:click', handleBlankClick);
+    detachBlankCanvasTap();
     graph.off('node:moved', handleNodeMoved);
     graph.off('node:resized', handleNodeResized);
     graph.off('edge:click', handleEdgeClick);

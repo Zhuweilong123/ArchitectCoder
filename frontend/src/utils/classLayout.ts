@@ -1,4 +1,6 @@
-import { RelationType, Stereotype, type Position, type UmlClass, type UmlDiagram } from '../types/uml';
+import { RelationType, type Position, type UmlClass, type UmlDiagram } from '../types/uml';
+import { getClassContentLayout } from './classContentLayout';
+import { orderArchitectureGraph, type ArchitectureEdge } from './architectureGraph';
 
 /**
  * Geometry used by both the persisted class auto-layout and the canvas renderer.
@@ -7,33 +9,9 @@ import { RelationType, Stereotype, type Position, type UmlClass, type UmlDiagram
  */
 export function getClassNodeSize(cls: UmlClass): { width: number; height: number } {
   const width = cls.size.width || 200;
-  const maxChars = Math.max(18, Math.floor((width - 20) / 7));
-  const wrappedRows = (rows: string[]) => rows.reduce((sum, row) => (
-    sum + Math.max(1, Math.ceil(row.replace(/\s+/g, ' ').trim().length / maxChars))
-  ), 0);
-  const attributeRows = cls.attributes.map((attribute) => (
-    `${attribute.visibility} ${attribute.name}: ${attribute.type}${attribute.default_value ? ` = ${attribute.default_value}` : ''}`
-  ));
-  const operationRows = cls.methods.map((method) => (
-    `${method.visibility} ${method.name}(${method.params}): ${method.return_type}`
-  ));
-  const interfaceRows = (cls.provided_interfaces?.length ? 1 : 0)
-    + (cls.required_interfaces?.length ? 1 : 0);
-  const headerHeight = cls.stereotype !== Stereotype.CLASS ? 58 : 42;
-  const interfaceHeight = interfaceRows ? 28 + interfaceRows * 16 : 0;
-  const attributesHeight = 28 + Math.max(1, wrappedRows(attributeRows)) * 19;
-  const operationsHeight = 28 + Math.max(1, wrappedRows(operationRows)) * 19;
-  const noteLines = cls.note
-    ? Math.max(1, Math.ceil(cls.note.replace(/\s+/g, ' ').trim().length / maxChars))
-    : 0;
-  const noteHeight = noteLines ? 12 + noteLines * 14 : 0;
-
   return {
     width,
-    height: Math.max(
-      cls.size.height || 150,
-      headerHeight + interfaceHeight + attributesHeight + operationsHeight + noteHeight + 8,
-    ),
+    height: Math.max(cls.size.height || 150, getClassContentLayout(cls, width).height),
   };
 }
 
@@ -88,145 +66,338 @@ export function resolveClassLayouts(classes: UmlClass[]): Map<string, ClassRende
   return layouts;
 }
 
-interface Group {
-  id: number;
-  members: string[];
-  outgoing: Set<number>;
-  incoming: Set<number>;
-  level: number;
-}
-
-/** Tarjan condensation makes cyclic domain models layout as a group, not as a broken tail row. */
-function condense(ids: string[], outgoing: Map<string, string[]>): Group[] {
-  let index = 0;
-  const indices = new Map<string, number>();
-  const lowLinks = new Map<string, number>();
-  const stack: string[] = [];
-  const onStack = new Set<string>();
-  const groups: Group[] = [];
-  const groupByMember = new Map<string, number>();
-
-  const visit = (id: string) => {
-    indices.set(id, index);
-    lowLinks.set(id, index);
-    index += 1;
-    stack.push(id);
-    onStack.add(id);
-    (outgoing.get(id) || []).forEach((next) => {
-      if (!indices.has(next)) {
-        visit(next);
-        lowLinks.set(id, Math.min(lowLinks.get(id)!, lowLinks.get(next)!));
-      } else if (onStack.has(next)) {
-        lowLinks.set(id, Math.min(lowLinks.get(id)!, indices.get(next)!));
-      }
-    });
-    if (lowLinks.get(id) !== indices.get(id)) return;
-    const members: string[] = [];
-    let member = '';
-    do {
-      member = stack.pop()!;
-      onStack.delete(member);
-      members.push(member);
-    } while (member !== id);
-    const group: Group = { id: groups.length, members, outgoing: new Set(), incoming: new Set(), level: 0 };
-    groups.push(group);
-    members.forEach((item) => groupByMember.set(item, group.id));
-  };
-
-  ids.forEach((id) => { if (!indices.has(id)) visit(id); });
-  outgoing.forEach((targets, source) => targets.forEach((target) => {
-    const fromGroup = groupByMember.get(source)!;
-    const toGroup = groupByMember.get(target)!;
-    if (fromGroup === toGroup) return;
-    groups[fromGroup].outgoing.add(toGroup);
-    groups[toGroup].incoming.add(fromGroup);
-  }));
-  return groups;
-}
-
-/**
- * Layer classes by the meaningful UML direction and use relation-aware ordering
- * within a layer. Inheritance remains top-down; other diagrams follow their
- * declared dependency direction. Cycles are condensed instead of being dumped
- * below the rest of the diagram.
- */
-export function layoutClasses(diagram: UmlDiagram): Map<string, Position> {
+/** Arrange one connected relation graph by its inheritance and ownership structure. */
+function layoutConnectedClasses(diagram: UmlDiagram): Map<string, Position> {
   const classes = diagram.classes || [];
-  const ids = new Set(classes.map((cls) => cls.id));
-  const primary = diagram.relations.filter((relation) => (
-    ids.has(relation.source) && ids.has(relation.target)
+  if (!classes.length) return new Map();
+  const byId = new Map(classes.map((cls) => [cls.id, cls]));
+  const relations = diagram.relations.filter((relation) => (
+    byId.has(relation.source) && byId.has(relation.target) && relation.source !== relation.target
   ));
-  const outgoing = new Map(classes.map((cls) => [cls.id, [] as string[]]));
-  const incoming = new Map(classes.map((cls) => [cls.id, [] as string[]]));
-  primary.forEach((relation) => {
-    // Inheritance points from subtype to base type, while the other
-    // relationships follow their declared source-to-target direction.
-    const hierarchy = relation.type === RelationType.INHERITANCE
-      || relation.type === RelationType.REALIZATION;
-    const from = hierarchy ? relation.target : relation.source;
-    const to = hierarchy ? relation.source : relation.target;
-    const neighbors = outgoing.get(from);
-    if (!neighbors || neighbors.includes(to)) return;
-    neighbors.push(to);
-    incoming.get(to)?.push(from);
+  const hierarchy = relations.filter((relation) => (
+    relation.type === RelationType.INHERITANCE || relation.type === RelationType.REALIZATION
+  ));
+  const hierarchyParticipants = new Set(hierarchy.flatMap((relation) => [
+    relation.source, relation.target,
+  ]));
+  const structural = relations.filter((relation) => (
+    (relation.type === RelationType.COMPOSITION || relation.type === RelationType.AGGREGATION)
+    && !hierarchyParticipants.has(relation.source)
+    && !hierarchyParticipants.has(relation.target)
+  ));
+  const structuralParticipants = new Set(structural.flatMap((relation) => [
+    relation.source, relation.target,
+  ]));
+  const parent = new Map(classes.map((cls) => [cls.id, cls.id]));
+  const root = (id: string): string => {
+    const current = parent.get(id)!;
+    if (current === id) return id;
+    const result = root(current);
+    parent.set(id, result);
+    return result;
+  };
+  hierarchy.forEach(({ source, target }) => parent.set(root(source), root(target)));
+  structural.forEach(({ source, target }) => {
+    // Shared targets have multiple structural owners, so proximity alone would
+    // falsely imply that every owner belongs to the same subsystem.
+    if (structural.filter((relation) => relation.target === target).length !== 1) return;
+    parent.set(root(target), root(source));
+  });
+  const groups = new Map<string, string[]>();
+  classes.forEach((cls) => {
+    const key = root(cls.id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(cls.id);
+  });
+  const groupOf = new Map<string, string>();
+  groups.forEach((members, key) => members.forEach((id) => groupOf.set(id, key)));
+
+  // A support class belongs near its consumers only when every relationship
+  // reaches the same inheritance family. Never infer a persisted parent/module.
+  classes.forEach((cls) => {
+    const own = groupOf.get(cls.id)!;
+    if (groups.get(own)!.length !== 1) return;
+    const incident = relations.filter((relation) => (
+      relation.source === cls.id || relation.target === cls.id
+    ));
+    const incoming = incident.filter((relation) => relation.target === cls.id);
+    if (!incoming.length || incident.some((relation) => (
+      relation.type !== RelationType.DEPENDENCY
+    ))) return;
+    const consumers = new Set(incoming.map((relation) => groupOf.get(relation.source)));
+    if (consumers.size !== 1) return;
+    const destination = [...consumers][0]!;
+    if (destination === own || groups.get(destination)!.length < 2) return;
+    if (incident.some((relation) => (
+      groupOf.get(relation.source === cls.id ? relation.target : relation.source) !== destination
+    ))) return;
+    groups.get(own)!.splice(0, 1);
+    groups.delete(own);
+    groups.get(destination)!.push(cls.id);
+    groupOf.set(cls.id, destination);
   });
 
-  const groups = condense(classes.map((cls) => cls.id), outgoing);
-  const indegree = new Map(groups.map((group) => [group.id, group.incoming.size]));
-  const queue = groups.filter((group) => indegree.get(group.id) === 0).map((group) => group.id);
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const group = groups[queue[cursor]];
-    group.outgoing.forEach((targetId) => {
-      const target = groups[targetId];
-      target.level = Math.max(target.level, group.level + 1);
-      const next = (indegree.get(targetId) || 0) - 1;
-      indegree.set(targetId, next);
-      if (next === 0) queue.push(targetId);
+  const sizes = new Map(classes.map((cls) => [cls.id, getClassNodeSize(cls)]));
+  const originalOrder = new Map(classes.map((cls) => [cls.id, cls.position.x]));
+  const localPositions = new Map<string, Position>();
+  const groupSizes = new Map<string, { width: number; height: number }>();
+  groups.forEach((members, groupId) => {
+    const familyEdges: ArchitectureEdge[] = hierarchy
+      .filter((relation) => members.includes(relation.source) && members.includes(relation.target))
+      .map((relation) => ({ source: relation.target, target: relation.source, weight: 4 }));
+    structural.filter((relation) => members.includes(relation.source) && members.includes(relation.target))
+      .forEach((relation) => familyEdges.push({
+        source: relation.source, target: relation.target, weight: 3,
+      }));
+    const ordered = orderArchitectureGraph(members, familyEdges, originalOrder);
+    const support = members.filter((id) => (
+      !hierarchyParticipants.has(id) && !structuralParticipants.has(id)
+    ));
+    support.forEach((id) => {
+      const connected = relations.filter((relation) => relation.source === id || relation.target === id)
+        .map((relation) => relation.source === id ? relation.target : relation.source)
+        .filter((other) => members.includes(other) && other !== id);
+      const level = Math.max(0, ...connected.map((other) => ordered.levels.get(other)!)) + 1;
+      ordered.rows.get(ordered.levels.get(id)!)?.splice(
+        ordered.rows.get(ordered.levels.get(id)!)!.indexOf(id), 1,
+      );
+      if (!ordered.rows.has(level)) ordered.rows.set(level, []);
+      ordered.rows.get(level)!.push(id);
+      ordered.levels.set(id, level);
     });
-  }
+    const rows = [...ordered.rows.entries()].filter(([, row]) => row.length)
+      .sort(([a], [b]) => a - b);
+    const internalGapX = 64;
+    const internalGapY = 84;
+    const width = Math.max(...rows.map(([, row]) => row.reduce((sum, id) => (
+      sum + sizes.get(id)!.width
+    ), 0) + Math.max(0, row.length - 1) * internalGapX));
+    let nextY = 0;
+    rows.forEach(([, row]) => {
+      const rowWidth = row.reduce((sum, id) => sum + sizes.get(id)!.width, 0)
+        + Math.max(0, row.length - 1) * internalGapX;
+      let nextX = (width - rowWidth) / 2;
+      row.forEach((id) => {
+        localPositions.set(id, { x: nextX, y: nextY });
+        nextX += sizes.get(id)!.width + internalGapX;
+      });
+      nextY += Math.max(...row.map((id) => sizes.get(id)!.height)) + internalGapY;
+    });
+    groupSizes.set(groupId, { width, height: nextY - internalGapY });
+  });
 
-  const rows = new Map<number, UmlClass[]>();
-  groups.forEach((group) => group.members.forEach((member) => {
-    const cls = classes.find((item) => item.id === member)!;
-    const row = rows.get(group.level) || [];
-    row.push(cls);
-    rows.set(group.level, row);
-  }));
+  const groupIds = [...groups.keys()];
+  const groupEdges: ArchitectureEdge[] = relations
+    .filter((relation) => !hierarchy.includes(relation))
+    .map((relation) => ({
+      source: groupOf.get(relation.source)!, target: groupOf.get(relation.target)!,
+      weight: relation.type === RelationType.DEPENDENCY ? 1 : 3,
+    }));
+  const groupOrder = new Map(groupIds.map((id) => [id,
+    Math.min(...groups.get(id)!.map((member) => originalOrder.get(member)!)),
+  ]));
+  const { levels, rows } = orderArchitectureGraph(groupIds, groupEdges, groupOrder);
+  // A root used only by a later layer can sit just above its consumer. This
+  // avoids a long edge spanning an otherwise unrelated middle layer.
+  groupIds.forEach((id) => {
+    if (groups.get(id)!.length !== 1) return;
+    const incoming = groupEdges.filter((edge) => edge.target === id && edge.source !== id);
+    const outgoing = groupEdges.filter((edge) => edge.source === id && edge.target !== id);
+    if (incoming.length || outgoing.length !== 1) return;
+    const nextLevel = (levels.get(outgoing[0].target) || 0) - 1;
+    const oldLevel = levels.get(id)!;
+    if (nextLevel <= oldLevel) return;
+    const oldRow = rows.get(oldLevel)!;
+    oldRow.splice(oldRow.indexOf(id), 1);
+    if (!rows.has(nextLevel)) rows.set(nextLevel, []);
+    rows.get(nextLevel)!.push(id);
+    rows.get(nextLevel)!.sort((a, b) => groupOrder.get(a)! - groupOrder.get(b)!
+      || a.localeCompare(b));
+    levels.set(id, nextLevel);
+  });
   const orderedLevels = [...rows.keys()].sort((a, b) => a - b);
   const positions = new Map<string, Position>();
-  const centers = new Map<string, number>();
-  const sizes = new Map(classes.map((cls) => [cls.id, getClassNodeSize(cls)]));
   const startX = 120;
   const startY = 100;
-  const horizontalGap = 96;
-  const verticalGap = 110;
+  const horizontalGap = 170;
+  const verticalGap = 100;
   const maxRowWidth = Math.max(...orderedLevels.map((level) => {
     const row = rows.get(level) || [];
-    return row.reduce((sum, cls) => sum + sizes.get(cls.id)!.width, 0)
+    return row.reduce((sum, id) => sum + groupSizes.get(id)!.width, 0)
       + Math.max(0, row.length - 1) * horizontalGap;
   }));
   const centerX = Math.max(680, startX + maxRowWidth / 2);
+  const degree = new Map(groupIds.map((id) => [id, 0]));
+  groupEdges.forEach(({ source, target }) => {
+    if (source === target) return;
+    degree.set(source, (degree.get(source) || 0) + 1);
+    degree.set(target, (degree.get(target) || 0) + 1);
+  });
   let nextY = startY;
   orderedLevels.forEach((level) => {
     const row = rows.get(level) || [];
-    row.sort((a, b) => {
-      const barycenter = (cls: UmlClass) => {
-        const upstream = incoming.get(cls.id) || [];
-        const values = upstream.map((id) => centers.get(id)).filter((value): value is number => value !== undefined);
-        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : cls.position.x;
-      };
-      return barycenter(a) - barycenter(b) || a.position.x - b.position.x || a.id.localeCompare(b.id);
+    if (!row.length) return;
+    // Keep the best connected group on a shared vertical spine. Other groups
+    // retain the requested clearance on either side of it.
+    let nextX: number;
+    if (groupIds.length <= 5 && row.length <= 2) {
+      const anchorIndex = row.reduce((best, id, index) => (
+        (degree.get(id) || 0) > (degree.get(row[best]) || 0) ? index : best
+      ), 0);
+      const beforeAnchor = row.slice(0, anchorIndex).reduce((sum, id) => (
+        sum + groupSizes.get(id)!.width + horizontalGap
+      ), 0);
+      nextX = centerX - beforeAnchor - groupSizes.get(row[anchorIndex])!.width / 2;
+    } else {
+      const totalWidth = row.reduce((sum, id) => sum + groupSizes.get(id)!.width, 0)
+        + Math.max(0, row.length - 1) * horizontalGap;
+      nextX = centerX - totalWidth / 2;
+    }
+    row.forEach((id) => {
+      groups.get(id)!.forEach((member) => {
+        const local = localPositions.get(member)!;
+        positions.set(member, { x: nextX + local.x, y: nextY + local.y });
+      });
+      nextX += groupSizes.get(id)!.width + horizontalGap;
     });
-    const totalWidth = row.reduce((sum, cls) => sum + sizes.get(cls.id)!.width, 0)
-      + Math.max(0, row.length - 1) * horizontalGap;
-    let nextX = Math.max(startX, centerX - totalWidth / 2);
-    row.forEach((cls) => {
-      const size = sizes.get(cls.id)!;
-      positions.set(cls.id, { x: nextX, y: nextY });
-      centers.set(cls.id, nextX + size.width / 2);
-      nextX += size.width + horizontalGap;
-    });
-    nextY += Math.max(...row.map((cls) => sizes.get(cls.id)!.height)) + verticalGap;
+    nextY += Math.max(...row.map((id) => groupSizes.get(id)!.height)) + verticalGap;
   });
+  const leftmost = Math.min(...[...positions.values()].map((point) => point.x));
+  if (leftmost < startX) {
+    const shift = startX - leftmost;
+    positions.forEach((point, id) => positions.set(id, { ...point, x: point.x + shift }));
+  }
+  return positions;
+}
+
+/**
+ * Independent relation graphs have independent layers. Pack their finished
+ * bounds afterwards so a tall chain cannot push an unrelated pair far apart.
+ */
+export function layoutClasses(diagram: UmlDiagram): Map<string, Position> {
+  const classes = diagram.classes || [];
+  if (!classes.length) return new Map();
+  const ids = new Set(classes.map((cls) => cls.id));
+  const relations = (diagram.relations || []).filter((relation) => (
+    ids.has(relation.source) && ids.has(relation.target)
+  ));
+  const parent = new Map(classes.map((cls) => [cls.id, cls.id]));
+  const counts = new Map(classes.map((cls) => [cls.id, 1]));
+  const root = (id: string): string => {
+    let representative = id;
+    while (parent.get(representative) !== representative) representative = parent.get(representative)!;
+    while (id !== representative) {
+      const next = parent.get(id)!;
+      parent.set(id, representative);
+      id = next;
+    }
+    return representative;
+  };
+  relations.forEach(({ source, target }) => {
+    const from = root(source);
+    const to = root(target);
+    if (from === to) return;
+    const [larger, smaller] = counts.get(from)! >= counts.get(to)!
+      ? [from, to] : [to, from];
+    parent.set(smaller, larger);
+    counts.set(larger, counts.get(larger)! + counts.get(smaller)!);
+  });
+  const components = new Map<string, UmlClass[]>();
+  classes.forEach((cls) => {
+    const key = root(cls.id);
+    if (!components.has(key)) components.set(key, []);
+    components.get(key)!.push(cls);
+  });
+
+  const relatedIds = new Set(relations.flatMap(({ source, target }) => [source, target]));
+  const linked = [...components.values()].filter((members) => (
+    members.length > 1 || relatedIds.has(members[0].id)
+  ));
+  const isolated = [...components.values()].filter((members) => (
+    members.length === 1 && !relatedIds.has(members[0].id)
+  )).map((members) => members[0]);
+  const positions = new Map<string, Position>();
+  const startX = 120;
+  const startY = 100;
+  const maxRowRight = 1600;
+  const blockGap = 130;
+  const placedBlocks: ClassRenderLayout[] = [];
+  let linkedRight = startX;
+  let linkedBottom = startY;
+
+  linked.forEach((members) => {
+    const memberIds = new Set(members.map((cls) => cls.id));
+    const local = layoutConnectedClasses({ ...diagram, classes: members,
+      relations: relations.filter((relation) => (
+        memberIds.has(relation.source) && memberIds.has(relation.target)
+      )),
+    });
+    const left = Math.min(...members.map((cls) => local.get(cls.id)!.x));
+    const top = Math.min(...members.map((cls) => local.get(cls.id)!.y));
+    const width = Math.max(...members.map((cls) => (
+      local.get(cls.id)!.x + getClassNodeSize(cls).width
+    ))) - left;
+    const height = Math.max(...members.map((cls) => (
+      local.get(cls.id)!.y + getClassNodeSize(cls).height
+    ))) - top;
+    const candidatesX = [startX, ...placedBlocks.map((block) => block.x + block.width + blockGap)];
+    const candidatesY = [startY, ...placedBlocks.map((block) => block.y + block.height + blockGap)];
+    const candidates = candidatesX.flatMap((x) => candidatesY.map((y) => ({ x, y })))
+      .filter(({ x, y }) => (
+        (x + width <= maxRowRight || (x === startX && width > maxRowRight - startX))
+        && placedBlocks.every((block) => (
+          x >= block.x + block.width + blockGap
+          || block.x >= x + width + blockGap
+          || y >= block.y + block.height + blockGap
+          || block.y >= y + height + blockGap
+        ))
+      ))
+      .sort((a, b) => {
+        const cost = ({ x, y }: Position) => (
+          Math.max(linkedBottom, y + height)
+          + 0.35 * Math.max(linkedRight, x + width)
+          + y * 0.001 + x * 0.0001
+        );
+        return cost(a) - cost(b) || a.y - b.y || a.x - b.x;
+      });
+    const { x, y } = candidates[0] || { x: startX, y: linkedBottom + blockGap };
+    members.forEach((cls) => {
+      const point = local.get(cls.id)!;
+      positions.set(cls.id, {
+        x: x + point.x - left,
+        y: y + point.y - top,
+      });
+    });
+    placedBlocks.push({ x, y, width, height });
+    linkedRight = Math.max(linkedRight, x + width);
+    linkedBottom = Math.max(linkedBottom, y + height);
+  });
+
+  if (isolated.length) {
+    const columns = Math.min(3, Math.ceil(Math.sqrt(isolated.length)));
+    const gapX = 64;
+    const gapY = 64;
+    const columnWidths = Array.from({ length: columns }, () => 0);
+    const rowHeights: number[] = [];
+    isolated.forEach((cls, index) => {
+      const size = getClassNodeSize(cls);
+      columnWidths[index % columns] = Math.max(columnWidths[index % columns], size.width);
+      const row = Math.floor(index / columns);
+      rowHeights[row] = Math.max(rowHeights[row] || 0, size.height);
+    });
+    const gridWidth = columnWidths.reduce((sum, width) => sum + width, 0)
+      + (columns - 1) * gapX;
+    const gridX = linked.length && linkedRight + blockGap + gridWidth <= maxRowRight
+      ? linkedRight + blockGap : startX;
+    const gridY = linked.length && gridX === startX ? linkedBottom + blockGap : startY;
+    isolated.forEach((cls, index) => {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      positions.set(cls.id, {
+        x: gridX + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gapX, 0),
+        y: gridY + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gapY, 0),
+      });
+    });
+  }
   return positions;
 }

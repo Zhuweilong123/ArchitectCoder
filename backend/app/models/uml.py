@@ -68,6 +68,9 @@ class UmlClass(BaseModel):
     stereotype: Stereotype = Stereotype.CLASS
     attributes: list[UmlAttribute] = Field(default_factory=list)
     methods: list[UmlMethod] = Field(default_factory=list)
+    # Presentation state; None identifies older projects without member folding.
+    expanded_attributes: Optional[bool] = None
+    expanded_methods: Optional[bool] = None
     position: Position = Field(default_factory=Position)
     size: Size = Field(default_factory=Size)
     note: str = ""

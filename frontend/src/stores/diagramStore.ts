@@ -27,6 +27,7 @@ import {
 } from './diagramHistory';
 import { layoutComponents } from '../utils/componentLayout';
 import { layoutClasses } from '../utils/classLayout';
+import { getClassContentLayout } from '../utils/classContentLayout';
 
 /** Clamp coordinate to valid canvas range. Falls back to a deterministic default if invalid. */
 function clampCoord(val: number | undefined, def: number, min = 50, max = 3000): number {
@@ -204,6 +205,7 @@ export interface DiagramState {
   updateClass: (id: string, updates: Partial<UmlClass>) => void;
   moveClass: (id: string, position: Position) => void;
   resizeClass: (id: string, size: Size) => void;
+  toggleClassMembers: (id: string, section: 'attributes' | 'methods') => void;
   selectClass: (id: string | null) => void;
   selectClasses: (ids: string[]) => void;
   alignClasses: (direction: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
@@ -570,7 +572,24 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     get().pushSnapshot('resize_class', `resize_class:${id}`);
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
-      classes: d.classes.map((c) => (c.id === id ? { ...c, size } : c)),
+      classes: d.classes.map((c) => (c.id === id ? {
+        ...c,
+        size: { ...size, height: Math.max(size.height, getClassContentLayout(c, size.width).height) },
+      } : c)),
+    }));
+    set({ project, isModified: true });
+  },
+
+  toggleClassMembers: (id, section) => {
+    get().pushSnapshot('toggle_class_members');
+    const field = section === 'attributes' ? 'expanded_attributes' : 'expanded_methods';
+    const project = _updateActiveDiagram(get().project, (d) => ({
+      ...d,
+      classes: d.classes.map((cls) => {
+        if (cls.id !== id) return cls;
+        const updated = { ...cls, [field]: !cls[field] };
+        return { ...updated, size: { ...updated.size, height: getClassContentLayout(updated).height } };
+      }),
     }));
     set({ project, isModified: true });
   },
@@ -674,8 +693,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   autoLayoutClasses: () => {
     const state = get();
     const diagram = _activeDiagram(state.project);
-    if (diagram.classes.length < 2) return;
-    const positions = layoutClasses(diagram);
+    if (diagram.classes.length === 0) return;
+    const compactClasses = diagram.classes.map((cls) => ({
+      ...cls, size: { ...cls.size, height: getClassContentLayout(cls).height },
+    }));
+    const positions = layoutClasses({ ...diagram, classes: compactClasses });
 
     const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
       ...activeDiagram,
@@ -683,7 +705,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         ...relation,
         vertices: undefined,
       })),
-      classes: activeDiagram.classes.map((cls) => {
+      classes: compactClasses.map((cls) => {
         const position = positions.get(cls.id);
         return position ? { ...cls, position } : cls;
       }),

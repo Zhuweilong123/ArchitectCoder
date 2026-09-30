@@ -1,4 +1,5 @@
 import type { Graph } from '@antv/x6';
+import { getClassTextLayout } from '../../../utils/classContentLayout';
 
 export type CanvasExportFormat = 'png' | 'svg';
 
@@ -70,7 +71,7 @@ function appendExportText(
   value: string,
   x: number,
   y: number,
-  options: { fill: string; fontSize: number; fontWeight?: string; anchor?: string; maxChars?: number },
+  options: { fill: string; fontSize: number; fontWeight?: string; anchor?: string; maxChars?: number; lines?: string[] },
 ): void {
   const text = createSvgElement(document, 'text', {
     x,
@@ -81,7 +82,7 @@ function appendExportText(
     'font-weight': options.fontWeight || '400',
     'text-anchor': options.anchor || 'start',
   });
-  const lines = wrapExportText(value, options.maxChars || 40);
+  const lines = options.lines || wrapExportText(value, options.maxChars || 40);
   lines.forEach((line, index) => {
     const tspan = createSvgElement(document, 'tspan', {
       x,
@@ -122,52 +123,56 @@ function flattenUmlClass(
   body?.setAttribute('stroke', palette.divider);
 
   const stereotype = root.querySelector('.uml-stereotype')?.textContent || '';
-  const name = root.querySelector('.uml-class-name')?.textContent || '';
+  const nameElement = root.querySelector('.uml-class-name');
+  const name = nameElement?.getAttribute('data-name') || nameElement?.textContent || '';
   const attributes = Array.from(root.querySelectorAll('.uml-attr'))
-    .map((element) => element.textContent || '');
+    .map((element) => element.getAttribute('data-member-text') || element.textContent || '');
   const methods = Array.from(root.querySelectorAll('.uml-method'))
-    .map((element) => element.textContent || '');
+    .map((element) => element.getAttribute('data-member-text') || element.textContent || '');
   const interfaces = Array.from(root.querySelectorAll('.uml-iface-row'))
-    .map((element) => element.textContent || '');
+    .map((element) => element.getAttribute('data-interface-text') || element.textContent || '');
   const sectionLabels = Array.from(root.querySelectorAll('.uml-section-label'))
     .map((element) => element.textContent || '');
-  const note = root.querySelector('.uml-class-note')?.textContent || '';
-  const maxChars = Math.max(18, Math.floor((width - 20) / 7));
-  const headerHeight = stereotype ? 58 : 42;
+  const noteElement = root.querySelector('.uml-class-note');
+  const note = noteElement?.getAttribute('data-note') || noteElement?.textContent || '';
+  const attributesToggle = root.querySelector('.uml-class-attrs .uml-member-toggle')?.textContent || '';
+  const methodsToggle = root.querySelector('.uml-class-methods .uml-member-toggle')?.textContent || '';
+  const content = getClassTextLayout({
+    width, name, hasStereotype: !!stereotype, attributes, methods, interfaces, note,
+    attributesToggle: !!attributesToggle, methodsToggle: !!methodsToggle,
+  });
+  const headerHeight = content.headerHeight;
 
   native.appendChild(createSvgElement(document, 'rect', {
     x: 0, y: 0, width, height: headerHeight, fill: palette.header,
   }));
   if (stereotype) {
     appendExportText(native, document, stereotype, width / 2, 17, {
-      fill: palette.secondary, fontSize: 10, anchor: 'middle', maxChars,
+      fill: palette.secondary, fontSize: 10, anchor: 'middle',
     });
   }
   appendExportText(native, document, name, width / 2, stereotype ? 42 : 27, {
-    fill: palette.text, fontSize: 14, fontWeight: '700', anchor: 'middle', maxChars,
+    fill: palette.text, fontSize: 14, fontWeight: '700', anchor: 'middle', lines: content.nameLines,
   });
 
   let y = headerHeight;
-  const appendSection = (label: string, rows: string[], fill: string) => {
-    const values = rows.length > 0 ? rows : ['—'];
-    const rowHeights = values.map((row) => {
-      const lineCount = wrapExportText(row, maxChars).length;
-      return Math.max(19, lineCount * 11 * 1.35 + 4);
-    });
-    const sectionHeight = 28 + rowHeights.reduce((sum, rowHeight) => sum + rowHeight, 0);
+  const appendSection = (label: string, rows: typeof content.attributes, sectionHeight: number, fill: string, toggle: string) => {
     native.appendChild(createSvgElement(document, 'rect', {
       x: 0, y, width, height: sectionHeight, fill,
     }));
     appendExportText(native, document, label, 10, y + 16, {
-      fill: palette.secondary, fontSize: 9, fontWeight: '700', maxChars,
+      fill: palette.secondary, fontSize: 9, fontWeight: '700',
     });
     let rowY = y + 35;
-    values.forEach((row, index) => {
-      appendExportText(native, document, row, 10, rowY, {
-        fill: palette.text, fontSize: 11, maxChars,
+    rows.forEach((row) => {
+      appendExportText(native, document, row.text, 10, rowY, {
+        fill: palette.text, fontSize: 11, lines: row.lines,
       });
-      rowY += rowHeights[index];
+      rowY += row.height;
     });
+    if (toggle) {
+      appendExportText(native, document, toggle, 10, y + sectionHeight - 14, { fill: palette.accent, fontSize: 10 });
+    }
     y += sectionHeight;
     native.appendChild(createSvgElement(document, 'line', {
       x1: 0, y1: y, x2: width, y2: y, stroke: palette.divider, 'stroke-width': 1,
@@ -175,24 +180,25 @@ function flattenUmlClass(
   };
 
   if (interfaces.length > 0) {
-    const interfaceHeight = 28 + interfaces.length * 16;
+    const interfaceHeight = content.interfaceHeight;
     native.appendChild(createSvgElement(document, 'rect', {
       x: 0, y, width, height: interfaceHeight, fill: palette.surface,
     }));
-    interfaces.forEach((row, index) => appendExportText(
-      native, document, row, 10, y + 18 + index * 16,
-      { fill: palette.secondary, fontSize: 10, maxChars },
-    ));
+    let interfaceY = y + 16;
+    content.interfaces.forEach((lines) => {
+      appendExportText(native, document, '', 10, interfaceY, { fill: palette.secondary, fontSize: 10, lines });
+      interfaceY += lines.length * 13.5;
+    });
     y += interfaceHeight;
     native.appendChild(createSvgElement(document, 'line', {
       x1: 0, y1: y, x2: width, y2: y, stroke: palette.divider, 'stroke-width': 1,
     }));
   }
-  appendSection(sectionLabels[0] || 'ATTRIBUTES', attributes, palette.surface);
-  appendSection(sectionLabels[1] || 'OPERATIONS', methods, palette.body);
+  appendSection(sectionLabels[0] || 'ATTRIBUTES', content.attributes, content.attributesHeight, palette.surface, attributesToggle);
+  appendSection(sectionLabels[1] || 'OPERATIONS', content.methods, content.methodsHeight, palette.body, methodsToggle);
   if (note) {
-    appendExportText(native, document, note, 10, y + 22, {
-      fill: palette.secondary, fontSize: 10, maxChars,
+    appendExportText(native, document, note, 10, y + 16, {
+      fill: palette.secondary, fontSize: 10, lines: content.noteLines,
     });
   }
 
@@ -464,6 +470,17 @@ export function exportCanvasGraphSvg(graph: Graph, backgroundColor = '#fafafa'):
         serializeImages: true,
         beforeSerialize(this: Graph, svg: SVGSVGElement) {
           resetSvgViewportTransform(svg);
+          // X6's style copier omits box-sizing. Its copied width/height already
+          // include padding and borders, so restore the sequence header model.
+          svg.querySelectorAll<HTMLElement>('.seq-lifeline-node, .seq-lifeline-name').forEach((element) => {
+            element.style.boxSizing = 'border-box';
+          });
+          svg.querySelectorAll<HTMLElement>('.seq-lifeline-name').forEach((element) => {
+            element.style.overflowWrap = 'anywhere';
+            element.style.wordBreak = 'break-word';
+            element.style.whiteSpace = 'normal';
+            element.style.flexShrink = '0';
+          });
           flattenHtmlDiagramNodes(this, svg);
           normalizeExportEdgeLabels(svg, backgroundColor);
           const bounds = svg.viewBox.baseVal;

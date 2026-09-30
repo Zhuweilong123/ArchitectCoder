@@ -84,6 +84,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const s = get();
     if (s.status !== 'pending' || s.reviewId === null) return;
     set({ status: 'accepted', actedFrom: from, deferred: false });
+    if (s.reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
 
     const text = comment || '批准，继续';
     const result = sendReviewResponse(s.reviewId, text, 'accept');
@@ -140,6 +141,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
     }
     set({ status: 'rejected', actedFrom: from, deferred: false });
+    if (s.reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
 
     if (s.reviewType === 'uml_diff') {
       const ui = useUiStore.getState();
@@ -170,6 +172,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const s = get();
     if (s.status !== 'pending') return;
     set({ status: 'expired', expiredReason: reason, deferred: false });
+    if (get().reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
     if (s.reviewType === 'uml_diff') {
       setPendingUmlReviewId(null);
     }

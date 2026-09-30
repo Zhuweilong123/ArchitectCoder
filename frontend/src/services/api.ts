@@ -127,17 +127,6 @@ export async function saveTestFile(req: {
   return data;
 }
 
-export async function generateTestCode(req: {
-  filename: string;
-  sheets: Record<string, unknown>;
-  language: string;
-  mode: 'full' | 'incremental';
-  changed_cases?: Array<Record<string, unknown>>;
-}): Promise<{ files: Record<string, string>; language: string; mode: string }> {
-  const { data } = await api.post('/testhub/generate-tests', req);
-  return data;
-}
-
 export async function saveTestReview(req: {
   action: string;
   comment: string;

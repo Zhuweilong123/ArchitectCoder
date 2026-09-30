@@ -1,5 +1,6 @@
 import type { UmlDiagram } from '../types/uml';
 import type { CompNode } from '../types/component';
+import { orderArchitectureGraph, type ArchitectureEdge } from './architectureGraph';
 
 /** Space occupied by a component's title and interface groups. */
 export function getComponentHeaderHeight(component: CompNode): number {
@@ -30,9 +31,28 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     children.push(component);
     childrenByParent.set(component.parent_id, children);
   });
-  childrenByParent.forEach((children) => children.sort((a, b) => (
-    a.y - b.y || a.x - b.x || a.id.localeCompare(b.id)
-  )));
+  childrenByParent.forEach((children, parentId) => {
+    const childIds = new Set(children.map((child) => child.id));
+    const childOwner = (id: string): string | undefined => {
+      let current = id;
+      const seen = new Set<string>();
+      while (componentById.has(current) && !seen.has(current)) {
+        if (childIds.has(current)) return current;
+        seen.add(current);
+        const parent = componentById.get(current)!.parent_id;
+        if (!parent || parent === parentId) break;
+        current = parent;
+      }
+      return undefined;
+    };
+    const edges: ArchitectureEdge[] = (diagram.comp_relations || []).map((relation) => ({
+      source: childOwner(relation.source) || '', target: childOwner(relation.target) || '',
+    }));
+    const order = new Map(children.map((child) => [child.id, child.x]));
+    const rows = orderArchitectureGraph(children.map((child) => child.id), edges, order).rows;
+    const orderedIds = [...rows.keys()].sort((a, b) => a - b).flatMap((level) => rows.get(level)!);
+    children.sort((a, b) => orderedIds.indexOf(a.id) - orderedIds.indexOf(b.id));
+  });
 
   const topLevel = components.filter((component) => (
     !component.parent_id || !componentById.has(component.parent_id)
@@ -90,79 +110,21 @@ export function layoutComponents(diagram: UmlDiagram): UmlDiagram | null {
     }
     return topLevelIds.has(current) ? current : id;
   };
-  const outgoing = new Map<string, string[]>();
-  const incoming = new Map<string, string[]>();
-  const indegree = new Map<string, number>();
-  const levels = new Map<string, number>();
-  topLevel.forEach((component) => {
-    outgoing.set(component.id, []);
-    incoming.set(component.id, []);
-    indegree.set(component.id, 0);
-    levels.set(component.id, 0);
-  });
+  const edges: ArchitectureEdge[] = [];
   (diagram.comp_relations || []).forEach((relation) => {
     const source = ownerOf(relation.source);
     const target = ownerOf(relation.target);
     if (!topLevelIds.has(source) || !topLevelIds.has(target) || source === target) return;
-    const neighbors = outgoing.get(source)!;
-    if (neighbors.includes(target)) return;
-    neighbors.push(target);
-    incoming.get(target)?.push(source);
-    indegree.set(target, (indegree.get(target) || 0) + 1);
+    edges.push({ source, target });
   });
-
-  const queue = topLevel
-    .filter((component) => indegree.get(component.id) === 0)
-    .map((component) => component.id);
-  const processed = new Set<string>();
-  for (let index = 0; index < queue.length; index += 1) {
-    const current = queue[index];
-    processed.add(current);
-    const currentLevel = levels.get(current) || 0;
-    outgoing.get(current)?.forEach((target) => {
-      levels.set(target, Math.max(levels.get(target) || 0, currentLevel + 1));
-      const nextIndegree = (indegree.get(target) || 0) - 1;
-      indegree.set(target, nextIndegree);
-      if (nextIndegree === 0) queue.push(target);
-    });
-  }
-  if (processed.size < topLevel.length) {
-    const maxLevel = Math.max(...Array.from(levels.values()));
-    topLevel.forEach((component) => {
-      if (!processed.has(component.id)) levels.set(component.id, maxLevel + 1);
-    });
-  }
-
+  const originalOrder = new Map(topLevel.map((component) => [component.id, component.y]));
+  const ordered = orderArchitectureGraph(topLevel.map((component) => component.id), edges, originalOrder);
   const positions = new Map<string, { x: number; y: number }>();
   const rows = new Map<number, CompNode[]>();
-  topLevel.forEach((component) => {
-    const row = rows.get(levels.get(component.id) || 0) || [];
-    row.push(component);
-    rows.set(levels.get(component.id) || 0, row);
+  ordered.rows.forEach((ids, level) => {
+    rows.set(level, ids.map((id) => componentById.get(id)!));
   });
   const orderedLevels = Array.from(rows.keys()).sort((a, b) => a - b);
-  // Order each rank using connected neighbours. Two passes account for both
-  // upstream and downstream edges, instead of preserving an unrelated old Y.
-  const orderByNeighbours = (level: number, neighbours: Map<string, string[]>) => {
-    const row = rows.get(level) || [];
-    row.sort((a, b) => {
-      const barycenter = (component: CompNode) => {
-        const positions = (neighbours.get(component.id) || [])
-          .filter((id) => levels.get(id) !== level)
-          .map((id) => {
-            const neighbourLevel = levels.get(id);
-            return (rows.get(neighbourLevel ?? -1) || []).findIndex((item) => item.id === id);
-          })
-          .filter((index) => index >= 0);
-        return positions.length
-          ? positions.reduce((sum, index) => sum + index, 0) / positions.length
-          : Number.POSITIVE_INFINITY;
-      };
-      return barycenter(a) - barycenter(b) || a.y - b.y || a.id.localeCompare(b.id);
-    });
-  };
-  orderedLevels.slice(1).forEach((level) => orderByNeighbours(level, incoming));
-  orderedLevels.slice(0, -1).reverse().forEach((level) => orderByNeighbours(level, outgoing));
   const columnGap = 160;
   const verticalGap = 70;
   const maxColumnHeight = Math.max(...orderedLevels.map((level) => {

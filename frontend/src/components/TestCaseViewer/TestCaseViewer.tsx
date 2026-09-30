@@ -1,5 +1,5 @@
 /**
- * Test Case Viewer – load Excel test cases, edit, generate test code.
+ * Test Case Viewer – load, edit, and save Excel test cases.
  * Used in pipeline Stage 4 (Case Review).
  */
 
@@ -9,12 +9,12 @@ import {
   Tooltip, Badge, Divider, Upload,
 } from 'antd';
 import {
-  ReloadOutlined, CodeOutlined, PlusOutlined,
-  SaveOutlined, FileTextOutlined, FileAddOutlined,
+  ReloadOutlined,
+  SaveOutlined, FileTextOutlined,
   HistoryOutlined, FolderOpenOutlined, UploadOutlined,
   CloseOutlined,
 } from '@ant-design/icons';
-import { loadTestFile, saveTestFile, generateTestCode, saveTestReview, listTestFiles, browseDirectory, type BrowseResult } from '../../services/api';
+import { loadTestFile, saveTestFile, saveTestReview, listTestFiles, browseDirectory, type BrowseResult } from '../../services/api';
 import { useUiStore } from '../../stores/uiStore';
 import './TestCaseViewer.css';
 
@@ -26,7 +26,7 @@ interface SheetData {
 }
 
 const TestCaseViewer: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
-  const { selectedLanguage, setRightPanelTab, setRightPanelVisible, setTestCaseData } = useUiStore();
+  const { setTestCaseData } = useUiStore();
 
   const [files, setFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [currentFile, setCurrentFile] = useState('');
@@ -36,7 +36,6 @@ const TestCaseViewer: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [activeSheet, setActiveSheet] = useState('');
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [changedCases, setChangedCases] = useState<Array<{sheet: string; row: number; case_id: string; field: string; old_val: string; new_val: string}>>([]);
   const [reviewLog, setReviewLog] = useState<string[]>([]);
   const [logVisible, setLogVisible] = useState(false);
@@ -227,32 +226,6 @@ const TestCaseViewer: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
     setLoading(false);
   };
 
-  // Generate test code
-  const handleGenerate = async (mode: 'full' | 'incremental') => {
-    setGenerating(true);
-    const key = 'testgen';
-    message.loading({ content: mode === 'full' ? '全量生成测试代码...' : '增量生成测试代码...', key });
-    try {
-      const result = await generateTestCode({
-        filename: currentFile,
-        sheets,
-        language: selectedLanguage,
-        mode,
-        changed_cases: mode === 'incremental' ? changedCases : [],
-      });
-      const store = useUiStore.getState();
-      store.setGeneratedTestCode(result.files);
-      store.setRightPanelTab('testcase');
-      store.setRightPanelVisible(true);
-      const count = Object.keys(result.files).length;
-      message.success({ content: `${mode === 'full' ? '全量' : '增量'}生成了 ${count} 个测试文件`, key });
-      addLog(`generate_${mode}`, `Generated ${count} test files (${mode})`);
-    } catch (e) {
-      message.error({ content: '测试代码生成失败: ' + String(e), key });
-    }
-    setGenerating(false);
-  };
-
   // Build table columns from headers
   const buildColumns = (headers: string[]) => {
     return headers.map((h, idx) => ({
@@ -359,31 +332,6 @@ const TestCaseViewer: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
               保存修改 ({changedCases.length})
             </Button>
           </Badge>
-
-          <Divider type="vertical" />
-
-          <Tooltip title="全量生成测试代码">
-            <Button
-              icon={<FileAddOutlined />}
-              onClick={() => handleGenerate('full')}
-              loading={generating}
-              size="small"
-              type="primary"
-            >
-              全量生成
-            </Button>
-          </Tooltip>
-          <Tooltip title="仅针对变更用例增量生成">
-            <Button
-              icon={<PlusOutlined />}
-              onClick={() => handleGenerate('incremental')}
-              loading={generating}
-              disabled={changedCases.length === 0}
-              size="small"
-            >
-              增量生成
-            </Button>
-          </Tooltip>
 
           <Divider type="vertical" />
 

@@ -333,10 +333,10 @@ const Toolbar: React.FC = () => {
         target === 'project'
           ? (projectRoot || currentWorkspacePath || '.')
           : target === 'design'
-            ? (designDir || (projectRoot ? `${normalizePath(projectRoot)}/design` : '.'))
+            ? (designDir || projectRoot || currentWorkspacePath || '.')
             : target === 'source'
-              ? (sourceDir || '.')
-              : (testDir || '.')
+              ? (sourceDir || projectRoot || currentWorkspacePath || '.')
+              : (testDir || projectRoot || currentWorkspacePath || '.')
       );
       const result = await browseDirectory(initialPath, false);
       setProjDirBrowseResult(result);
@@ -352,10 +352,8 @@ const Toolbar: React.FC = () => {
       void handleProjectFolderSelect(dirPath);
       return;
     }
-    // A role-specific selection is an explicit layout. Do not keep a stale
-    // project root that could reject a source/design/test directory outside it.
-    setProjectRoot('');
-    setCurrentWorkspacePath(null, true);
+    // Role directories are independent of the selected workspace root.
+    // Choosing source/test/design must not discard the workspace or its safety mode.
     if (projDirBrowseTarget === 'design') {
       setDesignDir(dirPath);
       setCurrentFilepath(null);
@@ -367,7 +365,7 @@ const Toolbar: React.FC = () => {
     setProjDirBrowseVisible(false);
     const labels = { design: '设计', source: '源码', test: '测试' };
     message.success(`已设置${labels[projDirBrowseTarget]}目录: ${dirPath}`);
-  }, [projDirBrowseTarget, setProjectRoot, setDesignDir, setSourceDir, setTestDir, setCurrentFilepath, setCurrentWorkspacePath]);
+  }, [projDirBrowseTarget, setDesignDir, setSourceDir, setTestDir, setCurrentFilepath]);
 
   const handleProjDirNav = useCallback((dirPath: string) => {
     handleBrowseDirFor(projDirBrowseTarget, dirPath);
@@ -394,9 +392,9 @@ const Toolbar: React.FC = () => {
 
   const handleBrowseDesign = () => {
     const designPath = designDir
-      || (projectRoot
-        ? `${normalizePath(projectRoot)}/design`
-        : (currentFilepath ? pathDirName(currentFilepath) : ''));
+      || projectRoot
+      || currentWorkspacePath
+      || (currentFilepath ? pathDirName(currentFilepath) : '');
     // The unified design picker may target an explicitly configured external
     // directory, so files opened from it must use the same unrestricted flag
     // as the directory browse request.

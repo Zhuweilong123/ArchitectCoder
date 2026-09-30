@@ -18,10 +18,11 @@ import { centerCanvasAfterFirstSync, useCanvasGraphViewport } from './core/useCa
 import { applyCanvasThemeToGraph, createCanvasGraph } from './core/createCanvasGraph';
 import { disposeCanvasGraphInstance, registerCanvasGraphInstance } from './core/canvasLifecycle';
 import { snapCanvasPosition } from './core/snapToGrid';
+import { attachBlankCanvasTap } from './core/blankCanvasTap';
 import { syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import type { FragmentType } from '../../types/sequence';
-import { sequenceMessageY } from '../../utils/sequenceLayout';
+import { sequenceMessageY, sequenceLifelineHeaderHeight } from '../../utils/sequenceLayout';
 import './SeqEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
 
@@ -256,12 +257,13 @@ const SeqEditor: React.FC = () => {
       });
     });
 
-    graph.on('blank:click', () => {
+    const clearBlankSelection = () => {
       selectLifeline(null);
       selectMessage(null);
       (graph as any).__selectedFragment = null;
       setRightPanelVisible(false);
-    });
+    };
+    const detachBlankCanvasTap = attachBlankCanvasTap(graph, clearBlankSelection);
 
     // Right-click on a fragment or lifeline → context menu
     graph.on('node:contextmenu', ({ node, e }: any) => {
@@ -487,6 +489,7 @@ const SeqEditor: React.FC = () => {
     return () => {
       _didFirstSync.current = false;  // reset for StrictMode remount
       disposeCanvasGraphInstance(graph, graphRef, () => {
+        detachBlankCanvasTap();
         document.removeEventListener('keydown', handleKeyDown);
       });
     };
@@ -585,7 +588,7 @@ const SeqEditor: React.FC = () => {
               : canvasTheme === 'eye-care' ? '#8ea594' : '#94a3b8';
         const lifelineLine = {
           x1: LIFELINE_WIDTH / 2,
-          y1: 45,
+          y1: 4 + sequenceLifelineHeaderHeight(ll.name) + 10,
           x2: LIFELINE_WIDTH / 2,
           y2: Math.max(50, neededHeight - 4),
           stroke: lineColor,
@@ -654,7 +657,7 @@ const SeqEditor: React.FC = () => {
       lifelines.forEach((ll) => {
         const explicitActivations = (ll.activations || []).map((y, index) => ({
           id: `${ll.id}__activation__explicit__${index}`,
-          top: LIFELINE_Y + 45 + y - 6,
+          top: LIFELINE_Y + 4 + sequenceLifelineHeaderHeight(ll.name) + 10 + y - 6,
           width: 32,
           height: 18,
           auto: false,

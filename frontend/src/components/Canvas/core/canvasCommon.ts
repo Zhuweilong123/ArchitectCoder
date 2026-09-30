@@ -49,6 +49,7 @@ export function getSpacedEdgePorts(
   nodes: CanvasNodeRect[],
   stub = 32,
   laneSpacing = 0,
+  preferAlignedPort = false,
 ) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const source = byId.get(edge.source);
@@ -79,8 +80,22 @@ export function getSpacedEdgePorts(
     const index = peers.findIndex((candidate) => candidate.id === edge.id);
     const span = side === 'left' || side === 'right' ? node.height : node.width;
     const limit = Math.max(0, span / 2 - 36);
+    const axis = side === 'left' || side === 'right' ? 'y' : 'x';
+    const alignedIndex = preferAlignedPort && peers.length > 1
+      ? peers.reduce((best, candidate, candidateIndex) => {
+        const other = byId.get(candidate[endpoint === 'source' ? 'target' : 'source'])!;
+        const bestOther = byId.get(peers[best][endpoint === 'source' ? 'target' : 'source'])!;
+        return Math.abs(center(other)[axis] - center(node)[axis])
+          < Math.abs(center(bestOther)[axis] - center(node)[axis]) ? candidateIndex : best;
+      }, 0)
+      : -1;
+    const alignedOther = alignedIndex >= 0
+      ? byId.get(peers[alignedIndex][endpoint === 'source' ? 'target' : 'source'])! : null;
+    const centered = alignedOther
+      && Math.abs(center(alignedOther)[axis] - center(node)[axis]) <= 8;
     return {
-      shift: Math.max(-limit, Math.min(limit, (index - (peers.length - 1) / 2) * 18)),
+      shift: Math.max(-limit, Math.min(limit,
+        (index - (centered ? alignedIndex : (peers.length - 1) / 2)) * 18)),
       rank: Math.max(0, index),
     };
   };

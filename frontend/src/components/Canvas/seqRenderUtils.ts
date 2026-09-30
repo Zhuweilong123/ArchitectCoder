@@ -3,11 +3,11 @@ import type { InterfaceLanguage } from '../../i18n';
 import type { SeqLifeline, MessageType } from '../../types/sequence';
 import { getCanvasLabels } from './canvasLabels';
 import { escapeHtml } from '../../utils/safeHtml';
-import { SEQUENCE_LIFELINE_WIDTH } from '../../utils/sequenceLayout';
+import { SEQUENCE_LIFELINE_WIDTH, SEQUENCE_LIFELINE_Y, sequenceLifelineHeaderHeight } from '../../utils/sequenceLayout';
 
 export const LIFELINE_WIDTH = SEQUENCE_LIFELINE_WIDTH;
 export const LIFELINE_HEIGHT = 400;
-export const LIFELINE_Y = 120;
+export const LIFELINE_Y = SEQUENCE_LIFELINE_Y;
 
 export function buildLifelineHTML(
   lifeline: SeqLifeline,
@@ -24,7 +24,7 @@ export function buildLifelineHTML(
     ? '<div class="seq-click-hint">' + getCanvasLabels(language).sequenceDiagram.selectedLifelineHint + '</div>'
     : '';
   return '<div class="seq-lifeline-node theme-' + theme + ' ' + selClass + '">' +
-    '<div class="seq-lifeline-name">' + escapeHtml(lifeline.name) + '</div>' +
+    '<div class="seq-lifeline-name" style="height:' + sequenceLifelineHeaderHeight(lifeline.name) + 'px;flex-shrink:0">' + escapeHtml(lifeline.name) + '</div>' +
     '<div class="seq-lifeline-body">' + hint + '</div>' +
     '</div>';
 }

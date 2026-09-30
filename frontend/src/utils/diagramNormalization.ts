@@ -2,6 +2,7 @@ import type { UmlAttribute, UmlClass, UmlDiagram, UmlMethod, UmlRelation, Projec
 import { DEFAULT_GRID_SETTINGS, RelationType, Stereotype, Visibility } from '../types/uml';
 import type { SeqFragment, SeqLifeline, SeqMessage } from '../types/sequence';
 import type { CompNode, CompRelation } from '../types/component';
+import { getClassContentLayout } from './classContentLayout';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -77,12 +78,14 @@ function normalizeMethod(value: unknown): UmlMethod {
 
 function normalizeClass(value: unknown, index: number, used: Set<string>): UmlClass {
   const item = record(value);
-  return {
+  const cls: UmlClass = {
     id: uniqueId(item.id, 'class', index, used),
     name: text(item.name, 'Class'),
     stereotype: enumValue(item.stereotype, Object.values(Stereotype), Stereotype.CLASS),
     attributes: array(item.attributes).map(normalizeAttribute),
     methods: array(item.methods).map(normalizeMethod),
+    expanded_attributes: item.expanded_attributes === true,
+    expanded_methods: item.expanded_methods === true,
     position: {
       x: number(record(item.position).x ?? item.x, 100),
       y: number(record(item.position).y ?? item.y, 100),
@@ -95,6 +98,12 @@ function normalizeClass(value: unknown, index: number, used: Set<string>): UmlCl
     provided_interfaces: array(item.provided_interfaces).map((v) => text(v)).filter(Boolean),
     required_interfaces: array(item.required_interfaces).map((v) => text(v)).filter(Boolean),
   };
+  // Older projects reserved height for every member. Start them in the new
+  // compact view; explicitly saved expansion states keep their manual sizes.
+  if (typeof item.expanded_attributes !== 'boolean' && typeof item.expanded_methods !== 'boolean') {
+    cls.size.height = getClassContentLayout(cls).height;
+  }
+  return cls;
 }
 
 function normalizeRelation(value: unknown, index: number, used: Set<string>): UmlRelation {
