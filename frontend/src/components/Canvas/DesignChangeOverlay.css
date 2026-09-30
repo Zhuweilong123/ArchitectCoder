@@ -1,0 +1,44 @@
+.design-change-panel {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 110;
+  width: 250px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  box-shadow: 0 2px 8px #00000018;
+  font-size: 12px;
+}
+.design-change-controls, .design-change-legend, .design-change-versions { display: flex; gap: 10px; align-items: center; }
+.design-change-controls { justify-content: space-between; }
+.design-change-controls label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.design-change-panel button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 3px 0; text-align: left; }
+.design-change-panel button:hover { text-decoration: underline; }
+.design-change-panel button:focus-visible { outline: 2px solid #64748b; outline-offset: 2px; }
+.design-change-legend { margin-top: 5px; font-weight: 600; }
+.design-change-versions { margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px; }
+.design-change-versions button { padding: 3px 8px; border-radius: 4px; }
+.design-change-versions button[aria-pressed="true"] { background: #e2e8f0; font-weight: 600; }
+.design-change-list { max-height: 35vh; overflow-y: auto; margin-top: 6px; }
+.design-change-item, .design-change-member { display: block; width: 100%; overflow-wrap: anywhere; }
+.design-change-panel .design-change-member { padding-left: 12px; font-size: 11px; }
+.design-change-help { margin-top: 6px; color: #64748b; font-size: 11px; }
+.x6-node[data-design-change]:not([data-design-change-kind="lifeline"]) > rect { stroke: var(--design-change-color) !important; stroke-width: 2.5px !important; }
+.x6-node[data-design-change="removed"] > rect { stroke-dasharray: 6 3 !important; }
+[data-design-change] .seq-lifeline-name { outline: 2px solid var(--design-change-color); outline-offset: -2px; }
+[data-design-change="removed"] .seq-lifeline-name { outline-style: dashed; }
+[data-design-change] .comp-node { outline: 2px solid var(--design-change-color); outline-offset: -2px; }
+[data-design-change="removed"] .comp-node { outline-style: dashed; }
+[data-design-change-line] { stroke: var(--design-change-color) !important; stroke-width: 2.5px !important; }
+[data-design-change-line="removed"] { stroke-dasharray: 6 3 !important; }
+.x6-edge[data-design-change] .x6-edge-label text { fill: var(--design-change-color) !important; font-weight: 700 !important; }
+.uml-member[data-design-change], .comp-iface[data-design-change], .uml-iface[data-design-change] {
+  background: color-mix(in srgb, var(--design-change-color) 12%, transparent);
+  box-shadow: inset 2px 0 var(--design-change-color);
+}
+.uml-member[data-design-change="removed"], .comp-iface[data-design-change="removed"], .uml-iface[data-design-change="removed"] { text-decoration: line-through; }
+[data-design-review-decoration="hidden-count"] { font-weight: 700; }

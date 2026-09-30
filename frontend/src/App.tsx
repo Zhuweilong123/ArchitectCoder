@@ -9,6 +9,7 @@ import {
   DiffOutlined, CloseOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import Toolbar from './components/Toolbar/Toolbar';
+import DesignChangeOverlay from './components/Canvas/DesignChangeOverlay';
 import { useUiStore, type RightPanelTab } from './stores/uiStore';
 import { selectActiveDiagram, useDiagramStore } from './stores/diagramStore';
 import { validateWorkspacePath } from './services/api';
@@ -191,6 +192,7 @@ const App: React.FC = () => {
             <Suspense fallback={<LoadingFallback />}><UMLEditor key={'uml_' + activeIdx} /></Suspense>
           )}
 
+          {!showTestCaseInCanvas && hasDiagrams && <DesignChangeOverlay />}
           <div className="status-bar">
             <span>{statusText}</span>
             <span>

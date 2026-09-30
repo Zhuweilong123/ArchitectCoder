@@ -118,6 +118,7 @@ const DiffViewer: React.FC = () => {
 
   // Toggle canvas between original and optimized (supports multi-diagram)
   const handleToggleCanvas = () => {
+    useUiStore.getState().setDesignComparisonVisible(true);
     // Ensure the active diagram matches the diff tab (in case user switched via toolbar)
     const targetType = hasMultiDiagrams ? activeDiffDiagramType : (originalDiagram?.diagram_type || 'class');
     const { dtype, dname } = parseDiagramKey(targetType);
@@ -233,6 +234,7 @@ const DiffViewer: React.FC = () => {
       });
       message.success('已接受优化结果，评审已保存到 dev_review.txt');
       setResolved(true);
+      useUiStore.getState().setDesignComparisonVisible(false);
       setRightPanelTab('properties');
       // 触发画布居中，确保用户可以看到更新后的图
       triggerRecenter();
@@ -337,6 +339,7 @@ const DiffViewer: React.FC = () => {
       }
       message.info('已拒绝优化结果，评审已保存到 dev_review.txt');
       setResolved(true);
+      useUiStore.getState().setDesignComparisonVisible(false);
       setRejectModalVisible(false);
       setRightPanelTab('properties');
     } catch (e) {

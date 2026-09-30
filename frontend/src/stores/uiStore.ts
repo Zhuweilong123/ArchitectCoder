@@ -33,6 +33,7 @@ interface UiState {
   originalDiagram: UmlDiagram | null;
   optimizedDiagram: UmlDiagram | null;
   showingOptimized: boolean;
+  designComparisonVisible: boolean;
   optimizeInstructions: string; // last optimization request content
 
   // Global multi-diagram optimization (pipeline Stage 1)
@@ -94,6 +95,7 @@ interface UiState {
   setActiveDiffDiagramType: (type: DiffDiagramType) => void;
   toggleShowingVersion: () => void;
   setShowingOptimized: (v: boolean) => void;
+  setDesignComparisonVisible: (visible: boolean) => void;
   toggleTestCaseInCanvas: () => void;
   setShowTestCaseInCanvas: (v: boolean) => void;
   setTestCaseData: (data: string) => void;
@@ -140,6 +142,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   originalDiagram: null,
   optimizedDiagram: null,
   showingOptimized: false,
+  designComparisonVisible: false,
   optimizeInstructions: '',
   originalDiagrams: {},
   optimizedDiagrams: {},
@@ -228,6 +231,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       diffContent: firstDiff,
       optimizeInstructions: instructions || '',
       showingOptimized: sameContents,
+      designComparisonVisible: true,
     });
   },
 
@@ -249,6 +253,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   toggleShowingVersion: () => set((s) => ({ showingOptimized: !s.showingOptimized })),
   setShowingOptimized: (v) => set({ showingOptimized: v }),
+  setDesignComparisonVisible: (visible) => set({ designComparisonVisible: visible }),
   toggleTestCaseInCanvas: () => set((s) => ({ showTestCaseInCanvas: !s.showTestCaseInCanvas })),
   setShowTestCaseInCanvas: (v) => set({ showTestCaseInCanvas: v }),
   setTestCaseData: (data) => set({ testCaseData: data }),
