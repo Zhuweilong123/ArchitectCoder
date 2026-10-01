@@ -50,6 +50,7 @@ export function getSpacedEdgePorts(
   stub = 32,
   laneSpacing = 0,
   preferAlignedPort = false,
+  spreadTargetLanes = false,
 ) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const source = byId.get(edge.source);
@@ -122,8 +123,10 @@ export function getSpacedEdgePorts(
   const targetPoint = port(target, targetSide, targetOffset.shift);
   return {
     sourcePoint, targetPoint,
-    sourceOutside: outside(sourcePoint, sourceSide, stub + Math.min(sourceOffset.rank, 4) * laneSpacing),
-    targetOutside: outside(targetPoint, targetSide, stub),
+    sourceOutside: outside(sourcePoint, sourceSide, stub
+      + (spreadTargetLanes ? sourceOffset.rank : Math.min(sourceOffset.rank, 4)) * laneSpacing),
+    targetOutside: outside(targetPoint, targetSide, stub
+      + (spreadTargetLanes ? targetOffset.rank * laneSpacing : 0)),
   };
 }
 
@@ -183,6 +186,40 @@ interface CanvasPoint {
   y: number;
 }
 
+interface RouteTraffic {
+  routes: CanvasPoint[][];
+  spacing?: number;
+  segments?: Array<{ start: CanvasPoint; end: CanvasPoint }>;
+}
+
+/** Prefer separate parallel channels; a crossing is cheaper than a shared segment. */
+function routeTrafficCost(start: CanvasPoint, end: CanvasPoint, traffic?: RouteTraffic): number {
+  if (!traffic) return 0;
+  const horizontal = start.y === end.y;
+  const axis = horizontal ? 'x' : 'y';
+  const crossAxis = horizontal ? 'y' : 'x';
+  const minimum = Math.min(start[axis], end[axis]);
+  const maximum = Math.max(start[axis], end[axis]);
+  const spacing = traffic.spacing || 14;
+  let cost = 0;
+  const tracks = traffic.segments || traffic.routes.flatMap((route) => route.slice(1).map((point, index) => ({
+    start: route[index], end: point,
+  })));
+  tracks.forEach(({ start: before, end: point }) => {
+    const parallel = horizontal ? before.y === point.y : before.x === point.x;
+    if (parallel) {
+      const distance = Math.abs(before[crossAxis] - start[crossAxis]);
+      const overlap = Math.min(maximum, Math.max(before[axis], point[axis]))
+        - Math.max(minimum, Math.min(before[axis], point[axis]));
+      if (overlap > 0 && distance < spacing) cost += overlap * (spacing - distance) * 2;
+    } else if (before[axis] === point[axis]
+      && before[axis] > minimum && before[axis] < maximum
+      && start[crossAxis] > Math.min(before[crossAxis], point[crossAxis])
+      && start[crossAxis] < Math.max(before[crossAxis], point[crossAxis])) cost += 80;
+  });
+  return cost;
+}
+
 function getNodeCenter(node: CanvasNodeRect): CanvasPoint {
   return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
 }
@@ -237,15 +274,25 @@ function findClearRoute(
   end: CanvasPoint,
   obstacles: CanvasNodeRect[],
   clearance: number,
+  traffic?: RouteTraffic,
 ): CanvasPoint[] | null {
   const margin = clearance + 1;
+  const spacing = traffic?.spacing || 14;
+  const tracks = traffic?.routes.flatMap((route) => route.slice(1).map((point, index) => ({
+    start: route[index], end: point,
+  }))) || [];
+  if (traffic) traffic = { ...traffic, segments: tracks };
   const xs = Array.from(new Set([
     start.x, end.x,
     ...obstacles.flatMap((node) => [node.x - margin, node.x + node.width + margin]),
+    ...tracks.filter(({ start, end }) => start.x === end.x)
+      .flatMap(({ start }) => [start.x - spacing, start.x + spacing]),
   ])).sort((a, b) => a - b);
   const ys = Array.from(new Set([
     start.y, end.y,
     ...obstacles.flatMap((node) => [node.y - margin, node.y + node.height + margin]),
+    ...tracks.filter(({ start, end }) => start.y === end.y)
+      .flatMap(({ start }) => [start.y - spacing, start.y + spacing]),
   ])).sort((a, b) => a - b);
   const width = xs.length;
   const height = ys.length;
@@ -329,7 +376,8 @@ function findClearRoute(
       ))) continue;
       const nextState = nextIndex * 3 + direction;
       const distance = score + Math.abs(next.x - xs[x]) + Math.abs(next.y - ys[y])
-        + (state % 3 !== 0 && state % 3 !== direction ? 16 : 0);
+        + (state % 3 !== 0 && state % 3 !== direction ? (traffic ? 80 : 16) : 0)
+        + routeTrafficCost(point(index), next, traffic);
       if (distance >= distances[nextState]) continue;
       distances[nextState] = distance;
       previous[nextState] = state;
@@ -349,7 +397,7 @@ export function getObstacleAvoidingEdgeVertices(
   edges: CanvasEdgeEndpoint[],
   nodes: CanvasNodeRect[],
   clearance = ROUTER_CLEARANCE,
-  endpoints?: { source?: CanvasPoint; target?: CanvasPoint; includeTerminals?: boolean },
+  endpoints?: { source?: CanvasPoint; target?: CanvasPoint; includeTerminals?: boolean; traffic?: RouteTraffic },
 ): CanvasPoint[] {
   const source = nodes.find((node) => node.id === edge.source);
   const target = nodes.find((node) => node.id === edge.target);
@@ -360,7 +408,13 @@ export function getObstacleAvoidingEdgeVertices(
   const obstacles = endpoints?.includeTerminals
     ? nodes
     : nodes.filter((node) => node.id !== edge.source && node.id !== edge.target);
-  if (obstacles.length === 0) return getParallelEdgeVertices(edge, edges, nodes);
+  if (obstacles.length === 0) {
+    if (endpoints?.source && endpoints.target) {
+      return sourceCenter.x === targetCenter.x || sourceCenter.y === targetCenter.y ? []
+        : [{ x: targetCenter.x, y: sourceCenter.y }];
+    }
+    return getParallelEdgeVertices(edge, edges, nodes);
+  }
 
   const left = Math.min(...obstacles.map((node) => node.x)) - clearance;
   const right = Math.max(...obstacles.map((node) => node.x + node.width)) + clearance;
@@ -394,28 +448,42 @@ export function getObstacleAvoidingEdgeVertices(
         route[index], point, node, clearance,
       )) ? count + 1 : count
     ), 0);
+    const trafficCost = route.slice(1).reduce((cost, point, index) => (
+      cost + routeTrafficCost(route[index], point, endpoints?.traffic)
+    ), 0);
     return {
       vertices: normalizeRouteVertices(vertices),
       collisions,
+      trafficCost,
       // Prefer short paths, while retaining a modest penalty for turns when
       // paths have the same clearance.
-      score: routeLength(route) + vertices.length * 16,
+      score: routeLength(route) + vertices.length * (endpoints?.traffic ? 80 : 16) + trafficCost,
     };
   }).sort((a, b) => a.collisions - b.collisions || a.score - b.score);
   if (scored[0]?.collisions === 0) {
+    // A clear short corridor already has the fewest useful bends. Avoid a
+    // full visibility-grid search for every ordinary adjacent connection.
+    const minimumLength = Math.abs(sourceCenter.x - targetCenter.x) + Math.abs(sourceCenter.y - targetCenter.y);
+    if (endpoints?.traffic && !scored[0].trafficCost && scored[0].vertices.length <= 2
+      && scored[0].score <= minimumLength + 160) return scored[0].vertices;
     if (endpoints?.includeTerminals) {
-      const gridRoute = findClearRoute(sourceCenter, targetCenter, obstacles, clearance);
+      const gridRoute = findClearRoute(sourceCenter, targetCenter, obstacles, clearance, endpoints.traffic);
       // An outer connection can use a narrow corridor, but a modest distance
       // saving is not worth several extra bends in an architecture overview.
       const outerBendCost = 150;
-      if (gridRoute && routeLength([sourceCenter, ...gridRoute, targetCenter])
-        + gridRoute.length * outerBendCost
-        < routeLength([sourceCenter, ...scored[0].vertices, targetCenter])
-          + scored[0].vertices.length * outerBendCost) return gridRoute;
+      const gridPoints = gridRoute ? [sourceCenter, ...gridRoute, targetCenter] : [];
+      if (gridRoute && routeLength(gridPoints)
+        + gridRoute.length * (endpoints.traffic ? 80 : outerBendCost)
+        + gridPoints.slice(1).reduce((cost, point, index) => (
+          cost + routeTrafficCost(gridPoints[index], point, endpoints.traffic)
+        ), 0)
+        < (endpoints.traffic ? scored[0].score
+          : routeLength([sourceCenter, ...scored[0].vertices, targetCenter])
+            + scored[0].vertices.length * outerBendCost)) return gridRoute;
     }
     return scored[0].vertices;
   }
-  return findClearRoute(sourceCenter, targetCenter, obstacles, clearance)
+  return findClearRoute(sourceCenter, targetCenter, obstacles, clearance, endpoints?.traffic)
     || scored[0]?.vertices || [];
 }
 
