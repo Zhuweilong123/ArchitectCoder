@@ -62,6 +62,7 @@ interface UiState {
   // Trace viewer
   traceVisible: boolean;
   traceSessionId: string | null;
+  pluginArchitectureVisible: boolean;
 
   // Evaluation center
   evaluationVisible: boolean;
@@ -111,6 +112,7 @@ interface UiState {
 
   // Trace viewer
   setTraceVisible: (visible: boolean) => void;
+  setPluginArchitectureVisible: (visible: boolean) => void;
   setTraceSessionId: (sessionId: string | null) => void;
   requestTraceCaseFactory: (sessionId: string) => void;
   clearTraceCaseFactoryRequest: () => void;
@@ -159,6 +161,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentChatExpanded: false,
   traceVisible: false,
   traceSessionId: null,
+  pluginArchitectureVisible: false,
   evaluationVisible: false,
   traceCaseFactoryRequestedSessionId: null,
   agentChatPosition: (() => {
@@ -284,6 +287,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   setTraceVisible: (visible) => set({ traceVisible: visible }),
+  setPluginArchitectureVisible: (visible) => set({ pluginArchitectureVisible: visible }),
   setTraceSessionId: (sessionId) => set({ traceSessionId: sessionId }),
   requestTraceCaseFactory: (sessionId) => set({ traceCaseFactoryRequestedSessionId: sessionId }),
   clearTraceCaseFactoryRequest: () => set({ traceCaseFactoryRequestedSessionId: null }),

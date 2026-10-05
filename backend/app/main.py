@@ -3,6 +3,7 @@
 import os
 import sys
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Extensions are repository-level packages. Add the repository root before
@@ -54,11 +55,24 @@ from app.api.metrics import router as metrics_router
 from app.agent_base.core.plugins import get_plugin_manager
 from app.api.runs import router as runs_router
 from app.api.audit import router as audit_router
+from app.api.plugins import router as plugins_router
 
 settings = get_settings()
 plugin_manager = get_plugin_manager()
 evals_extension_router = plugin_manager.load_router("evals", settings=settings)
 trace_extension_router = plugin_manager.load_router("trace", settings=settings)
+
+
+@asynccontextmanager
+async def lifespan(application):
+    from app.agent_base.core.hooks import get_hooks
+    from app.agent_base.core.lifecycle import build_plan, install_plan
+    plan = build_plan(plugin_manager, settings)
+    plan.write(Path(settings.plugin_plan_dir))
+    install_plan(plan, get_hooks())
+    application.state.plugin_plan = plan
+    logging.getLogger(__name__).info("Plugin execution plan: %s", plan.as_dict()["plan_id"])
+    yield
 
 app = FastAPI(
     title=settings.app_name,
@@ -66,6 +80,7 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 # CORS
@@ -90,6 +105,7 @@ if evals_extension_router is not None:
     app.include_router(evals_extension_router, dependencies=[Depends(require_auth)])
 app.include_router(runs_router, dependencies=[Depends(require_auth)])            # Durable harness runs
 app.include_router(audit_router, dependencies=[Depends(require_auth)])           # Harness audit events
+app.include_router(plugins_router, dependencies=[Depends(require_auth)])
 
 if settings.strict_production and (settings.debug or not settings.internal_api_token):
     raise RuntimeError("strict_production requires debug=false and internal_api_token")

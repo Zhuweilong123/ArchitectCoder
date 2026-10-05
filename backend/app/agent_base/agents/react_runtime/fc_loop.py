@@ -192,6 +192,10 @@ async def _invoke_fc_model(
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
+            get_hooks().emit(HookEvent.ERROR, HookContext(
+                event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
+                runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm"},
+            ))
             return None, "timeout", "llm_timeout"
     get_hooks().trigger(
         HookEvent.LLM_AFTER,
@@ -328,20 +332,26 @@ async def run_fc_loop(
     runtime.execution_budget = budget
     runtime.convergence_controller = convergence
     runtime.control_decision = None
-    get_hooks().trigger(
-        HookEvent.RUN_START,
-        HookContext(
-            event=HookEvent.RUN_START,
-            agent_name=agent.name,
-            run_id=runtime.run_id,
-            runtime=runtime,
-            payload={"initial_token_usage": initial_token_usage},
-        ),
-    )
+    runtime.plugin_plan_id = get_hooks().plan_id
+    runtime.lifecycle_round_open = False
+    runtime.lifecycle_status = "running"
+    agent.last_context_report["plugin_plan_id"] = runtime.plugin_plan_id
+    def publish(stage, **payload):
+        return get_hooks().emit(stage, HookContext(
+            event=stage, agent_name=agent.name, run_id=runtime.run_id,
+            runtime=runtime, payload=payload,
+        ))
     try:
+        publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage)
         step = 0
         while True:
+            if runtime.lifecycle_round_open:
+                runtime.lifecycle_round_open = False
+                publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=False)
             step += 1
+            runtime.lifecycle_step = step
+            runtime.lifecycle_round_open = True
+            publish(HookEvent.ROUND_BEFORE, step=step)
             remaining_tokens = budget.remaining_tokens
             # Only the convergence controller is allowed to enter tool-free
             # finalization mode; token usage is request-scoped telemetry.
@@ -702,6 +712,7 @@ async def run_fc_loop(
 
             # 3. 有 tool_calls → 全部执行
             no_tool_call_streak = 0
+            publish(HookEvent.TOOL_BATCH_BEFORE, step=step, tool_count=len(tool_calls))
             round_result = await tool_round_executor.execute(tool_calls, step=step)
             tool_results = round_result.tool_results
             actions = round_result.actions
@@ -808,12 +819,25 @@ async def run_fc_loop(
                 is_final=False,
             )
 
+    except (AgentInterrupted, asyncio.CancelledError):
+        runtime.lifecycle_status = "cancelled"
+        publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
+        raise
+    except GeneratorExit:
+        if runtime.lifecycle_status == "running":
+            runtime.lifecycle_status = "cancelled"
+            publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
+        raise
+    except Exception as exc:
+        runtime.lifecycle_status = "failed"
+        publish(HookEvent.ERROR, error_type=type(exc).__name__, step=runtime.lifecycle_step)
+        raise
     finally:
         try:
-            get_hooks().trigger(
-                HookEvent.RUN_END,
-                HookContext(event=HookEvent.RUN_END, agent_name=agent.name),
-            )
+            if runtime.lifecycle_round_open:
+                runtime.lifecycle_round_open = False
+                publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=True)
+            publish(HookEvent.RUN_END, status=runtime.lifecycle_status)
         except AgentInterrupted:
             pass  # 结束阶段不再响应中断
         except Exception:

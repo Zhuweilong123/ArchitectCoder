@@ -211,6 +211,7 @@ See [plugin architecture](docs/plugin-architecture-design.md) and [command execu
 | Context and project knowledge | [Context management](docs/context-management-design.md) · [Memory](docs/memory-system-design.md) · [Knowledge graph](docs/knowledge-graph-design.md) |
 | Extension development | [Plugin architecture](docs/plugin-architecture-design.md) |
 | Reusable Agent guides | [Skill plugin](docs/skills-plugin.md) |
+| Plugin execution plans | [Lifecycle contributions and graphs](docs/plugin-lifecycle.md) |
 
 ## Development
 

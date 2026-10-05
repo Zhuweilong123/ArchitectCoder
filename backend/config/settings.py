@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     # Read-only on-demand skills; each Agent captures one provider catalog.
     agent_skills_enabled: bool = True
     agent_skills_provider: str = DEFAULT_SKILLS_PROVIDER
+    plugin_plan_dir: str = str(Path(__file__).resolve().parents[1] / ".architectcoder" / "plugins")
+    plugin_manifest_file: str = ""
 
     # Command execution is selected by the runtime.  ``auto`` uses the native
     # host environment; WSL is an explicit compatibility option for projects

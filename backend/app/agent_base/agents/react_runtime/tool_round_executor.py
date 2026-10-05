@@ -296,12 +296,8 @@ class ToolRoundExecutor:
         blocked: str | None,
     ):
         if blocked is not None:
-            return (
-                blocked,
-                blocked,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"),
-                0.0,
-            )
+            return self._after_tool(tool_name, tool_args,
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
 
         runtime = get_runtime()
         if (
@@ -313,12 +309,8 @@ class ToolRoundExecutor:
                 "Task planning is required before other tools. "
                 "Call todo_write first with the task checklist."
             )
-            return (
-                blocked,
-                blocked,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"),
-                0.0,
-            )
+            return self._after_tool(tool_name, tool_args,
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
 
         veto = self.hooks.trigger(
             HookEvent.TOOL_BEFORE,
@@ -338,12 +330,8 @@ class ToolRoundExecutor:
                 veto = None
         if veto is not None:
             veto_message = str(veto)
-            return (
-                veto_message,
-                veto_message,
-                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"),
-                0.0,
-            )
+            return self._after_tool(tool_name, tool_args,
+                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0)
 
         from app.trace.tracing import trace_span
 
@@ -359,6 +347,10 @@ class ToolRoundExecutor:
         except Exception:
             pass
 
+        return self._after_tool(tool_name, tool_args, tool_result, duration_ms)
+
+    def _after_tool(self, tool_name, tool_args, tool_result, duration_ms):
+        runtime = get_runtime()
         observation_full = tool_result.text
         fed = self.hooks.trigger(
             HookEvent.TOOL_AFTER,

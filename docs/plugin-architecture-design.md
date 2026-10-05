@@ -16,7 +16,7 @@
 
 当前由统一管理器维护七个插件槽位：`orchestration`、`memory`、`trace`、`evals`、`knowledge_graph`、`design_contract`、`skills`。Skill 的协议与版本快照详见 [Skill 插件](skills-plugin.md)。
 
-插件不是动态扫描出来的。槽位由 `DEFAULT_PLUGIN_SPECS` 静态声明，provider 通过配置指定的 `module:factory` 入口加载。
+内置槽位由 `DEFAULT_PLUGIN_SPECS` 声明，额外插件可通过 `PLUGIN_MANIFEST_FILE` 清单发现，provider 通过配置指定的 `module:factory` 入口加载。生命周期接口由插件模块的 `list_contributions()` 显式列出；初始化生成执行计划和组织调度图，详见[阶段贡献说明](plugin-lifecycle.md)。
 
 ## 2. 代码布局
 
@@ -83,7 +83,7 @@ PluginManager.load(name, settings, kwargs)
 not_loaded | loaded | disabled | unavailable
 ```
 
-状态目前只供 Python 内部调用，没有插件管理后台或前端配置页。
+`status()` 保留领域 provider 的最近加载状态。初始化声明与执行计划通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询；目前没有可编辑的插件管理后台。
 
 ## 4. 七个内置槽位
 
@@ -221,13 +221,15 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 ## 10. 当前限制与新增插件流程
 
-- `DEFAULT_PLUGIN_SPECS` 是静态注册表，不支持目录扫描或第三方包自动发现。
-- 没有公开的插件状态/管理 API，也没有前端插件配置界面。
+- 额外插件通过显式清单发现，不扫描任意目录或自动安装第三方包。
+- 提供只读执行计划与图 API，没有可编辑的前端插件配置界面。
 - provider 切换需要修改环境配置并重启 backend。
 - router 挂载与 provider 加载是两个独立步骤；新增带 API 的插件必须同时在 `PluginSpec.router_provider` 和 `backend/app/main.py` 的挂载流程中接入。
 - 本文不固化旧版本测试通过数量；验证结果应以当前代码对应的 CI/本地命令为准。
 
 新增插件时，按以下顺序完成边界接入：
+
+纯生命周期扩展可以直接声明阶段接口并加入额外插件清单。新增核心领域端口则继续按下列步骤接入。
 
 1. 在 `backend/app/agent_base/core/` 定义端口与 NoOp 实现。
 2. 在 `extensions/<name>/` 提供 `create(**kwargs)` 和具体实现。

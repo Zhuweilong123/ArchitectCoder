@@ -1,0 +1,39 @@
+export type ContributionMode = 'observer' | 'transform' | 'control';
+
+export interface PluginContribution {
+  id: string;
+  stage: string;
+  handler: string;
+  mode: ContributionMode;
+  priority: number;
+  before: string[];
+  after: string[];
+  scope: string;
+  fail_closed: boolean;
+  plugin: string;
+  order: number;
+}
+
+export interface PluginStage {
+  stage: string;
+  supported_modes: ContributionMode[];
+  contributions: PluginContribution[];
+}
+
+export interface PlanPlugin {
+  name: string;
+  provider: string;
+  source: string;
+  status: 'discovered' | 'disabled' | 'unavailable';
+  error: string;
+  interfaces: string[];
+  contributions: string[];
+}
+
+export interface PluginExecutionPlan {
+  plan_id: string;
+  schema_version: number;
+  dispatch: string;
+  plugins: PlanPlugin[];
+  stages: PluginStage[];
+}

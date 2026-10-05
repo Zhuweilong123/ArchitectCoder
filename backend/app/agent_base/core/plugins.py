@@ -9,6 +9,7 @@ entry points live in the repository-level ``extensions`` package and use the
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ class PluginSpec:
     default_provider: str
     required_methods: tuple[str, ...]
     router_provider: str = ""
+    default_enabled: bool = True
+    source: str = "builtin"
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,31 @@ class PluginManager:
     def register(self, spec: PluginSpec) -> None:
         self._specs[spec.name] = spec
 
+    def discover_specs(self, manifest_path) -> None:
+        """Register explicitly configured extra plugins; validate atomically."""
+        path = Path(manifest_path).resolve()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema_version") != 1 or not isinstance(data.get("plugins"), list):
+            raise ValueError("plugin manifest requires schema_version=1 and a plugins list")
+        discovered = {}
+        for row in data["plugins"]:
+            if not isinstance(row, dict) or set(row) - {"name", "provider", "enabled", "interfaces"}:
+                raise ValueError("invalid plugin manifest entry")
+            name, provider = row.get("name"), row.get("provider")
+            interfaces = row.get("interfaces", [])
+            if not isinstance(name, str) or not name.strip() or not isinstance(provider, str) or ":" not in provider:
+                raise ValueError("plugin manifest requires name and module:factory provider")
+            if not isinstance(row.get("enabled", True), bool) or not isinstance(interfaces, list) or any(
+                not isinstance(item, str) or not item for item in interfaces
+            ):
+                raise ValueError("invalid enabled flag or interface list")
+            spec = PluginSpec(name, f"plugin_{name}_enabled", f"plugin_{name}_provider", provider,
+                              tuple(interfaces), default_enabled=row.get("enabled", True), source=str(path))
+            if name in discovered or name in self._specs and self._specs[name] != spec:
+                raise ValueError(f"duplicate or reserved plugin name: {name}")
+            discovered[name] = spec
+        self._specs.update(discovered)
+
     def _ensure_extension_import_path(self) -> None:
         project_root = str(_PROJECT_ROOT)
         if project_root not in sys.path:
@@ -177,7 +205,7 @@ class PluginManager:
             except Exception:
                 settings = None
 
-        enabled = True if settings is None else getattr(settings, spec.enabled_setting, True)
+        enabled = spec.default_enabled if settings is None else getattr(settings, spec.enabled_setting, spec.default_enabled)
         provider = str(
             getattr(settings, spec.provider_setting, spec.default_provider)
             or spec.default_provider
