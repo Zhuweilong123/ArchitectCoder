@@ -27,6 +27,9 @@
 .plugin-replay { flex: 0 1 auto; max-height: 40%; overflow: auto; background: #fff; border-top: 1px solid #e5eaf1; padding: 12px 20px; }
 .plugin-replay .plugin-plan-caption, .plugin-replay .ant-alert { margin-top: 8px; }
 .plugin-replay-navigation { margin-top: 8px; }
+.plugin-replay-summary { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: #637188; }
+.plugin-replay-step-details { margin-top: 10px; overflow-wrap: anywhere; }
+.plugin-replay-step-details .ant-alert { white-space: pre-wrap; }
 .plugin-replay-event { margin-top: 10px; }
 .plugin-replay-event summary { cursor: pointer; font-size: 12px; overflow-wrap: anywhere; }
 .plugin-replay-event pre { max-height: 160px; overflow: auto; background: #f7f9fc; padding: 10px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }

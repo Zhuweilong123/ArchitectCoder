@@ -8,7 +8,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { buildPluginGraph, wrapGraphLabel, type GraphView, type PlanNode, type PlanEdge } from './pluginGraph';
 import './PluginArchitecture.css';
 import PluginReplay from './PluginReplay';
-import type { ReplayStep } from './replayModel';
+import { stepStatus, type ReplayStep } from './replayModel';
 
 const STAGE_LABELS: Record<string, [string, string]> = {
   run_start: ['任务开始', 'Run start'], round_before: ['每轮开始', 'Round before'],
@@ -57,6 +57,9 @@ const PluginArchitecture: React.FC = () => {
   const [zoom, setZoom] = useState(1);
   const [replayVisible, setReplayVisible] = useState(false);
   const [replayStep, setReplayStep] = useState<ReplayStep | null>(null);
+  const replayStatus = replayStep ? stepStatus(replayStep.event) : '';
+  const replayColor = ({ executed: '#389e0d', completed: '#389e0d', error: '#cf1322', failed: '#cf1322',
+    skipped: '#ad6800', interrupted: '#d46b08', cancelled: '#d46b08' } as Record<string, string>)[replayStatus] || '#1677ff';
   const onReplayStep = useCallback((step: ReplayStep | null) => {
     setReplayStep(step); setSelectedId('');
     if (step) { setView('schedule'); setFilter(''); }
@@ -209,7 +212,7 @@ const PluginArchitecture: React.FC = () => {
                   if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
                 }} className="plugin-plan-node" opacity={related(node) ? 1 : 0.35}>
                 <title>{label}</title>
-                <rect width={node.width} height={node.height} rx={9} fill={replayStep?.nodeIds.includes(node.id) ? '#e6f4ff' : '#fff'} stroke={replayStep?.nodeIds.includes(node.id) || selectedId === node.id ? '#1677ff' : color(node)} strokeWidth={replayStep?.nodeIds.includes(node.id) || selectedId === node.id ? 2.5 : 1.2} />
+                <rect width={node.width} height={node.height} rx={9} fill={replayStep?.nodeIds.includes(node.id) ? '#f0f6ff' : '#fff'} stroke={replayStep?.nodeIds.includes(node.id) ? replayColor : selectedId === node.id ? '#1677ff' : color(node)} strokeWidth={replayStep?.nodeIds.includes(node.id) || selectedId === node.id ? 2.5 : 1.2} />
                 <rect width={5} height={node.height - 14} y={7} rx={2} fill={color(node)} />
                 <text x={14} y={22} className="plugin-plan-node-title">{lines.map((line, index) => <tspan x={14} dy={index ? 16 : 0} key={index}>{line}</tspan>)}</text>
                 <text x={14} y={node.height - 9} className="plugin-plan-node-subtitle">{wrapGraphLabel(subtitle(node), node.width > 260 ? 48 : 34)[0]}</text>

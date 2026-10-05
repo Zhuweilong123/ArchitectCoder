@@ -102,7 +102,7 @@ def test_control_short_circuit_preserves_observers_and_records_skips():
     token = set_current_trace_sink(sink)
     registry = HookRegistry()
     runtime = AgentRuntime(plugin_plan_id="test-plan")
-    registry.register(HookEvent.TOOL_BEFORE, lambda ctx: HookDecision(HookAction.VETO),
+    registry.register(HookEvent.TOOL_BEFORE, lambda ctx: HookDecision(HookAction.VETO, reason="permission", message="Path is protected"),
                       priority=100, contribution_id="deny", plugin="demo", mode="control")
     registry.register(HookEvent.TOOL_BEFORE, lambda ctx: called.append("skipped"),
                       priority=50, contribution_id="lower", plugin="demo", mode="control")
@@ -124,6 +124,40 @@ def test_control_short_circuit_preserves_observers_and_records_skips():
     assert ctx.tool_input["path"] == "original"
     assert [payload["status"] for _, payload in events] == ["executed", "skipped", "executed"]
     assert all(payload["plan_id"] == "test-plan" for _, payload in events)
+    assert events[1][1]["blocked_by"] == "deny"
+    assert events[1][1]["decision_action"] == "veto"
+    assert events[1][1]["decision_reason"] == "permission"
+    assert events[1][1]["decision_message"] == "Path is protected"
+    assert "decision_action" not in events[2][1]  # Observer return values never control the run.
+
+
+@pytest.mark.parametrize("dispatch,fail_closed", [("trigger", True), ("trigger", False), ("emit", True), ("emit", False)])
+def test_failed_contribution_records_error_and_actual_failure_policy(dispatch, fail_closed):
+    from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+    events = []
+    token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **payload: events.append(payload)))
+    registry = HookRegistry()
+    stage = HookEvent.LLM_BEFORE if dispatch == "trigger" else HookEvent.TOOL_BATCH_AFTER
+    def broken(ctx):
+        raise ValueError("configuration missing")
+    registry.register(stage, broken, contribution_id="broken", plugin="demo", mode="control", fail_closed=fail_closed)
+    try:
+        result = getattr(registry, dispatch)(stage, HookContext(stage, "demo", run_id="run"))
+    finally:
+        reset_current_trace_sink(token)
+    assert len(events) == 1
+    event = events[0]
+    assert event["status"] == "error"
+    assert event["error_type"] == "ValueError"
+    assert event["error_message"] == "configuration missing"
+    assert event["failure_effect"] == ("continue" if not fail_closed else "block" if dispatch == "trigger" else "finalize")
+    if fail_closed:
+        decision = result if dispatch == "trigger" else result[0]
+        assert event["decision_action"] == decision.action
+        assert event["decision_reason"] == "hook_error"
+        assert "configuration missing" in event["decision_message"]
+    else:
+        assert "decision_action" not in event
 
 
 def test_batch_control_decisions_are_consumed_with_finalize_precedence():

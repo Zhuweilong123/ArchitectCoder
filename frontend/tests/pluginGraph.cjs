@@ -6,7 +6,7 @@ require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, filename);
 const { buildPluginGraph, wrapGraphLabel } = require('../src/components/PluginArchitecture/pluginGraph.ts');
-const { replayRuns, replaySteps } = require('../src/components/PluginArchitecture/replayModel.ts');
+const { replayRuns, replaySteps, stepStatus, contributionSummary, stepExplanation } = require('../src/components/PluginArchitecture/replayModel.ts');
 
 const contribution = (id, stage, order, priority = 10) => ({
   id, stage, plugin: 'trace', order, priority, handler: `trace:${id}`, mode: 'observer', before: [], after: [], scope: 'run', fail_closed: false,
@@ -55,6 +55,35 @@ test('historical, mixed and missing plans retain details without misleading grap
   assert.deepEqual(replaySteps({ id: 'unknown', events: [
     { event_type: 'plugin_contribution', plan_id: 'fixture', stage: 'unknown', contribution_id: 'removed' },
   ] }, plan)[0].nodeIds, []);
+});
+
+test('skip explanation locates the nearest preceding decision in repeated phases', () => {
+  const event = (data) => ({ event: { event_type: 'plugin_contribution', stage: 'tool_before', ...data }, index: 0, nodeIds: [], compatible: true });
+  const steps = [
+    event({ contribution_id: 'deny', status: 'executed', decision_action: 'veto', decision_reason: 'old' }),
+    event({ contribution_id: 'deny', status: 'error', decision_action: 'veto', decision_reason: 'hook_error', decision_message: 'invalid config' }),
+    event({ contribution_id: 'lower', status: 'skipped', blocked_by: 'deny' }),
+    event({ contribution_id: 'deny', status: 'executed', decision_reason: 'future' }),
+  ];
+  assert.deepEqual(stepExplanation(steps, 2), { blockerIndex: 1, action: 'veto', reason: 'hook_error', message: 'invalid config', errorType: undefined, errorMessage: undefined, failureEffect: undefined });
+  assert.equal(stepExplanation([event({ status: 'skipped', blocked_by: 'missing' })], 0).blockerIndex, -1);
+  assert.equal(stepExplanation([{ ...steps[0], event: { ...steps[0].event, stage: 'llm_before' } }, steps[2]], 1).blockerIndex, -1);
+});
+
+test('contribution totals exclude model latency and copied skip decisions; statuses keep failure semantics', () => {
+  const steps = [
+    { event_type: 'plugin_contribution', status: 'executed', duration_ms: 3, decision_action: 'veto' },
+    { event_type: 'plugin_contribution', status: 'skipped', duration_ms: 0, decision_action: 'veto' },
+    { event_type: 'plugin_contribution', status: 'error', duration_ms: 2, decision_action: 'stop' },
+    { event_type: 'plugin_contribution', status: 'interrupted', duration_ms: 1 },
+    { event_type: 'plugin_contribution', status: 'executed', duration_ms: NaN, mode: 'observer', decision_action: 'stop' },
+    { event_type: 'llm_response', duration_ms: 10000 },
+  ].map((event) => ({ event }));
+  assert.deepEqual(contributionSummary(steps), { executed: 2, skipped: 1, error: 1, interrupted: 1, decisions: 2, durationMs: 6 });
+  assert.equal(stepStatus({ event_type: 'llm_response', error: 'timeout' }), 'error');
+  assert.equal(stepStatus({ event_type: 'tool_call' }), 'started');
+  assert.equal(stepStatus({ event_type: 'tool_result', error: '' }), 'completed');
+  assert.equal(stepStatus({ event_type: 'lifecycle_stage', stage_data: { status: 'cancelled' } }), 'cancelled');
 });
 
 function verifyGraph(graph) {

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Empty, Select, Space, Spin, Tag } from 'antd';
 import { getTrace, listTraces, type TraceMeta } from '../../services/api';
 import type { PluginExecutionPlan } from '../../types/plugins';
-import { replayRuns, replaySteps, type ReplayStep } from './replayModel';
+import { contributionSummary, replayRuns, replaySteps, stepStatus, type ReplayStep } from './replayModel';
+import ReplayStepDetails, { statusLabel, STATUS_COLORS } from './ReplayStepDetails';
 
 interface Props {
   plan: PluginExecutionPlan;
@@ -25,6 +26,7 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
   const run = runs.find((item) => item.id === runId);
   const steps = useMemo(() => run ? replaySteps(run, plan) : [], [run, plan]);
   const step = steps[index];
+  const summary = useMemo(() => contributionSummary(steps), [steps]);
   useEffect(() => { onStep(step || null); }, [step, onStep]);
   useEffect(() => {
     const controller = new AbortController();
@@ -47,10 +49,6 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
     return () => controller.abort();
   }, [session, revision]);
   const label = (item: ReplayStep) => String(item.event.contribution_id || item.event.stage || item.event.event_type);
-  const statusLabels: Record<string, string> = {
-    executed: tx('已执行', 'Executed'), skipped: tx('已跳过', 'Skipped'),
-    error: tx('失败', 'Failed'), interrupted: tx('已中断', 'Interrupted'),
-  };
   return <section className="plugin-replay">
     <Space wrap>
       <strong>{tx('实际执行回放', 'Execution history')}</strong>
@@ -69,20 +67,20 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
     {session && !loading && !error && !runs.length && <Alert type="info" message={tx('该会话没有阶段执行记录，请使用开启 Trace 的新版后端运行一次任务。', 'This session has no lifecycle records. Run a task with tracing enabled on the updated backend.')} />}
     {step && !step.compatible && <Alert type="warning" showIcon message={tx('记录缺少计划版本，或与当前计划不一致。可查看步骤详情，架构图高亮已停用。', 'The recorded plan is missing or differs from the current plan. Details remain available; graph highlighting is disabled.')} />}
     {!!steps.length && <>
+      <div className="plugin-replay-summary">
+        <span>{tx('本任务插件调用：', 'Task contributions: ')}</span>
+        {(['executed', 'skipped', 'error', 'interrupted'] as const).map((status) => <Tag color={STATUS_COLORS[status]} key={status}>{statusLabel(status, en)} {summary[status]}</Tag>)}
+        <Tag>{tx('控制决定', 'Decisions')} {summary.decisions}</Tag>
+        <span>{tx('插件累计耗时', 'Cumulative contribution duration')} {summary.durationMs.toFixed(2)} ms</span>
+      </div>
       <Space className="plugin-replay-navigation" wrap>
         <Button disabled={index === 0} onClick={() => setIndex((value) => value - 1)}>{tx('上一步', 'Previous')}</Button>
         <span>{index + 1} / {steps.length}</span>
         <Button disabled={index >= steps.length - 1} onClick={() => setIndex((value) => value + 1)}>{tx('下一步', 'Next')}</Button>
         <Select showSearch optionFilterProp="label" aria-label={tx('选择执行步骤', 'Select execution step')} value={index} style={{ width: 340 }} onChange={setIndex}
-          options={steps.map((item, i) => ({ value: i, label: `${i + 1}. ${label(item)}${item.event.status ? ` · ${statusLabels[String(item.event.status)] || item.event.status}` : ''}` }))} />
+          options={steps.map((item, i) => ({ value: i, label: `${i + 1}. ${label(item)} · ${statusLabel(stepStatus(item.event), en)}` }))} />
       </Space>
-      {step && <details className="plugin-replay-event" open>
-        <summary>{label(step)} <Tag>{statusLabels[String(step.event.status)] || String(step.event.event_type)}</Tag>
-          {typeof step.event.duration_ms === 'number' && <Tag>{step.event.duration_ms} ms</Tag>}
-          {typeof step.event.ts_ms === 'number' && <span>{new Date(step.event.ts_ms).toLocaleTimeString(en ? 'en-US' : 'zh-CN')}</span>}
-        </summary>
-        <pre>{JSON.stringify(step.event, null, 2)}</pre>
-      </details>}
+      {step && <ReplayStepDetails steps={steps} index={index} en={en} onLocate={setIndex} />}
     </>}
   </section>;
 }

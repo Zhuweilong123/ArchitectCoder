@@ -220,20 +220,21 @@ class HookRegistry:
         for _, fail_closed, hook in tuple(self._hooks[event]):
             mode = self._metadata.get((event, id(hook)), {}).get("mode", "legacy")
             if decision is not None and mode != "observer":
-                self._record(event, hook, ctx, "skipped", 0, blocked_by=decision_id)
+                self._record(event, hook, ctx, "skipped", 0, result=decision, blocked_by=decision_id)
                 continue
             started = time.monotonic()
             try:
                 result = hook(self._observer_context(ctx) if mode == "observer" else ctx)
                 self._validate_result(event, mode, result)
-            except AgentInterrupted:
-                self._record(event, hook, ctx, "interrupted", time.monotonic() - started)
+            except AgentInterrupted as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc),
+                             failure_effect="continue" if mode == "observer" else "interrupt")
                 if mode == "observer":
                     logger.warning("[Hooks] observer cannot interrupt execution")
                     continue
                 raise
             except Exception as exc:
-                self._record(event, hook, ctx, "error", time.monotonic() - started)
                 if fail_closed:
                     logger.exception(
                         "[Hooks] fail-closed hook %r for %s", hook, event.value
@@ -244,7 +245,11 @@ class HookRegistry:
                         reason="hook_error", message=message,
                     )
                     decision_id = self._metadata.get((event, id(hook)), {}).get("id", "legacy")
+                    self._record(event, hook, ctx, "error", time.monotonic() - started, result=decision,
+                                 error_type=type(exc).__name__, error_message=str(exc), failure_effect="block")
                     continue
+                self._record(event, hook, ctx, "error", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc), failure_effect="continue")
                 logger.warning(
                     "[Hooks] hook %r for %s failed (non-fatal)",
                     hook, event.value, exc_info=True,
@@ -274,14 +279,15 @@ class HookRegistry:
             try:
                 result = hook(self._observer_context(ctx) if mode == "observer" else ctx)
                 self._validate_result(event, mode, result)
-            except AgentInterrupted:
-                self._record(event, hook, ctx, "interrupted", time.monotonic() - started)
+            except AgentInterrupted as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc),
+                             failure_effect="continue" if mode == "observer" else "interrupt")
                 if mode == "observer":
                     logger.warning("[Hooks] observer cannot interrupt execution")
                     continue
                 raise
             except Exception as exc:
-                self._record(event, hook, ctx, "error", time.monotonic() - started)
                 if fail_closed:
                     logger.exception(
                         "[Hooks] fail-closed hook %r for %s", hook, event.value
@@ -293,7 +299,12 @@ class HookRegistry:
                             message=f"Hook error (fail-closed): {type(exc).__name__}: {exc}",
                         )
                     )
+                    self._record(event, hook, ctx, "error", time.monotonic() - started, result=results[-1],
+                                 error_type=type(exc).__name__, error_message=str(exc),
+                                 failure_effect="finalize" if event == HookEvent.TOOL_BATCH_AFTER else "block")
                 else:
+                    self._record(event, hook, ctx, "error", time.monotonic() - started,
+                                 error_type=type(exc).__name__, error_message=str(exc), failure_effect="continue")
                     logger.warning(
                         "[Hooks] hook %r for %s failed (non-fatal)",
                         hook, event.value, exc_info=True,
@@ -350,8 +361,9 @@ class HookRegistry:
             from app.trace.tracing import current_trace_sink
             sink = current_trace_sink()
             if sink is not None:
-                if isinstance(result, HookDecision):
-                    details.update(decision_action=result.action, decision_reason=result.reason)
+                if isinstance(result, HookDecision) and meta.get("mode") != "observer":
+                    details.update(decision_action=result.action, decision_reason=result.reason,
+                                   decision_message=result.message)
                 sink.event("plugin_contribution", contribution_id=meta["id"], plugin=meta["plugin"],
                            stage=event.value, mode=meta["mode"], status=status,
                            duration_ms=round(duration * 1000, 3), run_id=ctx.run_id,
