@@ -333,14 +333,15 @@ export async function publishTraceCaseDraft(draftId: string, req: {
   const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/publish`, req, { timeout: 15000 });
   return data;
 }
-export async function listTraces(): Promise<TraceMeta[]> {
-  const { data } = await api.get('/trace/list');
+export async function listTraces(signal?: AbortSignal): Promise<TraceMeta[]> {
+  const { data } = await api.get('/trace/list', { signal });
   return data.traces;
 }
 
-export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type']): Promise<TraceDetail> {
+export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type'], signal?: AbortSignal): Promise<TraceDetail> {
   const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`, {
     params: traceType ? { trace_type: traceType } : undefined,
+    signal,
   });
   return data;
 }

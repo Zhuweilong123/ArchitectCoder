@@ -6,6 +6,7 @@ require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, filename);
 const { buildPluginGraph, wrapGraphLabel } = require('../src/components/PluginArchitecture/pluginGraph.ts');
+const { replayRuns, replaySteps } = require('../src/components/PluginArchitecture/replayModel.ts');
 
 const contribution = (id, stage, order, priority = 10) => ({
   id, stage, plugin: 'trace', order, priority, handler: `trace:${id}`, mode: 'observer', before: [], after: [], scope: 'run', fail_closed: false,
@@ -21,6 +22,40 @@ const plan = {
   ],
   stages: stages.map((stage) => ({ stage, supported_modes: ['observer'], contributions: [contribution(`watch.${stage}`, stage, 1)] })),
 };
+
+test('replay separates interleaved tasks and preserves recorded order and repeated phases', () => {
+  const events = [
+    { event_type: 'user_message', message: 'legacy' },
+    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'llm_before', plan_id: 'fixture', ts_ms: 20 },
+    { event_type: 'lifecycle_stage', run_id: 'child', stage: 'run_start', plan_id: 'fixture', ts_ms: 20 },
+    { event_type: 'plugin_contribution', run_id: 'parent', stage: 'llm_before', contribution_id: 'watch.llm_before', plan_id: 'fixture', status: 'skipped', blocked_by: 'policy' },
+    { event_type: 'llm_request', run_id: 'parent', ts_ms: 19 },
+    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'llm_before', plan_id: 'fixture', ts_ms: 30 },
+  ];
+  const before = JSON.stringify(events);
+  const runs = replayRuns(events);
+  assert.deepEqual(runs.map((run) => run.id), ['parent', 'child']);
+  const steps = replaySteps(runs[0], plan);
+  assert.deepEqual(steps.map((step) => step.event.ts_ms), [20, undefined, 19, 30]);
+  assert.deepEqual(steps[1].nodeIds, ['stage:llm_before', 'contribution:watch.llm_before']);
+  assert.equal(steps[1].event.blocked_by, 'policy');
+  assert.deepEqual(steps[2].nodeIds, ['model-call']);
+  assert.equal(JSON.stringify(events), before);
+});
+
+test('historical, mixed and missing plans retain details without misleading graph matches', () => {
+  for (const planIds of [['old'], [], ['fixture', 'old']]) {
+    const events = [{ event_type: 'lifecycle_stage', run_id: 'run', stage: 'llm_before' },
+      ...planIds.map((plan_id) => ({ event_type: 'plugin_contribution', run_id: 'run', plan_id, contribution_id: 'watch.llm_before' }))];
+    const steps = replaySteps(replayRuns(events)[0], plan);
+    assert.ok(steps.length);
+    assert.ok(steps.every((step) => !step.compatible && !step.nodeIds.length));
+  }
+  assert.deepEqual(replayRuns([{ event_type: 'llm_request', run_id: 'legacy' }]), []);
+  assert.deepEqual(replaySteps({ id: 'unknown', events: [
+    { event_type: 'plugin_contribution', plan_id: 'fixture', stage: 'unknown', contribution_id: 'removed' },
+  ] }, plan)[0].nodeIds, []);
+});
 
 function verifyGraph(graph) {
   const ids = new Set(graph.nodes.map((node) => node.id));

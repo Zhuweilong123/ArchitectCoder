@@ -7,6 +7,8 @@ import type { ContributionMode, PluginExecutionPlan } from '../../types/plugins'
 import { useUiStore } from '../../stores/uiStore';
 import { buildPluginGraph, wrapGraphLabel, type GraphView, type PlanNode, type PlanEdge } from './pluginGraph';
 import './PluginArchitecture.css';
+import PluginReplay from './PluginReplay';
+import type { ReplayStep } from './replayModel';
 
 const STAGE_LABELS: Record<string, [string, string]> = {
   run_start: ['任务开始', 'Run start'], round_before: ['每轮开始', 'Round before'],
@@ -53,6 +55,12 @@ const PluginArchitecture: React.FC = () => {
   const [filter, setFilter] = useState('');
   const [selectedId, setSelectedId] = useState('');
   const [zoom, setZoom] = useState(1);
+  const [replayVisible, setReplayVisible] = useState(false);
+  const [replayStep, setReplayStep] = useState<ReplayStep | null>(null);
+  const onReplayStep = useCallback((step: ReplayStep | null) => {
+    setReplayStep(step); setSelectedId('');
+    if (step) { setView('schedule'); setFilter(''); }
+  }, []);
   const viewport = useRef<HTMLDivElement>(null);
   const markerId = useId().replace(/:/g, '');
   const graph = useMemo(() => plan ? buildPluginGraph(plan, view, filter) : null, [plan, view, filter]);
@@ -93,6 +101,12 @@ const PluginArchitecture: React.FC = () => {
     return () => observer.disconnect();
   }, [fit]);
 
+  useEffect(() => {
+    if (!replayStep || !graph || !viewport.current) return;
+    const node = graph.nodes.find((item) => item.id === replayStep.nodeIds[replayStep.nodeIds.length - 1]);
+    if (node) viewport.current.scrollTo({ left: Math.max(0, node.x * zoom - 24), top: Math.max(0, node.y * zoom - 24), behavior: 'smooth' });
+  }, [replayStep, graph, zoom]);
+
   const download = () => {
     if (!plan) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' }));
@@ -116,7 +130,7 @@ const PluginArchitecture: React.FC = () => {
     network: tx('无法加载执行计划，请检查后端连接后重试。', 'Could not load the plan. Check the backend connection and retry.'),
     unsupported: tx('无法识别执行计划版本，请更新前后端。', 'Unsupported execution-plan version. Update the frontend and backend.'),
   };
-  const related = (node: PlanNode) => !selected || node.id === selected.id || graph?.edges.some((edge) =>
+  const related = (node: PlanNode) => replayStep?.nodeIds.length ? replayStep.nodeIds.includes(node.id) : !selected || node.id === selected.id || graph?.edges.some((edge) =>
     edge.source === selected.id && edge.target === node.id || edge.target === selected.id && edge.source === node.id);
   const subtitle = (node: PlanNode) => node.contribution
     ? `${node.contribution.order}. ${node.contribution.plugin} · ${modeLabel(node.contribution.mode)}`
@@ -135,10 +149,13 @@ const PluginArchitecture: React.FC = () => {
           {counts && <span className="plugin-plan-counts">{tx(`${counts.plugins} 个插件 · ${counts.contributions} 个阶段接口`, `${counts.plugins} plugins · ${counts.contributions} contributions`)}</span>}
         </div>
         <Space wrap>
+          <Button type={replayVisible ? 'primary' : 'default'} disabled={!plan} onClick={() => {
+            setReplayVisible((value) => !value); setReplayStep(null); setSelectedId('');
+          }}>{tx('执行回放', 'Execution history')}</Button>
           <Button icon={<ReloadOutlined />} loading={loading} onClick={() => setRevision((value) => value + 1)}>{tx('刷新', 'Refresh')}</Button>
           <Button icon={<DownloadOutlined />} disabled={!plan} onClick={download}>{tx('导出计划', 'Export plan')}</Button>
         </Space>
-        <div className="plugin-plan-caption">{tx('点击节点查看详情。此图展示初始化组织关系，具体任务执行路径请查看 Trace。', 'Select a node for details. This graph shows initialization topology; inspect Trace for actual task execution.')}</div>
+        <div className="plugin-plan-caption">{tx('点击节点查看详情；打开执行回放，选择会话与任务，逐步查看实际执行节点。', 'Select nodes for details, or open execution history to inspect a recorded task step by step.')}</div>
         {plan && <Typography.Text className="plugin-plan-id" type="secondary" title={plan.plan_id}>Plan {plan.plan_id.slice(0, 16)}</Typography.Text>}
       </div>
       {error && <Alert type="error" showIcon message={errorText[error]} description={plan ? tx('当前保留上次加载的计划，可能已过期。', 'The previous plan remains visible and may be stale.') : undefined} />}
@@ -172,7 +189,8 @@ const PluginArchitecture: React.FC = () => {
             {graph.edges.map((edge, index) => {
               const source = graph.nodes.find((node) => node.id === edge.source); const target = graph.nodes.find((node) => node.id === edge.target);
               if (!source || !target) return null;
-              const highlighted = selected && (source.id === selected.id || target.id === selected.id);
+              const highlighted = replayStep?.nodeIds.length ? replayStep.nodeIds.includes(source.id) && replayStep.nodeIds.includes(target.id)
+                : selected && (source.id === selected.id || target.id === selected.id);
               const lane = edge.label === 'continue' ? 6 : edge.label === 'no-tools' ? 16 : 26;
               const labelY = (source.y + target.y + source.height / 2 + target.height / 2) / 2;
               return <g key={index}><path d={edgePath(edge, source, target)} fill="none" stroke={highlighted ? '#1677ff' : '#8190a7'}
@@ -191,7 +209,7 @@ const PluginArchitecture: React.FC = () => {
                   if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
                 }} className="plugin-plan-node" opacity={related(node) ? 1 : 0.35}>
                 <title>{label}</title>
-                <rect width={node.width} height={node.height} rx={9} fill="#fff" stroke={selectedId === node.id ? '#1677ff' : color(node)} strokeWidth={selectedId === node.id ? 2.5 : 1.2} />
+                <rect width={node.width} height={node.height} rx={9} fill={replayStep?.nodeIds.includes(node.id) ? '#e6f4ff' : '#fff'} stroke={replayStep?.nodeIds.includes(node.id) || selectedId === node.id ? '#1677ff' : color(node)} strokeWidth={replayStep?.nodeIds.includes(node.id) || selectedId === node.id ? 2.5 : 1.2} />
                 <rect width={5} height={node.height - 14} y={7} rx={2} fill={color(node)} />
                 <text x={14} y={22} className="plugin-plan-node-title">{lines.map((line, index) => <tspan x={14} dy={index ? 16 : 0} key={index}>{line}</tspan>)}</text>
                 <text x={14} y={node.height - 9} className="plugin-plan-node-subtitle">{wrapGraphLabel(subtitle(node), node.width > 260 ? 48 : 34)[0]}</text>
@@ -236,6 +254,7 @@ const PluginArchitecture: React.FC = () => {
           </>}
         </aside>
       </div>
+      {replayVisible && plan && <PluginReplay plan={plan} en={en} onStep={onReplayStep} />}
     </div>
   </Drawer>;
 };

@@ -24,6 +24,12 @@
 .plugin-plan-detail-links { display: flex; flex-direction: column; align-items: flex-start; }
 .plugin-plan-detail-links .ant-btn { height: auto; white-space: normal; text-align: left; padding: 4px 0; }
 .plugin-plan-loading { position: sticky; top: 10px; z-index: 1; width: fit-content; margin: 0 auto; padding: 10px 18px; background: #fff; border-radius: 8px; box-shadow: 0 2px 12px #26344914; display: flex; gap: 12px; align-items: center; }
+.plugin-replay { flex: 0 1 auto; max-height: 40%; overflow: auto; background: #fff; border-top: 1px solid #e5eaf1; padding: 12px 20px; }
+.plugin-replay .plugin-plan-caption, .plugin-replay .ant-alert { margin-top: 8px; }
+.plugin-replay-navigation { margin-top: 8px; }
+.plugin-replay-event { margin-top: 10px; }
+.plugin-replay-event summary { cursor: pointer; font-size: 12px; overflow-wrap: anywhere; }
+.plugin-replay-event pre { max-height: 160px; overflow: auto; background: #f7f9fc; padding: 10px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .plugin-plan-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(200px, 1fr) 210px; }
   .plugin-plan-details { border-left: 0; border-top: 1px solid #e5eaf1; }
