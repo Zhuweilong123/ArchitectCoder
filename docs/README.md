@@ -10,6 +10,7 @@
 | [`runtime-command-execution.md`](runtime-command-execution.md) | `run_task`、`run_program`、`shell` 和宿主命令安全契约 |
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | 插件加载、provider 和扩展所有权 |
+| [`skills-plugin.md`](skills-plugin.md) | Skill 插件协议、任务内版本快照和自定义 provider |
 | [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
 | [`design-source-contract.md`](design-source-contract.md) | 设计、源码与测试的一致性契约、实体映射和规则分级 |
 | [`multilanguage-execution-design.md`](multilanguage-execution-design.md) | 多语言任务解析、TaskPlan、自动编排和执行证据 |

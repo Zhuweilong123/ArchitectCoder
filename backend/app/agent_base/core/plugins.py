@@ -22,6 +22,7 @@ from backend.config.plugin_defaults import (
     DEFAULT_MEMORY_PROVIDER,
     DEFAULT_ORCHESTRATION_PROVIDER,
     DEFAULT_TRACE_PROVIDER,
+    DEFAULT_SKILLS_PROVIDER,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,13 @@ class PluginState:
 
 
 DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
+    PluginSpec(
+        name="skills",
+        enabled_setting="agent_skills_enabled",
+        provider_setting="agent_skills_provider",
+        default_provider=DEFAULT_SKILLS_PROVIDER,
+        required_methods=("list_skills", "read_skill"),
+    ),
     PluginSpec(
         name="orchestration",
         enabled_setting="agent_orchestration_enabled",

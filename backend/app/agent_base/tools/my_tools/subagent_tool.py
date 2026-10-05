@@ -24,6 +24,7 @@ from app.agent_base.tools.my_tools.foundation_tools import (
     create_foundation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
+from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
 from app.runtime import build_command_executor, workspace_root_for
 from app.runtime import TaskKind
 
@@ -120,6 +121,7 @@ def _build_toolkit_tools(
     source_dir: str, test_dir: str, design_dir: str,
     db_path: str, project_file: str,
     review_manager, progress, command_executor, workspace_root,
+    skill_catalog: SkillCatalog | None = None,
 ) -> list:
     """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
     foundation = create_foundation_tools(
@@ -129,8 +131,11 @@ def _build_toolkit_tools(
         workspace_root=workspace_root,
     )
     by_name = {tool.name: tool for tool in foundation}
+    if skill_catalog is None:
+        skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
+    skill_tools = [SkillTool(catalog=skill_catalog)] if skill_catalog.entries else []
     if kind == "standard":
-        return [*foundation, SkillTool()]
+        return [*foundation, *skill_tools]
 
     # Read-only toolkits intentionally expose only the foundation inspection
     # contract.  Directory listing and text search are needed to make a
@@ -146,11 +151,11 @@ def _build_toolkit_tools(
     if kind == "read_only":
         return inspection_tools
     if kind in {"kg_analysis", "strategy"}:
-        return [*inspection_tools, SkillTool()]
+        return [*inspection_tools, *skill_tools]
     if kind == "verification":
         return [
             *inspection_tools,
-            SkillTool(),
+            *skill_tools,
             VerificationRunTaskTool(
                 source_dir=source_dir,
                 test_dir=test_dir,
@@ -195,6 +200,7 @@ class SpawnSubagentTool(AsyncTool):
         single_use: bool = False,
         max_cumulative_tokens: int | None = None,
         child_run_name: str = "subagent",
+        skill_catalog: SkillCatalog | None = None,
     ):
         super().__init__(
             name="spawn_subagent",
@@ -258,7 +264,9 @@ class SpawnSubagentTool(AsyncTool):
         # db_path/project_file are retained in _build_toolkit_tools' signature
         # for compatibility with callers that construct custom toolkits.
         db_path = ""
-        skills = build_skills_section()
+        if skill_catalog is None:
+            skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
+        skills = build_skills_section(catalog=skill_catalog)
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
         for kind in self.toolkits:
@@ -266,7 +274,7 @@ class SpawnSubagentTool(AsyncTool):
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
                 db_path, project_file, review_manager, progress,
-                command_executor, workspace_root,
+                command_executor, workspace_root, skill_catalog,
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
@@ -276,8 +284,8 @@ class SpawnSubagentTool(AsyncTool):
                 prompt = VERIFICATION_SUBAGENT_SYSTEM
             else:
                 prompt = SUBAGENT_SYSTEM
-            if kind == "standard" and skills:
-                prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
+            if kind != "read_only" and skills:
+                prompt = f"{prompt}\n\n{skills}"
             self.system_prompts[kind] = prompt
 
     @staticmethod

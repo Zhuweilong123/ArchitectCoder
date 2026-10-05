@@ -1,7 +1,7 @@
 # 插件架构与扩展契约
 
 > 状态：当前实现说明
-> 更新日期：2026-09-11
+> 更新日期：2026-10-05
 > 适用范围：当前仓库 HEAD。本文描述运行时代码的实际边界；代码提交继续演进时，以源码和配置为最终依据。
 
 ## 1. 当前边界
@@ -14,7 +14,7 @@
 - `backend/app/main.py` 只负责加载插件拥有的 HTTP router，并统一附加认证依赖。
 - `backend/config/` 是插件开关和 provider 入口的配置来源。
 
-当前由统一管理器维护五个插件槽位：`orchestration`、`memory`、`trace`、`evals`、`knowledge_graph`。
+当前由统一管理器维护七个插件槽位：`orchestration`、`memory`、`trace`、`evals`、`knowledge_graph`、`design_contract`、`skills`。Skill 的协议与版本快照详见 [Skill 插件](skills-plugin.md)。
 
 插件不是动态扫描出来的。槽位由 `DEFAULT_PLUGIN_SPECS` 静态声明，provider 通过配置指定的 `module:factory` 入口加载。
 
@@ -24,12 +24,13 @@
 backend/
 ├── config/
 │   ├── settings.py              # Settings、环境变量和缓存入口
-│   ├── plugin_defaults.py       # 五个内置 provider 的唯一默认值来源
+│   ├── plugin_defaults.py       # 内置 provider 的唯一默认值来源
 │   └── agent_config.py          # 单个 Agent 的运行参数模型
 └── app/
     ├── agent_base/
     │   └── core/
     │       ├── plugins.py       # PluginSpec、PluginManager、PluginState
+    │       ├── skills.py        # SkillProvider、SkillCatalog 和 NoOp 实现
     │       ├── orchestration.py # OrchestrationPort 和 NoOpOrchestrator
     │       ├── memory.py        # MemoryPort 和 NoOpMemory
     │       ├── evals.py         # EvalProvider 和 NoOpEvalProvider
@@ -39,6 +40,7 @@ backend/
     └── main.py                  # 扩展 router 的应用挂载点
 
 extensions/
+├── skills/                      # 内置文件技能与资源快照 provider
 ├── orchestration/               # 规划/探索 provider
 ├── memory/                      # SQLite memory provider
 ├── trace/                       # JSONL 写入、查询、回放和 Trace API
@@ -83,11 +85,13 @@ not_loaded | loaded | disabled | unavailable
 
 状态目前只供 Python 内部调用，没有插件管理后台或前端配置页。
 
-## 4. 五个内置槽位
+## 4. 七个内置槽位
 
 | 槽位 | 配置开关 | provider 配置 | 默认入口 | 必需方法 | 插件 router |
 |---|---|---|---|---|---|
 | `orchestration` | `agent_orchestration_enabled` | `agent_orchestrator_provider` | `extensions.orchestration:create` | `prepare` | 无 |
+| `skills` | `agent_skills_enabled` | `agent_skills_provider` | `extensions.skills:create` | `list_skills`, `read_skill` | 无 |
+| `design_contract` | `agent_design_contract_enabled` | `agent_design_contract_provider` | `extensions.design_contract:create` | `collect` | 无 |
 | `memory` | `agent_memory_enabled` | `agent_memory_provider` | `extensions.memory:create` | `recall`, `archive`, `reinforce` | 无 |
 | `trace` | `agent_trace_enabled` | `agent_trace_provider` | `extensions.trace:create` | `create` | `extensions.trace.api:router` |
 | `evals` | `agent_evals_enabled` | `agent_evals_provider` | `extensions.evals:create` | `list_cases`, `get_case`, `run_case`, `list_results` | `extensions.evals.full_api:router` |
@@ -100,6 +104,7 @@ not_loaded | loaded | disabled | unavailable
 - `load_trace()` 返回 Trace provider；失败时使用 `NoOpTraceProvider`。
 - `load_evals()` 返回 `EvalProvider`；失败时使用 `NoOpEvalProvider`。
 - `load_knowledge_graph()` 返回 `KnowledgeGraphProvider`；失败时使用 `NoOpKnowledgeGraphProvider`。
+- `load_skills()` 返回 `SkillProvider`；失败时使用 `NoOpSkillProvider`，任务通过 `SkillCatalog` 校验读取版本。
 
 Orchestration、Memory、Trace 和 Evals loader 会在 provider 外包一层运行时保护，避免可选 provider 的执行异常破坏主 Agent 流程。Knowledge Graph 的 NoOp 实现对禁用能力返回空结果或明确的 disabled 错误。
 
@@ -140,6 +145,8 @@ DEFAULT_MEMORY_PROVIDER = "extensions.memory:create"
 DEFAULT_TRACE_PROVIDER = "extensions.trace:create"
 DEFAULT_EVALS_PROVIDER = "extensions.evals:create"
 DEFAULT_KNOWLEDGE_GRAPH_PROVIDER = "extensions.knowledge_graph:create"
+DEFAULT_DESIGN_CONTRACT_PROVIDER = "extensions.design_contract:create"
+DEFAULT_SKILLS_PROVIDER = "extensions.skills:create"
 ```
 
 `backend/config/settings.py` 将这些默认值映射为 Settings 字段。环境变量覆盖 Settings 默认值，进程内由 `get_settings()` 缓存；修改配置后需要重启 backend。
@@ -149,6 +156,7 @@ DEFAULT_KNOWLEDGE_GRAPH_PROVIDER = "extensions.knowledge_graph:create"
 - `AGENT_MEMORY_ENABLED=true`
 - `AGENT_TRACE_ENABLED=true`
 - `AGENT_EVALS_ENABLED=true`
+- `AGENT_SKILLS_ENABLED=true`
 - `AGENT_ORCHESTRATION_ENABLED=false`
 - `AGENT_KNOWLEDGE_GRAPH_ENABLED=false`
 
@@ -190,7 +198,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 ### `backend/config`
 
 - 环境变量和部署 Settings
-- 五个插件的 enable/provider 选择
+- 各插件的 enable/provider 选择
 - 路径、超时和共享基础设施默认值
 - Agent 实例配置模型
 

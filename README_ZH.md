@@ -210,6 +210,7 @@ HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形
 | 评测与回放 | [评测体系](docs/evaluation-system.md) · [Trace 回放](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
 | 上下文与项目知识 | [上下文管理](docs/context-management-design.md) · [记忆](docs/memory-system-design.md) · [知识图谱](docs/knowledge-graph-design.md) |
 | 扩展开发 | [插件架构](docs/plugin-architecture-design.md) |
+| 可复用 Agent 指南 | [Skill 插件](docs/skills-plugin.md) |
 
 ## 开发
 

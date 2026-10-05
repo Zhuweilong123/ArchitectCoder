@@ -28,6 +28,7 @@ from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
 from app.runtime import workspace_root_for
+from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
 
 
 # ── 进度事件转发 ──
@@ -86,6 +87,7 @@ def create_conversation_tools(
     include_task_system: bool = False,
     workspace_root: str = "",
     design_dir: str = "",
+    skill_catalog: SkillCatalog | None = None,
 ) -> tuple[list[Tool], ReviewManager | None]:
     """创建对话 Agent 可用的完整工具集。
 
@@ -144,7 +146,10 @@ def create_conversation_tools(
 
     # skill：按需加载 skills/ 下的领域知识包（L1 目录由 prompt 注入）
     from .skill_loader import SkillTool
-    tools.append(SkillTool())
+    if skill_catalog is None:
+        skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
+    if skill_catalog.entries:
+        tools.append(SkillTool(catalog=skill_catalog))
 
     # 子代理和持久化任务 DAG 都会显著扩大工具 schema，并引入额外的
     # 推理/模型调用。默认 DevAgent 保持单 Agent 的直接执行路径；仅由
@@ -161,6 +166,7 @@ def create_conversation_tools(
             toolkits=("strategy", "verification"),
             max_total_tokens=get_settings().agent_subagent_per_run_execution_budget_tokens,
             single_use=True,
+            skill_catalog=skill_catalog,
         ))
 
     if include_task_system:

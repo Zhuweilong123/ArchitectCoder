@@ -210,6 +210,7 @@ See [plugin architecture](docs/plugin-architecture-design.md) and [command execu
 | Evaluation and replay | [Evaluation system](docs/evaluation-system.md) · [Trace replay](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
 | Context and project knowledge | [Context management](docs/context-management-design.md) · [Memory](docs/memory-system-design.md) · [Knowledge graph](docs/knowledge-graph-design.md) |
 | Extension development | [Plugin architecture](docs/plugin-architecture-design.md) |
+| Reusable Agent guides | [Skill plugin](docs/skills-plugin.md) |
 
 ## Development
 

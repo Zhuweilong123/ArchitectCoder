@@ -114,6 +114,7 @@ extensions.knowledge_graph:create
 
 - 当前架构、工具边界和代码路径：本文。
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
+- Skill 通过 `core/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
 - 评测运行链路和指标：`evaluation-system.md`。
 - Trace 转评测用例：`trace-to-eval-case-factory-design.md`。
 - memory、knowledge graph、trace 的领域细节：对应子系统设计文档。

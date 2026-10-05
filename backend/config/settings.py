@@ -20,6 +20,7 @@ from .plugin_defaults import (
     DEFAULT_MEMORY_PROVIDER,
     DEFAULT_ORCHESTRATION_PROVIDER,
     DEFAULT_TRACE_PROVIDER,
+    DEFAULT_SKILLS_PROVIDER,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,10 @@ class Settings(BaseSettings):
     # on the ContractProvider port so alternative analyzers can be installed.
     agent_design_contract_enabled: bool = True
     agent_design_contract_provider: str = DEFAULT_DESIGN_CONTRACT_PROVIDER
+
+    # Read-only on-demand skills; each Agent captures one provider catalog.
+    agent_skills_enabled: bool = True
+    agent_skills_provider: str = DEFAULT_SKILLS_PROVIDER
 
     # Command execution is selected by the runtime.  ``auto`` uses the native
     # host environment; WSL is an explicit compatibility option for projects

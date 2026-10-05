@@ -26,6 +26,9 @@ from app.agent_base.tools.my_tools.conversation_tools import (
     create_conversation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
+from app.agent_base.core.skills import (
+    SkillCatalog, SkillContext, capture_skill_catalog, load_skills,
+)
 from app.agent_base.tools.registry import ToolRegistry
 from app.runtime import (
     WorkspaceManifest,
@@ -72,6 +75,7 @@ class DevPromptBuilder:
         environment_context=None,
         memory_recall_top_k: int = 3,
         memory_recall_max_tokens: int = 500,
+        skill_catalog: SkillCatalog | None = None,
     ):
         self.prompt_version = "3.1-r4"
         if environment_context is None:
@@ -88,6 +92,7 @@ class DevPromptBuilder:
             )
         self.system_prompt = self._build_static_prompt(
             environment_context=environment_context,
+            skill_catalog=skill_catalog,
         )
         self.memory = memory if memory is not None else NoOpMemory()
         self.memory_recall_top_k = max(1, int(memory_recall_top_k))
@@ -106,7 +111,7 @@ class DevPromptBuilder:
 
     @staticmethod
     def _build_static_prompt(
-        *, environment_context=None,
+        *, environment_context=None, skill_catalog: SkillCatalog | None = None,
     ) -> str:
         runtime_block = (
             environment_context.to_prompt()
@@ -141,7 +146,7 @@ class DevPromptBuilder:
             "",
             "If a safety rule, missing authority, or hard budget prevents completion, stop safely and report completed work, remaining work, and the exact reason.",
         ]
-        skills_section = build_skills_section()
+        skills_section = build_skills_section(catalog=skill_catalog)
         if skills_section:
             prompt_parts.extend(["", skills_section])
         return "\n".join(prompt_parts)
@@ -236,6 +241,9 @@ async def create_dev_agent(
     workspace_root = manifest.workspace_root
     change_set = ChangeSet(project_file=project_file)
     command_executor = build_command_executor(settings)
+    skill_catalog = capture_skill_catalog(
+        load_skills(settings=settings), context=SkillContext(workspace_root=workspace_root),
+    )
     tools, review_mgr = create_conversation_tools(
         llm,
         source_dir=source_dir,
@@ -255,6 +263,7 @@ async def create_dev_agent(
         include_subagent=settings.agent_main_subagent_enabled,
         workspace_root=workspace_root,
         design_dir=design_dir,
+        skill_catalog=skill_catalog,
     )
 
     workspace_roots = list(manifest.workspace_roots)
@@ -284,6 +293,7 @@ async def create_dev_agent(
         environment_context=environment_context,
         memory_recall_top_k=settings.agent_memory_recall_top_k,
         memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
+        skill_catalog=skill_catalog,
     )
     agent = ReActAgent(
         name="DevAgent",
