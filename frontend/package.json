@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test:layout": "node --test tests/architectureLayout.cjs tests/componentArchitecture.cjs",
+    "test:html": "node --test tests/projectHtml.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

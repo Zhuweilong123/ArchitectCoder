@@ -32,6 +32,7 @@ import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportCanvasGraphSvg, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
 import { createZipBlob } from '../../utils/zipArchive';
+import { createProjectHtml } from '../../utils/projectHtml';
 import './Toolbar.css';
 import { t, type TranslationKey } from '../../i18n';
 import SettingsPopover from '../Settings/SettingsPopover';
@@ -746,7 +747,8 @@ const Toolbar: React.FC = () => {
     }
   };
 
-  const handleExportFullDocs = async () => {
+  const handleExportFullDocs = async (format: 'markdown' | 'html' = 'markdown') => {
+    if (exportingAll) return;
     const initialState = useDiagramStore.getState();
     const diagrams = initialState.project.diagrams;
     if (diagrams.length === 0) {
@@ -794,6 +796,7 @@ const Toolbar: React.FC = () => {
         selectedCompRelationId: initialState.selectedCompRelationId,
         undoStack: initialState.undoStack,
         redoStack: initialState.redoStack,
+        isModified: initialState.isModified,
       });
       setExportingAll(false);
       setExportProgress('');
@@ -801,6 +804,17 @@ const Toolbar: React.FC = () => {
 
     try {
       const folder = fileStem(initialState.project.name) || 'project';
+      if (format === 'html') {
+        const html = createProjectHtml(initialState.project, images, interfaceLanguage);
+        const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${folder}_design.html`;
+        a.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        message.success(copy('exportAllDesignsSuccess'));
+        return;
+      }
       const documentResults = await Promise.all(diagrams.map((item) => exportMarkdown(item)));
       const files: Array<{ path: string; content: string }> = [];
       const indexLines = [
@@ -866,6 +880,12 @@ const Toolbar: React.FC = () => {
     },
     { type: 'divider' as const },
     {
+      key: 'project-html',
+      label: copy('exportProjectHtml'),
+      disabled: exportingAll,
+      onClick: () => void handleExportFullDocs('html'),
+    },
+    {
       key: 'project',
       label: copy('exportAllDesigns'),
       onClick: handleExportProject,
@@ -876,7 +896,7 @@ const Toolbar: React.FC = () => {
     <div className="toolbar">
     <Modal
       open={exportingAll}
-      title={interfaceLanguage === 'en' ? 'Exporting full design documents' : '\u6b63\u5728\u5bfc\u51fa\u5168\u91cf\u8bbe\u8ba1\u6587\u6863'}
+      title={copy('exportingProject')}
       footer={null}
       closable={false}
       keyboard={false}

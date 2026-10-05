@@ -13,6 +13,7 @@
 | [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
 | [`design-source-contract.md`](design-source-contract.md) | 设计、源码与测试的一致性契约、实体映射和规则分级 |
 | [`multilanguage-execution-design.md`](multilanguage-execution-design.md) | 多语言任务解析、TaskPlan、自动编排和执行证据 |
+| [`project-html-export.md`](project-html-export.md) | 项目单文件 HTML 导出与离线阅读操作 |
 
 ## 子系统设计
 
