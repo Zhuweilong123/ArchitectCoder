@@ -8,7 +8,7 @@ for _root in (_BACKEND_ROOT.parent, _BACKEND_ROOT):
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-from backend.config import get_settings
+from backend.config import Settings
 from app.agent_base.core.lifecycle import build_plan
 from app.agent_base.core.plugins import get_plugin_manager
 
@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", help="Output directory; defaults to PLUGIN_PLAN_DIR")
     args = parser.parse_args()
-    settings = get_settings()
+    settings = Settings(_env_file=_BACKEND_ROOT / ".env")
     plan = build_plan(get_plugin_manager(), settings)
     output = args.output or settings.plugin_plan_dir
     plan.write(output)

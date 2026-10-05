@@ -636,5 +636,6 @@ class ArchitectureAwareOrchestrator:
 
     def create_tools(self, **_kwargs):
         from .tool import ArchitectureRouteTool
+        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
 
-        return [ArchitectureRouteTool(self)]
+        return [ArchitectureRouteTool(schedule_tool_provider(self, "orchestration"))]

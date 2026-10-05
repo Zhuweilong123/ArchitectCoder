@@ -296,7 +296,16 @@ def recent_conversation_history(
         for role, content in turn
     )
 
-async def _archive_task_to_memory(
+async def _archive_task_to_memory(*args, **kwargs) -> None:
+    from app.agent_base.core.operations import operation_scope
+    runtime = get_runtime()
+    run_id = kwargs.get("run_id", "")
+    parent_id = runtime.run_operation_id if run_id and runtime.run_id == run_id else None
+    with operation_scope("background", run_id=run_id, stage="finalize", scope="background", parent_operation_id=parent_id or None) as operation:
+        operation.status = await _archive_task_to_memory_impl(*args, **kwargs)
+
+
+async def _archive_task_to_memory_impl(
     memory: MemoryPort,
     project_id: str,
     user_message: str,
@@ -305,8 +314,14 @@ async def _archive_task_to_memory(
     run_id: str = "",
     trace_id: str = "",
     conversation_history: tuple[dict[str, str], ...] = (),
-) -> None:
+) -> str:
+    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    async def publish(stage, **data):
+        await get_hooks().aemit(stage, HookContext(stage, "memory", run_id=run_id,
+            payload={"source": "memory_archive", **data}))
+    status = "failed"
     try:
+        await publish(HookEvent.BACKGROUND_BEFORE)
         result = await memory.archive(MemoryArchiveRequest(
             project_id=project_id,
             user_message=user_message,
@@ -316,13 +331,20 @@ async def _archive_task_to_memory(
             trace_id=trace_id,
             conversation_history=conversation_history,
         ))
+        status = "degraded" if result.metadata.get("degraded") else "completed"
         logger.info(
             "[Memory] Archived task to memory (project=%s, stored=%d)",
             project_id,
             result.stored_count,
         )
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
     except Exception:
         logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
+    finally:
+        await publish(HookEvent.BACKGROUND_AFTER, status=status)
+    return status
 
 async def _create_task_execution_async(
     *,
@@ -393,6 +415,19 @@ async def _load_review_baseline_async(project_file: str):
 
 
 async def _prepare_orchestration(
+    agent: ReActAgent, **kwargs,
+) -> tuple[str, Any, str]:
+    from app.agent_base.core.operations import operation_scope
+    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    with operation_scope("prepare", run_id=kwargs.get("run_id", ""), stage=HookEvent.PREPARE.value):
+        await get_hooks().aemit(HookEvent.PREPARE, HookContext(
+            HookEvent.PREPARE, getattr(agent, "name", "DevAgent"), run_id=kwargs.get("run_id", ""),
+            payload={"source": "orchestration"},
+        ))
+        return await _prepare_orchestration_impl(agent, **kwargs)
+
+
+async def _prepare_orchestration_impl(
     agent: ReActAgent,
     *,
     user_message: str,

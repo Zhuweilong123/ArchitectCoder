@@ -43,6 +43,7 @@ class PluginSpec:
     router_provider: str = ""
     default_enabled: bool = True
     source: str = "builtin"
+    interface_stages: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,10 +149,22 @@ class PluginManager:
             raise ValueError("plugin manifest requires schema_version=1 and a plugins list")
         discovered = {}
         for row in data["plugins"]:
-            if not isinstance(row, dict) or set(row) - {"name", "provider", "enabled", "interfaces"}:
+            if not isinstance(row, dict) or set(row) - {"name", "provider", "enabled", "interfaces", "interface_stages"}:
                 raise ValueError("invalid plugin manifest entry")
             name, provider = row.get("name"), row.get("provider")
             interfaces = row.get("interfaces", [])
+            stages = row.get("interface_stages", {})
+            from .plugin_dispatch import SERVICE_STAGES
+            from .hooks import HookEvent
+            if not isinstance(stages, dict) or any(key not in interfaces or not isinstance(stage, str)
+                for key, stage in stages.items()):
+                raise ValueError("interface_stages must map declared interfaces to service phases")
+            try:
+                stages = {key: HookEvent(stage).value for key, stage in stages.items()}
+            except ValueError as exc:
+                raise ValueError("unknown interface stage") from exc
+            if any(HookEvent(stage) not in SERVICE_STAGES for stage in stages.values()):
+                raise ValueError("interfaces must bind to public phases")
             if not isinstance(name, str) or not name.strip() or not isinstance(provider, str) or ":" not in provider:
                 raise ValueError("plugin manifest requires name and module:factory provider")
             if not isinstance(row.get("enabled", True), bool) or not isinstance(interfaces, list) or any(
@@ -159,7 +172,8 @@ class PluginManager:
             ):
                 raise ValueError("invalid enabled flag or interface list")
             spec = PluginSpec(name, f"plugin_{name}_enabled", f"plugin_{name}_provider", provider,
-                              tuple(interfaces), default_enabled=row.get("enabled", True), source=str(path))
+                              tuple(interfaces), default_enabled=row.get("enabled", True), source=str(path),
+                              interface_stages=tuple(sorted(stages.items())))
             if name in discovered or name in self._specs and self._specs[name] != spec:
                 raise ValueError(f"duplicate or reserved plugin name: {name}")
             discovered[name] = spec
@@ -228,7 +242,8 @@ class PluginManager:
                     f"plugin '{name}' is missing required methods: {', '.join(missing)}"
                 )
             self._state(name, provider, "loaded")
-            return instance
+            from .plugin_dispatch import ScheduledProvider
+            return ScheduledProvider(instance, spec)
         except Exception as exc:
             self._state(name, provider, "unavailable", str(exc))
             logger.warning(

@@ -29,6 +29,8 @@ AGENT_SKILLS_PROVIDER=extensions.skills:create
 
 创建 Agent 时捕获一次目录。Prompt 中的名称、工具 schema 中的名称和实际读取内容使用同一份 `SkillCatalog`。主 Agent 直接创建的子 Agent 共享该目录；独立创建的子 Agent 捕获自己的目录。
 
+两个 provider 接口已纳入统一调度：`list_skills` 默认绑定公共阶段 `initialize`，`read_skill` 默认绑定 `tool_before`。在活动操作中调用时继承该操作当前阶段，例如技能工具中的读取挂在该工具操作之下。调用条件与目录快照保持不变，实际执行通过计划中的 `skills.interface.*` 贡献，并可在有活动 Trace 的任务中回放。详见[插件阶段调度](plugin-lifecycle.md)。
+
 默认文件 provider 在创建时读取正文和参考文件，版本由内容哈希生成。任务期间修改、删除或新增技能不会改变已有快照，新创建的 Agent 才会看到更新。资源快照驻留内存，适合当前规模的文本技能包；后续大型资源存储可通过其他 provider 实现。
 
 自定义 provider 必须在一个实例生命周期内保持版本一致。核心会拒绝与目录 ID 或版本不一致的读取结果，并提示启动新任务刷新。

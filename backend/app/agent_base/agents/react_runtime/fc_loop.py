@@ -145,7 +145,30 @@ def _append_failure_recovery_guidance(
     return last_directive_signature
 
 
-async def _invoke_fc_model(
+async def _invoke_fc_model(agent, **kwargs):
+    from ...core.operations import operation_scope
+    runtime = kwargs["runtime"]
+    with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
+        response = None
+        status = "failed"
+        try:
+            result = await _invoke_fc_model_impl(agent, **kwargs)
+            response = result[0]
+            status = "completed" if response is not None else "blocked" if result[1] == "hook_stop" else "failed"
+            operation.status = status
+            return result
+        except (asyncio.CancelledError, AgentInterrupted):
+            status = "cancelled"
+            raise
+        finally:
+            await get_hooks().atrigger(HookEvent.MODEL_AFTER, HookContext(
+                HookEvent.MODEL_AFTER, agent.name, run_id=runtime.run_id, runtime=runtime,
+                messages=kwargs["messages"], llm_response=response,
+                payload={"status": status, "observers_only": status != "completed"},
+            ))
+
+
+async def _invoke_fc_model_impl(
     agent,
     *,
     messages: list[dict[str, Any]],
@@ -161,7 +184,7 @@ async def _invoke_fc_model(
     Returns ``(response, failure_kind, reason)``. A missing response is an
     intentional terminal condition, either stopped by a hook or timed out.
     """
-    before_decision = get_hooks().trigger(
+    before_decision = await get_hooks().atrigger(
         HookEvent.LLM_BEFORE,
         HookContext(
             event=HookEvent.LLM_BEFORE,
@@ -192,26 +215,28 @@ async def _invoke_fc_model(
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            get_hooks().emit(HookEvent.ERROR, HookContext(
+            await get_hooks().aemit(HookEvent.ERROR, HookContext(
                 event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
                 runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm"},
             ))
             return None, "timeout", "llm_timeout"
-    get_hooks().trigger(
-        HookEvent.LLM_AFTER,
-        HookContext(
-            event=HookEvent.LLM_AFTER,
-            agent_name=agent.name,
-            run_id=runtime.run_id,
-            runtime=runtime,
-            messages=messages,
-            llm_response=response,
-        ),
-    )
     return response, "", ""
 
 
-async def run_fc_loop(
+async def run_fc_loop(agent, *args, **kwargs):
+    from ...core.operations import operation_scope
+    with operation_scope("run", run_id=get_runtime().run_id, stage=HookEvent.RUN_START.value) as operation:
+        get_runtime().run_operation_id = operation.operation_id
+        stream = _run_fc_loop_impl(agent, *args, **kwargs)
+        try:
+            async for progress in stream:
+                yield progress
+        finally:
+            await stream.aclose()
+            operation.status = get_runtime().lifecycle_status
+
+
+async def _run_fc_loop_impl(
     agent,
     input_text: str,
     context: str = "",
@@ -335,23 +360,24 @@ async def run_fc_loop(
     runtime.plugin_plan_id = get_hooks().plan_id
     runtime.lifecycle_round_open = False
     runtime.lifecycle_status = "running"
+    runtime.lifecycle_finalized = False
     agent.last_context_report["plugin_plan_id"] = runtime.plugin_plan_id
-    def publish(stage, **payload):
-        return get_hooks().emit(stage, HookContext(
+    async def publish(stage, **payload):
+        return await get_hooks().aemit(stage, HookContext(
             event=stage, agent_name=agent.name, run_id=runtime.run_id,
             runtime=runtime, payload=payload,
         ))
     try:
-        publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage)
+        await publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage)
         step = 0
         while True:
             if runtime.lifecycle_round_open:
                 runtime.lifecycle_round_open = False
-                publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=False)
+                await publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=False)
             step += 1
             runtime.lifecycle_step = step
             runtime.lifecycle_round_open = True
-            publish(HookEvent.ROUND_BEFORE, step=step)
+            await publish(HookEvent.ROUND_BEFORE, step=step)
             remaining_tokens = budget.remaining_tokens
             # Only the convergence controller is allowed to enter tool-free
             # finalization mode; token usage is request-scoped telemetry.
@@ -497,7 +523,7 @@ async def run_fc_loop(
                     "context_hard_limit_tokens": agent.context_budget.budget.max_context_tokens,
                 })
                 agent._record_turn(input_text, final_answer)
-                yield agent._final_progress(
+                yield await agent._final_progress(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
@@ -530,7 +556,7 @@ async def run_fc_loop(
                     "the task was finalized with the available evidence."
                 )
                 agent._record_turn(input_text, final_answer)
-                yield agent._final_progress(
+                yield await agent._final_progress(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
@@ -545,7 +571,7 @@ async def run_fc_loop(
                 })
                 final_answer = "LLM 调用超过时间预算，已停止本轮任务。"
                 agent._record_turn(input_text, final_answer)
-                yield agent._final_progress(
+                yield await agent._final_progress(
                     total_tokens=total_tokens,
                     step=step,
                     thought=final_answer,
@@ -577,7 +603,7 @@ async def run_fc_loop(
 
                 if not content.strip() or not todo_plan_complete(get_runtime()):
                     runtime.control_decision = None
-                    get_hooks().emit(
+                    await get_hooks().aemit(
                         HookEvent.TOOL_BATCH_AFTER,
                         HookContext(
                             event=HookEvent.TOOL_BATCH_AFTER,
@@ -642,7 +668,7 @@ async def run_fc_loop(
                         if not _turn_recorded:
                             agent._record_turn(input_text, content)
                             _turn_recorded = True
-                        yield agent._final_progress(total_tokens=total_tokens,
+                        yield await agent._final_progress(total_tokens=total_tokens,
                             step=step, thought=content,
                             is_final=True, final_answer=content,
                         )
@@ -668,7 +694,7 @@ async def run_fc_loop(
                     if not _turn_recorded:
                         agent._record_turn(input_text, content)
                         _turn_recorded = True
-                    yield agent._final_progress(total_tokens=total_tokens,
+                    yield await agent._final_progress(total_tokens=total_tokens,
                         step=step, thought=content,
                         is_final=True, final_answer=content,
                     )
@@ -688,7 +714,7 @@ async def run_fc_loop(
                         "finalization_textual_tool_markup_blocked": textual_tool_markup,
                     })
                     agent._record_turn(input_text, final_answer)
-                    yield agent._final_progress(total_tokens=total_tokens,
+                    yield await agent._final_progress(total_tokens=total_tokens,
                         step=step, thought=final_answer,
                         is_final=True, final_answer=final_answer,
                     )
@@ -712,7 +738,7 @@ async def run_fc_loop(
 
             # 3. 有 tool_calls → 全部执行
             no_tool_call_streak = 0
-            publish(HookEvent.TOOL_BATCH_BEFORE, step=step, tool_count=len(tool_calls))
+            await publish(HookEvent.TOOL_BATCH_BEFORE, step=step, tool_count=len(tool_calls))
             round_result = await tool_round_executor.execute(tool_calls, step=step)
             tool_results = round_result.tool_results
             actions = round_result.actions
@@ -740,7 +766,7 @@ async def run_fc_loop(
                 last_failure_directive_signature,
             )
 
-            get_hooks().emit(
+            await get_hooks().aemit(
                 HookEvent.TOOL_BATCH_AFTER,
                 HookContext(
                     event=HookEvent.TOOL_BATCH_AFTER,
@@ -805,7 +831,7 @@ async def run_fc_loop(
                 })
                 agent._record_turn(input_text, final_answer)
                 _turn_recorded = True
-                yield agent._final_progress(total_tokens=total_tokens,
+                yield await agent._final_progress(total_tokens=total_tokens,
                     step=step, actions=actions, tool_calls_detail=details,
                     thought=final_answer, is_final=True, final_answer=final_answer,
                 )
@@ -821,23 +847,26 @@ async def run_fc_loop(
 
     except (AgentInterrupted, asyncio.CancelledError):
         runtime.lifecycle_status = "cancelled"
-        publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
+        await publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
         raise
     except GeneratorExit:
         if runtime.lifecycle_status == "running":
             runtime.lifecycle_status = "cancelled"
-            publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
+            await publish(HookEvent.CANCEL, step=runtime.lifecycle_step)
         raise
     except Exception as exc:
         runtime.lifecycle_status = "failed"
-        publish(HookEvent.ERROR, error_type=type(exc).__name__, step=runtime.lifecycle_step)
+        await publish(HookEvent.ERROR, error_type=type(exc).__name__, step=runtime.lifecycle_step)
         raise
     finally:
         try:
             if runtime.lifecycle_round_open:
                 runtime.lifecycle_round_open = False
-                publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=True)
-            publish(HookEvent.RUN_END, status=runtime.lifecycle_status)
+                await publish(HookEvent.ROUND_AFTER, step=runtime.lifecycle_step, terminal=True)
+            if not runtime.lifecycle_finalized:
+                runtime.lifecycle_finalized = True
+                await publish(HookEvent.FINALIZE, status=runtime.lifecycle_status, source="termination")
+            await publish(HookEvent.RUN_END, status=runtime.lifecycle_status, execution_only=True)
         except AgentInterrupted:
             pass  # 结束阶段不再响应中断
         except Exception:

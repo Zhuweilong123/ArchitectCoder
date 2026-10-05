@@ -151,7 +151,15 @@ class DevPromptBuilder:
             prompt_parts.extend(["", skills_section])
         return "\n".join(prompt_parts)
 
-    async def build_context(
+    async def build_context(self, *args, **kwargs):
+        from app.agent_base.core.hooks import HookEvent, HookContext, get_hooks, get_runtime
+        from app.agent_base.core.operations import operation_scope, current_operation
+        parent = current_operation()
+        with operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
+            await get_hooks().aemit(HookEvent.PREPARE, HookContext(HookEvent.PREPARE, "DevAgent", run_id=get_runtime().run_id or (parent.run_id if parent else "")))
+            return await self._build_context_impl(*args, **kwargs)
+
+    async def _build_context_impl(
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -205,7 +213,15 @@ class DevPromptBuilder:
             return ""
 
 
-async def create_dev_agent(
+async def create_dev_agent(*args, **kwargs):
+    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    from app.agent_base.core.operations import operation_scope
+    with operation_scope("initialize", stage=HookEvent.INITIALIZE.value, scope="agent"):
+        await get_hooks().aemit(HookEvent.INITIALIZE, HookContext(HookEvent.INITIALIZE, "DevAgent"))
+        return await _create_dev_agent_impl(*args, **kwargs)
+
+
+async def _create_dev_agent_impl(
     llm: BaseAgentsLLM,
     source_dir: str = "",
     test_dir: str = "",

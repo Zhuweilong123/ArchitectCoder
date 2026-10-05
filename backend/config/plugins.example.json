@@ -5,7 +5,8 @@
       "name": "team_checks",
       "provider": "my_team.checks:create",
       "enabled": false,
-      "interfaces": []
+      "interfaces": ["query"],
+      "interface_stages": {"query": "run_start"}
     }
   ]
 }

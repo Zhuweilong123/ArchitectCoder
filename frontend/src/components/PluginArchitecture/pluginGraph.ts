@@ -41,7 +41,8 @@ export function buildPluginGraph(plan: PluginExecutionPlan, view: GraphView, fil
     let y = 64;
     for (const plugin of plugins) {
       const contributions = allContributions.filter((item) => item.plugin === plugin.name);
-      const count = contributions.length + plugin.interfaces.length;
+      const interfaces = plugin.interfaces.filter((name) => !contributions.some((item) => item.interface_id === `${plugin.name}.${name}`));
+      const count = contributions.length + interfaces.length;
       const blockHeight = Math.max(88, count * 78);
       const parent = add({ id: `plugin:${plugin.name}`, kind: 'plugin', label: plugin.name,
         x: 24, y: y + (blockHeight - 66) / 2, width: 220, height: 66, plugin });
@@ -51,7 +52,7 @@ export function buildPluginGraph(plan: PluginExecutionPlan, view: GraphView, fil
         edges.push({ source: parent, target: child, kind: 'binding' });
         edges.push({ source: child, target: stageId(item.stage), kind: 'binding' });
       });
-      plugin.interfaces.forEach((name, index) => {
+      interfaces.forEach((name, index) => {
         const child = add({ id: `interface:${plugin.name}:${index}`, kind: 'interface', label: name,
           x: 316, y: y + (index + contributions.length) * 78, width: 310, height: 66,
           plugin, interfaceName: name });
@@ -75,16 +76,20 @@ export function buildPluginGraph(plan: PluginExecutionPlan, view: GraphView, fil
         x: 352 + (index % 2) * 346, y: y + Math.floor(index / 2) * 78, width: 310, height: 66,
         contribution: item });
       edges.push({ source: stageId(stage.stage), target: child, kind: 'binding' });
-      if (index > 0) edges.push({ source: contributionId(contributions[index - 1].id), target: child, kind: 'order' });
+      if (index > 0 && item.mode !== 'service' && contributions[index - 1].mode !== 'service') edges.push({ source: contributionId(contributions[index - 1].id), target: child, kind: 'order' });
     });
     y += Math.max(110, Math.ceil(contributions.length / 2) * 78 + 24);
-    if (stage.stage === 'llm_before' || stage.stage === 'tool_before') {
-      add({ id: stage.stage === 'llm_before' ? 'model-call' : 'tool-call', kind: 'execution',
-        label: stage.stage === 'llm_before' ? 'model-call' : 'tool-call', x: 36, y, width: 250, height: 66 });
+    if (stage.stage === 'model_before' || stage.stage === 'llm_before' || stage.stage === 'tool_before') {
+      add({ id: stage.stage !== 'tool_before' ? 'model-call' : 'tool-call', kind: 'execution',
+        label: stage.stage !== 'tool_before' ? 'model-call' : 'tool-call', x: 36, y, width: 250, height: 66 });
       y += 104;
     }
   }
-  const spine = ['run_start', 'round_before', 'llm_before', 'model-call', 'llm_after',
+  const compatibleStage = (current: string, legacy: string) => plan.stages.some((stage) => stage.stage === current) ? current : legacy;
+  const modelBefore = compatibleStage('model_before', 'llm_before');
+  const modelAfter = compatibleStage('model_after', 'llm_after');
+  const finalize = compatibleStage('finalize', 'run_finalize');
+  const spine = ['initialize', 'prepare', 'run_start', 'round_before', modelBefore, 'model-call', modelAfter,
     'tool_batch_before', 'tool_before', 'tool-call', 'tool_after', 'tool_batch_after', 'round_after'];
   const nodeId = (value: string) => value.endsWith('-call') ? value : stageId(value);
   const existing = new Set(nodes.map((node) => node.id));
@@ -93,8 +98,8 @@ export function buildPluginGraph(plan: PluginExecutionPlan, view: GraphView, fil
     if (existing.has(source) && existing.has(target)) edges.push({ source, target, kind: 'flow' });
   }
   const branches: Array<[string, string, PlanEdge['label']]> = [
-    ['llm_after', 'round_after', 'no-tools'], ['round_after', 'round_before', 'continue'],
-    ['round_after', 'run_finalize', 'finish'], ['run_finalize', 'run_end', 'end'],
+    [modelAfter, 'round_after', 'no-tools'], ['round_after', 'round_before', 'continue'],
+    ['round_after', finalize, 'finish'], [finalize, 'run_end', 'end'],
     ['tool_before', 'tool_after', 'blocked'], ['error', 'run_end', 'end'], ['cancel', 'run_end', 'end'],
   ];
   branches.forEach(([source, target, label]) => {

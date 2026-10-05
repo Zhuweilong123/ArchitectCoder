@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Empty, Select, Space, Spin, Tag } from 'antd';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Alert, Button, Empty, Select, Space, Spin, Tag, Tree } from 'antd';
 import { getTrace, listTraces, type TraceMeta } from '../../services/api';
 import type { PluginExecutionPlan } from '../../types/plugins';
-import { contributionSummary, replayRuns, replaySteps, stepStatus, type ReplayStep } from './replayModel';
+import { contributionSummary, replayOperations, replayRuns, replaySteps, stepStatus, type ReplayStep, type ReplayOperation } from './replayModel';
 import ReplayStepDetails, { statusLabel, STATUS_COLORS } from './ReplayStepDetails';
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
   en: boolean;
   onStep: (step: ReplayStep | null) => void;
 }
+interface OperationTreeNode { key: string; title: ReactNode; children: OperationTreeNode[]; }
 
 export default function PluginReplay({ plan, en, onStep }: Props) {
   const tx = (zh: string, english: string) => en ? english : zh;
@@ -27,6 +28,17 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
   const steps = useMemo(() => run ? replaySteps(run, plan) : [], [run, plan]);
   const step = steps[index];
   const summary = useMemo(() => contributionSummary(steps), [steps]);
+  const operations = useMemo(() => replayOperations(runs, plan), [runs, plan]);
+  const operationTitle = (node: ReplayOperation) => <Space size={4} wrap>
+    <span>{String(node.event.interface_id || node.event.operation_kind)}</span>
+    <Tag color={STATUS_COLORS[String(node.event.status)]}>{statusLabel(String(node.event.status), en)}</Tag>
+    <small>{String(node.event.scope)} · {node.runId.slice(0, 12)}</small>
+  </Space>;
+  const treeData = (nodes: ReplayOperation[]): OperationTreeNode[] =>
+    nodes.map((node) => ({ key: node.key, title: operationTitle(node), children: treeData(node.children) }));
+  const locateOperation = (nodes: ReplayOperation[], key: string): ReplayOperation | undefined => {
+    for (const node of nodes) { if (node.key === key) return node; const found = locateOperation(node.children, key); if (found) return found; }
+  };
   useEffect(() => { onStep(step || null); }, [step, onStep]);
   useEffect(() => {
     const controller = new AbortController();
@@ -48,7 +60,7 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [session, revision]);
-  const label = (item: ReplayStep) => String(item.event.contribution_id || item.event.stage || item.event.event_type);
+  const label = (item: ReplayStep) => String(item.event.interface_id || item.event.operation_kind || item.event.contribution_id || item.event.stage || item.event.event_type);
   return <section className="plugin-replay">
     <Space wrap>
       <strong>{tx('实际执行回放', 'Execution history')}</strong>
@@ -67,6 +79,11 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
     {session && !loading && !error && !runs.length && <Alert type="info" message={tx('该会话没有阶段执行记录，请使用开启 Trace 的新版后端运行一次任务。', 'This session has no lifecycle records. Run a task with tracing enabled on the updated backend.')} />}
     {step && !step.compatible && <Alert type="warning" showIcon message={tx('记录缺少计划版本，或与当前计划不一致。可查看步骤详情，架构图高亮已停用。', 'The recorded plan is missing or differs from the current plan. Details remain available; graph highlighting is disabled.')} />}
     {!!steps.length && <>
+      {!!operations.length && <details className="plugin-operation-tree">
+        <summary>{tx('操作树（包含子任务）', 'Operation tree (including subtasks)')}</summary>
+        <Tree treeData={treeData(operations)} selectedKeys={step?.event.operation_id ? [String(step.event.operation_id)] : []}
+          onSelect={(keys) => { const target = locateOperation(operations, String(keys[0] || '')); if (target) { setRunId(target.runId); setIndex(target.stepIndex); } }} />
+      </details>}
       <div className="plugin-replay-summary">
         <span>{tx('本任务插件调用：', 'Task contributions: ')}</span>
         {(['executed', 'skipped', 'error', 'interrupted'] as const).map((status) => <Tag color={STATUS_COLORS[status]} key={status}>{statusLabel(status, en)} {summary[status]}</Tag>)}

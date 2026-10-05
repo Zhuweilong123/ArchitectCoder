@@ -45,7 +45,8 @@ def test_discovery_exports_interfaces_stable_plan_and_two_graphs(monkeypatch, tm
     assert json.loads((tmp_path / "plugin-plan.json").read_text(encoding="utf-8")) == json.loads(json.dumps(plan.as_dict()))
     assert "Model call" in (tmp_path / "plugin-schedule.mmd").read_text()
     organization = (tmp_path / "plugin-organization.mmd").read_text()
-    assert "query / on demand" in organization
+    assert "demo.interface.query / service" in organization
+    assert "P0 --> C" in organization
     assert "demo.observe" in organization
     assert list(tmp_path.glob("*.tmp")) == []
 
@@ -63,7 +64,7 @@ def test_install_is_idempotent_and_dispatch_matches_export_order(monkeypatch):
     registry.emit(HookEvent.RUN_START, HookContext(HookEvent.RUN_START, "demo", runtime=runtime))
     assert len(calls) == 2
     exported = next(stage for stage in plan.as_dict()["stages"] if stage["stage"] == "run_start")
-    assert [c["id"] for c in exported["contributions"] if c["plugin"] == "demo"] == ["first", "second"]
+    assert [c["id"] for c in exported["contributions"] if c["plugin"] == "demo" and c["mode"] != "service"] == ["first", "second"]
 
 
 @pytest.mark.parametrize("enabled,provider,status", [
@@ -213,7 +214,8 @@ def test_builtin_routing_contributions_are_discovered_and_fallback_does_not_dupl
     spec = next(spec for spec in DEFAULT_PLUGIN_SPECS if spec.name == "orchestration")
     manager = PluginManager((spec,))
     plan = discover_plan(manager, SimpleNamespace())
-    assert len(plan.plugins[0]["contributions"]) == 3
+    assert len([key for key in plan.plugins[0]["contributions"] if key.startswith("orchestration.routing.")]) == 3
+    assert "orchestration.interface.prepare" in plan.plugins[0]["contributions"]
     registry = get_hooks()
     saved = ({stage: list(bindings) for stage, bindings in registry._hooks.items()},
              dict(registry._metadata), registry.plan_id)
@@ -279,7 +281,7 @@ def test_lifecycle_and_contribution_events_reach_real_jsonl_on_stream_close(tmp_
     events = [json.loads(line) for line in Path(sink.path).read_text(encoding="utf-8").splitlines()]
     lifecycle = [event for event in events if event["event_type"] == "lifecycle_stage"]
     assert [event["stage"] for event in lifecycle] == [
-        "run_start", "round_before", "llm_before", "llm_after", "round_after", "run_finalize", "run_end",
+        "run_start", "round_before", "model_before", "model_after", "round_after", "finalize", "run_end",
     ]
     contributions = [event for event in events if event["event_type"] == "plugin_contribution"]
     assert len(contributions) > len(lifecycle)

@@ -6,7 +6,7 @@ require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, filename);
 const { buildPluginGraph, wrapGraphLabel } = require('../src/components/PluginArchitecture/pluginGraph.ts');
-const { replayRuns, replaySteps, stepStatus, contributionSummary, stepExplanation } = require('../src/components/PluginArchitecture/replayModel.ts');
+const { replayRuns, replaySteps, replayOperations, stepStatus, contributionSummary, stepExplanation } = require('../src/components/PluginArchitecture/replayModel.ts');
 
 const contribution = (id, stage, order, priority = 10) => ({
   id, stage, plugin: 'trace', order, priority, handler: `trace:${id}`, mode: 'observer', before: [], after: [], scope: 'run', fail_closed: false,
@@ -112,6 +112,22 @@ test('both graph views have bounded, non-overlapping nodes and valid edges', () 
   assert.equal(JSON.stringify(plan), snapshot, 'rendering must not mutate the backend snapshot');
 });
 
+test('scheduled interfaces connect to stages without duplicate domain nodes or invented service order', () => {
+  const fixture = structuredClone(plan);
+  fixture.plugins[0].interfaces = ['read_skill'];
+  fixture.stages[0].contributions = [
+    { ...contribution('trace.interface.read_skill', 'run_start', 1), mode: 'service', interface_id: 'trace.read_skill' },
+    { ...contribution('trace.interface.query', 'run_start', 2), mode: 'service', interface_id: 'trace.query' },
+  ];
+  const organization = buildPluginGraph(fixture, 'organization', 'trace');
+  verifyGraph(organization);
+  assert.ok(!organization.nodes.some((node) => node.kind === 'interface'));
+  assert.ok(organization.edges.some((edge) => edge.source === 'contribution:trace.interface.read_skill' && edge.target === 'stage:run_start'));
+  const schedule = buildPluginGraph(fixture, 'schedule', 'trace');
+  verifyGraph(schedule);
+  assert.ok(!schedule.edges.some((edge) => edge.kind === 'order' && edge.source === 'contribution:trace.interface.read_skill'));
+});
+
 test('domain-only disabled plugins stay visible without invented lifecycle attachments', () => {
   const graph = buildPluginGraph(plan, 'organization', 'disabled');
   verifyGraph(graph);
@@ -146,4 +162,41 @@ test('long Unicode node labels wrap and preserve their code points', () => {
   assert.deepEqual(wrapGraphLabel('观察模型调用阶段', 8), ['观察模型', '调用阶段']);
   assert.equal(wrapGraphLabel('a'.repeat(200)).length, 2);
   assert.ok(wrapGraphLabel('a'.repeat(200))[1].endsWith('…'));
+});
+
+test('canonical plan renders thirteen public phases with model/tool nodes and no notification nodes', () => {
+  const fixture = structuredClone(plan);
+  fixture.stages = ['initialize', 'prepare', 'run_start', 'round_before', 'model_before', 'model_after',
+    'tool_batch_before', 'tool_before', 'tool_after', 'tool_batch_after', 'round_after', 'finalize', 'run_end']
+    .map((stage) => ({ stage, contributions: [], supported_modes: ['observer', 'service'] }));
+  fixture.notifications = [{ stage: 'error', contributions: [contribution('watch.error', 'error', 1)] }];
+  const graph = buildPluginGraph(fixture, 'schedule');
+  verifyGraph(graph);
+  assert.equal(graph.nodes.filter((node) => node.kind === 'stage').length, 13);
+  assert.ok(graph.nodes.some((node) => node.id === 'model-call'));
+  assert.ok(graph.nodes.some((node) => node.id === 'tool-call'));
+  assert.ok(!graph.nodes.some((node) => node.id === 'stage:error'));
+  const [step] = replaySteps({ id: 'parent', events: [{ event_type: 'runtime_notification', run_id: 'parent', stage: 'error', plan_id: 'fixture' }] }, fixture);
+  assert.deepEqual(step.nodeIds, []);
+});
+
+test('operation tree merges end records and locates nested operations across tasks', () => {
+  const operation = (run_id, operation_id, parent_operation_id, status) => ({ event_type: 'operation',
+    run_id, operation_id, parent_operation_id, status, plan_id: 'fixture' });
+  const runs = replayRuns([
+    operation('parent', 'run', '', 'running'), operation('parent', 'tool', 'run', 'running'),
+    operation('child', 'child-run', 'tool', 'running'), operation('child', 'model', 'child-run', 'running'),
+    operation('child', 'model', 'child-run', 'failed'), operation('parent', 'tool', 'run', 'completed'),
+    operation('parent', 'run', '', 'completed'), operation('parent', 'orphan', 'missing', 'completed'),
+  ]);
+  const tree = replayOperations(runs, plan);
+  assert.equal(tree.length, 2);
+  assert.equal(tree[0].event.status, 'completed');
+  const model = tree[0].children[0].children[0].children[0];
+  assert.equal(model.runId, 'child');
+  assert.equal(model.event.status, 'failed');
+  assert.equal(replaySteps(runs.find((run) => run.id === model.runId), plan)[model.stepIndex].event.operation_id, 'model');
+  assert.equal(tree[1].key, 'orphan');
+  // Malformed history must not create recursive UI trees.
+  assert.equal(replayOperations(replayRuns([operation('parent', 'a', 'b', 'running'), operation('parent', 'b', 'a', 'running')]), plan).length, 2);
 });

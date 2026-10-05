@@ -209,11 +209,11 @@ class ReActAgent(Agent):
             final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
-    def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+    async def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
         runtime = get_runtime()
         if runtime.lifecycle_round_open:
             runtime.lifecycle_round_open = False
-            get_hooks().emit(HookEvent.ROUND_AFTER, HookContext(
+            await get_hooks().aemit(HookEvent.ROUND_AFTER, HookContext(
                 event=HookEvent.ROUND_AFTER, agent_name=self.name, runtime=runtime,
                 run_id=runtime.run_id, payload={"step": runtime.lifecycle_step, "terminal": True},
             ))
@@ -234,7 +234,8 @@ class ReActAgent(Agent):
             ),
         )
         runtime.lifecycle_status = outcome.status
-        get_hooks().emit(HookEvent.RUN_FINALIZE, HookContext(
+        runtime.lifecycle_finalized = True
+        await get_hooks().aemit(HookEvent.RUN_FINALIZE, HookContext(
             event=HookEvent.RUN_FINALIZE, agent_name=self.name, runtime=runtime,
             run_id=runtime.run_id, payload={"status": outcome.status, "stop_reason": outcome.stop_reason},
         ))

@@ -11,16 +11,27 @@ import PluginReplay from './PluginReplay';
 import { stepStatus, type ReplayStep } from './replayModel';
 
 const STAGE_LABELS: Record<string, [string, string]> = {
+  initialize: ['初始化', 'Initialize'], prepare: ['任务准备', 'Prepare'], model_before: ['模型调用前', 'Model before'],
+  model_after: ['模型调用后', 'Model after'], finalize: ['执行收尾', 'Finalize'],
+  agent_initialize: ['Agent 初始化', 'Agent initialization'], context_prepare: ['上下文准备', 'Context preparation'],
+  skill_read: ['技能读取', 'Skill read'], memory_reinforce: ['记忆强化', 'Memory reinforcement'], task_archive: ['任务归档', 'Task archive'],
+  review_after: ['审核结果', 'Review result'], background_before: ['后台任务开始', 'Background start'], background_after: ['后台任务结束', 'Background end'],
+  orchestration_prepare: ['编排准备', 'Orchestration preparation'], trace_initialize: ['Trace 初始化', 'Trace initialization'],
+  orchestration_execute: ['编排探索', 'Orchestration exploration'],
+  trace_query: ['Trace 查询', 'Trace query'], trace_replay: ['Trace 回放', 'Trace replay'],
+  evaluation_query: ['评测查询', 'Evaluation query'], evaluation_run: ['评测执行', 'Evaluation execution'], evaluation_update: ['评测更新', 'Evaluation update'],
+  graph_query: ['图谱查询', 'Graph query'], graph_update: ['图谱更新', 'Graph update'], contract_collect: ['契约采集', 'Contract collection'],
+  plugin_service: ['插件接口调用', 'Plugin service call'],
   run_start: ['任务开始', 'Run start'], round_before: ['每轮开始', 'Round before'],
   llm_before: ['模型调用前', 'Model before'], llm_after: ['模型调用后', 'Model after'],
   tool_batch_before: ['工具批次开始', 'Tool batch before'], tool_before: ['工具执行前', 'Tool before'],
   tool_after: ['工具执行后', 'Tool after'], tool_batch_after: ['工具批次结束', 'Tool batch after'],
   round_after: ['每轮结束', 'Round after'], run_finalize: ['任务收尾', 'Run finalize'],
-  run_end: ['任务结束', 'Run end'], error: ['异常通知', 'Error'], cancel: ['取消通知', 'Cancel'],
+  run_end: ['执行结束', 'Execution end'], error: ['异常通知', 'Error'], cancel: ['取消通知', 'Cancel'],
   'model-call': ['模型调用', 'Model invocation'], 'tool-call': ['工具执行', 'Tool execution'],
 };
 const COLORS: Record<string, string> = { plugin: '#5265c8', stage: '#177875', interface: '#687588', execution: '#315170',
-  observer: '#2b7ca4', transform: '#9a6b18', control: '#9455b6' };
+  observer: '#2b7ca4', transform: '#9a6b18', control: '#9455b6', service: '#25854e' };
 
 function edgePath(edge: PlanEdge, source: PlanNode, target: PlanNode): string {
   if (edge.kind === 'flow') {
@@ -45,7 +56,7 @@ const PluginArchitecture: React.FC = () => {
   const en = language === 'en';
   const tx = (zh: string, english: string) => en ? english : zh;
   const stageLabel = (key: string) => STAGE_LABELS[key]?.[en ? 1 : 0] || key;
-  const modeLabel = (mode: ContributionMode) => ({ observer: tx('观察', 'Observer'), transform: tx('数据处理', 'Transform'), control: tx('控制', 'Control') })[mode];
+  const modeLabel = (mode: ContributionMode) => ({ observer: tx('观察', 'Observer'), transform: tx('数据处理', 'Transform'), control: tx('控制', 'Control'), service: tx('按需接口执行', 'On-demand service') })[mode];
   const statusLabel = (status: string) => ({ discovered: tx('已发现', 'Discovered'), disabled: tx('已禁用', 'Disabled'), unavailable: tx('不可用', 'Unavailable') })[status] || status;
   const [plan, setPlan] = useState<PluginExecutionPlan | null>(null);
   const [error, setError] = useState('');
@@ -70,7 +81,7 @@ const PluginArchitecture: React.FC = () => {
   const selected = graph?.nodes.find((node) => node.id === selectedId);
   const selectedPlugin = selected?.plugin || (selected?.contribution
     ? plan?.plugins.find((plugin) => plugin.name === selected.contribution?.plugin) : undefined);
-  const counts = plan ? { plugins: plan.plugins.length, contributions: plan.stages.reduce((count, stage) => count + stage.contributions.length, 0),
+  const counts = plan ? { plugins: plan.plugins.length, contributions: [...plan.stages, ...(plan.notifications || [])].reduce((count, stage) => count + stage.contributions.length, 0),
     failed: plan.plugins.filter((plugin) => plugin.status === 'unavailable').length } : null;
 
   useEffect(() => {
@@ -138,7 +149,7 @@ const PluginArchitecture: React.FC = () => {
   const subtitle = (node: PlanNode) => node.contribution
     ? `${node.contribution.order}. ${node.contribution.plugin} · ${modeLabel(node.contribution.mode)}`
     : node.kind === 'stage' ? node.label : node.kind === 'plugin' ? statusLabel(node.plugin!.status)
-      : node.kind === 'interface' ? tx('领域接口 · 按需调用', 'Domain interface · on demand') : tx('核心执行节点', 'Core execution');
+      : node.kind === 'interface' ? tx('领域接口 · 未安装绑定', 'Domain interface · binding not installed') : tx('核心执行节点', 'Core execution');
   const color = (node: PlanNode) => node.plugin?.status === 'unavailable' ? '#be4242'
     : node.plugin?.status === 'disabled' ? '#9299a6' : COLORS[node.contribution?.mode || node.kind];
   const branchLabels = { continue: tx('继续下一轮', 'Next round'), 'no-tools': tx('无工具调用', 'No tools'), finish: tx('返回最终结果', 'Finalize'),
@@ -177,7 +188,7 @@ const PluginArchitecture: React.FC = () => {
           <Tooltip title={tx('放大', 'Zoom in')}><Button aria-label={tx('放大', 'Zoom in')} icon={<PlusOutlined />} onClick={() => setZoom((value) => Math.min(2, value + 0.1))} /></Tooltip>
           <Button icon={<ExpandOutlined />} onClick={fit}>{tx('适应宽度', 'Fit width')}</Button>
         </Space>
-        <div className="plugin-plan-legend">{(['observer', 'transform', 'control'] as const).map((mode) =>
+        <div className="plugin-plan-legend">{(['observer', 'transform', 'control', 'service'] as const).map((mode) =>
           <Tag color={COLORS[mode]} key={mode}>{modeLabel(mode)}</Tag>)}<span>{tx('虚线：接口挂接／顺序', 'Dashed: bindings / order')}</span></div>
       </div>
       <div className="plugin-plan-main">
@@ -232,16 +243,17 @@ const PluginArchitecture: React.FC = () => {
             ]} />}
             {selectedPlugin?.error && <Alert type="error" showIcon message={tx('加载失败原因', 'Load failure')} description={selectedPlugin.error} />}
             {selected.contribution && <Descriptions column={1} size="small" bordered items={[
+              ...(selected.contribution.interface_id ? [{ key: 'interface_id', label: tx('插件接口', 'Plugin interface'), children: selected.contribution.interface_id }] : []),
               { key: 'plugin', label: tx('插件', 'Plugin'), children: selected.contribution.plugin },
-              { key: 'stage', label: tx('阶段', 'Stage'), children: `${stageLabel(selected.contribution.stage)} (${selected.contribution.stage})` },
+              { key: 'stage', label: selected.contribution.mode === 'service' ? tx('默认阶段', 'Default phase') : tx('阶段', 'Stage'), children: `${stageLabel(selected.contribution.stage)} (${selected.contribution.stage})` },
               { key: 'mode', label: tx('类型', 'Mode'), children: modeLabel(selected.contribution.mode) },
-              { key: 'order', label: tx('阶段内顺序', 'Stage order'), children: selected.contribution.order },
+              { key: 'order', label: tx('阶段内顺序', 'Stage order'), children: selected.contribution.mode === 'service' ? tx('按请求匹配，继承当前操作阶段', 'Matched on demand; inherits the active operation phase') : selected.contribution.order },
               { key: 'priority', label: tx('声明优先级', 'Priority'), children: selected.contribution.priority },
               { key: 'handler', label: tx('接口', 'Handler'), children: selected.contribution.handler },
               { key: 'before', label: tx('先于', 'Before'), children: selected.contribution.before.join(', ') || '—' },
               { key: 'after', label: tx('后于', 'After'), children: selected.contribution.after.join(', ') || '—' },
               { key: 'scope', label: tx('作用域', 'Scope'), children: selected.contribution.scope },
-              { key: 'failure', label: tx('接口异常时', 'On failure'), children: selected.contribution.fail_closed ? tx('阻断执行', 'Block execution') : tx('记录并继续', 'Record and continue') },
+              { key: 'failure', label: tx('接口异常时', 'On failure'), children: selected.contribution.mode === 'service' ? tx('记录并交给领域调用方处理', 'Record and propagate to the domain caller') : selected.contribution.fail_closed ? tx('阻断执行', 'Block execution') : tx('记录并继续', 'Record and continue') },
             ]} />}
             {selected.stage && <>
               <p>{tx('允许的外部接口类型', 'Supported external modes')}</p>
@@ -251,12 +263,20 @@ const PluginArchitecture: React.FC = () => {
                 <Button key={item.id} size="small" type="link" disabled={!graph?.nodes.some((node) => node.id === `contribution:${item.id}`)} onClick={() => selectNode(`contribution:${item.id}`)}>{item.order}. {item.id}</Button>)}
                 {!selected.stage.contributions.length && <Typography.Text type="secondary">{tx('没有贡献接口', 'No contributions')}</Typography.Text>}</div>
             </>}
-            {selected.kind === 'plugin' && <p>{tx('按需领域接口与阶段贡献分开组织。发现成功不代表 provider 已实例化或通过健康检查。', 'Domain interfaces are separate from lifecycle contributions. Discovery does not imply provider instantiation or health checks.')}</p>}
-            {selected.kind === 'interface' && <p>{tx('该接口由领域调用方按需使用，未自动挂接到生命周期阶段。', 'This interface is called by its domain consumer and is not automatically attached to a lifecycle stage.')}</p>}
+            {selected.kind === 'plugin' && <p>{tx('领域接口按请求执行，继承当前操作的公共阶段；独立调用采用默认阶段。发现成功不代表 provider 已实例化或通过健康检查。', 'Domain interfaces execute on demand and inherit the active operation phase; independent calls use their default phase. Discovery does not imply provider instantiation or health checks.')}</p>}
+            {selected.kind === 'interface' && <p>{tx('该接口当前没有安装可用阶段绑定，请检查插件状态及接口声明。', 'No active stage binding is installed for this interface. Check its plugin status and declaration.')}</p>}
             {selected.kind === 'execution' && <p>{tx('由核心执行器调用；前后阶段的接口可观察或参与处理。', 'The core executor performs this operation; surrounding phases expose observation and processing hooks.')}</p>}
           </>}
         </aside>
       </div>
+      {!!plan?.notifications?.length && <details>
+        <summary>{tx('独立通知（异常、取消、审核、后台）', 'Separate notifications (errors, cancellation, review, background)')}</summary>
+        <Descriptions column={1} size="small" bordered items={plan.notifications.map((notification) => ({
+          key: notification.stage, label: stageLabel(notification.stage),
+          children: notification.contributions.filter((item) => !filter || item.plugin === filter).map((item) =>
+            <Tag key={item.id} title={`${item.handler} · ${item.mode} · ${item.order}`}>{item.id}</Tag>),
+        }))} />
+      </details>}
       {replayVisible && plan && <PluginReplay plan={plan} en={en} onStep={onReplayStep} />}
     </div>
   </Drawer>;

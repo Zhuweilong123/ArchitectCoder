@@ -487,9 +487,11 @@ async def _start_agent_chat_run(
             raise ConnectionError("Transport disconnected before execution")
         context = ""
         if prompt_builder is not None:
-            context = await prompt_builder.build_context(
-                project_file, source_dir, test_dir, message,
-            )
+            from app.agent_base.core.operations import operation_scope
+            with operation_scope("prepare", run_id=run.run_id, stage="prepare"):
+                context = await prompt_builder.build_context(
+                    project_file, source_dir, test_dir, message,
+                )
             trace_log.event(
                 "prompt_context",
                 prompt_version=f"devagent-{prompt_builder.prompt_version}",
@@ -901,6 +903,14 @@ class ChatSessionCoordinator:
                             candidate_recovery=bool(candidate_recovery),
                         )
                         logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
+                        from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+                        from app.agent_base.core.operations import operation_scope
+                        review_run_id = (reviewed_checkpoint or {}).get("run_id", "") or fallback_review_runs.get(review_id, "") or (dev_agent.last_run_checkpoint or {}).get("run_id", "")
+                        with operation_scope("review", run_id=review_run_id, stage="finalize", scope="request"):
+                            await get_hooks().aemit(HookEvent.REVIEW_AFTER, HookContext(
+                                HookEvent.REVIEW_AFTER, "DevAgent", run_id=review_run_id,
+                                payload={"status": decision, "source": "review_response"},
+                            ))
 
                         # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──
                         # accept 才把 waiting_approval 变为最终状态；reject 则把

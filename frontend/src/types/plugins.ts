@@ -1,4 +1,4 @@
-export type ContributionMode = 'observer' | 'transform' | 'control';
+export type ContributionMode = 'observer' | 'transform' | 'control' | 'service';
 
 export interface PluginContribution {
   id: string;
@@ -12,6 +12,7 @@ export interface PluginContribution {
   fail_closed: boolean;
   plugin: string;
   order: number;
+  interface_id?: string;
 }
 
 export interface PluginStage {
@@ -28,6 +29,7 @@ export interface PlanPlugin {
   error: string;
   interfaces: string[];
   contributions: string[];
+  interface_bindings?: Array<{ method: string; stage: string; contribution_id: string }>;
 }
 
 export interface PluginExecutionPlan {
@@ -36,4 +38,6 @@ export interface PluginExecutionPlan {
   dispatch: string;
   plugins: PlanPlugin[];
   stages: PluginStage[];
+  notifications?: PluginStage[];
+  run_end_semantics?: string;
 }

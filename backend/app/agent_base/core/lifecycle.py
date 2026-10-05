@@ -12,7 +12,8 @@ from functools import wraps
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .hooks import HookEvent, HookRegistry
+from .hooks import HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
+from .plugin_dispatch import SERVICE_STAGES, service_contributions
 
 # Only these existing boundaries consume mutations/control decisions.
 # Remaining lifecycle phases are observation-only until their contracts expand.
@@ -22,6 +23,8 @@ PHASE_MODES[HookEvent.LLM_AFTER] |= {"transform"}
 PHASE_MODES[HookEvent.TOOL_BEFORE] |= {"control"}
 PHASE_MODES[HookEvent.TOOL_AFTER] |= {"transform"}
 PHASE_MODES[HookEvent.TOOL_BATCH_AFTER] |= {"control", "transform"}
+for stage in SERVICE_STAGES:
+    PHASE_MODES[stage] |= {"service"}
 
 
 @dataclass(frozen=True)
@@ -35,16 +38,15 @@ class Contribution:
     after: tuple[str, ...] = ()
     scope: str = "run"
     fail_closed: bool = False
+    interface_id: str = ""
 
     def resolve(self):
         module, separator, attribute = self.handler.partition(":")
         if not separator or not module or not attribute:
             raise ValueError("handler must use module:callable syntax")
         handler = getattr(importlib.import_module(module), attribute)
-        if not callable(handler) or inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
-            getattr(handler, "__call__", None)
-        ):
-            raise ValueError("lifecycle handlers must be synchronous callables")
+        if not callable(handler):
+            raise ValueError("lifecycle handlers must be callables")
         inspect.signature(handler).bind(object())
         return handler
 
@@ -98,15 +100,17 @@ class ExecutionPlan:
 
     def as_dict(self):
         stages = []
-        for stage in HookEvent:
+        notifications = []
+        for stage in (*PUBLIC_STAGES, *NOTIFICATIONS):
             items = [{**asdict(item), "stage": stage.value, "plugin": plugin}
                      for plugin, item in self.contributions if item.stage == stage]
             for order, item in enumerate(items, 1):
                 item["order"] = order
-            stages.append({"stage": stage.value, "supported_modes": sorted(PHASE_MODES[stage]),
+            (stages if stage in PUBLIC_STAGES else notifications).append({"stage": stage.value, "supported_modes": sorted(PHASE_MODES[stage]),
                            "contributions": items})
-        data = {"schema_version": 1, "dispatch": "sequential; observers survive control short-circuit",
-                "plugins": list(self.plugins), "stages": stages}
+        data = {"schema_version": 1, "dispatch": "sequential sync/async; observers survive control short-circuit; services execute only on matching requests",
+                "plugins": list(self.plugins), "stages": stages, "notifications": notifications,
+                "run_end_semantics": "execution interval closed; approval and background completion are separate"}
         digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
         return {"plan_id": digest, **data}
 
@@ -115,16 +119,15 @@ class ExecutionPlan:
             raise ValueError("view must be schedule or organization")
         label = lambda value: json.dumps(html.escape(str(value), quote=True), ensure_ascii=False)
         lines = ["flowchart TD", f"  %% plan_id: {self.as_dict()['plan_id']}"]
-        for stage in HookEvent:
+        for stage in PUBLIC_STAGES:
             lines.append(f"  {stage.name}[{label(stage.value)}]")
         if view == "schedule":
-            lines += ["  RUN_START --> ROUND_BEFORE --> LLM_BEFORE --> MODEL[Model call] --> LLM_AFTER",
-                      "  LLM_AFTER -->|tools| TOOL_BATCH_BEFORE -->|per tool| TOOL_BEFORE --> TOOL[Tool execution] --> TOOL_AFTER",
+            lines += ["  INITIALIZE --> PREPARE --> RUN_START --> ROUND_BEFORE --> MODEL_BEFORE --> MODEL[Model call] --> MODEL_AFTER",
+                      "  MODEL_AFTER -->|tools| TOOL_BATCH_BEFORE -->|per tool| TOOL_BEFORE --> TOOL[Tool execution] --> TOOL_AFTER",
                       "  TOOL_BEFORE -->|blocked| TOOL_AFTER", "  TOOL_BATCH_BEFORE -->|invalid or disallowed| TOOL_AFTER",
                       "  TOOL_AFTER -->|batch joined| TOOL_BATCH_AFTER --> ROUND_AFTER",
-                      "  LLM_AFTER -->|no tools| ROUND_AFTER", "  ROUND_AFTER -->|continue| ROUND_BEFORE",
-                      "  ROUND_AFTER -->|finish| RUN_FINALIZE --> RUN_END",
-                      "  ERROR --> RUN_END", "  CANCEL --> RUN_END"]
+                      "  MODEL_AFTER -->|no tools| ROUND_AFTER", "  ROUND_AFTER -->|continue| ROUND_BEFORE",
+                      "  ROUND_AFTER -->|finish| FINALIZE --> RUN_END"]
         plugins = {row["name"]: f"P{index}" for index, row in enumerate(self.plugins)}
         plugins["core"] = "PCORE"
         if view == "organization":
@@ -133,18 +136,23 @@ class ExecutionPlan:
                 lines.append(f"  {node}[{label(name + ': ' + status)}]")
         previous = {}
         for index, (plugin, item) in enumerate(self.contributions):
+            if item.stage not in PUBLIC_STAGES:
+                continue
             node = f"C{index}"
             lines.append(f"  {node}[{label(item.id + ' / ' + item.mode)}]")
             if view == "organization":
                 lines.append(f"  {plugins[plugin]} --> {node} --> {item.stage.name}")
             else:
                 lines.append(f"  {item.stage.name} -.-> {node}")
-                if item.stage in previous:
+                if item.stage in previous and item.mode != "service":
                     lines.append(f"  {previous[item.stage]} -. order .-> {node}")
-                previous[item.stage] = node
+                if item.mode != "service":
+                    previous[item.stage] = node
         if view == "organization":
             for index, row in enumerate(self.plugins):
                 for offset, interface in enumerate(row["interfaces"]):
+                    if any(binding["method"] == interface for binding in row.get("interface_bindings", ())):
+                        continue
                     node = f"I{index}_{offset}"
                     lines.append(f"  {node}[{label(interface + ' / on demand')}]")
                     lines.append(f"  {plugins[row['name']]} -.-> {node}")
@@ -176,7 +184,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
     for spec in manager.specs:
         provider = str(getattr(settings, spec.provider_setting, spec.default_provider) or spec.default_provider).strip()
         row = {"name": spec.name, "provider": provider, "source": spec.source, "status": "discovered", "error": "",
-               "interfaces": list(spec.required_methods), "contributions": []}
+                "interfaces": list(spec.required_methods), "contributions": [], "interface_bindings": []}
         rows.append(row)
         if not getattr(settings, spec.enabled_setting, spec.default_enabled) or provider.lower() in {"none", "noop", "disabled"}:
             row["status"] = "disabled"
@@ -185,11 +193,12 @@ def discover_plan(manager, settings) -> ExecutionPlan:
             manager._load_factory(provider)
             module = importlib.import_module(provider.partition(":")[0])
             declaration = getattr(module, "list_contributions", None)
-            declared = tuple(declaration(settings=settings)) if declaration else ()
+            services = service_contributions(spec)
+            declared = (*(tuple(declaration(settings=settings)) if declaration else ()), *services)
             for item in declared:
                 if not isinstance(item, Contribution) or not isinstance(item.stage, HookEvent):
                     raise ValueError("invalid contribution declaration or stage")
-                if not item.id or item.mode not in {"observer", "transform", "control"} or item.scope != "run":
+                if not item.id or item.mode not in {"observer", "transform", "control", "service"} or item.scope not in {"run", "invocation"}:
                     raise ValueError("invalid contribution ID, mode or scope")
                 if item.mode not in PHASE_MODES[item.stage]:
                     raise ValueError(f"{item.mode} is unsupported at {item.stage.value}")
@@ -201,11 +210,17 @@ def discover_plan(manager, settings) -> ExecutionPlan:
                 if item.mode != "control" and item.fail_closed:
                     raise ValueError("fail_closed requires a control contribution")
                 item.resolve()
+                if item.mode == "service" and not item.interface_id:
+                    raise ValueError("service contribution requires an interface ID")
+                if item.scope == "invocation" and item.mode != "service":
+                    raise ValueError("invocation scope is reserved for service executors")
             candidate = [*items, *((spec.name, item) for item in declared)]
             if len({item.id for _, item in candidate}) != len(candidate):
                 raise ValueError("duplicate contribution IDs")
             items = candidate
             row["contributions"] = [item.id for item in declared]
+            row["interface_bindings"] = [{"method": item.interface_id.split(".", 1)[1], "stage": item.stage.value,
+                                           "contribution_id": item.id} for item in services]
         except Exception as exc:
             row["status"] = "unavailable"
             row["error"] = f"{type(exc).__name__}: {exc}"
@@ -222,6 +237,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
                     row["status"] = "unavailable"
                     row["error"] = str(exc)
                     row["contributions"] = []
+                    row["interface_bindings"] = []
             items = [(plugin, item) for plugin, item in items if plugin not in rejected]
     return ExecutionPlan(tuple(rows), ordered)
 
@@ -247,5 +263,5 @@ def install_plan(plan: ExecutionPlan, registry: HookRegistry) -> None:
             return handler(context)
         registry.register(item.stage, binding, priority=len(plan.contributions) - order,
                           fail_closed=item.fail_closed, contribution_id=item.id,
-                          plugin=plugin, mode=item.mode)
+                          plugin=plugin, mode=item.mode, interface_id=item.interface_id)
     registry.plan_id = plan.as_dict()["plan_id"]

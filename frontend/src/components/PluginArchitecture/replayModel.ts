@@ -3,6 +3,35 @@ import type { PluginExecutionPlan } from '../../types/plugins';
 export type ReplayEvent = Record<string, unknown>;
 export interface ReplayRun { id: string; events: ReplayEvent[]; }
 export interface ReplayStep { event: ReplayEvent; index: number; nodeIds: string[]; compatible: boolean; }
+export interface ReplayOperation {
+  key: string; parentId: string; runId: string; stepIndex: number;
+  event: ReplayEvent; children: ReplayOperation[];
+}
+
+// Merge interval start/end records without depending on completion order.
+export function replayOperations(runs: ReplayRun[], plan: PluginExecutionPlan): ReplayOperation[] {
+  const byId = new Map<string, ReplayOperation>();
+  for (const run of runs) {
+    replaySteps(run, plan).forEach(({ event }, stepIndex) => {
+      if (event.event_type !== 'operation' || typeof event.operation_id !== 'string') return;
+      const key = event.operation_id;
+      byId.set(key, { key, parentId: String(event.parent_operation_id || ''),
+        runId: run.id, stepIndex, event, children: [] });
+    });
+  }
+  const roots: ReplayOperation[] = [];
+  for (const node of byId.values()) {
+    let ancestor = byId.get(node.parentId);
+    const visited = new Set([node.key]);
+    while (ancestor && !visited.has(ancestor.key)) {
+      visited.add(ancestor.key); ancestor = byId.get(ancestor.parentId);
+    }
+    const parent = byId.get(node.parentId);
+    if (parent && !ancestor) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
 
 export function stepStatus(event: ReplayEvent): string {
   if (typeof event.status === 'string' && event.status) return event.status;
@@ -57,12 +86,12 @@ export function replayRuns(events: ReplayEvent[]): ReplayRun[] {
     list.push(event); runs.set(event.run_id, list);
   }
   return [...runs].filter(([, list]) => list.some((event) =>
-    event.event_type === 'lifecycle_stage' || event.event_type === 'plugin_contribution'))
+    event.event_type === 'lifecycle_stage' || event.event_type === 'plugin_contribution' || event.event_type === 'operation'))
     .map(([id, list]) => ({ id, events: list }));
 }
 
 export function replaySteps(run: ReplayRun, plan: PluginExecutionPlan): ReplayStep[] {
-  const types = new Set(['lifecycle_stage', 'plugin_contribution', 'llm_request', 'llm_response', 'tool_call', 'tool_result', 'error']);
+  const types = new Set(['lifecycle_stage', 'plugin_contribution', 'operation', 'runtime_notification', 'task_summary', 'review_response', 'llm_request', 'llm_response', 'tool_call', 'tool_result', 'error']);
   const planIds = new Set(run.events.map((event) => event.plan_id).filter((id) => typeof id === 'string' && id));
   const compatible = planIds.size === 1 && planIds.has(plan.plan_id);
   const ids = new Set(plan.stages.flatMap((stage) => stage.contributions.map((item) => item.id)));
@@ -74,6 +103,8 @@ export function replaySteps(run: ReplayRun, plan: PluginExecutionPlan): ReplaySt
       if (typeof event.contribution_id === 'string' && ids.has(event.contribution_id)) nodeIds.push(`contribution:${event.contribution_id}`);
       if (event.event_type === 'llm_request' || event.event_type === 'llm_response') nodeIds.push('model-call');
       if (event.event_type === 'tool_call' || event.event_type === 'tool_result') nodeIds.push('tool-call');
+      if (event.event_type === 'operation' && event.operation_kind === 'model') nodeIds.push('model-call');
+      if (event.event_type === 'operation' && event.operation_kind === 'tool') nodeIds.push('tool-call');
     }
     return [{ event, index, nodeIds, compatible }];
   });

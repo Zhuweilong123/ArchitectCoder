@@ -290,13 +290,32 @@ class ToolRoundExecutor:
         return parsed_calls
 
     async def _execute_one(
+        self, tool_name, tool_args, blocked,
+    ):
+        from ...core.operations import operation_scope
+        with operation_scope("tool", run_id=get_runtime().run_id, stage=HookEvent.TOOL_BEFORE.value) as operation:
+            try:
+                result = await self._execute_one_impl(tool_name, tool_args, blocked)
+                status = result[2].status
+                operation.status = {"success": "completed", "error": "failed"}.get(status, status)
+                return result
+            except BaseException as exc:
+                if operation.stage != HookEvent.TOOL_AFTER.value:
+                    from ...core.exceptions import AgentInterrupted
+                    await self.hooks.aemit(HookEvent.TOOL_AFTER, HookContext(
+                        HookEvent.TOOL_AFTER, self.agent_name, run_id=get_runtime().run_id,
+                        tool_name=tool_name, payload={"status": "cancelled" if isinstance(exc, (asyncio.CancelledError, AgentInterrupted)) else "failed", "observers_only": True},
+                    ))
+                raise
+
+    async def _execute_one_impl(
         self,
         tool_name: str,
         tool_args: dict | str,
         blocked: str | None,
     ):
         if blocked is not None:
-            return self._after_tool(tool_name, tool_args,
+            return await self._after_tool(tool_name, tool_args,
                 ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
 
         runtime = get_runtime()
@@ -309,10 +328,10 @@ class ToolRoundExecutor:
                 "Task planning is required before other tools. "
                 "Call todo_write first with the task checklist."
             )
-            return self._after_tool(tool_name, tool_args,
+            return await self._after_tool(tool_name, tool_args,
                 ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
 
-        veto = self.hooks.trigger(
+        veto = await self.hooks.atrigger(
             HookEvent.TOOL_BEFORE,
             HookContext(
                 event=HookEvent.TOOL_BEFORE,
@@ -330,7 +349,7 @@ class ToolRoundExecutor:
                 veto = None
         if veto is not None:
             veto_message = str(veto)
-            return self._after_tool(tool_name, tool_args,
+            return await self._after_tool(tool_name, tool_args,
                 ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0)
 
         from app.trace.tracing import trace_span
@@ -347,12 +366,12 @@ class ToolRoundExecutor:
         except Exception:
             pass
 
-        return self._after_tool(tool_name, tool_args, tool_result, duration_ms)
+        return await self._after_tool(tool_name, tool_args, tool_result, duration_ms)
 
-    def _after_tool(self, tool_name, tool_args, tool_result, duration_ms):
+    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms):
         runtime = get_runtime()
         observation_full = tool_result.text
-        fed = self.hooks.trigger(
+        fed = await self.hooks.atrigger(
             HookEvent.TOOL_AFTER,
             HookContext(
                 event=HookEvent.TOOL_AFTER,
