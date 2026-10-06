@@ -141,8 +141,7 @@ extensions.skills:create
   作为评测边界的参数与证据，不能复制一套工具或提示词装配链。
 - 知识图谱工具工厂只接受 `KnowledgeGraphProvider`。本地 SQLite Provider 必须由
   组合层创建后注入，工具层不得回退导入具体 Provider。
-- 内置插件 Provider 默认值只在 `config/plugin_defaults.py` 定义，`Settings` 和
-  `PluginManager` 只引用该定义。
+- 插件声明与默认配置由 `extensions/<plugin>/plugin.json` 维护；统一扫描仓库扩展目录和 PLUGIN_ROOTS，部署覆盖通过 PLUGIN_CONFIG_FILE 合并。`config/plugin_defaults.py` 和 DEFAULT_PLUGIN_SPECS 是从声明生成的兼容入口，不能再新增独立硬编码表。详见[插件目录发现](plugin-discovery.md)。
 - `agent_execution.py` 保持传输无关：新增进度事件先扩展独立的事件适配器，再接入
   执行生命周期，避免把 WebSocket 协议分支重新塞回主协调器。
 - `chat_session.py` 只协调会话、WebSocket 命令和连接生命周期；持久 Run 创建、
@@ -175,5 +174,4 @@ extensions.skills:create
 
 当前前端分层优化基线已完成。后续维护新功能时，应优先复用上述公共运行时、请求边界
 和纯计算模块，避免把协议分支、API 批量请求或布局算法重新放回页面组件。所有迁移
-必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，使用既有构建
-和检查命令验证变更。
+必须保持公开工具/Provider 契约不变，验证应覆盖实际配置、调度及故障路径，并运行相关构建和检查命令。

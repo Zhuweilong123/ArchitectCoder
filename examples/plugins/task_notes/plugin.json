@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "task_notes",
+  "version": "1.0.0",
+  "provider": "task_notes:create",
+  "enabled_by_default": true,
+  "interfaces": {
+    "describe": {"stage": "prepare"}
+  },
+  "defaults": {
+    "label": "Task notes example"
+  },
+  "contributions": [
+    {
+      "id": "task_notes.run_start",
+      "stage": "run_start",
+      "handler": "task_notes:observe_start",
+      "mode": "observer"
+    }
+  ]
+}

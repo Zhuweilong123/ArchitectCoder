@@ -12,6 +12,7 @@
 | [`plugin-architecture-design.md`](plugin-architecture-design.md) | 插件加载、provider 和扩展所有权 |
 | [`skills-plugin.md`](skills-plugin.md) | Skill 插件协议、任务内版本快照和自定义 provider |
 | [`plugin-lifecycle.md`](plugin-lifecycle.md) | 13 个公共阶段、全插件接口调度、操作树、独立通知、组织图与执行回放 |
+| [`plugin-discovery.md`](plugin-discovery.md) | 插件自带声明、目录扫描、配置覆盖、依赖与新增插件示例 |
 | [`baseagents-design.md`](baseagents-design.md) | Agent 范式、工具注册和框架公开入口 |
 | [`design-source-contract.md`](design-source-contract.md) | 设计、源码与测试的一致性契约、实体映射和规则分级 |
 | [`multilanguage-execution-design.md`](multilanguage-execution-design.md) | 多语言任务解析、TaskPlan、自动编排和执行证据 |

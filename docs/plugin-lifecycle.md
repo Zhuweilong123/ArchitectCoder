@@ -63,13 +63,15 @@ Trace 使用 operation、lifecycle_stage、plugin_contribution、runtime_notific
 
 ## 配置、发现与贡献
 
-内置插件继续使用 AGENT_*_ENABLED / AGENT_*_PROVIDER。额外插件通过 PLUGIN_MANIFEST_FILE=config/plugins.json 接入，相对路径以 backend/ 解析。格式见 [plugins.example.json](../backend/config/plugins.example.json)：
+七个内置扩展与新增扩展都通过自己目录中的 plugin.json 声明。启动时扫描仓库 extensions/，以及 PLUGIN_ROOTS 指定的额外根目录的直接子目录；元数据扫描不导入插件代码。默认 Provider、必需和可选接口、异步标志及默认阶段均由插件自身维护。独立配置、扫描规则与完整字段见[插件目录发现](plugin-discovery.md)。
+
+已有 AGENT_*_ENABLED / AGENT_*_PROVIDER 继续生效；PLUGIN_CONFIG_FILE 指定部署覆盖文件，优先级为显式 Settings / 环境变量 > 部署覆盖 > 插件默认值。PLUGIN_MANIFEST_FILE 兼容旧的额外插件集中清单，相对路径仍以 backend/ 解析：
 
 ```json
 {"schema_version":1,"plugins":[{"name":"team_checks","provider":"my_team.checks:create","enabled":true,"interfaces":["query"],"interface_stages":{"query":"prepare"}}]}
 ```
 
-接口未指定阶段时默认 run_start。清单不能覆盖现有槽位。发现过程导入指定模块、校验工厂并读取模块级 list_contributions(settings=...)，不创建需要 LLM、项目或数据库的 Provider。discovered 表示声明可用，不代表已实例化或通过健康检查。
+接口未指定阶段时默认 run_start。声明 ID 和槽位不得冲突；必需依赖缺失、禁用、声明失败或形成循环时，插件标记 unavailable。元数据解析后，计划编译才导入指定模块并校验工厂，读取 JSON contributions 或显式 contribution_loader；不创建需要 LLM、项目或数据库的 Provider。discovered 表示声明可用，不代表已实例化或通过健康检查。代码声明函数示例，需在 plugin.json 的 contribution_loader 中配置其入口：
 
 ```python
 from app.agent_base.core.hooks import HookEvent
@@ -101,7 +103,7 @@ def inspect_tool(context):
 
 | 文件 | 内容 |
 |---|---|
-| plugin-plan.json | 插件来源与状态、接口默认绑定、13 个阶段、独立通知及排序 |
+| plugin-plan.json | 插件声明来源、版本、槽位、依赖、参数名称、状态、接口绑定、13 个阶段及独立通知 |
 | plugin-schedule.mmd | 公共主循环、模型与工具节点、阶段贡献 |
 | plugin-organization.mmd | 插件、接口与默认公共阶段的组织关系 |
 

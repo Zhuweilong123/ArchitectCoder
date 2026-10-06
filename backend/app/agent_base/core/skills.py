@@ -111,5 +111,5 @@ def capture_skill_catalog(
 def load_skills(*, settings=None, **kwargs) -> SkillProvider:
     from .plugins import get_plugin_manager
 
-    provider = get_plugin_manager().load("skills", settings=settings, kwargs=kwargs)
+    provider = get_plugin_manager().load_optional("skills", settings=settings, kwargs=kwargs)
     return provider if provider is not None else NoOpSkillProvider()

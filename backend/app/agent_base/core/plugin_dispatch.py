@@ -8,50 +8,10 @@ from functools import wraps
 from .hooks import HookContext, HookEvent, HookRegistry, PUBLIC_STAGES, get_hooks, get_runtime
 from .operations import current_operation, operation_scope
 
-# Optional public capabilities are listed without instantiating a provider.
-OPTIONAL_INTERFACES = {
-    "orchestration": ("create_tools", "explore"),
-    "knowledge_graph": ("contract_facts", "index_facts", "sync_facts", "create_tools"),
-    "design_contract": ("collect_facts", "snapshot_from_facts"),
-    "trace": ("query", "replay", "list_traces", "read_trace", "summarize_trace", "reconstruct_history"),
-    "evals": ("get_baseline", "start_batch", "merge_batches", "list_batches", "get_batch", "delete_batch", "trends",
-              "archive", "archive_baseline", "list_archives", "list_performance_results", "get_performance_result",
-              "delete_performance_result", "archive_performance_result", "list_trace_case_projects", "list_trace_case_drafts",
-              "delete_trace_case_draft", "create_trace_case_draft", "get_trace_case_draft", "review_trace_case_draft",
-              "capture_trace_case_fixture", "preview_trace_case_fixture", "validate_trace_case_draft", "publish_trace_case_draft"),
-}
-
-ASYNC_INTERFACES = {
-    "memory": {"recall", "archive", "reinforce"},
-    "orchestration": {"prepare", "explore"},
-    "trace": {"replay"},
-    "evals": {"run_case", "start_batch", "create_trace_case_draft", "validate_trace_case_draft"},
-}
-
-
-def interface_stage(plugin, method):
-    if method == "create_tools":
-        return HookEvent.AGENT_INITIALIZE
-    if plugin == "skills":
-        return HookEvent.AGENT_INITIALIZE if method == "list_skills" else HookEvent.SKILL_READ
-    if plugin == "memory":
-        return {"recall": HookEvent.CONTEXT_PREPARE, "reinforce": HookEvent.MEMORY_REINFORCE,
-                "archive": HookEvent.TASK_ARCHIVE}[method]
-    if plugin == "orchestration":
-        return HookEvent.ORCHESTRATION_EXECUTE if method == "explore" else HookEvent.ORCHESTRATION_PREPARE
-    if plugin == "trace":
-        return HookEvent.TRACE_INITIALIZE if method == "create" else HookEvent.TRACE_REPLAY if method == "replay" else HookEvent.TRACE_QUERY
-    if plugin == "knowledge_graph":
-        return HookEvent.GRAPH_UPDATE if method in {"rebuild_project", "index_facts", "sync_facts"} else HookEvent.GRAPH_QUERY
-    if plugin == "design_contract":
-        return HookEvent.CONTRACT_COLLECT
-    if plugin == "evals":
-        if method in {"run_case", "start_batch", "validate_trace_case_draft"}:
-            return HookEvent.EVALUATION_RUN
-        if method.startswith(("list_", "get_", "preview_")) or method == "trends":
-            return HookEvent.EVALUATION_QUERY
-        return HookEvent.EVALUATION_UPDATE
-    return HookEvent.PLUGIN_SERVICE
+# Compatibility views generated from plugin-owned declarations.
+from .plugins import DEFAULT_PLUGIN_SPECS
+OPTIONAL_INTERFACES = {spec.name: spec.optional_methods for spec in DEFAULT_PLUGIN_SPECS if spec.optional_methods}
+ASYNC_INTERFACES = {spec.name: frozenset(spec.async_methods) for spec in DEFAULT_PLUGIN_SPECS if spec.async_methods}
 
 
 SERVICE_STAGES = frozenset(PUBLIC_STAGES)
@@ -88,9 +48,9 @@ def invoke_provider(context):
 
 def service_contributions(spec):
     from .lifecycle import Contribution
-    methods = tuple(dict.fromkeys((*spec.required_methods, *OPTIONAL_INTERFACES.get(spec.name, ()))))
+    methods = tuple(dict.fromkeys((*spec.required_methods, *spec.optional_methods)))
     stages = dict(spec.interface_stages)
-    return tuple(Contribution(f"{spec.name}.interface.{method}", HookEvent(stages[method]) if method in stages else interface_stage(spec.name, method),
+    return tuple(Contribution(f"{spec.name}.interface.{method}", HookEvent(stages.get(method, "run_start")),
                              "app.agent_base.core.plugin_dispatch:invoke_provider", mode="service",
                              interface_id=f"{spec.name}.{method}", scope="invocation") for method in methods)
 
@@ -100,7 +60,7 @@ def schedule_tool_provider(provider, name):
     if isinstance(provider, ScheduledProvider):
         return provider
     from .plugins import get_plugin_manager
-    spec = next(spec for spec in get_plugin_manager().specs if spec.name == name)
+    spec = get_plugin_manager().get_spec(name)
     return ScheduledProvider(provider, spec)
 
 
@@ -118,7 +78,7 @@ class ScheduledProvider:
             if callable(target) and not name.startswith("_") and name not in {"close", "aclose"}:
                 raise RuntimeError(f"undeclared plugin interface: {self._spec.name}.{name}")
             return target
-        asynchronous = inspect.iscoroutinefunction(target) or name in ASYNC_INTERFACES.get(self._spec.name, ())
+        asynchronous = inspect.iscoroutinefunction(target) or name in self._spec.async_methods
 
         def prepare(args, kwargs):
             registry = get_hooks()
@@ -144,7 +104,7 @@ class ScheduledProvider:
             value = context.invocation.result
             # Read-side trace adapters are public plugin capabilities too. Sinks are
             # intentionally left unwrapped to avoid recursive instrumentation.
-            return ScheduledProvider(value, self._spec) if self._spec.name == "trace" and name == "query" else value
+            return ScheduledProvider(value, self._spec) if name in self._spec.wrapped_results else value
 
         def interval(context):
             parent = current_operation()

@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "id": "evals",
+  "version": "1.0.0",
+  "slot": "evals",
+  "provider": "extensions.evals:create",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_evals_enabled",
+    "provider": "agent_evals_provider"
+  },
+  "interfaces": {
+    "list_cases": {
+      "stage": "run_start",
+      "required": true,
+      "async": false
+    },
+    "get_case": {
+      "stage": "run_start",
+      "required": true,
+      "async": false
+    },
+    "run_case": {
+      "stage": "run_start",
+      "required": true,
+      "async": true
+    },
+    "list_results": {
+      "stage": "run_start",
+      "required": true,
+      "async": false
+    },
+    "get_baseline": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "start_batch": {
+      "stage": "run_start",
+      "required": false,
+      "async": true
+    },
+    "merge_batches": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "list_batches": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "get_batch": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "delete_batch": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "trends": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "archive": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "archive_baseline": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "list_archives": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "list_performance_results": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "get_performance_result": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "delete_performance_result": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "archive_performance_result": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "list_trace_case_projects": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "list_trace_case_drafts": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "delete_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "create_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": true
+    },
+    "get_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "review_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "capture_trace_case_fixture": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "preview_trace_case_fixture": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "validate_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": true
+    },
+    "publish_trace_case_draft": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    }
+  },
+  "defaults": {},
+  "dependencies": [],
+  "router": "extensions.evals.full_api:router"
+}

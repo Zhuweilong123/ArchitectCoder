@@ -2,6 +2,8 @@
 
 Skill 通过独立的 `skills` 插件槽位提供给 Agent。核心负责协议、任务内目录和工具适配；文件发现、元数据解析、资源读取由 `extensions/skills` 实现。替换存储实现不需要修改 Agent 主流程。
 
+插件声明位于 `extensions/skills/plugin.json`，由统一目录扫描发现；Provider、接口及默认阶段由技能插件自身维护。已有 AGENT_SKILLS_* 配置保持兼容，部署覆盖规则见[插件目录发现](plugin-discovery.md)。
+
 ## 配置
 
 默认启用仓库内置技能：

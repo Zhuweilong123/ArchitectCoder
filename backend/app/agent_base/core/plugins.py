@@ -9,21 +9,15 @@ entry points live in the repository-level ``extensions`` package and use the
 from __future__ import annotations
 
 import importlib
-import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from backend.config.plugin_defaults import (
-    DEFAULT_EVALS_PROVIDER,
-    DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
-    DEFAULT_DESIGN_CONTRACT_PROVIDER,
-    DEFAULT_MEMORY_PROVIDER,
-    DEFAULT_ORCHESTRATION_PROVIDER,
-    DEFAULT_TRACE_PROVIDER,
-    DEFAULT_SKILLS_PROVIDER,
+from backend.config.plugin_catalog import (
+    BUILTIN_PLUGIN_ROOT, config_path, scan_manifests, packaged_manifests,
+    deployment_overrides, resolved_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +38,18 @@ class PluginSpec:
     default_enabled: bool = True
     source: str = "builtin"
     interface_stages: tuple[tuple[str, str], ...] = ()
+    optional_methods: tuple[str, ...] = ()
+    async_methods: tuple[str, ...] = ()
+    wrapped_results: tuple[str, ...] = ()
+    version: str = ""
+    slot: str = ""
+    dependencies: tuple[str, ...] = ()
+    optional_dependencies: tuple[str, ...] = ()
+    contribution_loader: str = ""
+    contributions: tuple[dict, ...] = ()
+    defaults: dict = field(default_factory=dict)
+    settings_prefix: str = ""
+    manifest_owned: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,75 +70,45 @@ class PluginState:
         }
 
 
-DEFAULT_PLUGIN_SPECS: tuple[PluginSpec, ...] = (
-    PluginSpec(
-        name="skills",
-        enabled_setting="agent_skills_enabled",
-        provider_setting="agent_skills_provider",
-        default_provider=DEFAULT_SKILLS_PROVIDER,
-        required_methods=("list_skills", "read_skill"),
-    ),
-    PluginSpec(
-        name="orchestration",
-        enabled_setting="agent_orchestration_enabled",
-        provider_setting="agent_orchestrator_provider",
-        default_provider=DEFAULT_ORCHESTRATION_PROVIDER,
-        required_methods=("prepare",),
-    ),
-    PluginSpec(
-        name="memory",
-        enabled_setting="agent_memory_enabled",
-        provider_setting="agent_memory_provider",
-        default_provider=DEFAULT_MEMORY_PROVIDER,
-        required_methods=("recall", "archive", "reinforce"),
-    ),
-    PluginSpec(
-        name="trace",
-        enabled_setting="agent_trace_enabled",
-        provider_setting="agent_trace_provider",
-        default_provider=DEFAULT_TRACE_PROVIDER,
-        required_methods=("create",),
-        router_provider="extensions.trace.api:router",
-    ),
-    PluginSpec(
-        name="evals",
-        enabled_setting="agent_evals_enabled",
-        provider_setting="agent_evals_provider",
-        default_provider=DEFAULT_EVALS_PROVIDER,
-        required_methods=("list_cases", "get_case", "run_case", "list_results"),
-        router_provider="extensions.evals.full_api:router",
-    ),
-    PluginSpec(
-        name="knowledge_graph",
-        enabled_setting="agent_knowledge_graph_enabled",
-        provider_setting="agent_knowledge_graph_provider",
-        default_provider=DEFAULT_KNOWLEDGE_GRAPH_PROVIDER,
-        required_methods=(
-            "rebuild_project",
-            "search_diagrams",
-            "map_project",
-            "locate",
-            "expand",
-            "impact",
-            "diff",
-        ),
-    ),
-    PluginSpec(
-        name="design_contract",
-        enabled_setting="agent_design_contract_enabled",
-        provider_setting="agent_design_contract_provider",
-        default_provider=DEFAULT_DESIGN_CONTRACT_PROVIDER,
-        required_methods=("collect",),
-    ),
-)
+def manifest_spec(data):
+    interfaces = data.get("interfaces", {})
+    aliases = data.get("settings", {})
+    return PluginSpec(
+        name=data["id"], enabled_setting=aliases.get("enabled", f"plugin_{data['id']}_enabled"),
+        provider_setting=aliases.get("provider", f"plugin_{data['id']}_provider"),
+        default_provider=data["provider"],
+        required_methods=tuple(name for name, item in interfaces.items() if item.get("required", True)),
+        optional_methods=tuple(name for name, item in interfaces.items() if not item.get("required", True)),
+        interface_stages=tuple((name, item.get("stage", "run_start")) for name, item in interfaces.items()),
+        async_methods=tuple(name for name, item in interfaces.items() if item.get("async", False)),
+        wrapped_results=tuple(name for name, item in interfaces.items() if item.get("wrap_result", False)),
+        router_provider=data.get("router", ""), default_enabled=data.get("enabled_by_default", True),
+        source=data["source"], version=data["version"], slot=data.get("slot", data["id"]),
+        dependencies=tuple(data.get("dependencies", ())),
+        optional_dependencies=tuple(data.get("optional_dependencies", ())),
+        contribution_loader=data.get("contribution_loader", ""),
+        contributions=tuple(data.get("contributions", ())),
+        defaults=data.get("defaults", {}), settings_prefix=aliases.get("prefix", f"plugin_{data['id']}_"),
+        manifest_owned=True,
+    )
+
+
+# Compatibility snapshot generated from plugin-owned files.
+DEFAULT_PLUGIN_SPECS = tuple(manifest_spec(data) for data in packaged_manifests())
 
 
 class PluginManager:
     """Register, load, inspect and safely disable extension providers."""
 
-    def __init__(self, specs: tuple[PluginSpec, ...] = DEFAULT_PLUGIN_SPECS):
+    def __init__(self, specs: tuple[PluginSpec, ...] | None = None):
+        self._auto_scan = specs is None
+        self._manual_specs = {spec.name: spec for spec in (specs or ())}
+        specs = DEFAULT_PLUGIN_SPECS if specs is None else specs
         self._specs = {spec.name: spec for spec in specs}
         self._states: dict[str, PluginState] = {}
+        self._configuration = None
+        self._overrides = {}
+        self._plan_errors = {}
 
     @property
     def specs(self) -> tuple[PluginSpec, ...]:
@@ -140,49 +116,118 @@ class PluginManager:
 
     def register(self, spec: PluginSpec) -> None:
         self._specs[spec.name] = spec
+        self._manual_specs[spec.name] = spec
+        self._configuration = None
+
+    def get_spec(self, name):
+        spec = self._specs.get(name)
+        if spec is None:
+            spec = next((item for item in self.specs if item.slot == name), None)
+        if spec is None:
+            raise KeyError(f"unknown plugin: {name}")
+        return spec
+
+    def discover_directories(self, roots):
+        candidates = {item["id"]: manifest_spec(item) for item in scan_manifests(roots)}
+        combined = dict(self._specs)
+        for name, spec in candidates.items():
+            if name in combined and combined[name] != spec:
+                raise ValueError(f"duplicate or reserved plugin name: {name}")
+            combined[name] = spec
+        self._validate_slots(combined)
+        self._specs = combined
+
+    @staticmethod
+    def _validate_slots(specs):
+        slots = {}
+        for spec in specs.values():
+            slot = spec.slot or spec.name
+            if slot == "core" or slot in slots or slot in specs and slot != spec.name:
+                raise ValueError(f"duplicate or conflicting plugin slot: {slot}")
+            slots[slot] = spec.name
+
+    def configure(self, settings):
+        roots = tuple(getattr(settings, "plugin_roots", ()))
+        manifest = getattr(settings, "plugin_manifest_file", "")
+        config = getattr(settings, "plugin_config_file", "")
+        if not self._auto_scan and not any((roots, manifest, config)):
+            return
+        signature = (roots, manifest, config)
+        if signature == self._configuration:
+            return
+        # Build a candidate so a failed scan/config never partially mutates us.
+        candidate = PluginManager(tuple(self._manual_specs.values()))
+        if self._auto_scan or roots:
+            candidate.discover_directories((BUILTIN_PLUGIN_ROOT, *roots) if self._auto_scan else roots)
+        if manifest:
+            candidate.discover_specs(config_path(manifest))
+        overrides = deployment_overrides(config, set(candidate._specs))
+        candidate._overrides = overrides
+        candidate.effective_settings(settings)
+        self._specs = candidate._specs
+        self._overrides = overrides
+        self._configuration = signature
+        self._plan_errors = {}
+
+    def effective_settings(self, settings):
+        declarations = ({"id": spec.name, "provider": spec.default_provider,
+            "enabled_by_default": spec.default_enabled, "defaults": spec.defaults,
+            "settings": {"enabled": spec.enabled_setting, "provider": spec.provider_setting,
+                         "prefix": spec.settings_prefix or f"plugin_{spec.name}_"}} for spec in self.specs)
+        return resolved_settings(settings, declarations, self._overrides)
+
+    def dependency_errors(self, settings):
+        errors, visiting, visited = {}, [], set()
+        def enabled(spec):
+            return getattr(settings, spec.enabled_setting, spec.default_enabled) and str(
+                getattr(settings, spec.provider_setting, spec.default_provider)).lower() not in {"none", "noop", "disabled"}
+        def visit(name):
+            if name in visiting:
+                for member in visiting[visiting.index(name):]:
+                    errors[member] = "plugin dependency cycle: " + " -> ".join((*visiting, name))
+                return
+            if name in visited:
+                return
+            visiting.append(name)
+            for dependency in self._specs[name].dependencies:
+                target = self._specs.get(dependency)
+                if target is None or not enabled(target):
+                    errors[name] = f"required plugin dependency is missing or disabled: {dependency}"
+                else:
+                    visit(dependency)
+                    if dependency in errors:
+                        errors.setdefault(name, f"required plugin dependency is unavailable: {dependency}")
+            visiting.pop()
+            visited.add(name)
+        for spec in self.specs:
+            if enabled(spec):
+                visit(spec.name)
+        return errors
 
     def discover_specs(self, manifest_path) -> None:
-        """Register explicitly configured extra plugins; validate atomically."""
-        path = Path(manifest_path).resolve()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("schema_version") != 1 or not isinstance(data.get("plugins"), list):
-            raise ValueError("plugin manifest requires schema_version=1 and a plugins list")
-        discovered = {}
-        for row in data["plugins"]:
-            if not isinstance(row, dict) or set(row) - {"name", "provider", "enabled", "interfaces", "interface_stages"}:
-                raise ValueError("invalid plugin manifest entry")
-            name, provider = row.get("name"), row.get("provider")
-            interfaces = row.get("interfaces", [])
-            stages = row.get("interface_stages", {})
-            from .plugin_dispatch import SERVICE_STAGES
-            from .hooks import HookEvent
-            if not isinstance(stages, dict) or any(key not in interfaces or not isinstance(stage, str)
-                for key, stage in stages.items()):
-                raise ValueError("interface_stages must map declared interfaces to service phases")
-            try:
-                stages = {key: HookEvent(stage).value for key, stage in stages.items()}
-            except ValueError as exc:
-                raise ValueError("unknown interface stage") from exc
-            if any(HookEvent(stage) not in SERVICE_STAGES for stage in stages.values()):
+        """Compatibility: read the previous explicit additional-plugin list."""
+        from backend.config.plugin_catalog import legacy_manifests
+        from .hooks import HookEvent, PUBLIC_STAGES
+        from dataclasses import replace
+        combined = dict(self._specs)
+        for data in legacy_manifests(manifest_path):
+            spec = manifest_spec(data)
+            spec = replace(spec, manifest_owned=False,
+                interface_stages=tuple((method, HookEvent(stage).value)
+                                       for method, stage in spec.interface_stages))
+            if any(HookEvent(stage) not in PUBLIC_STAGES for _, stage in spec.interface_stages):
                 raise ValueError("interfaces must bind to public phases")
-            if not isinstance(name, str) or not name.strip() or not isinstance(provider, str) or ":" not in provider:
-                raise ValueError("plugin manifest requires name and module:factory provider")
-            if not isinstance(row.get("enabled", True), bool) or not isinstance(interfaces, list) or any(
-                not isinstance(item, str) or not item for item in interfaces
-            ):
-                raise ValueError("invalid enabled flag or interface list")
-            spec = PluginSpec(name, f"plugin_{name}_enabled", f"plugin_{name}_provider", provider,
-                              tuple(interfaces), default_enabled=row.get("enabled", True), source=str(path),
-                              interface_stages=tuple(sorted(stages.items())))
-            if name in discovered or name in self._specs and self._specs[name] != spec:
-                raise ValueError(f"duplicate or reserved plugin name: {name}")
-            discovered[name] = spec
-        self._specs.update(discovered)
+            if spec.name in combined and combined[spec.name] != spec:
+                raise ValueError(f"duplicate or reserved plugin name: {spec.name}")
+            combined[spec.name] = spec
+        self._validate_slots(combined)
+        self._specs = combined
 
     def _ensure_extension_import_path(self) -> None:
-        project_root = str(_PROJECT_ROOT)
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
+        roots = {_PROJECT_ROOT, *(Path(spec.source).parent.parent for spec in self.specs if spec.manifest_owned)}
+        for root in sorted(roots, key=str):
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
 
     @staticmethod
     def _load_factory(provider: str):
@@ -207,10 +252,6 @@ class PluginManager:
         factory_loader=None,
     ) -> Any | None:
         """Load one provider, returning ``None`` for disabled/unavailable slots."""
-        spec = self._specs.get(name)
-        if spec is None:
-            raise KeyError(f"unknown plugin: {name}")
-
         if settings is None:
             try:
                 from backend.config import get_settings
@@ -219,13 +260,22 @@ class PluginManager:
             except Exception:
                 settings = None
 
+        self.configure(settings)
+        settings = self.effective_settings(settings)
+        spec = self.get_spec(name)
+
         enabled = spec.default_enabled if settings is None else getattr(settings, spec.enabled_setting, spec.default_enabled)
         provider = str(
             getattr(settings, spec.provider_setting, spec.default_provider)
             or spec.default_provider
         ).strip()
         if not enabled or provider.lower() in {"", "none", "noop", "disabled"}:
-            self._state(name, provider, "disabled")
+            self._state(spec.name, provider, "disabled")
+            return None
+
+        error = self._plan_errors.get(spec.name) or self.dependency_errors(settings).get(spec.name)
+        if error:
+            self._state(spec.name, provider, "unavailable", error)
             return None
 
         try:
@@ -241,11 +291,11 @@ class PluginManager:
                 raise TypeError(
                     f"plugin '{name}' is missing required methods: {', '.join(missing)}"
                 )
-            self._state(name, provider, "loaded")
+            self._state(spec.name, provider, "loaded")
             from .plugin_dispatch import ScheduledProvider
             return ScheduledProvider(instance, spec)
         except Exception as exc:
-            self._state(name, provider, "unavailable", str(exc))
+            self._state(spec.name, provider, "unavailable", str(exc))
             logger.warning(
                 "[Plugins] %s provider unavailable; using domain fallback",
                 name,
@@ -263,7 +313,7 @@ class PluginManager:
         default=None,
     ):
         """Call an optional provider contribution without domain-specific host code."""
-        instance = self.load(name, settings=settings, kwargs=kwargs)
+        instance = self.load_optional(name, settings=settings, kwargs=kwargs)
         if instance is None:
             return default if default is not None else []
         contributor = getattr(instance, method, None)
@@ -275,13 +325,16 @@ class PluginManager:
         except Exception:
             logger.warning("[Plugins] %s contribution %s failed", name, method, exc_info=True)
             return default if default is not None else []
+
+    def load_optional(self, name, **kwargs):
+        """Domain ports retain their NoOp behavior when a plugin is absent."""
+        try:
+            return self.load(name, **kwargs)
+        except KeyError:
+            return None
+
     def load_router(self, name: str, *, settings=None):
         """Load an optional plugin-owned FastAPI router without loading its provider."""
-        spec = self._specs.get(name)
-        if spec is None:
-            raise KeyError(f"unknown plugin: {name}")
-        if not spec.router_provider:
-            return None
         if settings is None:
             try:
                 from backend.config import get_settings
@@ -289,6 +342,10 @@ class PluginManager:
                 settings = get_settings()
             except Exception:
                 settings = None
+        self.configure(settings)
+        spec = self.get_spec(name)
+        if not spec.router_provider:
+            return None
         # Keep the route mounted even when the provider is disabled so clients
         # receive the provider's explicit 503 response instead of a route 404.
         try:

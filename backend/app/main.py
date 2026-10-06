@@ -59,8 +59,9 @@ from app.api.plugins import router as plugins_router
 
 settings = get_settings()
 plugin_manager = get_plugin_manager()
-evals_extension_router = plugin_manager.load_router("evals", settings=settings)
-trace_extension_router = plugin_manager.load_router("trace", settings=settings)
+plugin_manager.configure(settings)
+extension_routers = [router for spec in plugin_manager.specs
+                     if (router := plugin_manager.load_router(spec.name, settings=settings)) is not None]
 
 
 @asynccontextmanager
@@ -97,12 +98,10 @@ app.include_router(files_router)
 app.include_router(llm_router, dependencies=[Depends(require_auth)])
 app.include_router(testhub_router, dependencies=[Depends(require_auth)])
 app.include_router(agent_chat_router, prefix="/api")  # Agent chat WebSocket
-if trace_extension_router is not None:
-    app.include_router(trace_extension_router, dependencies=[Depends(require_auth)])
 app.include_router(metrics_router, dependencies=[Depends(require_auth)])        # Agent metrics
 
-if evals_extension_router is not None:
-    app.include_router(evals_extension_router, dependencies=[Depends(require_auth)])
+for extension_router in extension_routers:
+    app.include_router(extension_router, dependencies=[Depends(require_auth)])
 app.include_router(runs_router, dependencies=[Depends(require_auth)])            # Durable harness runs
 app.include_router(audit_router, dependencies=[Depends(require_auth)])           # Harness audit events
 app.include_router(plugins_router, dependencies=[Depends(require_auth)])

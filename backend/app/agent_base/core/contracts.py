@@ -105,7 +105,7 @@ def load_contracts(*, settings=None, **kwargs) -> ContractProvider:
     """Load the configured contract collector through the plugin manager."""
     from .plugins import get_plugin_manager
 
-    provider = get_plugin_manager().load("design_contract", settings=settings, kwargs=kwargs)
+    provider = get_plugin_manager().load_optional("design_contract", settings=settings, kwargs=kwargs)
     return provider if provider is not None else NoOpContractProvider()
 
 

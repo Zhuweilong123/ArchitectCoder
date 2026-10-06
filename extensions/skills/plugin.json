@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "skills",
+  "version": "1.0.0",
+  "slot": "skills",
+  "provider": "extensions.skills:create",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_skills_enabled",
+    "provider": "agent_skills_provider"
+  },
+  "interfaces": {
+    "list_skills": {
+      "stage": "initialize",
+      "required": true,
+      "async": false
+    },
+    "read_skill": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    }
+  },
+  "defaults": {},
+  "dependencies": []
+}

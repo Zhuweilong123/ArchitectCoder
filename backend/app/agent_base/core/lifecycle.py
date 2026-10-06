@@ -178,23 +178,37 @@ class ExecutionPlan:
 
 def discover_plan(manager, settings) -> ExecutionPlan:
     """Read explicit declarations without constructing storage/LLM providers."""
+    manager.configure(settings)
+    settings = manager.effective_settings(settings)
+    dependency_errors = manager.dependency_errors(settings)
     rows = []
     items = [("core", item) for item in core_contributions()]
     manager._ensure_extension_import_path()
     for spec in manager.specs:
         provider = str(getattr(settings, spec.provider_setting, spec.default_provider) or spec.default_provider).strip()
         row = {"name": spec.name, "provider": provider, "source": spec.source, "status": "discovered", "error": "",
-                "interfaces": list(spec.required_methods), "contributions": [], "interface_bindings": []}
+                "version": spec.version, "slot": spec.slot or spec.name,
+                "dependencies": list(spec.dependencies), "optional_dependencies": list(spec.optional_dependencies),
+                "config_keys": list(spec.defaults),
+                "interfaces": list(dict.fromkeys((*spec.required_methods, *spec.optional_methods))),
+                "contributions": [], "interface_bindings": []}
         rows.append(row)
         if not getattr(settings, spec.enabled_setting, spec.default_enabled) or provider.lower() in {"none", "noop", "disabled"}:
             row["status"] = "disabled"
             continue
+        if spec.name in dependency_errors:
+            row["status"] = "unavailable"
+            row["error"] = dependency_errors[spec.name]
+            continue
         try:
             manager._load_factory(provider)
             module = importlib.import_module(provider.partition(":")[0])
-            declaration = getattr(module, "list_contributions", None)
+            declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
+                           else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)
+            configured = tuple(Contribution(**{**item, "stage": HookEvent(item["stage"]),
+                "before": tuple(item.get("before", ())), "after": tuple(item.get("after", ()))}) for item in spec.contributions)
             services = service_contributions(spec)
-            declared = (*(tuple(declaration(settings=settings)) if declaration else ()), *services)
+            declared = (*configured, *(tuple(declaration(settings=settings)) if declaration else ()), *services)
             for item in declared:
                 if not isinstance(item, Contribution) or not isinstance(item.stage, HookEvent):
                     raise ValueError("invalid contribution declaration or stage")
@@ -225,6 +239,20 @@ def discover_plan(manager, settings) -> ExecutionPlan:
             row["status"] = "unavailable"
             row["error"] = f"{type(exc).__name__}: {exc}"
     while True:
+        # A declared dependency can also fail during handler/provider import.
+        unavailable = {row["name"] for row in rows if row["status"] != "discovered"}
+        dependent_failures = {spec.name: next((dependency for dependency in spec.dependencies if dependency in unavailable), "")
+                              for spec in manager.specs}
+        rejected = set()
+        for row in rows:
+            dependency = dependent_failures[row["name"]]
+            if row["status"] == "discovered" and dependency:
+                row.update(status="unavailable", error=f"required plugin dependency is unavailable: {dependency}",
+                           contributions=[], interface_bindings=[])
+                rejected.add(row["name"])
+        if rejected:
+            items = [(plugin, item) for plugin, item in items if plugin not in rejected]
+            continue
         try:
             ordered = _ordered(items)
             break
@@ -239,16 +267,12 @@ def discover_plan(manager, settings) -> ExecutionPlan:
                     row["contributions"] = []
                     row["interface_bindings"] = []
             items = [(plugin, item) for plugin, item in items if plugin not in rejected]
+    manager._plan_errors = {row["name"]: row["error"] for row in rows if row["status"] == "unavailable"}
     return ExecutionPlan(tuple(rows), ordered)
 
 
 def build_plan(manager, settings):
-    manifest = getattr(settings, "plugin_manifest_file", "")
-    if manifest:
-        path = Path(manifest)
-        if not path.is_absolute():
-            path = Path(__file__).resolve().parents[3] / path
-        manager.discover_specs(path)
+    manager.configure(settings)
     return discover_plan(manager, settings)
 
 

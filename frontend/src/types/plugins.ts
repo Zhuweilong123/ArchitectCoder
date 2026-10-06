@@ -30,6 +30,11 @@ export interface PlanPlugin {
   interfaces: string[];
   contributions: string[];
   interface_bindings?: Array<{ method: string; stage: string; contribution_id: string }>;
+  version?: string;
+  slot?: string;
+  dependencies?: string[];
+  optional_dependencies?: string[];
+  config_keys?: string[];
 }
 
 export interface PluginExecutionPlan {

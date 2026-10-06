@@ -1,7 +1,7 @@
 # 插件架构与扩展契约
 
 > 状态：当前实现说明
-> 更新日期：2026-10-05
+> 更新日期：2026-10-06
 > 适用范围：当前仓库 HEAD。本文描述运行时代码的实际边界；代码提交继续演进时，以源码和配置为最终依据。
 
 ## 1. 当前边界
@@ -12,11 +12,11 @@
 - `backend/app/trace/tracing.py` 保留 Trace 的运行时端口、会话生命周期和协程上下文桥接。
 - `extensions/` 保存具体 provider、存储、序列化和领域算法。
 - `backend/app/main.py` 只负责加载插件拥有的 HTTP router，并统一附加认证依赖。
-- `backend/config/` 是插件开关和 provider 入口的配置来源。
+- `extensions/<plugin>/plugin.json` 是插件声明及默认配置的来源；`backend/config/` 负责解析和部署覆盖。
 
 当前由统一管理器维护七个插件槽位：`orchestration`、`memory`、`trace`、`evals`、`knowledge_graph`、`design_contract`、`skills`。Skill 的协议与版本快照详见 [Skill 插件](skills-plugin.md)。
 
-内置槽位由 `DEFAULT_PLUGIN_SPECS` 声明，额外插件可通过 `PLUGIN_MANIFEST_FILE` 清单发现，provider 通过配置指定的 `module:factory` 入口加载。生命周期接口由插件模块的 `list_contributions()` 显式列出；初始化生成执行计划和组织调度图，详见[阶段贡献说明](plugin-lifecycle.md)。
+七个内置扩展与新增扩展均通过自己的 `plugin.json` 声明。系统扫描仓库 `extensions/` 和 `PLUGIN_ROOTS` 指定根目录的直接子目录，发现元数据后合并部署配置，再导入工厂与贡献声明并编译计划。Provider 保持按需创建。阶段贡献可以写入 JSON，或通过显式 contribution_loader 提供；路由入口也由插件声明。`DEFAULT_PLUGIN_SPECS` 仅是从插件文件生成的兼容快照。详见[目录发现与独立配置](plugin-discovery.md)和[阶段贡献说明](plugin-lifecycle.md)。
 
 全部内置领域 provider 的协议接口及已声明可选能力均编译为 `service` 贡献。加载后的 provider 调度适配器按请求选择接口，保留原有触发条件和降级边界；同步和异步调用分别通过 `invoke` / `ainvoke`。公共主流程固定为 13 个阶段，领域接口继承当前操作阶段，无活动操作时采用声明的默认阶段。操作通过 ID、父操作 ID、类型、范围和状态表达嵌套关系；审核、异常、取消与后台完成属于独立通知，不能把执行结束解释为业务审批完成。阶段发布不会自动执行服务，也不会因嵌套服务调用再次广播阶段。
 
@@ -26,7 +26,8 @@
 backend/
 ├── config/
 │   ├── settings.py              # Settings、环境变量和缓存入口
-│   ├── plugin_defaults.py       # 内置 provider 的唯一默认值来源
+│   ├── plugin_catalog.py        # 无代码导入的元数据扫描与配置合并
+│   ├── plugin_defaults.py       # 从插件声明生成的默认入口兼容名称
 │   └── agent_config.py          # 单个 Agent 的运行参数模型
 └── app/
     ├── agent_base/
@@ -42,12 +43,13 @@ backend/
     └── main.py                  # 扩展 router 的应用挂载点
 
 extensions/
-├── skills/                      # 内置文件技能与资源快照 provider
-├── orchestration/               # 规划/探索 provider
-├── memory/                      # SQLite memory provider
-├── trace/                       # JSONL 写入、查询、回放和 Trace API
-├── evals/                       # 评测 provider、目录、运行器和 API
-└── knowledge_graph/             # SQLite 图索引、检索和图工具
+├── skills/                      # plugin.json、文件技能与资源快照 provider
+├── orchestration/               # plugin.json、规划/探索 provider
+├── memory/                      # plugin.json、SQLite memory provider
+├── trace/                       # plugin.json、JSONL 读写、回放与 API
+├── evals/                       # plugin.json、评测 provider、运行器与 API
+├── knowledge_graph/             # plugin.json、SQLite 图索引和图工具
+└── design_contract/             # plugin.json、契约收集与分析
 ```
 
 核心层不得导入具体扩展实现。扩展可以依赖自己的存储和第三方库，但只能通过对应端口与 Agent 主流程交互。
@@ -62,8 +64,10 @@ extensions/
     ▼
 PluginManager.load(name, settings, kwargs)
     │
+    ├─ 扫描声明并合并部署配置（启动时固定）
     ├─ 读取 enabled/provider 配置
     ├─ 未启用或 provider=none/noop/disabled ──► 返回 None
+    ├─ 必需依赖或已编译声明不可用 ──► 返回 None
     ├─ 按 module:factory 导入并创建实例
     ├─ 校验 required_methods
     └─ 记录 loaded 或 unavailable ──► 领域层选择 NoOp
@@ -139,19 +143,16 @@ def create(*, settings, **kwargs):
 
 ## 6. 配置来源与运行 profile
 
-默认 provider 只在 `backend/config/plugin_defaults.py` 定义一次：
+默认 Provider、默认启停、接口与参数由 `extensions/<plugin>/plugin.json` 定义。配置顺序是显式 Settings / 环境变量 > PLUGIN_CONFIG_FILE 部署覆盖 > 插件默认值。新插件无需修改核心注册表或 Settings：工厂可读取 settings.plugin_configs 中自己的参数，系统也提供默认 plugin_<id>_<parameter> 属性别名。
 
-```python
-DEFAULT_ORCHESTRATION_PROVIDER = "extensions.orchestration:create"
-DEFAULT_MEMORY_PROVIDER = "extensions.memory:create"
-DEFAULT_TRACE_PROVIDER = "extensions.trace:create"
-DEFAULT_EVALS_PROVIDER = "extensions.evals:create"
-DEFAULT_KNOWLEDGE_GRAPH_PROVIDER = "extensions.knowledge_graph:create"
-DEFAULT_DESIGN_CONTRACT_PROVIDER = "extensions.design_contract:create"
-DEFAULT_SKILLS_PROVIDER = "extensions.skills:create"
+已有内置插件的 AGENT_* 配置保持兼容，声明文件中的 settings 字段指定原有字段名与参数前缀。plugin_defaults.py 的 DEFAULT_* 名称从插件文件生成；Typed Settings 保留公开字段，默认值读取插件声明。get_settings() 继续缓存，配置修改后重启 backend。
+
+```dotenv
+PLUGIN_ROOTS=["../examples/plugins"]
+PLUGIN_CONFIG_FILE=config/plugin-overrides.example.json
 ```
 
-`backend/config/settings.py` 将这些默认值映射为 Settings 字段。环境变量覆盖 Settings 默认值，进程内由 `get_settings()` 缓存；修改配置后需要重启 backend。
+扫描仓库扩展目录与指定额外根目录时，只读取直接子目录的 plugin.json；元数据阶段不导入插件代码。PLUGIN_MANIFEST_FILE 仍兼容旧的集中清单，但不能重复声明扫描到的插件。详情和配置示例见[插件目录发现](plugin-discovery.md)。
 
 仓库中的 `backend/.env.example` 是保守部署 profile：
 
@@ -162,7 +163,7 @@ DEFAULT_SKILLS_PROVIDER = "extensions.skills:create"
 - `AGENT_ORCHESTRATION_ENABLED=false`
 - `AGENT_KNOWLEDGE_GRAPH_ENABLED=false`
 
-这只是示例部署配置，不改变 `Settings` 中 orchestration 和 knowledge graph 的代码默认值（当前均为 `true`）。
+这些显式环境设置优先于插件默认配置和部署覆盖文件。若希望某项设置由部署文件管理，应移除相应的环境覆盖。
 
 示例：
 
@@ -178,7 +179,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 - `extensions.trace.api:router`
 - `extensions.evals.full_api:router`
 
-`PluginManager.load_router()` 只导入 router，不加载 provider。`backend/app/main.py` 启动时分别调用 `load_router("trace")` 和 `load_router("evals")`，并通过 `Depends(require_auth)` 统一挂载认证依赖。
+`PluginManager.load_router()` 只导入 router，不创建 provider。`backend/app/main.py` 遍历扫描到的全部插件，加载其声明的 router，并通过 `Depends(require_auth)` 统一挂载认证依赖。新增带路由的插件无需再修改 main.py。
 
 即使对应 provider 被禁用，router 仍会尝试挂载，使客户端进入扩展自己的禁用处理（按 endpoint 返回空结果或 503），而不是因为路由未注册而得到 404。router 导入失败只记录日志并跳过挂载。
 
@@ -200,7 +201,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 ### `backend/config`
 
 - 环境变量和部署 Settings
-- 各插件的 enable/provider 选择
+- 扫描目录、部署覆盖文件和显式 enable/provider 选择
 - 路径、超时和共享基础设施默认值
 - Agent 实例配置模型
 
@@ -213,6 +214,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 ### `extensions`
 
+- plugin.json：插件身份、入口、接口、默认阶段、默认配置与依赖
 - provider 工厂及具体算法
 - SQLite/JSONL 等存储实现
 - 评测目录、运行器、批次和检查器
@@ -223,19 +225,19 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 ## 10. 当前限制与新增插件流程
 
-- 额外插件通过显式清单发现，不扫描任意目录或自动安装第三方包。
-- 提供只读执行计划与图 API，没有可编辑的前端插件配置界面。
-- provider 切换需要修改环境配置并重启 backend。
-- router 挂载与 provider 加载是两个独立步骤；新增带 API 的插件必须同时在 `PluginSpec.router_provider` 和 `backend/app/main.py` 的挂载流程中接入。
-- 本文不固化旧版本测试通过数量；验证结果应以当前代码对应的 CI/本地命令为准。
+- 启动时扫描明确的根目录和直接子目录；内部子模块不被递归识别，也不自动安装第三方包。
+- 配置修改、Provider 切换和新目录生效需要重启，没有热加载或热卸载。
+- 提供只读计划、组织图与回放，前端尚不能编辑插件配置。
+- 必需依赖按插件 ID 检查；声明版本用于展示，暂未解析版本范围。
+- 扫描注册阶段贡献和接口声明，Agent 工具暴露及新的业务调用入口仍按现有契约装配。
+- 验证结果以当前代码对应的 CI/本地检查为准。
 
-新增插件时，按以下顺序完成边界接入：
+新增普通扩展：
 
-纯生命周期扩展可以直接声明阶段接口并加入额外插件清单。新增核心领域端口则继续按下列步骤接入。
+1. 在扫描根目录下创建插件目录，编写 plugin.json 和可导入的实现入口。
+2. 声明 Provider、接口、阶段贡献、默认配置、依赖及可选路由。
+3. 若位于外部根目录，在 PLUGIN_ROOTS 添加该根目录；启停与参数可放入部署覆盖文件。
+4. 重启后端，在插件架构中检查声明、状态及绑定，运行任务验证 Trace。
+5. 可参考 [task_notes](../examples/plugins/task_notes/plugin.json)，无需修改 DEFAULT_PLUGIN_SPECS 或默认阶段映射表。
 
-1. 在 `backend/app/agent_base/core/` 定义端口与 NoOp 实现。
-2. 在 `extensions/<name>/` 提供 `create(**kwargs)` 和具体实现。
-3. 在 `plugin_defaults.py` 增加默认入口，并在 `Settings` 增加开关/入口字段。
-4. 在 `DEFAULT_PLUGIN_SPECS` 增加 required methods 和可选 router。
-5. 在领域组装点调用对应 loader；若有 HTTP API，再由 `main.py` 挂载 router。
-6. 同步本文件和 `docs/current-architecture.md` 的边界说明。
+新增核心领域端口时，仍先定义端口、请求结果模型与 NoOp 实现，再在业务装配点调用对应 loader。将接口绑定到公共阶段不会自动创建新的业务调用入口。

@@ -240,6 +240,11 @@ const PluginArchitecture: React.FC = () => {
               { key: 'status', label: tx('状态', 'Status'), children: statusLabel(selectedPlugin.status) },
               { key: 'provider', label: 'Provider', children: selectedPlugin.provider || tx('核心内置', 'Built in') },
               { key: 'source', label: tx('来源', 'Source'), children: selectedPlugin.source },
+              ...(selectedPlugin.version ? [{ key: 'version', label: tx('版本', 'Version'), children: selectedPlugin.version }] : []),
+              ...(selectedPlugin.slot ? [{ key: 'slot', label: tx('能力槽位', 'Capability slot'), children: selectedPlugin.slot }] : []),
+              ...(selectedPlugin.dependencies?.length ? [{ key: 'dependencies', label: tx('必需插件', 'Required plugins'), children: selectedPlugin.dependencies.join(', ') }] : []),
+              ...(selectedPlugin.optional_dependencies?.length ? [{ key: 'optional-dependencies', label: tx('可选插件', 'Optional plugins'), children: selectedPlugin.optional_dependencies.join(', ') }] : []),
+              ...(selectedPlugin.config_keys?.length ? [{ key: 'config-keys', label: tx('插件参数', 'Plugin parameters'), children: selectedPlugin.config_keys.join(', ') }] : []),
             ]} />}
             {selectedPlugin?.error && <Alert type="error" showIcon message={tx('加载失败原因', 'Load failure')} description={selectedPlugin.error} />}
             {selected.contribution && <Descriptions column={1} size="small" bordered items={[

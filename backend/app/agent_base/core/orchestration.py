@@ -162,7 +162,7 @@ def load_orchestrator(*, llm, settings, **kwargs) -> OrchestrationPort:
     """Load orchestration through the central extension manager."""
     from .plugins import get_plugin_manager
 
-    instance = get_plugin_manager().load(
+    instance = get_plugin_manager().load_optional(
         "orchestration",
         settings=settings,
         kwargs={"llm": llm, **kwargs},
