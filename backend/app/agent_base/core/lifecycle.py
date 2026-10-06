@@ -164,10 +164,13 @@ class ExecutionPlan:
         files = {"plugin-plan.json": json.dumps(self.as_dict(), ensure_ascii=False, indent=2) + "\n",
                  "plugin-schedule.mmd": self.mermaid(),
                  "plugin-organization.mmd": self.mermaid("organization")}
+        history = directory / "history"
+        history.mkdir(exist_ok=True)
+        files[f"history/{self.as_dict()['plan_id']}.json"] = files["plugin-plan.json"]
         for name, content in files.items():
             target = directory / name
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                             prefix=name + ".", suffix=".tmp", delete=False) as stream:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                             prefix=target.name + ".", suffix=".tmp", delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(content)
             try:
@@ -188,6 +191,8 @@ def discover_plan(manager, settings) -> ExecutionPlan:
         provider = str(getattr(settings, spec.provider_setting, spec.default_provider) or spec.default_provider).strip()
         row = {"name": spec.name, "provider": provider, "source": spec.source, "status": "discovered", "error": "",
                 "version": spec.version, "slot": spec.slot or spec.name,
+                "revision": spec.revision, "manifest_digest": spec.manifest_digest,
+                "implementation_digest": spec.implementation_digest, "diagnostics": [],
                 "dependencies": list(spec.dependencies), "optional_dependencies": list(spec.optional_dependencies),
                 "config_keys": list(spec.defaults),
                 "interfaces": list(dict.fromkeys((*spec.required_methods, *spec.optional_methods))),
@@ -199,10 +204,17 @@ def discover_plan(manager, settings) -> ExecutionPlan:
         if spec.name in dependency_errors:
             row["status"] = "unavailable"
             row["error"] = dependency_errors[spec.name]
+            row["diagnostics"] = [manager.diagnostic(spec, "plan", "dependencies", "dependency_unavailable", row["error"], provider)]
             continue
+        phase = "import"
         try:
-            manager._load_factory(provider)
+            factory = manager._load_factory(provider)
+            phase = "factory_signature"
+            if inspect.iscoroutinefunction(factory):
+                raise TypeError("plugin factories must be synchronous")
+            inspect.signature(factory).bind_partial(settings=settings)
             module = importlib.import_module(provider.partition(":")[0])
+            phase = "contributions"
             declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
                            else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)
             configured = tuple(Contribution(**{**item, "stage": HookEvent(item["stage"]),
@@ -238,6 +250,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
         except Exception as exc:
             row["status"] = "unavailable"
             row["error"] = f"{type(exc).__name__}: {exc}"
+            row["diagnostics"] = [manager.diagnostic(spec, "plan", phase, f"{phase}_failed", row["error"], provider)]
     while True:
         # A declared dependency can also fail during handler/provider import.
         unavailable = {row["name"] for row in rows if row["status"] != "discovered"}
@@ -249,6 +262,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
             if row["status"] == "discovered" and dependency:
                 row.update(status="unavailable", error=f"required plugin dependency is unavailable: {dependency}",
                            contributions=[], interface_bindings=[])
+                row["diagnostics"] = [manager.diagnostic(manager.get_spec(row["name"]), "plan", "dependencies", "dependency_unavailable", row["error"], row["provider"])]
                 rejected.add(row["name"])
         if rejected:
             items = [(plugin, item) for plugin, item in items if plugin not in rejected]
@@ -266,6 +280,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
                     row["error"] = str(exc)
                     row["contributions"] = []
                     row["interface_bindings"] = []
+                    row["diagnostics"] = [manager.diagnostic(manager.get_spec(row["name"]), "plan", "ordering", "ordering_failed", row["error"], row["provider"])]
             items = [(plugin, item) for plugin, item in items if plugin not in rejected]
     manager._plan_errors = {row["name"]: row["error"] for row in rows if row["status"] == "unavailable"}
     return ExecutionPlan(tuple(rows), ordered)
@@ -280,6 +295,7 @@ def install_plan(plan: ExecutionPlan, registry: HookRegistry) -> None:
     """Replace managed bindings idempotently, preserving manually registered hooks."""
     # Resolve everything before mutating the active registry.
     resolved = [(plugin, item, item.resolve()) for plugin, item in plan.contributions]
+    versions = {row["name"]: row for row in plan.plugins}
     registry.clear_managed()
     for order, (plugin, item, handler) in enumerate(resolved):
         @wraps(handler)
@@ -287,5 +303,7 @@ def install_plan(plan: ExecutionPlan, registry: HookRegistry) -> None:
             return handler(context)
         registry.register(item.stage, binding, priority=len(plan.contributions) - order,
                           fail_closed=item.fail_closed, contribution_id=item.id,
-                          plugin=plugin, mode=item.mode, interface_id=item.interface_id)
+                          plugin=plugin, mode=item.mode, interface_id=item.interface_id,
+                          plugin_version=versions.get(plugin, {}).get("version", ""),
+                          plugin_revision=versions.get(plugin, {}).get("revision", ""))
     registry.plan_id = plan.as_dict()["plan_id"]

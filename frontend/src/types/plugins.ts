@@ -31,10 +31,31 @@ export interface PlanPlugin {
   contributions: string[];
   interface_bindings?: Array<{ method: string; stage: string; contribution_id: string }>;
   version?: string;
+  revision?: string;
+  manifest_digest?: string;
+  implementation_digest?: string;
+  diagnostics?: PluginDiagnostic[];
   slot?: string;
   dependencies?: string[];
   optional_dependencies?: string[];
   config_keys?: string[];
+}
+
+export interface PluginDiagnostic {
+  plugin: string;
+  component: string;
+  phase: string;
+  code: string;
+  message: string;
+  provider: string;
+  source: string;
+  version: string;
+  revision: string;
+}
+
+export interface PluginLoadReport {
+  plan_id: string;
+  plugins: Array<{ name: string; status: string; version: string; revision: string; diagnostics: PluginDiagnostic[] }>;
 }
 
 export interface PluginExecutionPlan {

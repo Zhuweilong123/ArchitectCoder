@@ -86,7 +86,8 @@ class ScheduledProvider:
                 # CLI/library use has no app lifespan; use the same declared binding locally.
                 registry = HookRegistry()
                 registry.register(binding.stage, invoke_provider, contribution_id=binding.id,
-                                  plugin=self._spec.name, mode="service", interface_id=binding.interface_id)
+                                  plugin=self._spec.name, mode="service", interface_id=binding.interface_id,
+                                  plugin_version=self._spec.version, plugin_revision=self._spec.revision)
             elif not registry.has_contribution(binding.id):
                 raise RuntimeError(f"plugin interface is not in the active execution plan: {binding.interface_id}")
             runtime = get_runtime()

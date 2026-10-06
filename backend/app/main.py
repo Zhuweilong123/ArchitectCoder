@@ -72,6 +72,8 @@ async def lifespan(application):
     plan.write(Path(settings.plugin_plan_dir))
     install_plan(plan, get_hooks())
     application.state.plugin_plan = plan
+    application.state.plugin_manager = plugin_manager
+    application.state.plugin_plan_dir = Path(settings.plugin_plan_dir)
     logging.getLogger(__name__).info("Plugin execution plan: %s", plan.as_dict()["plan_id"])
     yield
 

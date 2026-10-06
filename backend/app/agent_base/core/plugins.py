@@ -9,6 +9,7 @@ entry points live in the repository-level ``extensions`` package and use the
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -50,6 +51,9 @@ class PluginSpec:
     defaults: dict = field(default_factory=dict)
     settings_prefix: str = ""
     manifest_owned: bool = False
+    manifest_digest: str = ""
+    implementation_digest: str = ""
+    revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,8 @@ def manifest_spec(data):
         contributions=tuple(data.get("contributions", ())),
         defaults=data.get("defaults", {}), settings_prefix=aliases.get("prefix", f"plugin_{data['id']}_"),
         manifest_owned=True,
+        manifest_digest=data.get("manifest_digest", ""),
+        implementation_digest=data.get("implementation_digest", ""), revision=data.get("revision", ""),
     )
 
 
@@ -109,6 +115,7 @@ class PluginManager:
         self._configuration = None
         self._overrides = {}
         self._plan_errors = {}
+        self._diagnostics = {}
 
     @property
     def specs(self) -> tuple[PluginSpec, ...]:
@@ -243,6 +250,24 @@ class PluginManager:
     def _state(self, name: str, provider: str, status: str, error: str = "") -> None:
         self._states[name] = PluginState(name, provider, status, error)
 
+    def diagnostic(self, spec, component, phase, code, message, provider=""):
+        return {"plugin": spec.name, "component": component, "phase": phase, "code": code,
+                "message": message, "provider": provider or spec.default_provider,
+                "source": spec.source, "version": spec.version, "revision": spec.revision}
+
+    def record_diagnostic(self, spec, component, phase, code, message, provider=""):
+        value = self.diagnostic(spec, component, phase, code, message, provider)
+        self._diagnostics[spec.name, component] = value
+        return value
+
+    def diagnostics(self):
+        """Runtime observations stay separate from the immutable execution plan."""
+        return [{**row, "version": self.get_spec(row["name"]).version,
+                 "revision": self.get_spec(row["name"]).revision,
+                 "source": self.get_spec(row["name"]).source,
+                 "diagnostics": [value for (name, _), value in self._diagnostics.items() if name == row["name"]]}
+                for row in self.status()]
+
     def load(
         self,
         name: str,
@@ -271,18 +296,30 @@ class PluginManager:
         ).strip()
         if not enabled or provider.lower() in {"", "none", "noop", "disabled"}:
             self._state(spec.name, provider, "disabled")
+            self._diagnostics.pop((spec.name, "provider"), None)
             return None
 
         error = self._plan_errors.get(spec.name) or self.dependency_errors(settings).get(spec.name)
         if error:
             self._state(spec.name, provider, "unavailable", error)
+            self.record_diagnostic(spec, "provider", "readiness", "plugin_unavailable", error, provider)
             return None
 
+        phase = "import"
         try:
             self._ensure_extension_import_path()
             factory = (factory_loader or self._load_factory)(provider)
+            phase = "factory"
+            if inspect.iscoroutinefunction(factory):
+                raise TypeError("plugin factories must be synchronous")
             factory_kwargs = dict(kwargs or {})
             instance = factory(settings=settings, **factory_kwargs)
+            if instance is None or inspect.isawaitable(instance):
+                close = getattr(instance, "close", None)
+                if close is not None:
+                    close()
+                raise TypeError("plugin factory must return a provider synchronously")
+            phase = "interfaces"
             missing = [
                 method for method in spec.required_methods
                 if not callable(getattr(instance, method, None))
@@ -291,11 +328,19 @@ class PluginManager:
                 raise TypeError(
                     f"plugin '{name}' is missing required methods: {', '.join(missing)}"
                 )
+            for method in (*spec.required_methods, *spec.optional_methods):
+                target = getattr(instance, method, None)
+                if target is not None and not callable(target):
+                    raise TypeError(f"declared plugin interface is not callable: {spec.name}.{method}")
+                if spec.manifest_owned and inspect.iscoroutinefunction(target) and method not in spec.async_methods:
+                    raise TypeError(f"async plugin interface requires async=true: {spec.name}.{method}")
             self._state(spec.name, provider, "loaded")
+            self._diagnostics.pop((spec.name, "provider"), None)
             from .plugin_dispatch import ScheduledProvider
             return ScheduledProvider(instance, spec)
         except Exception as exc:
             self._state(spec.name, provider, "unavailable", str(exc))
+            self.record_diagnostic(spec, "provider", phase, f"{phase}_failed", f"{type(exc).__name__}: {exc}", provider)
             logger.warning(
                 "[Plugins] %s provider unavailable; using domain fallback",
                 name,
@@ -357,8 +402,10 @@ class PluginManager:
             router = getattr(module, attribute)
             if router is None:
                 raise TypeError(f"plugin router is empty: {spec.router_provider}")
+            self._diagnostics.pop((spec.name, "router"), None)
             return router
         except Exception as exc:
+            self.record_diagnostic(spec, "router", "router", "router_load_failed", f"{type(exc).__name__}: {exc}", spec.router_provider)
             logger.warning("[Plugins] %s router unavailable", name, exc_info=True)
             return None
     def status(self) -> list[dict[str, str]]:

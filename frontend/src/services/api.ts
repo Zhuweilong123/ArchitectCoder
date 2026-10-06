@@ -2,7 +2,7 @@
 
 import axios from 'axios';
 import type { UmlDiagram, Project } from '../types/uml';
-import type { PluginExecutionPlan } from '../types/plugins';
+import type { PluginExecutionPlan, PluginLoadReport } from '../types/plugins';
 
 // Read auth token from Vite env var (VITE_API_TOKEN in .env.local)
 const API_TOKEN = import.meta.env.VITE_API_TOKEN as string | undefined;
@@ -20,6 +20,11 @@ export async function getPluginPlan(signal?: AbortSignal): Promise<PluginExecuti
   if (data.schema_version !== 1 || !Array.isArray(data.plugins) || !Array.isArray(data.stages)) {
     throw new Error('Unsupported plugin execution plan');
   }
+  return data;
+}
+
+export async function getPluginDiagnostics(signal?: AbortSignal): Promise<PluginLoadReport> {
+  const { data } = await api.get<PluginLoadReport>('/plugins/diagnostics', { signal });
   return data;
 }
 

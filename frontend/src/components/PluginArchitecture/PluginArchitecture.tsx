@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 
 import axios from 'axios';
 import { Alert, Button, Descriptions, Drawer, Empty, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { DownloadOutlined, MinusOutlined, PlusOutlined, ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
-import { getPluginPlan } from '../../services/api';
-import type { ContributionMode, PluginExecutionPlan } from '../../types/plugins';
+import { getPluginPlan, getPluginDiagnostics } from '../../services/api';
+import type { ContributionMode, PluginExecutionPlan, PluginLoadReport } from '../../types/plugins';
 import { useUiStore } from '../../stores/uiStore';
 import { buildPluginGraph, wrapGraphLabel, type GraphView, type PlanNode, type PlanEdge } from './pluginGraph';
 import './PluginArchitecture.css';
@@ -59,6 +59,7 @@ const PluginArchitecture: React.FC = () => {
   const modeLabel = (mode: ContributionMode) => ({ observer: tx('观察', 'Observer'), transform: tx('数据处理', 'Transform'), control: tx('控制', 'Control'), service: tx('按需接口执行', 'On-demand service') })[mode];
   const statusLabel = (status: string) => ({ discovered: tx('已发现', 'Discovered'), disabled: tx('已禁用', 'Disabled'), unavailable: tx('不可用', 'Unavailable') })[status] || status;
   const [plan, setPlan] = useState<PluginExecutionPlan | null>(null);
+  const [loadReport, setLoadReport] = useState<PluginLoadReport | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -81,15 +82,18 @@ const PluginArchitecture: React.FC = () => {
   const selected = graph?.nodes.find((node) => node.id === selectedId);
   const selectedPlugin = selected?.plugin || (selected?.contribution
     ? plan?.plugins.find((plugin) => plugin.name === selected.contribution?.plugin) : undefined);
+  const selectedLoad = loadReport?.plan_id === plan?.plan_id
+    ? loadReport?.plugins.find((plugin) => plugin.name === selectedPlugin?.name) : undefined;
+  const selectedDiagnostics = [...(selectedPlugin?.diagnostics || []), ...(selectedLoad?.diagnostics || [])];
   const counts = plan ? { plugins: plan.plugins.length, contributions: [...plan.stages, ...(plan.notifications || [])].reduce((count, stage) => count + stage.contributions.length, 0),
     failed: plan.plugins.filter((plugin) => plugin.status === 'unavailable').length } : null;
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError('');
-    void getPluginPlan(controller.signal).then((data) => {
+    void Promise.all([getPluginPlan(controller.signal), getPluginDiagnostics(controller.signal)]).then(([data, report]) => {
       if (!controller.signal.aborted) {
-        setPlan(data); setSelectedId('');
+        setPlan(data); setLoadReport(report); setSelectedId('');
         setFilter((value) => value === 'core' || data.plugins.some((plugin) => plugin.name === value) ? value : '');
       }
     }).catch((reason: unknown) => {
@@ -241,12 +245,16 @@ const PluginArchitecture: React.FC = () => {
               { key: 'provider', label: 'Provider', children: selectedPlugin.provider || tx('核心内置', 'Built in') },
               { key: 'source', label: tx('来源', 'Source'), children: selectedPlugin.source },
               ...(selectedPlugin.version ? [{ key: 'version', label: tx('版本', 'Version'), children: selectedPlugin.version }] : []),
+              ...(selectedPlugin.revision ? [{ key: 'revision', label: tx('内容指纹', 'Content fingerprint'), children: selectedPlugin.revision }] : []),
+              ...(selectedLoad ? [{ key: 'runtime', label: tx('最近实例加载', 'Latest instance load'), children: ({ not_loaded: tx('尚未实例化', 'Not instantiated'), loaded: tx('加载成功', 'Loaded'), disabled: tx('已禁用', 'Disabled'), unavailable: tx('加载失败', 'Load failed') } as Record<string, string>)[selectedLoad.status] || selectedLoad.status }] : []),
               ...(selectedPlugin.slot ? [{ key: 'slot', label: tx('能力槽位', 'Capability slot'), children: selectedPlugin.slot }] : []),
               ...(selectedPlugin.dependencies?.length ? [{ key: 'dependencies', label: tx('必需插件', 'Required plugins'), children: selectedPlugin.dependencies.join(', ') }] : []),
               ...(selectedPlugin.optional_dependencies?.length ? [{ key: 'optional-dependencies', label: tx('可选插件', 'Optional plugins'), children: selectedPlugin.optional_dependencies.join(', ') }] : []),
               ...(selectedPlugin.config_keys?.length ? [{ key: 'config-keys', label: tx('插件参数', 'Plugin parameters'), children: selectedPlugin.config_keys.join(', ') }] : []),
             ]} />}
-            {selectedPlugin?.error && <Alert type="error" showIcon message={tx('加载失败原因', 'Load failure')} description={selectedPlugin.error} />}
+            {selectedDiagnostics.map((diagnostic, index) => <Alert key={`${diagnostic.component}:${index}`} type="error" showIcon
+              message={`${diagnostic.component} · ${diagnostic.phase} · ${diagnostic.code}`} description={diagnostic.message} />)}
+            {selectedPlugin?.error && !selectedDiagnostics.length && <Alert type="error" showIcon message={tx('加载失败原因', 'Load failure')} description={selectedPlugin.error} />}
             {selected.contribution && <Descriptions column={1} size="small" bordered items={[
               ...(selected.contribution.interface_id ? [{ key: 'interface_id', label: tx('插件接口', 'Plugin interface'), children: selected.contribution.interface_id }] : []),
               { key: 'plugin', label: tx('插件', 'Plugin'), children: selected.contribution.plugin },

@@ -43,6 +43,8 @@
 
 Trace 使用 operation、lifecycle_stage、plugin_contribution、runtime_notification 记录不同维度。初始化早于 Trace sink 建立、或 API 查询没有活动 Trace 时，不补造历史记录。服务调度记录不包含原始接口参数及返回正文；模型和工具原有 Trace 内容策略保持不变。
 
+plugin_contribution 还保存执行绑定的 plugin_version 与 plugin_revision；版本及目录 Python 内容指纹随计划归档至 `PLUGIN_PLAN_DIR/history/<plan_id>.json`。声明编译和运行期实例加载诊断分别管理，不把运行期加载结果加入计划摘要。校验边界、诊断 API 与归档读取见[插件目录发现](plugin-discovery.md)。
+
 ## 领域接口统一调度
 
 七个内置槽位的协议接口及已声明可选能力均编译为 service 贡献。Provider 加载后由调度适配器包装，调用点保留按需触发及领域降级规则。已安装计划缺少所需贡献时明确报错；无应用启动过程的 CLI / 库调用使用同一声明生成局部调度器。

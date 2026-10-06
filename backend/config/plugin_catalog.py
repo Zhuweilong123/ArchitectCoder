@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from functools import lru_cache
@@ -35,7 +36,7 @@ def read_manifest(path):
     data = json.loads(path.read_text(encoding="utf-8"))
     allowed = {"schema_version", "id", "version", "slot", "provider", "enabled_by_default", "settings",
                "interfaces", "defaults", "dependencies", "optional_dependencies", "router", "contributions", "contribution_loader"}
-    if not isinstance(data, dict) or set(data) - allowed or data.get("schema_version") != 1:
+    if not isinstance(data, dict) or set(data) - allowed or type(data.get("schema_version")) is not int or data["schema_version"] != 1:
         raise ValueError(f"Invalid plugin manifest schema: {path}")
     identifier = data.get("id")
     if not isinstance(identifier, str) or not _IDENTIFIER.fullmatch(identifier) or identifier == "core":
@@ -54,7 +55,7 @@ def read_manifest(path):
     if not isinstance(interfaces, dict):
         raise ValueError(f"Plugin interfaces must be an object: {path}")
     for name, declaration in interfaces.items():
-        if not _IDENTIFIER.fullmatch(name) or not isinstance(declaration, dict) or set(declaration) - {"stage", "required", "async", "wrap_result"}:
+        if not _IDENTIFIER.fullmatch(name) or name.startswith("_") or name in {"close", "aclose"} or not isinstance(declaration, dict) or set(declaration) - {"stage", "required", "async", "wrap_result"}:
             raise ValueError(f"Invalid plugin interface: {path}")
         if not isinstance(declaration.get("stage", "run_start"), str) or any(
                 type(declaration[key]) is not bool for key in ("required", "async", "wrap_result") if key in declaration):
@@ -71,7 +72,28 @@ def read_manifest(path):
             raise ValueError(f"Invalid plugin {key} entry: {path}")
     if not isinstance(data.get("contributions", []), list) or any(not isinstance(item, dict) for item in data.get("contributions", [])):
         raise ValueError(f"Invalid plugin contributions: {path}")
-    return {**data, "source": str(path)}
+    contribution_fields = {"id", "stage", "handler", "mode", "priority", "before", "after", "scope", "fail_closed", "interface_id"}
+    for item in data.get("contributions", []):
+        if set(item) - contribution_fields or any(not isinstance(item.get(key), str) or not item[key] for key in ("id", "stage", "handler")) or not _entry(item["handler"]):
+            raise ValueError(f"Invalid plugin contribution entry: {path}")
+        for key in ("before", "after"):
+            values = item.get(key, [])
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values) or len(values) != len(set(values)):
+                raise ValueError(f"Invalid contribution ordering: {path}")
+        if type(item.get("priority", 0)) is not int or type(item.get("fail_closed", False)) is not bool:
+            raise ValueError(f"Invalid contribution priority or failure policy: {path}")
+    manifest_digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    implementation = hashlib.sha256()
+    # Content identity, not executable-code reload. Ignore caches and generated files.
+    for source in sorted(path.parent.rglob("*.py")):
+        if "__pycache__" in source.parts:
+            continue
+        implementation.update(json.dumps(source.relative_to(path.parent).as_posix()).encode())
+        implementation.update(hashlib.sha256(source.read_bytes()).digest())
+    implementation_digest = implementation.hexdigest()
+    revision = hashlib.sha256(f"{manifest_digest}:{implementation_digest}".encode()).hexdigest()
+    return {**data, "source": str(path), "manifest_digest": manifest_digest,
+            "implementation_digest": implementation_digest, "revision": revision}
 
 
 def scan_manifests(roots):
@@ -172,13 +194,18 @@ def resolved_settings(settings, declarations, overrides):
     def is_explicit(key):
         return key in explicit if explicit is not None else hasattr(settings, key)
     fields = getattr(type(settings), "model_fields", {})
-    updates, configs = {}, {}
+    updates, configs, owners = {}, {}, {}
     for data in declarations:
         identifier = data["id"]
         aliases = data.get("settings", {})
         enabled = aliases.get("enabled", f"plugin_{identifier}_enabled")
         provider = aliases.get("provider", f"plugin_{identifier}_provider")
         prefix = aliases.get("prefix", f"plugin_{identifier}_")
+        keys = [enabled, provider, *(key if key.startswith(("agent_", "plugin_")) else prefix + key for key in data.get("defaults", {}))]
+        for key in keys:
+            if key in owners:
+                raise ValueError(f"Conflicting plugin setting {key}: {owners[key]} and {identifier}")
+            owners[key] = identifier
         options = overrides.get(identifier, {})
         defaults = data.get("defaults", {})
         unknown = set(options.get("config", {})) - defaults.keys()

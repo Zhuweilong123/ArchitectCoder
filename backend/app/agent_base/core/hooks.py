@@ -223,11 +223,14 @@ class HookRegistry:
         plugin: str = "",
         mode: str = "legacy",
         interface_id: str = "",
+        plugin_version: str = "",
+        plugin_revision: str = "",
     ) -> None:
         """注册 hook。priority 越高越先触发；fail_closed 的 hook 抛异常视为 veto。"""
         self._hooks[event].append((priority, fail_closed, hook))
         self._metadata[event, id(hook)] = {
             "id": contribution_id, "plugin": plugin, "mode": mode, "interface_id": interface_id,
+            "plugin_version": plugin_version, "plugin_revision": plugin_revision,
         }
         self._hooks[event].sort(key=lambda item: item[0], reverse=True)
 
@@ -514,7 +517,9 @@ class HookRegistry:
                            stage=operation.stage if operation else event.value, mode=meta["mode"], status=status,
                            duration_ms=round(duration * 1000, 3), run_id=ctx.run_id,
                            plan_id=(ctx.runtime.plugin_plan_id or self.plan_id) if ctx.runtime else self.plan_id,
-                           interface_id=meta.get("interface_id", ""), **details)
+                           interface_id=meta.get("interface_id", ""),
+                           plugin_version=meta.get("plugin_version", ""),
+                           plugin_revision=meta.get("plugin_revision", ""), **details)
         except Exception:
             logger.debug("[Hooks] contribution tracing failed", exc_info=True)
 

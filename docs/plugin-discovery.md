@@ -95,4 +95,32 @@ PLUGIN_CONFIG_FILE=config/plugin-overrides.example.json
 
 插件计划包含声明来源、版本、槽位、依赖、配置参数名称和接口绑定；不导出部署参数值。插件架构面板展示这些信息。组织图、调度图与回放沿用同一个 plan_id。
 
+## 校验与加载诊断
+
+启动时校验清单字段、配置别名冲突、依赖、同步工厂签名与贡献排序。工厂必须接受 `settings` 关键字参数；业务调用点额外传入的 LLM、项目等参数在实际调用时验证。阶段编译只导入声明，不为检查而创建数据库或模型客户端。
+
+首次实例化时检查所有必需接口、已实现的可选接口是否可调用，以及清单同步接口是否误实现为 async 方法。async 方法必须声明 `async=true`；声明为异步的接口也允许同步包装函数返回 awaitable。旧的程序化 PluginSpec 保留自动识别协程的兼容行为。`close` / `aclose` 是资源管理入口，不能声明为阶段接口。
+
+前端插件节点详情分别显示声明状态、最近一次实例加载状态和失败诊断。诊断包含 component、phase、code、message、声明来源及版本；路由加载失败单独记录，不被 Provider 成功加载覆盖。重新加载成功会清除该组件的旧失败信息。最近一次实例加载成功不代表全部实例或外部服务持续健康。
+
+`GET /api/plugins/diagnostics` 提供运行时加载诊断；计划内 diagnostics 保存声明编译失败原因。运行时结果不修改执行计划或 plan_id。前端刷新重新读取这两种信息，仍不重新扫描或替换插件。
+
+启动前可运行：
+
+```shell
+python backend/export_plugin_plan.py --check --output temp/plugin-check
+```
+
+命令导出计划并逐插件报告声明状态。存在 unavailable 插件时退出码为 1；disabled 不算失败。此检查不实例化 Provider、不验证运行期数据库连接，也不挂载 HTTP 路由；实际实例与路由结果可在运行时诊断中查看。
+
+## 版本与历史计划
+
+每个目录插件记录声明 version，以及 manifest_digest、implementation_digest、revision。声明指纹使用规范化 JSON，忽略 JSON 缩进变化；实现指纹覆盖插件目录内 Python 源文件内容与相对文件名。因此即使未修改 version，Python 代码或声明变化也会改变下一次启动生成的 plan_id。
+
+revision 描述声明与本插件目录内 Python 内容，不是整个 Python 依赖环境的版本；资源文件、外部依赖和部署覆盖到目录外的 Provider 代码不在该指纹范围内。部署参数值不会写入版本记录。建议发布插件时仍主动更新声明 version。
+
+计划导出时同时保留 `PLUGIN_PLAN_DIR/history/<plan_id>.json`。后续启动覆盖当前 plugin-plan.json，但保留旧计划；`GET /api/plugins/plans/{plan_id}` 读取指定快照并验证内容摘要。它只读取记录，不重新执行历史插件。
+
+插件贡献 Trace 事件保存执行时绑定的 plugin_version、plugin_revision 与 plan_id，回放步骤详情展示这些字段。旧记录仍可查看；历史计划不一致时，现有图高亮保护继续生效。归档与诊断为后续受控刷新提供基础，当前修改仍需要重启生效。
+
 目录扫描负责发现实现及注册阶段贡献。新的 Agent 工具或新的业务调用入口仍需按现有契约装配；声明一个 service 方法不会自动把它暴露给模型。新增领域端口时继续在核心定义协议、请求结果模型和降级行为；同一端口的不同实现通过 Provider 配置选择。
