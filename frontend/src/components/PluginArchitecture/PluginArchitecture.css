@@ -5,6 +5,9 @@
 .plugin-plan-id { font-family: monospace; font-size: 11px; }
 .plugin-plan-tools { padding: 12px 20px; background: #fff; border-bottom: 1px solid #e5eaf1; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .plugin-plan-legend { display: flex; align-items: center; font-size: 11px; color: #66768b; }
+.plugin-plan-roster { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 20px; border-bottom: 1px solid #e5eaf1; background: #f7f9fc; font-size: 12px; }
+.plugin-plan-issue-count { color: #cf1322; font-weight: 600; }
+.plugin-plan-node-issue { fill: #cf1322; font-size: 11px; font-weight: 600; }
 .plugin-plan-main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; flex: 1; min-height: 0; }
 .plugin-plan-viewport { overflow: auto; position: relative; background-image: radial-gradient(#dce3ed 1px, transparent 1px); background-size: 20px 20px; padding: 12px; min-height: 200px; }
 .plugin-plan-svg { display: block; }

@@ -6,6 +6,7 @@ require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, filename);
 const { buildPluginGraph, wrapGraphLabel } = require('../src/components/PluginArchitecture/pluginGraph.ts');
+const { graphCatalog, graphIssues, revealGraphNode, searchGraph } = require('../src/components/PluginArchitecture/graphExplorer.ts');
 const { replayRuns, replaySteps, replayOperations, stepStatus, contributionSummary, stepExplanation } = require('../src/components/PluginArchitecture/replayModel.ts');
 
 const contribution = (id, stage, order, priority = 10) => ({
@@ -199,4 +200,70 @@ test('operation tree merges end records and locates nested operations across tas
   assert.equal(tree[1].key, 'orphan');
   // Malformed history must not create recursive UI trees.
   assert.equal(replayOperations(replayRuns([operation('parent', 'a', 'b', 'running'), operation('parent', 'b', 'a', 'running')]), plan).length, 2);
+});
+
+test('collapsed plugin summaries preserve bindings, counts and unavailable plugins', () => {
+  const fixture = structuredClone(plan);
+  fixture.stages[2].contributions = Array.from({ length: 80 }, (_, i) => contribution(`extra.${i}`, 'llm_before', i + 1));
+  const before = JSON.stringify(fixture);
+  for (const view of ['organization', 'schedule']) {
+    const full = buildPluginGraph(fixture, view);
+    const folded = buildPluginGraph(fixture, view, '', { expandedPlugins: [] });
+    verifyGraph(folded);
+    assert.ok(folded.height < full.height);
+    assert.ok(!folded.nodes.some(node => node.kind === 'contribution'));
+    if (view === 'organization') {
+      assert.ok(folded.edges.some(edge => edge.source === 'plugin:trace' && edge.target === 'stage:llm_before'));
+      assert.equal(folded.nodes.find(node => node.id === 'plugin:unavailable').plugin.status, 'unavailable');
+    } else {
+      const group = folded.nodes.find(node => node.id === 'group:llm_before:trace');
+      assert.equal(group.summary.contributions, 80);
+      assert.ok(!folded.edges.some(edge => edge.kind === 'order'));
+    }
+    const expanded = buildPluginGraph(fixture, view, '', { expandedPlugins: ['trace'] });
+    verifyGraph(expanded); assert.ok(expanded.nodes.some(node => node.id === 'contribution:extra.79'));
+  }
+  assert.equal(JSON.stringify(fixture), before);
+});
+
+test('catalog searches public, notification and unbound interfaces without losing identity', () => {
+  const fixture = structuredClone(plan);
+  fixture.notifications = [{ stage: 'background_after', supported_modes: ['observer'], contributions: [contribution('archive.finished', 'background_after', 1)] }];
+  const catalog = graphCatalog(fixture);
+  assert.equal(new Set(catalog.map(node => node.id)).size, catalog.length);
+  assert.equal(searchGraph(catalog, 'ARCHIVE trace')[0].id, 'contribution:archive.finished');
+  assert.equal(searchGraph(catalog, 'query disabled')[0].id, 'interface:disabled:0');
+  assert.ok(searchGraph(catalog, 'llm_before trace').some(node => node.id === 'contribution:watch.llm_before'));
+  assert.deepEqual(searchGraph(catalog, ''), []);
+});
+
+test('issues separate declaration/load/execution and ignore stale runtime reports and ordinary cancellation', () => {
+  const report = { plan_id: plan.plan_id, plugins: [{ name: 'trace', status: 'loaded', diagnostics: [{ code: 'router_failed', message: 'route error' }] }] };
+  const steps = [{ compatible: false, event: { event_type: 'plugin_contribution', status: 'error', plugin: 'trace', contribution_id: 'watch.llm_before', error_message: 'old failure' } },
+    { compatible: true, event: { event_type: 'plugin_contribution', status: 'interrupted', plugin: 'trace' } }];
+  const issues = graphIssues(plan, report, steps);
+  assert.deepEqual(issues.map(issue => issue.source), ['load', 'declaration', 'execution']);
+  assert.equal(issues[2].compatible, false); assert.equal(issues[2].stepIndex, 0);
+  assert.equal(graphIssues(plan, { ...report, plan_id: 'stale' }).length, 1);
+});
+
+test('search reveal clears conflicting filters and shows hidden public stages and interfaces', () => {
+  const catalog = graphCatalog(plan);
+  const folded = { view: 'organization', filter: 'disabled', expandedPlugins: [] };
+  const stage = revealGraphNode(plan, catalog, 'stage:llm_before', folded);
+  assert.deepEqual(stage, { view: 'schedule', filter: '', expandedPlugins: [] });
+  const target = revealGraphNode(plan, catalog, 'contribution:watch.llm_before', folded);
+  assert.equal(target.filter, ''); assert.deepEqual(target.expandedPlugins, ['trace']);
+  assert.ok(buildPluginGraph(plan, target.view, target.filter, target).nodes.some(node => node.id === 'contribution:watch.llm_before'));
+  assert.deepEqual(folded.expandedPlugins, []);
+});
+
+test('mixed folded/expanded stage groups do not invent sequential edges', () => {
+  const fixture = structuredClone(plan);
+  fixture.stages[2].contributions = [contribution('trace.first', 'llm_before', 1),
+    { ...contribution('core.middle', 'llm_before', 2), plugin: 'core' }, contribution('trace.last', 'llm_before', 3)];
+  const graph = buildPluginGraph(fixture, 'schedule', '', { expandedPlugins: ['trace'] });
+  verifyGraph(graph);
+  assert.ok(graph.nodes.some(node => node.id === 'group:llm_before:core'));
+  assert.ok(!graph.edges.some(edge => edge.kind === 'order' && edge.source === 'contribution:trace.first'));
 });
