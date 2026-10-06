@@ -53,7 +53,7 @@ function viewer(html) {
     querySelectorAll() { return this.nodes; }
     fire(name, event = {}) { this.events[name](event); }
   }
-  const ids = Object.fromEntries(['data', 'view', 'filter', 'canvas', 'viewport', 'detail', 'zoom', 'in', 'out', 'fit', 'reset', 'clear', 'search', 'results', 'issues', 'expand', 'collapse', 'overview', 'notifications'].map(id => [id, new Element()]));
+  const ids = Object.fromEntries(['data', 'view', 'filter', 'canvas', 'viewport', 'detail', 'zoom', 'in', 'out', 'fit', 'reset', 'clear', 'search', 'results', 'issues', 'fold', 'overview', 'notifications'].map(id => [id, new Element()]));
   ids.data.textContent = JSON.stringify(data); ids.detail.innerHTML = '<p>Select a node</p>';
   const document = new Element(); document.getElementById = id => ids[id];
   document.createElement = () => new Element();
@@ -155,6 +155,7 @@ test('folds, drill-down and overview share expansion state across views', () => 
   assert.ok(ids.canvas.nodes.some(node => node.attrs['data-node'] === 'group:prepare:trace'));
   toggle('trace');
   assert.ok(ids.canvas.nodes.some(node => node.attrs['data-node'] === 'contribution:watch.prepare'));
+  assert.equal(ids.fold.textContent, '全部展开');
   ids.view.value = 'organization'; ids.view.fire('change');
   assert.ok(ids.canvas.nodes.some(node => node.attrs['data-node'] === 'contribution:watch.prepare'));
   toggle('trace');
@@ -164,10 +165,13 @@ test('folds, drill-down and overview share expansion state across views', () => 
   ids.overview.fire('click');
   assert.equal(ids.view.value, 'schedule'); assert.equal(ids.filter.value, '');
   assert.ok(!ids.canvas.nodes.some(node => node.attrs['data-node'].startsWith('contribution:')));
-  ids.expand.fire('click');
+  assert.equal(ids.fold.textContent, '全部展开');
+  ids.fold.fire('click');
   assert.ok(ids.canvas.nodes.some(node => node.attrs['data-node'] === 'contribution:watch.prepare'));
-  ids.collapse.fire('click');
+  assert.equal(ids.fold.textContent, '全部收起');
+  ids.fold.fire('click');
   assert.ok(!ids.canvas.nodes.some(node => node.attrs['data-node'].startsWith('contribution:')));
+  assert.equal(ids.fold.textContent, '全部展开');
 });
 
 test('search reveals folded interfaces and notifications, and handles empty results', () => {

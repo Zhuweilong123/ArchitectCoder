@@ -31,6 +31,8 @@ const PluginArchitecture: React.FC = () => {
   const [revision, setRevision] = useState(0);
   const [view, setView] = useState<GraphView>('schedule');
   const [expandedPlugins, setExpandedPlugins] = useState<string[]>([]);
+  const allPluginNames = plan ? ['core', ...plan.plugins.map((plugin) => plugin.name)] : [];
+  const allExpanded = allPluginNames.length > 0 && allPluginNames.every((name) => expandedPlugins.includes(name));
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('');
   const [selectedId, setSelectedId] = useState('');
@@ -234,8 +236,10 @@ const PluginArchitecture: React.FC = () => {
           <Select value={undefined} showSearch optionFilterProp="label" style={{ width: 240 }} aria-label={tx('定位异常', 'Locate issue')}
             placeholder={tx(`定位异常（${issues.length}）`, `Locate issue (${issues.length})`)} disabled={!issues.length}
             options={issues.map((issue) => ({ value: issue.id, label: issueLabel(issue) }))} onChange={locateIssue} />
-          <Button onClick={() => { setReplayStep(null); setExpandedPlugins(['core', ...(plan?.plugins.map((plugin) => plugin.name) || [])]); }}>{tx('全部展开', 'Expand all')}</Button>
-          <Button onClick={() => { setReplayStep(null); setExpandedPlugins([]); setSelectedId(''); }}>{tx('全部收起', 'Collapse all')}</Button>
+          <Button disabled={!plan} onClick={() => {
+            setReplayStep(null); setExpandedPlugins(allExpanded ? [] : allPluginNames);
+            if (allExpanded) setSelectedId('');
+          }}>{allExpanded ? tx('全部收起', 'Collapse all') : tx('全部展开', 'Expand all')}</Button>
           <Tooltip title={tx('缩小', 'Zoom out')}><Button aria-label={tx('缩小', 'Zoom out')} icon={<MinusOutlined />} onClick={() => setZoom((value) => Math.max(0.25, value - 0.1))} /></Tooltip>
           <span>{Math.round(zoom * 100)}%</span>
           <Tooltip title={tx('放大', 'Zoom in')}><Button aria-label={tx('放大', 'Zoom in')} icon={<PlusOutlined />} onClick={() => setZoom((value) => Math.min(2, value + 0.1))} /></Tooltip>
