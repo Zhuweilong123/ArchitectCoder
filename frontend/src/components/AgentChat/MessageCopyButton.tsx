@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Button, Tooltip, message } from 'antd';
 import { CheckOutlined, CopyOutlined } from '@ant-design/icons';
 import { t, type InterfaceLanguage } from '../../i18n';
@@ -35,9 +35,10 @@ async function copyText(text: string) {
   }
 }
 
-export function MessageCopyButton({ content, language }: {
+export function MessageCopyButton({ content, language, children }: {
   content: string;
   language: InterfaceLanguage;
+  children?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [copying, setCopying] = useState(false);
@@ -74,6 +75,7 @@ export function MessageCopyButton({ content, language }: {
           {copied ? label : null}
         </Button>
       </Tooltip>
+      {children}
     </div>
   );
 }

@@ -41,6 +41,7 @@ import {
 } from './agentChatUtils';
 import { createAgentChatEventHandler } from './agentChatEventHandler';
 import { MessageCopyButton } from './MessageCopyButton';
+import { MessageReadButton } from './MessageReadButton';
 import { useChatInputHistory } from './useChatInputHistory';
 import './AgentChat.css';
 
@@ -781,7 +782,11 @@ const AgentChat: React.FC = () => {
                     {msg.content}
                   </div>
                   {msg.content.length > 0 && (
-                    <MessageCopyButton content={msg.content} language={interfaceLanguage} />
+                    <MessageCopyButton content={msg.content} language={interfaceLanguage}>
+                      {msg.role === 'agent' && !msg.id.startsWith('stream_') && (
+                        <MessageReadButton content={msg.content} language={interfaceLanguage} messageId={msg.id} />
+                      )}
+                    </MessageCopyButton>
                   )}
                   {msg.action && !messages.slice(index + 1).some((later) => later.role === 'user') && (
                     <Button

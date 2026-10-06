@@ -349,10 +349,12 @@
 .agent-message-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 2px;
   margin-top: 2px;
 }
 
-.agent-message-copy.ant-btn {
+.agent-message-copy.ant-btn,
+.agent-message-read.ant-btn {
   color: #666;
   font-size: 12px;
 }
