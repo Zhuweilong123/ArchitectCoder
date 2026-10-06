@@ -27,11 +27,13 @@ from app.agent_base.core.contract_analysis import (
 )
 from app.agent_base.core.hooks import (
     AgentRuntime,
+    get_hooks,
     get_runtime,
     reset_runtime,
     set_runtime,
 )
 from app.agent_base.core.memory import MemoryArchiveRequest, MemoryPort
+from app.agent_base.core.plugin_runtime import pin_plugins
 from app.agent_base.core.orchestration import (
     OrchestrationRequest,
     exclude_tools,
@@ -788,6 +790,7 @@ def _stream_progress_event(step: dict, todo_state: dict) -> dict:
         **todo_state,
     }
 
+@pin_plugins
 async def handle_agent_execution(
     agent: ReActAgent,
     review_mgr,
@@ -842,6 +845,7 @@ async def handle_agent_execution(
     )[:500]
     agent.last_run_checkpoint = {
         "run_id": run_id,
+        "plugin_plan_id": get_hooks().plan_id,
         "status": "running",
         "request_summary": checkpoint_request_summary,
         "completed_items": list(resume_checkpoint.get("completed_items") or []),

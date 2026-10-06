@@ -16,7 +16,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 class _SettingsView(SimpleNamespace):
     def __getattr__(self, key):
-        return getattr(self._base, key)
+        return getattr(object.__getattribute__(self, "_base"), key)
 
 
 def config_path(value):
@@ -31,9 +31,16 @@ def _entry(value):
     return bool(separator and all(_IDENTIFIER.fullmatch(part) for part in module.split(".")) and _IDENTIFIER.fullmatch(name))
 
 
+def _read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid plugin JSON: {path}: {exc.msg} (line {exc.lineno})") from exc
+
+
 def read_manifest(path):
     path = Path(path).resolve()
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json(path)
     allowed = {"schema_version", "id", "version", "slot", "provider", "enabled_by_default", "settings",
                "interfaces", "defaults", "dependencies", "optional_dependencies", "router", "contributions", "contribution_loader"}
     if not isinstance(data, dict) or set(data) - allowed or type(data.get("schema_version")) is not int or data["schema_version"] != 1:
@@ -143,7 +150,7 @@ def legacy_manifests(value):
     if not value:
         return ()
     path = config_path(value)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json(path)
     if not isinstance(data, dict) or data.get("schema_version") != 1 or not isinstance(data.get("plugins"), list):
         raise ValueError("plugin manifest requires schema_version=1 and a plugins list")
     result, names = [], set()
@@ -172,7 +179,7 @@ def deployment_overrides(path, identifiers):
     if not path:
         return {}
     path = config_path(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json(path)
     if not isinstance(data, dict) or set(data) != {"schema_version", "plugins"} or data["schema_version"] != 1 or not isinstance(data["plugins"], dict):
         raise ValueError(f"Invalid plugin deployment config: {path}")
     for identifier, options in data["plugins"].items():
@@ -230,6 +237,8 @@ def resolved_settings(settings, declarations, overrides):
         configs[identifier] = config
     if hasattr(settings, "model_copy"):
         result = settings.model_copy(update=updates)
+        # Inherited plugin defaults are not explicit deployment/environment overrides.
+        object.__setattr__(result, "__pydantic_fields_set__", set(explicit))
     else:
         result = _SettingsView(**{**attributes, **updates, "_base": settings})
     object.__setattr__(result, "plugin_configs", configs)

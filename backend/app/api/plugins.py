@@ -6,12 +6,15 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
 
 def _plan(request):
+    service = getattr(request.app.state, "plugin_refresh", None)
+    if service is not None:
+        return service.active.plan
     plan = getattr(request.app.state, "plugin_plan", None)
     if plan is None:
         raise HTTPException(503, "Plugin plan has not been initialized")
@@ -26,8 +29,22 @@ async def plugin_plan(request: Request):
 @router.get("/diagnostics")
 async def plugin_diagnostics(request: Request):
     plan = _plan(request).as_dict()
-    manager = getattr(request.app.state, "plugin_manager", None)
-    return {"plan_id": plan["plan_id"], "plugins": manager.diagnostics() if manager else []}
+    service = getattr(request.app.state, "plugin_refresh", None)
+    manager = service.active.manager if service else getattr(request.app.state, "plugin_manager", None)
+    return {"plan_id": plan["plan_id"], "plugins": manager.diagnostics() if manager else [],
+            "last_refresh": service.last_result if service else None}
+
+
+@router.post("/refresh")
+async def refresh_plugins(request: Request):
+    service = getattr(request.app.state, "plugin_refresh", None)
+    if service is None:
+        raise HTTPException(503, "Plugin refresh has not been initialized")
+    result = await service.refresh()
+    if result["status"] == "published":
+        request.app.state.plugin_plan = service.active.plan
+        request.app.state.plugin_manager = service.active.manager
+    return JSONResponse(result, status_code=409 if result["status"] == "rejected" else 200)
 
 
 @router.get("/plans/{plan_id}")

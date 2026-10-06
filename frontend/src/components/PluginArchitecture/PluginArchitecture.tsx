@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 
 import axios from 'axios';
 import { Alert, Button, Descriptions, Drawer, Empty, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { DownloadOutlined, MinusOutlined, PlusOutlined, ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
-import { getPluginPlan, getPluginDiagnostics } from '../../services/api';
-import type { ContributionMode, PluginExecutionPlan, PluginLoadReport } from '../../types/plugins';
+import { getPluginPlan, getPluginDiagnostics, refreshPlugins } from '../../services/api';
+import type { ContributionMode, PluginExecutionPlan, PluginLoadReport, PluginRefreshResult } from '../../types/plugins';
 import { useUiStore } from '../../stores/uiStore';
 import { buildPluginGraph, wrapGraphLabel, type GraphView, type PlanNode, type PlanEdge } from './pluginGraph';
 import { STAGE_LABELS, COLORS, edgePath } from './graphPresentation';
@@ -22,6 +22,9 @@ const PluginArchitecture: React.FC = () => {
   const statusLabel = (status: string) => ({ discovered: tx('已发现', 'Discovered'), disabled: tx('已禁用', 'Disabled'), unavailable: tx('不可用', 'Unavailable') })[status] || status;
   const [plan, setPlan] = useState<PluginExecutionPlan | null>(null);
   const [loadReport, setLoadReport] = useState<PluginLoadReport | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<PluginRefreshResult | null>(null);
+  const [refreshError, setRefreshError] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -56,6 +59,7 @@ const PluginArchitecture: React.FC = () => {
     void Promise.all([getPluginPlan(controller.signal), getPluginDiagnostics(controller.signal)]).then(([data, report]) => {
       if (!controller.signal.aborted) {
         setPlan(data); setLoadReport(report); setSelectedId('');
+        setRefreshResult(report.last_refresh || null);
         setFilter((value) => value === 'core' || data.plugins.some((plugin) => plugin.name === value) ? value : '');
       }
     }).catch((reason: unknown) => {
@@ -94,6 +98,18 @@ const PluginArchitecture: React.FC = () => {
     const url = URL.createObjectURL(new Blob([content], { type: html ? 'text/html;charset=utf-8' : 'application/json' }));
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = html ? 'plugin-architecture.html' : 'plugin-plan.json';
     anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const discoverPlugins = async () => {
+    setRefreshing(true); setRefreshError(false); setRefreshResult(null);
+    try {
+      const result = await refreshPlugins();
+      setRefreshResult(result);
+      if (result.status === 'published') {
+        setReplayStep(null); setReplayVisible(false);
+        setRevision((value) => value + 1);
+      }
+    } catch { setRefreshError(true); }
+    finally { setRefreshing(false); }
   };
   const selectNode = (id: string) => {
     setSelectedId(id);
@@ -134,7 +150,10 @@ const PluginArchitecture: React.FC = () => {
           <Button type={replayVisible ? 'primary' : 'default'} disabled={!plan} onClick={() => {
             setReplayVisible((value) => !value); setReplayStep(null); setSelectedId('');
           }}>{tx('执行回放', 'Execution history')}</Button>
-          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => setRevision((value) => value + 1)}>{tx('刷新', 'Refresh')}</Button>
+          <Button icon={<ReloadOutlined />} loading={loading} disabled={refreshing} onClick={() => setRevision((value) => value + 1)}>{tx('刷新视图', 'Reload view')}</Button>
+          <Tooltip title={tx('扫描新增插件并校验发布；运行中的任务继续使用原计划。已有插件或路由变化需要重启。', 'Validate and publish newly discovered plugins. Running tasks retain their plan. Existing plugin or route changes require restart.')}>
+            <Button loading={refreshing} disabled={!plan || loading} onClick={discoverPlugins}>{tx('扫描新插件', 'Discover plugins')}</Button>
+          </Tooltip>
           <Button icon={<DownloadOutlined />} disabled={!plan} onClick={() => download()}>{tx('导出计划', 'Export plan')}</Button>
           <Button icon={<DownloadOutlined />} disabled={!plan} onClick={() => download('html')}>{tx('导出 HTML', 'Export HTML')}</Button>
         </Space>
@@ -142,6 +161,14 @@ const PluginArchitecture: React.FC = () => {
         {plan && <Typography.Text className="plugin-plan-id" type="secondary" title={plan.plan_id}>Plan {plan.plan_id.slice(0, 16)}</Typography.Text>}
       </div>
       {error && <Alert type="error" showIcon message={errorText[error]} description={plan ? tx('当前保留上次加载的计划，可能已过期。', 'The previous plan remains visible and may be stale.') : undefined} />}
+      {refreshError && <Alert type="error" showIcon message={tx('无法获取扫描结果，请检查连接并刷新视图以确认当前计划。', 'Could not retrieve the discovery result. Check the connection and reload the view to confirm the active plan.')} />}
+      {refreshResult && <Alert showIcon type={refreshResult.status === 'rejected' ? 'warning' : refreshResult.status === 'published' ? 'success' : 'info'}
+        message={refreshResult.status === 'published' ? tx(`新计划已发布，新增插件：${refreshResult.added.join(', ')}`, `New plan published. Added: ${refreshResult.added.join(', ')}`)
+          : refreshResult.status === 'unchanged' ? tx('没有新增可发布的插件，当前计划保持不变。', 'No newly publishable plugins. The active plan is unchanged.')
+            : tx('候选计划未发布，当前计划继续运行。', 'Candidate plan was rejected; the active plan continues to run.')}
+        description={refreshResult.status === 'rejected' ? <ul>{refreshResult.diagnostics.map((item, index) => <li key={index}>
+          {item.plugin && <strong>{item.plugin}: </strong>}{item.code === 'restart_required' ? tx('该变更需要重启后端。', 'This change requires a backend restart.') : item.code} · {item.message}
+        </li>)}</ul> : refreshResult.status === 'published' ? tx('新任务使用新计划，运行中的任务继续使用原计划。', 'New tasks use the new plan; running tasks retain their original plan.') : undefined} />}
       {!!counts?.failed && <Alert type="warning" showIcon message={tx(`${counts.failed} 个插件不可用，可点击对应节点查看原因。`, `${counts.failed} plugins are unavailable. Select their nodes for details.`)} />}
       <div className="plugin-plan-tools">
         <Space wrap>

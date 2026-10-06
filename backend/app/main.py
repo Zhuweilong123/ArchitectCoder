@@ -68,14 +68,24 @@ extension_routers = [router for spec in plugin_manager.specs
 async def lifespan(application):
     from app.agent_base.core.hooks import get_hooks
     from app.agent_base.core.lifecycle import build_plan, install_plan
+    from app.agent_base.core.plugin_runtime import PluginSnapshot, PluginRefreshService, publish_snapshot
     plan = build_plan(plugin_manager, settings)
     plan.write(Path(settings.plugin_plan_dir))
     install_plan(plan, get_hooks())
     application.state.plugin_plan = plan
-    application.state.plugin_manager = plugin_manager
+    frozen = plugin_manager.freeze(settings)
+    snapshot = PluginSnapshot(frozen, get_hooks(), frozen._fixed_settings, plan)
+    service = PluginRefreshService(snapshot, settings.plugin_plan_dir)
+    previous_snapshot = publish_snapshot(snapshot)
+    application.state.plugin_refresh = service
+    application.state.plugin_manager = frozen
     application.state.plugin_plan_dir = Path(settings.plugin_plan_dir)
     logging.getLogger(__name__).info("Plugin execution plan: %s", plan.as_dict()["plan_id"])
-    yield
+    try:
+        yield
+    finally:
+        publish_snapshot(previous_snapshot)
+        del application.state.plugin_refresh
 
 app = FastAPI(
     title=settings.app_name,

@@ -224,6 +224,17 @@ async def _invoke_fc_model_impl(
 
 
 async def run_fc_loop(agent, *args, **kwargs):
+    from ...core.plugin_runtime import plugin_scope
+    with plugin_scope():
+        stream = _run_fc_loop_scoped(agent, *args, **kwargs)
+        try:
+            async for progress in stream:
+                yield progress
+        finally:
+            await stream.aclose()
+
+
+async def _run_fc_loop_scoped(agent, *args, **kwargs):
     from ...core.operations import operation_scope
     with operation_scope("run", run_id=get_runtime().run_id, stage=HookEvent.RUN_START.value) as operation:
         get_runtime().run_operation_id = operation.operation_id
