@@ -1,5 +1,7 @@
 # 插件开发工具包
 
+首次体验可先阅读[插件快速上手](plugin-quickstart.md)（[English](plugin-quickstart.en.md)），包含 `task_notes` 的可复制命令、预期结果和离线 HTML 示例。
+
 工具入口：[backend/plugin_dev.py](../backend/plugin_dev.py)。使用后端 Python 环境运行，无需启动服务、配置模型密钥或创建 DevAgent 会话。CLI 不读取应用 `.env`，只使用插件默认值及明确传入的开发输入。命令路径相对当前工作目录解析；应用中的 `PLUGIN_ROOTS` 相对 `backend/` 解析。
 
 ## 1. 创建插件骨架

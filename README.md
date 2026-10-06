@@ -6,7 +6,7 @@
 
 **English** | [中文](README_ZH.md)
 
-[Quick start](#quick-start) · [Product tour](#product-tour) · [Core capabilities](#core-capabilities) · [Real project case](#real-project-case-lightweight-vehicle-simulation) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Product tour](#product-tour) · [Plugin walkthrough](#plugin-walkthrough) · [Core capabilities](#core-capabilities) · [Real project case](#real-project-case-lightweight-vehicle-simulation) · [Documentation](#documentation)
 
 </div>
 
@@ -104,6 +104,18 @@ python -m pytest test -q
 ```
 
 See the [example guide](examples/quickstart/README.md). Its performance reference is a historical summary, not a fresh evaluation result.
+
+## Plugin walkthrough
+
+Explore the framework without a video: **main flow → plugin details → interface search**, then verify `task_notes` locally and inspect its execution in a DevAgent task. Plugins declare their own interfaces and phase contributions and are discovered from configured directories.
+
+[![task_notes interfaces and public phase bindings](docs/media/plugin-demo/task-notes-en.svg)](docs/plugin-quickstart.en.md)
+
+*Architecture preview generated from the real example declarations.*
+
+[Follow the step-by-step guide](docs/plugin-quickstart.en.md) · [Download the offline HTML example](docs/media/plugin-demo/plugin-architecture-en.html)
+
+On GitHub, download the **raw HTML file** and open it in a browser. No installation or model is needed for the offline viewer. Local plugin checks need backend dependencies; the application walkthrough needs a configured model and Trace enabled.
 
 ## Core capabilities
 
@@ -211,6 +223,7 @@ See [plugin architecture](docs/plugin-architecture-design.md) and [command execu
 | Context and project knowledge | [Context management](docs/context-management-design.md) · [Memory](docs/memory-system-design.md) · [Knowledge graph](docs/knowledge-graph-design.md) |
 | Extension development | [Plugin architecture](docs/plugin-architecture-design.md) |
 | Plugin scaffolding and local checks | [Plugin development toolkit](docs/plugin-development.md) |
+| Plugin walkthrough and offline example | [Step-by-step guide](docs/plugin-quickstart.en.md) · [HTML example](docs/media/plugin-demo/plugin-architecture-en.html) |
 | Reusable Agent guides | [Skill plugin](docs/skills-plugin.md) |
 | Plugin execution plans | [Lifecycle contributions and graphs](docs/plugin-lifecycle.md) |
 
