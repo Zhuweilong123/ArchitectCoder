@@ -64,7 +64,7 @@ extensions/
     ▼
 PluginManager.load(name, settings, kwargs)
     │
-    ├─ 扫描声明并合并部署配置（启动时固定）
+    ├─ 扫描声明并合并部署配置（启动及新增插件受控刷新）
     ├─ 读取 enabled/provider 配置
     ├─ 未启用或 provider=none/noop/disabled ──► 返回 None
     ├─ 必需依赖或已编译声明不可用 ──► 返回 None
@@ -194,7 +194,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 
 评测 provider 的部分操作在禁用时会明确抛出“provider disabled”错误，这是为了让 API 层返回可识别的不可用状态；Trace 和 Memory 的存储异常不会阻断当前 Agent 回合。
 
-降级是可靠性边界，不代表 provider 健康检查。当前没有独立的插件健康检查、热重载或运行时切换机制。
+降级是可靠性边界，不代表 provider 健康检查。当前支持新增插件的受控刷新，候选校验与归档成功后发布，新任务使用新快照，运行中的任务保持原快照。已有插件代码、配置、路由和编译贡献的更新需要重启；没有运行中替换已有实现或独立健康检查。详见[受控刷新](plugin-discovery.md#受控刷新与任务隔离)。
 
 ## 9. 所有权规则
 
@@ -226,7 +226,7 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 ## 10. 当前限制与新增插件流程
 
 - 启动时扫描明确的根目录和直接子目录；内部子模块不被递归识别，也不自动安装第三方包。
-- 配置修改、Provider 切换和新目录生效需要重启，没有热加载或热卸载。
+- 已配置根目录中的新增插件可受控刷新生效；已有插件更新、配置修改、Provider 切换及路由变化需要重启，没有运行中替换或卸载已有实现。
 - 提供只读计划、组织图与回放，前端尚不能编辑插件配置。
 - 必需依赖按插件 ID 检查；声明版本用于展示，暂未解析版本范围。
 - 扫描注册阶段贡献和接口声明，Agent 工具暴露及新的业务调用入口仍按现有契约装配。
@@ -237,7 +237,9 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 1. 在扫描根目录下创建插件目录，编写 plugin.json 和可导入的实现入口。
 2. 声明 Provider、接口、阶段贡献、默认配置、依赖及可选路由。
 3. 若位于外部根目录，在 PLUGIN_ROOTS 添加该根目录；启停与参数可放入部署覆盖文件。
-4. 重启后端，在插件架构中检查声明、状态及绑定，运行任务验证 Trace。
+4. 若位于已有扫描根目录且不增加 HTTP router，点击“扫描新插件”；其余情况重启后端。在插件架构中检查声明、状态及绑定，运行任务验证 Trace。
 5. 可参考 [task_notes](../examples/plugins/task_notes/plugin.json)，无需修改 DEFAULT_PLUGIN_SPECS 或默认阶段映射表。
+
+插件骨架生成、接口契约检查和独立试运行使用[插件开发工具包](plugin-development.md)；应用全量部署校验继续使用 `export_plugin_plan.py --check`。
 
 新增核心领域端口时，仍先定义端口、请求结果模型与 NoOp 实现，再在业务装配点调用对应 loader。将接口绑定到公共阶段不会自动创建新的业务调用入口。

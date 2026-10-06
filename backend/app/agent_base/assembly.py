@@ -42,6 +42,7 @@ from app.services.context_manager import ContextBudget, ContextBudgetManager, es
 from app.agent_base.core.contract_gate import load_contract_gate
 from app.agent_base.core.contract_analysis import load_contract_failure_analyzer
 from app.agent_base.core.language_adapters import broker_command_runner
+from app.agent_base.core.plugin_runtime import pin_plugins
 
 
 def enabled_tools_context() -> str:
@@ -213,6 +214,7 @@ class DevPromptBuilder:
             return ""
 
 
+@pin_plugins
 async def create_dev_agent(*args, **kwargs):
     from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
     from app.agent_base.core.operations import operation_scope

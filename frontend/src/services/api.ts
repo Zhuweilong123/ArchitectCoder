@@ -2,7 +2,7 @@
 
 import axios from 'axios';
 import type { UmlDiagram, Project } from '../types/uml';
-import type { PluginExecutionPlan, PluginLoadReport } from '../types/plugins';
+import type { PluginExecutionPlan, PluginLoadReport, PluginRefreshResult } from '../types/plugins';
 
 // Read auth token from Vite env var (VITE_API_TOKEN in .env.local)
 const API_TOKEN = import.meta.env.VITE_API_TOKEN as string | undefined;
@@ -25,6 +25,13 @@ export async function getPluginPlan(signal?: AbortSignal): Promise<PluginExecuti
 
 export async function getPluginDiagnostics(signal?: AbortSignal): Promise<PluginLoadReport> {
   const { data } = await api.get<PluginLoadReport>('/plugins/diagnostics', { signal });
+  return data;
+}
+
+export async function refreshPlugins(): Promise<PluginRefreshResult> {
+  const { data } = await api.post<PluginRefreshResult>('/plugins/refresh', null, {
+    timeout: 120000, validateStatus: (status) => status === 200 || status === 409,
+  });
   return data;
 }
 

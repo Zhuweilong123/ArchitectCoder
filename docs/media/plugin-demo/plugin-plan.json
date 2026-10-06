@@ -1,0 +1,2026 @@
+{
+  "plan_id": "a326ed35d0230b1bdcd42e3fb524a11bf8c80de12b819356c4f949df27caea19",
+  "schema_version": 1,
+  "dispatch": "sequential sync/async; observers survive control short-circuit; services execute only on matching requests",
+  "plugins": [
+    {
+      "name": "design_contract",
+      "provider": "extensions.design_contract:create",
+      "source": "extensions/design_contract/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "design_contract",
+      "revision": "a86bc13353869c1c5393ae6cd0b612380b2d3a917e460e1fc6f9360b9846869f",
+      "manifest_digest": "6a52dc77412487592ae1145e8173ab22bfaa8aa895314f00de9c0de4d409b6b5",
+      "implementation_digest": "b3ee510c5ff66fd2a01ffc7c8cc5f1e35587d62f19d13b6815998f133fc67899",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [],
+      "interfaces": [
+        "collect",
+        "collect_facts",
+        "snapshot_from_facts"
+      ],
+      "contributions": [
+        "design_contract.interface.collect",
+        "design_contract.interface.collect_facts",
+        "design_contract.interface.snapshot_from_facts"
+      ],
+      "interface_bindings": [
+        {
+          "method": "collect",
+          "stage": "finalize",
+          "contribution_id": "design_contract.interface.collect"
+        },
+        {
+          "method": "collect_facts",
+          "stage": "finalize",
+          "contribution_id": "design_contract.interface.collect_facts"
+        },
+        {
+          "method": "snapshot_from_facts",
+          "stage": "finalize",
+          "contribution_id": "design_contract.interface.snapshot_from_facts"
+        }
+      ]
+    },
+    {
+      "name": "evals",
+      "provider": "extensions.evals:create",
+      "source": "extensions/evals/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "evals",
+      "revision": "be3c882b0a7c1397ec42743326939044c0c0d00b14a43ad50e9669fa95918220",
+      "manifest_digest": "7565073d339f0204ad5d6e9a012e4f8b45d11d37ad322c751aa27f07e88be78c",
+      "implementation_digest": "984eb8fde4991b5169fdba1d2ea9145581cdac5001baf9fe7beac0bd56edb7cc",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [],
+      "interfaces": [
+        "list_cases",
+        "get_case",
+        "run_case",
+        "list_results",
+        "get_baseline",
+        "start_batch",
+        "merge_batches",
+        "list_batches",
+        "get_batch",
+        "delete_batch",
+        "trends",
+        "archive",
+        "archive_baseline",
+        "list_archives",
+        "list_performance_results",
+        "get_performance_result",
+        "delete_performance_result",
+        "archive_performance_result",
+        "list_trace_case_projects",
+        "list_trace_case_drafts",
+        "delete_trace_case_draft",
+        "create_trace_case_draft",
+        "get_trace_case_draft",
+        "review_trace_case_draft",
+        "capture_trace_case_fixture",
+        "preview_trace_case_fixture",
+        "validate_trace_case_draft",
+        "publish_trace_case_draft"
+      ],
+      "contributions": [
+        "evals.interface.list_cases",
+        "evals.interface.get_case",
+        "evals.interface.run_case",
+        "evals.interface.list_results",
+        "evals.interface.get_baseline",
+        "evals.interface.start_batch",
+        "evals.interface.merge_batches",
+        "evals.interface.list_batches",
+        "evals.interface.get_batch",
+        "evals.interface.delete_batch",
+        "evals.interface.trends",
+        "evals.interface.archive",
+        "evals.interface.archive_baseline",
+        "evals.interface.list_archives",
+        "evals.interface.list_performance_results",
+        "evals.interface.get_performance_result",
+        "evals.interface.delete_performance_result",
+        "evals.interface.archive_performance_result",
+        "evals.interface.list_trace_case_projects",
+        "evals.interface.list_trace_case_drafts",
+        "evals.interface.delete_trace_case_draft",
+        "evals.interface.create_trace_case_draft",
+        "evals.interface.get_trace_case_draft",
+        "evals.interface.review_trace_case_draft",
+        "evals.interface.capture_trace_case_fixture",
+        "evals.interface.preview_trace_case_fixture",
+        "evals.interface.validate_trace_case_draft",
+        "evals.interface.publish_trace_case_draft"
+      ],
+      "interface_bindings": [
+        {
+          "method": "list_cases",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_cases"
+        },
+        {
+          "method": "get_case",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.get_case"
+        },
+        {
+          "method": "run_case",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.run_case"
+        },
+        {
+          "method": "list_results",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_results"
+        },
+        {
+          "method": "get_baseline",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.get_baseline"
+        },
+        {
+          "method": "start_batch",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.start_batch"
+        },
+        {
+          "method": "merge_batches",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.merge_batches"
+        },
+        {
+          "method": "list_batches",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_batches"
+        },
+        {
+          "method": "get_batch",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.get_batch"
+        },
+        {
+          "method": "delete_batch",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.delete_batch"
+        },
+        {
+          "method": "trends",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.trends"
+        },
+        {
+          "method": "archive",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.archive"
+        },
+        {
+          "method": "archive_baseline",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.archive_baseline"
+        },
+        {
+          "method": "list_archives",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_archives"
+        },
+        {
+          "method": "list_performance_results",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_performance_results"
+        },
+        {
+          "method": "get_performance_result",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.get_performance_result"
+        },
+        {
+          "method": "delete_performance_result",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.delete_performance_result"
+        },
+        {
+          "method": "archive_performance_result",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.archive_performance_result"
+        },
+        {
+          "method": "list_trace_case_projects",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_trace_case_projects"
+        },
+        {
+          "method": "list_trace_case_drafts",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.list_trace_case_drafts"
+        },
+        {
+          "method": "delete_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.delete_trace_case_draft"
+        },
+        {
+          "method": "create_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.create_trace_case_draft"
+        },
+        {
+          "method": "get_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.get_trace_case_draft"
+        },
+        {
+          "method": "review_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.review_trace_case_draft"
+        },
+        {
+          "method": "capture_trace_case_fixture",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.capture_trace_case_fixture"
+        },
+        {
+          "method": "preview_trace_case_fixture",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.preview_trace_case_fixture"
+        },
+        {
+          "method": "validate_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.validate_trace_case_draft"
+        },
+        {
+          "method": "publish_trace_case_draft",
+          "stage": "run_start",
+          "contribution_id": "evals.interface.publish_trace_case_draft"
+        }
+      ]
+    },
+    {
+      "name": "knowledge_graph",
+      "provider": "extensions.knowledge_graph:create",
+      "source": "extensions/knowledge_graph/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "knowledge_graph",
+      "revision": "0da968d94a2324d2cd9ac7162866b225772f43e634b40339a5776402901ca069",
+      "manifest_digest": "86722c233f68ea7d85f7479808ecc3e02bb2f8bea2230da69c3ffa53eec32765",
+      "implementation_digest": "362ac16aa0a775999bbd0b925cf57aa112d24409716921570f44ef710f7728bd",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [
+        "db_path"
+      ],
+      "interfaces": [
+        "rebuild_project",
+        "search_diagrams",
+        "map_project",
+        "locate",
+        "expand",
+        "impact",
+        "diff",
+        "contract_facts",
+        "index_facts",
+        "sync_facts",
+        "create_tools"
+      ],
+      "contributions": [
+        "knowledge_graph.interface.rebuild_project",
+        "knowledge_graph.interface.search_diagrams",
+        "knowledge_graph.interface.map_project",
+        "knowledge_graph.interface.locate",
+        "knowledge_graph.interface.expand",
+        "knowledge_graph.interface.impact",
+        "knowledge_graph.interface.diff",
+        "knowledge_graph.interface.contract_facts",
+        "knowledge_graph.interface.index_facts",
+        "knowledge_graph.interface.sync_facts",
+        "knowledge_graph.interface.create_tools"
+      ],
+      "interface_bindings": [
+        {
+          "method": "rebuild_project",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.rebuild_project"
+        },
+        {
+          "method": "search_diagrams",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.search_diagrams"
+        },
+        {
+          "method": "map_project",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.map_project"
+        },
+        {
+          "method": "locate",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.locate"
+        },
+        {
+          "method": "expand",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.expand"
+        },
+        {
+          "method": "impact",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.impact"
+        },
+        {
+          "method": "diff",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.diff"
+        },
+        {
+          "method": "contract_facts",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.contract_facts"
+        },
+        {
+          "method": "index_facts",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.index_facts"
+        },
+        {
+          "method": "sync_facts",
+          "stage": "tool_before",
+          "contribution_id": "knowledge_graph.interface.sync_facts"
+        },
+        {
+          "method": "create_tools",
+          "stage": "initialize",
+          "contribution_id": "knowledge_graph.interface.create_tools"
+        }
+      ]
+    },
+    {
+      "name": "memory",
+      "provider": "extensions.memory:create",
+      "source": "extensions/memory/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "memory",
+      "revision": "a0be5dbe3621d0aa8fb7a154b241a6160e4dbb4c30f20d2e2d7bd4b9c330d243",
+      "manifest_digest": "79483e1066312161d6e04c608d22ce2803572f2177f604ef09af17068c6f287c",
+      "implementation_digest": "437b513a8b002c95291e6815c6ea48d0b9528cb6e500fb57845b437852993158",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [
+        "db_path",
+        "recall_top_k",
+        "recall_max_tokens"
+      ],
+      "interfaces": [
+        "recall",
+        "archive",
+        "reinforce"
+      ],
+      "contributions": [
+        "memory.interface.recall",
+        "memory.interface.archive",
+        "memory.interface.reinforce"
+      ],
+      "interface_bindings": [
+        {
+          "method": "recall",
+          "stage": "prepare",
+          "contribution_id": "memory.interface.recall"
+        },
+        {
+          "method": "archive",
+          "stage": "finalize",
+          "contribution_id": "memory.interface.archive"
+        },
+        {
+          "method": "reinforce",
+          "stage": "prepare",
+          "contribution_id": "memory.interface.reinforce"
+        }
+      ]
+    },
+    {
+      "name": "orchestration",
+      "provider": "extensions.orchestration:create",
+      "source": "extensions/orchestration/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "orchestration",
+      "revision": "8879904961d54ae8b2592eecb3116b4371a0f54059c53344125274fb03a24741",
+      "manifest_digest": "3feeb839a213e0ab0efa88876864206c75a7f9b8799fe2c58000776c58370325",
+      "implementation_digest": "600ad596e68ca885bb420349b321f7b2a914ad8e272886a99c900b3a3b397e82",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [
+        "knowledge_graph"
+      ],
+      "config_keys": [
+        "max_workers",
+        "total_tokens",
+        "worker_seconds"
+      ],
+      "interfaces": [
+        "prepare",
+        "create_tools",
+        "explore"
+      ],
+      "contributions": [
+        "orchestration.routing.tool_batch_after",
+        "orchestration.routing.model_before",
+        "orchestration.routing.model_after",
+        "orchestration.interface.prepare",
+        "orchestration.interface.create_tools",
+        "orchestration.interface.explore"
+      ],
+      "interface_bindings": [
+        {
+          "method": "prepare",
+          "stage": "prepare",
+          "contribution_id": "orchestration.interface.prepare"
+        },
+        {
+          "method": "create_tools",
+          "stage": "initialize",
+          "contribution_id": "orchestration.interface.create_tools"
+        },
+        {
+          "method": "explore",
+          "stage": "tool_before",
+          "contribution_id": "orchestration.interface.explore"
+        }
+      ]
+    },
+    {
+      "name": "skills",
+      "provider": "extensions.skills:create",
+      "source": "extensions/skills/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "skills",
+      "revision": "5f9bcbdd01f90791c3a372125afdce560964bec9130c33e959e433bdb4313c71",
+      "manifest_digest": "f1fb0072593a193c56a4962da0d31e93aadbb5ce8965625b982ca7f09849fde2",
+      "implementation_digest": "7e8f4c758bdc49450368c6a6c1762a18389e8697e870efb780d820b61017ac2e",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [],
+      "interfaces": [
+        "list_skills",
+        "read_skill"
+      ],
+      "contributions": [
+        "skills.interface.list_skills",
+        "skills.interface.read_skill"
+      ],
+      "interface_bindings": [
+        {
+          "method": "list_skills",
+          "stage": "initialize",
+          "contribution_id": "skills.interface.list_skills"
+        },
+        {
+          "method": "read_skill",
+          "stage": "tool_before",
+          "contribution_id": "skills.interface.read_skill"
+        }
+      ]
+    },
+    {
+      "name": "trace",
+      "provider": "extensions.trace:create",
+      "source": "extensions/trace/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "trace",
+      "revision": "c66a0c24859b5abd9af318119a15ef3ed3897523e062d4c48f67e737480770cd",
+      "manifest_digest": "e33997f4354f8180e3cdf10eaef94268355c5851d8f244df53399c535e06bb33",
+      "implementation_digest": "5d7d8db81a92bf750b80e31d5e7dda487db54af7d9d14a52ab94f6ef24fca699",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [],
+      "interfaces": [
+        "create",
+        "query",
+        "replay",
+        "list_traces",
+        "read_trace",
+        "summarize_trace",
+        "reconstruct_history"
+      ],
+      "contributions": [
+        "trace.lifecycle.initialize",
+        "trace.lifecycle.prepare",
+        "trace.lifecycle.run_start",
+        "trace.lifecycle.round_before",
+        "trace.lifecycle.model_before",
+        "trace.lifecycle.model_after",
+        "trace.lifecycle.tool_batch_before",
+        "trace.lifecycle.tool_before",
+        "trace.lifecycle.tool_after",
+        "trace.lifecycle.tool_batch_after",
+        "trace.lifecycle.round_after",
+        "trace.lifecycle.finalize",
+        "trace.lifecycle.run_end",
+        "trace.lifecycle.error",
+        "trace.lifecycle.cancel",
+        "trace.lifecycle.review_after",
+        "trace.lifecycle.background_before",
+        "trace.lifecycle.background_after",
+        "trace.interface.create",
+        "trace.interface.query",
+        "trace.interface.replay",
+        "trace.interface.list_traces",
+        "trace.interface.read_trace",
+        "trace.interface.summarize_trace",
+        "trace.interface.reconstruct_history"
+      ],
+      "interface_bindings": [
+        {
+          "method": "create",
+          "stage": "initialize",
+          "contribution_id": "trace.interface.create"
+        },
+        {
+          "method": "query",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.query"
+        },
+        {
+          "method": "replay",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.replay"
+        },
+        {
+          "method": "list_traces",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.list_traces"
+        },
+        {
+          "method": "read_trace",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.read_trace"
+        },
+        {
+          "method": "summarize_trace",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.summarize_trace"
+        },
+        {
+          "method": "reconstruct_history",
+          "stage": "run_start",
+          "contribution_id": "trace.interface.reconstruct_history"
+        }
+      ]
+    },
+    {
+      "name": "task_notes",
+      "provider": "task_notes:create",
+      "source": "examples/plugins/task_notes/plugin.json",
+      "status": "discovered",
+      "error": "",
+      "version": "1.0.0",
+      "slot": "task_notes",
+      "revision": "f79a4e2afb23d279f0b6583cb797f93cdcb569568bb8b127f059040b431bac02",
+      "manifest_digest": "ea6ab06413dbbf24f6a51bcf9121c196bcb9fbbe0694e2be881362769d8ded95",
+      "implementation_digest": "cc4c9636877a083c88d8d6dd17f7ecb53cdd9c8752ebf5e54aabf2f9ae41243d",
+      "diagnostics": [],
+      "dependencies": [],
+      "optional_dependencies": [],
+      "config_keys": [
+        "label"
+      ],
+      "interfaces": [
+        "describe"
+      ],
+      "contributions": [
+        "task_notes.run_start",
+        "task_notes.interface.describe"
+      ],
+      "interface_bindings": [
+        {
+          "method": "describe",
+          "stage": "prepare",
+          "contribution_id": "task_notes.interface.describe"
+        }
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "stage": "initialize",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "knowledge_graph.interface.create_tools",
+          "stage": "initialize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.create_tools",
+          "plugin": "knowledge_graph",
+          "order": 1
+        },
+        {
+          "id": "orchestration.interface.create_tools",
+          "stage": "initialize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "orchestration.create_tools",
+          "plugin": "orchestration",
+          "order": 2
+        },
+        {
+          "id": "skills.interface.list_skills",
+          "stage": "initialize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "skills.list_skills",
+          "plugin": "skills",
+          "order": 3
+        },
+        {
+          "id": "trace.interface.create",
+          "stage": "initialize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.create",
+          "plugin": "trace",
+          "order": 4
+        },
+        {
+          "id": "trace.lifecycle.initialize",
+          "stage": "initialize",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 5
+        }
+      ]
+    },
+    {
+      "stage": "prepare",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "memory.interface.recall",
+          "stage": "prepare",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "memory.recall",
+          "plugin": "memory",
+          "order": 1
+        },
+        {
+          "id": "memory.interface.reinforce",
+          "stage": "prepare",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "memory.reinforce",
+          "plugin": "memory",
+          "order": 2
+        },
+        {
+          "id": "orchestration.interface.prepare",
+          "stage": "prepare",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "orchestration.prepare",
+          "plugin": "orchestration",
+          "order": 3
+        },
+        {
+          "id": "task_notes.interface.describe",
+          "stage": "prepare",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "task_notes.describe",
+          "plugin": "task_notes",
+          "order": 4
+        },
+        {
+          "id": "trace.lifecycle.prepare",
+          "stage": "prepare",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 5
+        }
+      ]
+    },
+    {
+      "stage": "run_start",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "core.policy.run_start",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.hooks:_run_policy_hook",
+          "mode": "control",
+          "priority": 90,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 1
+        },
+        {
+          "id": "evals.interface.archive",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.archive",
+          "plugin": "evals",
+          "order": 2
+        },
+        {
+          "id": "evals.interface.archive_baseline",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.archive_baseline",
+          "plugin": "evals",
+          "order": 3
+        },
+        {
+          "id": "evals.interface.archive_performance_result",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.archive_performance_result",
+          "plugin": "evals",
+          "order": 4
+        },
+        {
+          "id": "evals.interface.capture_trace_case_fixture",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.capture_trace_case_fixture",
+          "plugin": "evals",
+          "order": 5
+        },
+        {
+          "id": "evals.interface.create_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.create_trace_case_draft",
+          "plugin": "evals",
+          "order": 6
+        },
+        {
+          "id": "evals.interface.delete_batch",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.delete_batch",
+          "plugin": "evals",
+          "order": 7
+        },
+        {
+          "id": "evals.interface.delete_performance_result",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.delete_performance_result",
+          "plugin": "evals",
+          "order": 8
+        },
+        {
+          "id": "evals.interface.delete_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.delete_trace_case_draft",
+          "plugin": "evals",
+          "order": 9
+        },
+        {
+          "id": "evals.interface.get_baseline",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.get_baseline",
+          "plugin": "evals",
+          "order": 10
+        },
+        {
+          "id": "evals.interface.get_batch",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.get_batch",
+          "plugin": "evals",
+          "order": 11
+        },
+        {
+          "id": "evals.interface.get_case",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.get_case",
+          "plugin": "evals",
+          "order": 12
+        },
+        {
+          "id": "evals.interface.get_performance_result",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.get_performance_result",
+          "plugin": "evals",
+          "order": 13
+        },
+        {
+          "id": "evals.interface.get_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.get_trace_case_draft",
+          "plugin": "evals",
+          "order": 14
+        },
+        {
+          "id": "evals.interface.list_archives",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_archives",
+          "plugin": "evals",
+          "order": 15
+        },
+        {
+          "id": "evals.interface.list_batches",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_batches",
+          "plugin": "evals",
+          "order": 16
+        },
+        {
+          "id": "evals.interface.list_cases",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_cases",
+          "plugin": "evals",
+          "order": 17
+        },
+        {
+          "id": "evals.interface.list_performance_results",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_performance_results",
+          "plugin": "evals",
+          "order": 18
+        },
+        {
+          "id": "evals.interface.list_results",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_results",
+          "plugin": "evals",
+          "order": 19
+        },
+        {
+          "id": "evals.interface.list_trace_case_drafts",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_trace_case_drafts",
+          "plugin": "evals",
+          "order": 20
+        },
+        {
+          "id": "evals.interface.list_trace_case_projects",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.list_trace_case_projects",
+          "plugin": "evals",
+          "order": 21
+        },
+        {
+          "id": "evals.interface.merge_batches",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.merge_batches",
+          "plugin": "evals",
+          "order": 22
+        },
+        {
+          "id": "evals.interface.preview_trace_case_fixture",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.preview_trace_case_fixture",
+          "plugin": "evals",
+          "order": 23
+        },
+        {
+          "id": "evals.interface.publish_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.publish_trace_case_draft",
+          "plugin": "evals",
+          "order": 24
+        },
+        {
+          "id": "evals.interface.review_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.review_trace_case_draft",
+          "plugin": "evals",
+          "order": 25
+        },
+        {
+          "id": "evals.interface.run_case",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.run_case",
+          "plugin": "evals",
+          "order": 26
+        },
+        {
+          "id": "evals.interface.start_batch",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.start_batch",
+          "plugin": "evals",
+          "order": 27
+        },
+        {
+          "id": "evals.interface.trends",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.trends",
+          "plugin": "evals",
+          "order": 28
+        },
+        {
+          "id": "evals.interface.validate_trace_case_draft",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "evals.validate_trace_case_draft",
+          "plugin": "evals",
+          "order": 29
+        },
+        {
+          "id": "task_notes.run_start",
+          "stage": "run_start",
+          "handler": "task_notes:observe_start",
+          "mode": "observer",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "task_notes",
+          "order": 30
+        },
+        {
+          "id": "trace.interface.list_traces",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.list_traces",
+          "plugin": "trace",
+          "order": 31
+        },
+        {
+          "id": "trace.interface.query",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.query",
+          "plugin": "trace",
+          "order": 32
+        },
+        {
+          "id": "trace.interface.read_trace",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.read_trace",
+          "plugin": "trace",
+          "order": 33
+        },
+        {
+          "id": "trace.interface.reconstruct_history",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.reconstruct_history",
+          "plugin": "trace",
+          "order": 34
+        },
+        {
+          "id": "trace.interface.replay",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.replay",
+          "plugin": "trace",
+          "order": 35
+        },
+        {
+          "id": "trace.interface.summarize_trace",
+          "stage": "run_start",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "trace.summarize_trace",
+          "plugin": "trace",
+          "order": 36
+        },
+        {
+          "id": "trace.lifecycle.run_start",
+          "stage": "run_start",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 37
+        }
+      ]
+    },
+    {
+      "stage": "round_before",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.round_before",
+          "stage": "round_before",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "model_before",
+      "supported_modes": [
+        "control",
+        "observer",
+        "service",
+        "transform"
+      ],
+      "contributions": [
+        {
+          "id": "core.interrupt.llm_before",
+          "stage": "model_before",
+          "handler": "app.agent_base.core.hooks:_interrupt_hook",
+          "mode": "control",
+          "priority": 100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 1
+        },
+        {
+          "id": "core.policy.model_before",
+          "stage": "model_before",
+          "handler": "app.agent_base.core.hooks:_run_policy_hook",
+          "mode": "control",
+          "priority": 90,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 2
+        },
+        {
+          "id": "orchestration.routing.model_before",
+          "stage": "model_before",
+          "handler": "extensions.orchestration.architecture_aware.routing_checkpoint:_routing_checkpoint",
+          "mode": "transform",
+          "priority": 55,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "orchestration",
+          "order": 3
+        },
+        {
+          "id": "core.todo.reminder",
+          "stage": "model_before",
+          "handler": "app.agent_base.core.hooks:_todo_reminder_hook",
+          "mode": "transform",
+          "priority": 50,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 4
+        },
+        {
+          "id": "trace.lifecycle.model_before",
+          "stage": "model_before",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 5
+        }
+      ]
+    },
+    {
+      "stage": "model_after",
+      "supported_modes": [
+        "observer",
+        "service",
+        "transform"
+      ],
+      "contributions": [
+        {
+          "id": "core.policy.model_after",
+          "stage": "model_after",
+          "handler": "app.agent_base.core.hooks:_run_policy_hook",
+          "mode": "control",
+          "priority": 90,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 1
+        },
+        {
+          "id": "orchestration.routing.model_after",
+          "stage": "model_after",
+          "handler": "extensions.orchestration.architecture_aware.routing_checkpoint:_routing_checkpoint",
+          "mode": "transform",
+          "priority": 55,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "orchestration",
+          "order": 2
+        },
+        {
+          "id": "trace.lifecycle.model_after",
+          "stage": "model_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 3
+        }
+      ]
+    },
+    {
+      "stage": "tool_batch_before",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.tool_batch_before",
+          "stage": "tool_batch_before",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "tool_before",
+      "supported_modes": [
+        "control",
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "core.interrupt.tool_before",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.hooks:_interrupt_hook",
+          "mode": "control",
+          "priority": 100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 1
+        },
+        {
+          "id": "core.policy.tool_before",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.hooks:_run_policy_hook",
+          "mode": "control",
+          "priority": 90,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 2
+        },
+        {
+          "id": "knowledge_graph.interface.contract_facts",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.contract_facts",
+          "plugin": "knowledge_graph",
+          "order": 3
+        },
+        {
+          "id": "knowledge_graph.interface.diff",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.diff",
+          "plugin": "knowledge_graph",
+          "order": 4
+        },
+        {
+          "id": "knowledge_graph.interface.expand",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.expand",
+          "plugin": "knowledge_graph",
+          "order": 5
+        },
+        {
+          "id": "knowledge_graph.interface.impact",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.impact",
+          "plugin": "knowledge_graph",
+          "order": 6
+        },
+        {
+          "id": "knowledge_graph.interface.index_facts",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.index_facts",
+          "plugin": "knowledge_graph",
+          "order": 7
+        },
+        {
+          "id": "knowledge_graph.interface.locate",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.locate",
+          "plugin": "knowledge_graph",
+          "order": 8
+        },
+        {
+          "id": "knowledge_graph.interface.map_project",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.map_project",
+          "plugin": "knowledge_graph",
+          "order": 9
+        },
+        {
+          "id": "knowledge_graph.interface.rebuild_project",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.rebuild_project",
+          "plugin": "knowledge_graph",
+          "order": 10
+        },
+        {
+          "id": "knowledge_graph.interface.search_diagrams",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.search_diagrams",
+          "plugin": "knowledge_graph",
+          "order": 11
+        },
+        {
+          "id": "knowledge_graph.interface.sync_facts",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "knowledge_graph.sync_facts",
+          "plugin": "knowledge_graph",
+          "order": 12
+        },
+        {
+          "id": "orchestration.interface.explore",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "orchestration.explore",
+          "plugin": "orchestration",
+          "order": 13
+        },
+        {
+          "id": "skills.interface.read_skill",
+          "stage": "tool_before",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "skills.read_skill",
+          "plugin": "skills",
+          "order": 14
+        },
+        {
+          "id": "trace.lifecycle.tool_before",
+          "stage": "tool_before",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 15
+        }
+      ]
+    },
+    {
+      "stage": "tool_after",
+      "supported_modes": [
+        "observer",
+        "service",
+        "transform"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.tool_after",
+          "stage": "tool_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "tool_batch_after",
+      "supported_modes": [
+        "control",
+        "observer",
+        "service",
+        "transform"
+      ],
+      "contributions": [
+        {
+          "id": "core.policy.tool_batch_after",
+          "stage": "tool_batch_after",
+          "handler": "app.agent_base.core.hooks:_run_policy_hook",
+          "mode": "control",
+          "priority": 90,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "core",
+          "order": 1
+        },
+        {
+          "id": "orchestration.routing.tool_batch_after",
+          "stage": "tool_batch_after",
+          "handler": "extensions.orchestration.architecture_aware.routing_checkpoint:_routing_checkpoint",
+          "mode": "transform",
+          "priority": 50,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "orchestration",
+          "order": 2
+        },
+        {
+          "id": "trace.lifecycle.tool_batch_after",
+          "stage": "tool_batch_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 3
+        }
+      ]
+    },
+    {
+      "stage": "round_after",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.round_after",
+          "stage": "round_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "finalize",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "design_contract.interface.collect",
+          "stage": "finalize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "design_contract.collect",
+          "plugin": "design_contract",
+          "order": 1
+        },
+        {
+          "id": "design_contract.interface.collect_facts",
+          "stage": "finalize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "design_contract.collect_facts",
+          "plugin": "design_contract",
+          "order": 2
+        },
+        {
+          "id": "design_contract.interface.snapshot_from_facts",
+          "stage": "finalize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "design_contract.snapshot_from_facts",
+          "plugin": "design_contract",
+          "order": 3
+        },
+        {
+          "id": "memory.interface.archive",
+          "stage": "finalize",
+          "handler": "app.agent_base.core.plugin_dispatch:invoke_provider",
+          "mode": "service",
+          "priority": 0,
+          "before": [],
+          "after": [],
+          "scope": "invocation",
+          "fail_closed": false,
+          "interface_id": "memory.archive",
+          "plugin": "memory",
+          "order": 4
+        },
+        {
+          "id": "trace.lifecycle.finalize",
+          "stage": "finalize",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 5
+        }
+      ]
+    },
+    {
+      "stage": "run_end",
+      "supported_modes": [
+        "observer",
+        "service"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.run_end",
+          "stage": "run_end",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    }
+  ],
+  "notifications": [
+    {
+      "stage": "error",
+      "supported_modes": [
+        "observer"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.error",
+          "stage": "error",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "cancel",
+      "supported_modes": [
+        "observer"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.cancel",
+          "stage": "cancel",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "review_after",
+      "supported_modes": [
+        "observer"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.review_after",
+          "stage": "review_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "background_before",
+      "supported_modes": [
+        "observer"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.background_before",
+          "stage": "background_before",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    },
+    {
+      "stage": "background_after",
+      "supported_modes": [
+        "observer"
+      ],
+      "contributions": [
+        {
+          "id": "trace.lifecycle.background_after",
+          "stage": "background_after",
+          "handler": "extensions.trace.lifecycle:observe",
+          "mode": "observer",
+          "priority": -100,
+          "before": [],
+          "after": [],
+          "scope": "run",
+          "fail_closed": false,
+          "interface_id": "",
+          "plugin": "trace",
+          "order": 1
+        }
+      ]
+    }
+  ],
+  "run_end_semantics": "execution interval closed; approval and background completion are separate"
+}

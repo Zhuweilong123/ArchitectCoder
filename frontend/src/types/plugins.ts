@@ -55,7 +55,16 @@ export interface PluginDiagnostic {
 
 export interface PluginLoadReport {
   plan_id: string;
+  last_refresh?: PluginRefreshResult | null;
   plugins: Array<{ name: string; status: string; version: string; revision: string; diagnostics: PluginDiagnostic[] }>;
+}
+
+export interface PluginRefreshResult {
+  status: 'published' | 'unchanged' | 'rejected';
+  plan_id: string;
+  previous_plan_id?: string;
+  added: string[];
+  diagnostics: Array<{ plugin: string; code: string; message: string; phase?: string }>;
 }
 
 export interface PluginExecutionPlan {

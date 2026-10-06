@@ -342,6 +342,21 @@
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.agent-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.agent-message-copy.ant-btn,
+.agent-message-read.ant-btn {
+  color: #666;
+  font-size: 12px;
 }
 
 /* User bubble: blue, left-pointing tail */
@@ -538,7 +553,18 @@
 .agent-chat-input-actions {
   display: flex;
   gap: 6px;
+  align-items: center;
   justify-content: flex-end;
+}
+
+.agent-chat-input-history-position {
+  margin-right: auto;
+  min-width: 0;
+  color: #888;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Trigger button ─────────────────────────────────── */

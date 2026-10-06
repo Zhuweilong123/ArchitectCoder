@@ -529,6 +529,10 @@ _registry = HookRegistry()
 
 def get_hooks() -> HookRegistry:
     """返回全局单例 hook 注册表。"""
+    from .plugin_runtime import current_snapshot
+    snapshot = current_snapshot()
+    if snapshot is not None:
+        return snapshot.registry
     return _registry
 
 

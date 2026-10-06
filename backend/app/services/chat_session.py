@@ -36,6 +36,7 @@ from backend.config import get_settings
 from backend.config.project_storage import project_id_for
 
 from app.agent_base.assembly import create_dev_agent
+from app.agent_base.core.plugin_runtime import pin_plugins
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.contract_gate import resolve_contract_enabled
@@ -371,6 +372,7 @@ def _consume_task_exception(task: asyncio.Task) -> None:
         task.exception()
 
 
+@pin_plugins
 async def _start_agent_chat_run(
     *,
     agent: ReActAgent,
@@ -906,7 +908,10 @@ class ChatSessionCoordinator:
                         from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
                         from app.agent_base.core.operations import operation_scope
                         review_run_id = (reviewed_checkpoint or {}).get("run_id", "") or fallback_review_runs.get(review_id, "") or (dev_agent.last_run_checkpoint or {}).get("run_id", "")
-                        with operation_scope("review", run_id=review_run_id, stage="finalize", scope="request"):
+                        from app.agent_base.core.plugin_runtime import plugin_scope, snapshot_for_plan
+                        review_checkpoint = reviewed_checkpoint or dev_agent.last_run_checkpoint or {}
+                        review_snapshot = snapshot_for_plan(review_checkpoint.get("plugin_plan_id", ""))
+                        with plugin_scope(review_snapshot), operation_scope("review", run_id=review_run_id, stage="finalize", scope="request"):
                             await get_hooks().aemit(HookEvent.REVIEW_AFTER, HookContext(
                                 HookEvent.REVIEW_AFTER, "DevAgent", run_id=review_run_id,
                                 payload={"status": decision, "source": "review_response"},
@@ -935,17 +940,18 @@ class ChatSessionCoordinator:
                                 if memory is not None and reviewed_project and _should_archive_task_memory(
                                     status, checkpoint.get("tool_calls", []), checkpoint,
                                 ):
-                                    asyncio.create_task(_archive_task_to_memory(
-                                        memory=memory,
-                                        project_id=project_id_for(reviewed_project),
-                                        user_message=checkpoint.get("request_summary", ""),
-                                        final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
-                                        tool_calls_detail=checkpoint.get("tool_calls", []),
-                                        run_id=reviewed_run_id, trace_id=trace_log.trace_id,
-                                        conversation_history=recent_conversation_history(
-                                            dev_agent, turns=4, exclude_latest_turn=True,
-                                        ),
-                                    ))
+                                    with plugin_scope(snapshot_for_plan(checkpoint.get("plugin_plan_id", ""))):
+                                        asyncio.create_task(_archive_task_to_memory(
+                                            memory=memory,
+                                            project_id=project_id_for(reviewed_project),
+                                            user_message=checkpoint.get("request_summary", ""),
+                                            final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
+                                            tool_calls_detail=checkpoint.get("tool_calls", []),
+                                            run_id=reviewed_run_id, trace_id=trace_log.trace_id,
+                                            conversation_history=recent_conversation_history(
+                                                dev_agent, turns=4, exclude_latest_turn=True,
+                                            ),
+                                        ))
                                 answer = (
                                     "设计变更已通过审核，任务已完成。"
                                     if status == "completed"

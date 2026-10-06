@@ -9,10 +9,12 @@ interface Props {
   plan: PluginExecutionPlan;
   en: boolean;
   onStep: (step: ReplayStep | null) => void;
+  onSteps?: (steps: ReplayStep[]) => void;
+  locateStep?: { index: number; token: number } | null;
 }
 interface OperationTreeNode { key: string; title: ReactNode; children: OperationTreeNode[]; }
 
-export default function PluginReplay({ plan, en, onStep }: Props) {
+export default function PluginReplay({ plan, en, onStep, onSteps, locateStep }: Props) {
   const tx = (zh: string, english: string) => en ? english : zh;
   const [sessions, setSessions] = useState<TraceMeta[]>([]);
   const [session, setSession] = useState('');
@@ -40,6 +42,8 @@ export default function PluginReplay({ plan, en, onStep }: Props) {
     for (const node of nodes) { if (node.key === key) return node; const found = locateOperation(node.children, key); if (found) return found; }
   };
   useEffect(() => { onStep(step || null); }, [step, onStep]);
+  useEffect(() => { onSteps?.(steps); }, [steps, onSteps]);
+  useEffect(() => { if (locateStep) setIndex(locateStep.index); }, [locateStep]);
   useEffect(() => {
     const controller = new AbortController();
     setListLoading(true); setError('');

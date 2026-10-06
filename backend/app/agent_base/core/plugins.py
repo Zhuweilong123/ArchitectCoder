@@ -9,6 +9,7 @@ entry points live in the repository-level ``extensions`` package and use the
 from __future__ import annotations
 
 import importlib
+import copy
 import inspect
 import logging
 import sys
@@ -116,12 +117,16 @@ class PluginManager:
         self._overrides = {}
         self._plan_errors = {}
         self._diagnostics = {}
+        self._fixed_settings = None
+        self._validated_factories = {}
 
     @property
     def specs(self) -> tuple[PluginSpec, ...]:
         return tuple(self._specs.values())
 
     def register(self, spec: PluginSpec) -> None:
+        if self._fixed_settings is not None:
+            raise RuntimeError("plugin snapshots cannot be modified; use controlled refresh")
         self._specs[spec.name] = spec
         self._manual_specs[spec.name] = spec
         self._configuration = None
@@ -135,6 +140,8 @@ class PluginManager:
         return spec
 
     def discover_directories(self, roots):
+        if self._fixed_settings is not None:
+            raise RuntimeError("plugin snapshots cannot be modified; use controlled refresh")
         candidates = {item["id"]: manifest_spec(item) for item in scan_manifests(roots)}
         combined = dict(self._specs)
         for name, spec in candidates.items():
@@ -154,6 +161,8 @@ class PluginManager:
             slots[slot] = spec.name
 
     def configure(self, settings):
+        if self._fixed_settings is not None:
+            return
         roots = tuple(getattr(settings, "plugin_roots", ()))
         manifest = getattr(settings, "plugin_manifest_file", "")
         config = getattr(settings, "plugin_config_file", "")
@@ -177,11 +186,25 @@ class PluginManager:
         self._plan_errors = {}
 
     def effective_settings(self, settings):
+        if self._fixed_settings is not None:
+            return self._fixed_settings
         declarations = ({"id": spec.name, "provider": spec.default_provider,
             "enabled_by_default": spec.default_enabled, "defaults": spec.defaults,
             "settings": {"enabled": spec.enabled_setting, "provider": spec.provider_setting,
                          "prefix": spec.settings_prefix or f"plugin_{spec.name}_"}} for spec in self.specs)
         return resolved_settings(settings, declarations, self._overrides)
+
+    def freeze(self, settings):
+        """Freeze catalog/config and factory references without sharing provider instances."""
+        frozen = copy.copy(self)
+        frozen._specs = copy.deepcopy(self._specs)
+        frozen._manual_specs = copy.deepcopy(self._manual_specs)
+        frozen._states = dict(self._states)
+        frozen._diagnostics = copy.deepcopy(self._diagnostics)
+        frozen._plan_errors = dict(self._plan_errors)
+        frozen._fixed_settings = copy.deepcopy(self.effective_settings(settings))
+        frozen._validated_factories = dict(self._validated_factories)
+        return frozen
 
     def dependency_errors(self, settings):
         errors, visiting, visited = {}, [], set()
@@ -213,6 +236,8 @@ class PluginManager:
 
     def discover_specs(self, manifest_path) -> None:
         """Compatibility: read the previous explicit additional-plugin list."""
+        if self._fixed_settings is not None:
+            raise RuntimeError("plugin snapshots cannot be modified; use controlled refresh")
         from backend.config.plugin_catalog import legacy_manifests
         from .hooks import HookEvent, PUBLIC_STAGES
         from dataclasses import replace
@@ -308,7 +333,7 @@ class PluginManager:
         phase = "import"
         try:
             self._ensure_extension_import_path()
-            factory = (factory_loader or self._load_factory)(provider)
+            factory = (self._validated_factories.get(provider) if self._fixed_settings is not None else None) or (factory_loader or self._load_factory)(provider)
             phase = "factory"
             if inspect.iscoroutinefunction(factory):
                 raise TypeError("plugin factories must be synchronous")
@@ -423,6 +448,10 @@ _default_manager: PluginManager | None = None
 
 
 def get_plugin_manager() -> PluginManager:
+    from .plugin_runtime import current_snapshot
+    snapshot = current_snapshot()
+    if snapshot is not None:
+        return snapshot.manager
     global _default_manager
     if _default_manager is None:
         _default_manager = PluginManager()

@@ -118,6 +118,7 @@ extensions.skills:create
 
 - 当前架构、工具边界和代码路径：本文。
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
+- 插件开发工具入口为 `backend/plugin_dev.py`，复用生产清单与接口校验，支持骨架生成、显式实例检查和独立阶段／服务试运行，详见[插件开发工具包](plugin-development.md)。
 - 生命周期贡献由 `core/lifecycle.py` 发现、校验和组织，后端启动生成执行计划及 Mermaid 图，并通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询，详见 [`plugin-lifecycle.md`](plugin-lifecycle.md)。
 - Skill 通过 `core/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
 - 评测运行链路和指标：`evaluation-system.md`。
@@ -141,7 +142,7 @@ extensions.skills:create
   作为评测边界的参数与证据，不能复制一套工具或提示词装配链。
 - 知识图谱工具工厂只接受 `KnowledgeGraphProvider`。本地 SQLite Provider 必须由
   组合层创建后注入，工具层不得回退导入具体 Provider。
-- 插件声明与默认配置由 `extensions/<plugin>/plugin.json` 维护；统一扫描仓库扩展目录和 PLUGIN_ROOTS，部署覆盖通过 PLUGIN_CONFIG_FILE 合并。`config/plugin_defaults.py` 和 DEFAULT_PLUGIN_SPECS 是从声明生成的兼容入口，不能再新增独立硬编码表。详见[插件目录发现](plugin-discovery.md)。
+- 插件声明与默认配置由 `extensions/<plugin>/plugin.json` 维护；统一扫描仓库扩展目录和 PLUGIN_ROOTS，部署覆盖通过 PLUGIN_CONFIG_FILE 合并。`plugin_runtime.py` 支持新增插件的受控刷新，运行中的任务绑定原目录、配置、工厂和调度快照；已有插件及路由更新需要重启。`config/plugin_defaults.py` 和 DEFAULT_PLUGIN_SPECS 是从声明生成的兼容入口，不能再新增独立硬编码表。详见[插件目录发现](plugin-discovery.md)。
 - `agent_execution.py` 保持传输无关：新增进度事件先扩展独立的事件适配器，再接入
   执行生命周期，避免把 WebSocket 协议分支重新塞回主协调器。
 - `chat_session.py` 只协调会话、WebSocket 命令和连接生命周期；持久 Run 创建、

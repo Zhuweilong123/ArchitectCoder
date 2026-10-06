@@ -334,11 +334,14 @@ def test_backend_startup_installs_and_exports_authenticated_plan(monkeypatch, tm
     try:
         with TestClient(main.app) as client:
             assert client.get("/api/plugins/plan").status_code == 401
+            assert client.post("/api/plugins/refresh").status_code == 401
             response = client.get("/api/plugins/plan", headers={"Authorization": "Bearer test-plan-token"})
             assert response.status_code == 200
             disk = json.loads((tmp_path / "plugin-plan.json").read_text(encoding="utf-8"))
             assert response.json() == disk
             assert registry.plan_id == disk["plan_id"]
+            refresh = client.post("/api/plugins/refresh", headers={"Authorization": "Bearer test-plan-token"})
+            assert refresh.status_code == 200 and refresh.json()["status"] == "unchanged"
             assert client.get("/api/plugins/graph", headers={"Authorization": "Bearer test-plan-token"}).text == (
                 tmp_path / "plugin-schedule.mmd").read_text(encoding="utf-8")
     finally:

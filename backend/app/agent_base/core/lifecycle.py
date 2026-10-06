@@ -209,6 +209,7 @@ def discover_plan(manager, settings) -> ExecutionPlan:
         phase = "import"
         try:
             factory = manager._load_factory(provider)
+            manager._validated_factories[provider] = factory
             phase = "factory_signature"
             if inspect.iscoroutinefunction(factory):
                 raise TypeError("plugin factories must be synchronous")

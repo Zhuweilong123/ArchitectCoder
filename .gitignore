@@ -34,6 +34,7 @@ backend/.env
 /temp/
 
 # Runtime artifacts (regenerated, never commit)
+backend/.architectcoder/
 *.db
 *.tsbuildinfo
 /data/

@@ -6,7 +6,7 @@
 
 [English](README.md) | **中文**
 
-[快速开始](#快速开始) · [产品演示](#产品演示) · [核心能力](#核心能力) · [真实工程案例](#真实工程案例轻量级车辆仿真) · [文档](#文档)
+[快速开始](#快速开始) · [产品演示](#产品演示) · [插件上手演示](#插件上手演示) · [核心能力](#核心能力) · [真实工程案例](#真实工程案例轻量级车辆仿真) · [文档](#文档)
 
 </div>
 
@@ -104,6 +104,18 @@ python -m pytest test -q
 ```
 
 详见[案例说明](examples/quickstart/README.md)。其中的性能参考是历史摘要，不代表当前环境重新执行后的结果。
+
+## 插件上手演示
+
+无需视频也能体验框架扩展：**主流程总览 → 插件详情 → 接口搜索**，再本地验证 `task_notes`，查看它在 DevAgent 任务中的实际执行。每个插件自行声明接口和阶段贡献，系统统一扫描配置的目录加载。
+
+[![task_notes 的接口与公共阶段绑定](docs/media/plugin-demo/task-notes-zh.svg)](docs/plugin-quickstart.md)
+
+*根据示例真实声明生成的架构预览图。*
+
+[按步骤跑通示例](docs/plugin-quickstart.md) · [下载离线 HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html)
+
+在 GitHub 下载 **HTML 原始文件**，用浏览器打开即可，无需安装或配置模型。本地插件验证需要后端依赖；应用内演示需要配置模型并启用 Trace。
 
 ## 核心能力
 
@@ -210,6 +222,8 @@ HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形
 | 评测与回放 | [评测体系](docs/evaluation-system.md) · [Trace 回放](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
 | 上下文与项目知识 | [上下文管理](docs/context-management-design.md) · [记忆](docs/memory-system-design.md) · [知识图谱](docs/knowledge-graph-design.md) |
 | 扩展开发 | [插件架构](docs/plugin-architecture-design.md) |
+| 插件骨架、契约检查与试运行 | [插件开发工具包](docs/plugin-development.md) |
+| 插件上手与离线示例 | [逐步教程](docs/plugin-quickstart.md) · [HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html) |
 | 可复用 Agent 指南 | [Skill 插件](docs/skills-plugin.md) |
 | 插件组织与调度 | [阶段贡献、执行计划和调度图](docs/plugin-lifecycle.md) |
 
