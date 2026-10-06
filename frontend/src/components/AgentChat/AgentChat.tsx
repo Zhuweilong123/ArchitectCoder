@@ -40,6 +40,8 @@ import {
   sessionTimeFromId, truncateTitle, type ChatMessage,
 } from './agentChatUtils';
 import { createAgentChatEventHandler } from './agentChatEventHandler';
+import { MessageCopyButton } from './MessageCopyButton';
+import { useChatInputHistory } from './useChatInputHistory';
 import './AgentChat.css';
 
 // ── 组件 ──────────────────────────────────────────────
@@ -66,8 +68,13 @@ const AgentChat: React.FC = () => {
       return [];
     }
   });
-  const [inputValue, setInputValue] = useState('');
+  const {
+    inputValue, setInputValue, resetInputHistory, recallInput,
+    canRecallOlder, canRecallNewer, historyPosition, historyCount,
+  } = useChatInputHistory(messages);
   const [busy, setBusy] = useState(false);
+  const [sessions, setSessions] = useState<TraceMeta[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [designContractEnabled, setDesignContractEnabled] = useState(() => {
     try {
       return localStorage.getItem(DESIGN_CONTRACT_STORAGE_KEY) !== 'false';
@@ -221,7 +228,7 @@ const AgentChat: React.FC = () => {
         timestamp: Date.now(),
       },
     ]);
-    setInputValue('');
+    resetInputHistory();
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
@@ -231,7 +238,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+  }, [inputValue, busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled, resetInputHistory]);
 
   const handleMessageAction = useCallback((message: string) => {
     const text = message.trim();
@@ -304,12 +311,29 @@ const AgentChat: React.FC = () => {
   }, [reviewStatus, reviewActedFrom]);
 
   // ── 键盘快捷键 ──
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the input method use arrows and Enter to select/confirm candidates.
+    if (e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+      return;
     }
-  }, [handleSend]);
+    if (busy || sessionsLoading || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    const { value, selectionStart, selectionEnd } = e.currentTarget;
+    if (selectionStart !== selectionEnd) return;
+    const older = e.key === 'ArrowUp';
+    const atBoundary = older
+      ? !value.slice(0, selectionStart).includes('\n')
+      : !value.slice(selectionEnd).includes('\n');
+    if (!atBoundary || !(older ? canRecallOlder : canRecallNewer)) return;
+    e.preventDefault();
+    recallInput(older ? -1 : 1);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ cursor: older ? 'start' : 'end' });
+    });
+  }, [handleSend, busy, sessionsLoading, canRecallOlder, canRecallNewer, recallInput]);
 
   // ── 关闭面板（仅隐藏）──
   // 连接与 agent 运行都和面板开关解耦：关面板只是收起 UI，
@@ -340,15 +364,12 @@ const AgentChat: React.FC = () => {
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
     useReviewStore.getState().clear();
-    setInputValue('');
+    resetInputHistory();
     setBusy(false);
     connect();
-  }, [connect, currentSteps.length, currentTodos.length, messages, review.status]);
+  }, [connect, currentSteps.length, currentTodos.length, messages, review.status, resetInputHistory]);
 
   // ── 历史会话（恢复继续聊，结论级）──
-  const [sessions, setSessions] = useState<TraceMeta[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-
   const loadSessions = useCallback(async () => {
     setSessionsLoading(true);
     try {
@@ -386,7 +407,7 @@ const AgentChat: React.FC = () => {
       setTodoExpanded(false);
       todoSeenInTaskRef.current = false;
       useReviewStore.getState().clear();
-      setInputValue('');
+      resetInputHistory();
       setBusy(false);
       connect();
     } catch {
@@ -394,7 +415,7 @@ const AgentChat: React.FC = () => {
     } finally {
       setSessionsLoading(false);
     }
-  }, [connect]);
+  }, [connect, resetInputHistory]);
 
   // ── 挂载即建立长连接：连接随应用存活，与面板开关解耦 ──
   // AgentChat 在 App 中常驻挂载（App.tsx），面板只是显示/隐藏；
@@ -757,10 +778,11 @@ const AgentChat: React.FC = () => {
                 </div>
                 <div className="agent-message-body">
                   <div className="agent-message-content">
-                    {msg.content.split('\n').map((line, i) => (
-                      <span key={i}>{line}<br /></span>
-                    ))}
+                    {msg.content}
                   </div>
+                  {msg.content.length > 0 && (
+                    <MessageCopyButton content={msg.content} language={interfaceLanguage} />
+                  )}
                   {msg.action && !messages.slice(index + 1).some((later) => later.role === 'user') && (
                     <Button
                       type="primary"
@@ -924,6 +946,11 @@ const AgentChat: React.FC = () => {
               style={{ resize: 'none' }}
             />
             <div className="agent-chat-input-actions">
+              {historyPosition !== null && (
+                <span className="agent-chat-input-history-position" aria-live="polite">
+                  {`${copy('inputHistory')} ${historyPosition}/${historyCount}`}
+                </span>
+              )}
               {busy ? (
                 <Button
                   danger
