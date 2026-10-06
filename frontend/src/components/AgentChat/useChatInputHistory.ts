@@ -1,11 +1,24 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ChatMessage } from './agentChatUtils';
 
-/** Recall current-session user inputs without changing the recorded messages. */
-export function useChatInputHistory(messages: ChatMessage[]) {
-  const [inputValue, setInputValue] = useState('');
+function loadDraft(sessionId: string): string {
+  try { return localStorage.getItem(`agentChatDraft:${sessionId}`) || ''; }
+  catch { return ''; }
+}
+
+function saveDraft(sessionId: string, value: string) {
+  try {
+    if (value) localStorage.setItem(`agentChatDraft:${sessionId}`, value);
+    else localStorage.removeItem(`agentChatDraft:${sessionId}`);
+  } catch { /* Keep editing usable if browser storage is unavailable. */ }
+}
+
+/** Recall user inputs and save an independent unsent draft for each session. */
+export function useChatInputHistory(messages: ChatMessage[], initialSessionId: string) {
+  const sessionRef = useRef(initialSessionId);
+  const [inputValue, updateInputValue] = useState(() => loadDraft(initialSessionId));
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const draftRef = useRef('');
+  const draftRef = useRef(inputValue);
   const editsRef = useRef(new Map<string, string>());
   const history = useMemo(
     () => messages.filter((item) => item.role === 'user' && item.content.trim()),
@@ -14,10 +27,27 @@ export function useChatInputHistory(messages: ChatMessage[]) {
   const selectedIndex = history.findIndex((item) => item.id === selectedId);
   const currentIndex = selectedIndex < 0 ? history.length : selectedIndex;
 
+  const setInputValue = useCallback((value: string) => {
+    updateInputValue(value);
+    // Save immediately so a refresh right after typing cannot lose the edit.
+    saveDraft(sessionRef.current, value);
+  }, []);
+
   const resetInputHistory = useCallback(() => {
-    setInputValue('');
+    updateInputValue('');
+    saveDraft(sessionRef.current, '');
     setSelectedId(null);
     draftRef.current = '';
+    editsRef.current.clear();
+  }, []);
+
+  const activateInputSession = useCallback((sessionId: string) => {
+    // Old-session edits are already saved; loading never clears either draft.
+    sessionRef.current = sessionId;
+    const draft = loadDraft(sessionId);
+    updateInputValue(draft);
+    setSelectedId(null);
+    draftRef.current = draft;
     editsRef.current.clear();
   }, []);
 
@@ -31,13 +61,15 @@ export function useChatInputHistory(messages: ChatMessage[]) {
     }
     const next = history[nextIndex];
     setSelectedId(next?.id ?? null);
-    setInputValue(next
+    updateInputValue(next
       ? editsRef.current.get(next.id) ?? next.content
       : draftRef.current);
+    // Browsing historical messages must not overwrite the unsent draft.
+    if (!next) saveDraft(sessionRef.current, draftRef.current);
   }, [currentIndex, history, inputValue, selectedIndex]);
 
   return {
-    inputValue, setInputValue, resetInputHistory, recallInput,
+    inputValue, setInputValue, resetInputHistory, activateInputSession, recallInput,
     canRecallOlder: currentIndex > 0,
     canRecallNewer: selectedIndex >= 0,
     historyPosition: selectedIndex >= 0 ? selectedIndex + 1 : null,
