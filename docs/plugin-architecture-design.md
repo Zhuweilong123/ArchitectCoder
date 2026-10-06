@@ -240,4 +240,6 @@ AGENT_TRACE_PROVIDER=extensions.trace:create
 4. 若位于已有扫描根目录且不增加 HTTP router，点击“扫描新插件”；其余情况重启后端。在插件架构中检查声明、状态及绑定，运行任务验证 Trace。
 5. 可参考 [task_notes](../examples/plugins/task_notes/plugin.json)，无需修改 DEFAULT_PLUGIN_SPECS 或默认阶段映射表。
 
+插件骨架生成、接口契约检查和独立试运行使用[插件开发工具包](plugin-development.md)；应用全量部署校验继续使用 `export_plugin_plan.py --check`。
+
 新增核心领域端口时，仍先定义端口、请求结果模型与 NoOp 实现，再在业务装配点调用对应 loader。将接口绑定到公共阶段不会自动创建新的业务调用入口。

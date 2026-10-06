@@ -109,6 +109,8 @@ PLUGIN_CONFIG_FILE=config/plugin-overrides.example.json
 
 ## 示例与观察
 
+开发新插件可使用[插件开发工具包](plugin-development.md)：`python backend/plugin_dev.py new <id> --root <directory>` 生成骨架，`check` / `check --instantiate` 分别检查声明与实际接口，`run --method` / `run --stage` 在独立调度上下文中验证服务或阶段贡献。无需启动后端，检查和试运行报告可用于 CI。
+
 [task_notes 示例](../examples/plugins/task_notes/plugin.json) 包含一个按需服务接口与 run_start 观察贡献。设置 `PLUGIN_ROOTS=["../examples/plugins"]` 并重启后端，即可在插件架构中看到它；开启 Trace 后运行一次任务，可以查看 task_notes.run_start 的执行记录。
 
 插件计划包含声明来源、版本、槽位、依赖、配置参数名称和接口绑定；不导出部署参数值。插件架构面板展示这些信息。组织图、调度图与回放沿用同一个 plan_id。

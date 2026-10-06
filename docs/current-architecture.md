@@ -118,6 +118,7 @@ extensions.skills:create
 
 - 当前架构、工具边界和代码路径：本文。
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
+- 插件开发工具入口为 `backend/plugin_dev.py`，复用生产清单与接口校验，支持骨架生成、显式实例检查和独立阶段／服务试运行，详见[插件开发工具包](plugin-development.md)。
 - 生命周期贡献由 `core/lifecycle.py` 发现、校验和组织，后端启动生成执行计划及 Mermaid 图，并通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询，详见 [`plugin-lifecycle.md`](plugin-lifecycle.md)。
 - Skill 通过 `core/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
 - 评测运行链路和指标：`evaluation-system.md`。
