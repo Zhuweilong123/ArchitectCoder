@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "test:layout": "node --test tests/architectureLayout.cjs tests/componentArchitecture.cjs",
     "test:html": "node --test tests/projectHtml.cjs",
-    "test:plugins": "node --test tests/pluginGraph.cjs",
+    "test:plugins": "node --test tests/pluginGraph.cjs tests/pluginArchitectureHtml.cjs",
     "preview": "vite preview"
   },
   "dependencies": {
