@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "name": "team_checks",
+      "provider": "my_team.checks:create",
+      "enabled": false,
+      "interfaces": ["query"],
+      "interface_stages": {"query": "run_start"}
+    }
+  ]
+}

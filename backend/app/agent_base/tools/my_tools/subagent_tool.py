@@ -24,6 +24,7 @@ from app.agent_base.tools.my_tools.foundation_tools import (
     create_foundation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
+from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
 from app.runtime import build_command_executor, workspace_root_for
 from app.runtime import TaskKind
 
@@ -120,6 +121,7 @@ def _build_toolkit_tools(
     source_dir: str, test_dir: str, design_dir: str,
     db_path: str, project_file: str,
     review_manager, progress, command_executor, workspace_root,
+    skill_catalog: SkillCatalog | None = None,
 ) -> list:
     """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
     foundation = create_foundation_tools(
@@ -129,8 +131,11 @@ def _build_toolkit_tools(
         workspace_root=workspace_root,
     )
     by_name = {tool.name: tool for tool in foundation}
+    if skill_catalog is None:
+        skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
+    skill_tools = [SkillTool(catalog=skill_catalog)] if skill_catalog.entries else []
     if kind == "standard":
-        return [*foundation, SkillTool()]
+        return [*foundation, *skill_tools]
 
     # Read-only toolkits intentionally expose only the foundation inspection
     # contract.  Directory listing and text search are needed to make a
@@ -146,11 +151,11 @@ def _build_toolkit_tools(
     if kind == "read_only":
         return inspection_tools
     if kind in {"kg_analysis", "strategy"}:
-        return [*inspection_tools, SkillTool()]
+        return [*inspection_tools, *skill_tools]
     if kind == "verification":
         return [
             *inspection_tools,
-            SkillTool(),
+            *skill_tools,
             VerificationRunTaskTool(
                 source_dir=source_dir,
                 test_dir=test_dir,
@@ -195,6 +200,7 @@ class SpawnSubagentTool(AsyncTool):
         single_use: bool = False,
         max_cumulative_tokens: int | None = None,
         child_run_name: str = "subagent",
+        skill_catalog: SkillCatalog | None = None,
     ):
         super().__init__(
             name="spawn_subagent",
@@ -258,7 +264,9 @@ class SpawnSubagentTool(AsyncTool):
         # db_path/project_file are retained in _build_toolkit_tools' signature
         # for compatibility with callers that construct custom toolkits.
         db_path = ""
-        skills = build_skills_section()
+        if skill_catalog is None:
+            skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
+        skills = build_skills_section(catalog=skill_catalog)
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
         for kind in self.toolkits:
@@ -266,7 +274,7 @@ class SpawnSubagentTool(AsyncTool):
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
                 db_path, project_file, review_manager, progress,
-                command_executor, workspace_root,
+                command_executor, workspace_root, skill_catalog,
             ):
                 registry.register_tool(t)
             self.sub_registries[kind] = registry
@@ -276,8 +284,8 @@ class SpawnSubagentTool(AsyncTool):
                 prompt = VERIFICATION_SUBAGENT_SYSTEM
             else:
                 prompt = SUBAGENT_SYSTEM
-            if kind == "standard" and skills:
-                prompt = f"{SUBAGENT_SYSTEM}\n\n{skills}"
+            if kind != "read_only" and skills:
+                prompt = f"{prompt}\n\n{skills}"
             self.system_prompts[kind] = prompt
 
     @staticmethod
@@ -396,6 +404,46 @@ class SpawnSubagentTool(AsyncTool):
         )
 
     async def _execute(self, params: dict) -> str:
+        from ...core.operations import operation_scope
+        parent_run_id = get_runtime().run_id
+        child_run_id = f"{parent_run_id}/{self.child_run_name}" if parent_run_id else self.child_run_name
+        with operation_scope("subagent", run_id=child_run_id, stage=HookEvent.RUN_START.value):
+            return await self._execute_impl(params)
+
+    async def _call_model(self, messages, active_tools, finalization_mode, request_context, runtime):
+        from ...core.operations import operation_scope
+        from app.trace.tracing import trace_span
+        with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
+            response = None
+            try:
+                before = await get_hooks().atrigger(HookEvent.MODEL_BEFORE, HookContext(
+                    HookEvent.MODEL_BEFORE, "spawn_subagent", run_id=runtime.run_id,
+                    runtime=runtime, messages=messages,
+                ))
+                if isinstance(before, HookDecision) and before.action in {HookAction.STOP, "stop"}:
+                    operation.status = "blocked"
+                    return None
+                with trace_span(SUBAGENT_TRACE_SPAN):
+                    response = await asyncio.wait_for(self.llm.ainvoke_with_tools(
+                        messages=messages, tools=active_tools,
+                        tool_choice="none" if finalization_mode else "auto",
+                        temperature=0.3, trace_context=request_context,
+                    ), timeout=self.llm_timeout_seconds)
+                return response
+            except (asyncio.CancelledError, AgentInterrupted):
+                operation.status = "cancelled"
+                raise
+            except Exception:
+                operation.status = "failed"
+                raise
+            finally:
+                await get_hooks().atrigger(HookEvent.MODEL_AFTER, HookContext(
+                    HookEvent.MODEL_AFTER, "spawn_subagent", run_id=runtime.run_id,
+                    runtime=runtime, messages=messages, llm_response=response,
+                    payload={"status": operation.status, "observers_only": operation.status != "completed"},
+                ))
+
+    async def _execute_impl(self, params: dict) -> str:
         description = params.get("description", "")
         if not isinstance(description, str) or not description.strip():
             return "Error: description is required"
@@ -463,6 +511,13 @@ class SpawnSubagentTool(AsyncTool):
         finalization_added = False
         context_soft_notified = False
         step = 0
+        round_open = False
+        terminal_status = "completed"
+
+        async def publish(stage, **data):
+            await get_hooks().aemit(stage, HookContext(stage, "spawn_subagent",
+                run_id=child_runtime.run_id, runtime=child_runtime,
+                payload={"step": step, **data}))
 
         def budget_message(reason: str) -> str:
             return (
@@ -483,10 +538,12 @@ class SpawnSubagentTool(AsyncTool):
             )
 
         def safe_failure(reason: str, error: Exception | None = None) -> str:
+            nonlocal terminal_status
+            terminal_status = "failed"
             return self._safe_failure_summary(reason, evidence_summary, budget, error)
 
         try:
-            get_hooks().trigger(
+            await get_hooks().atrigger(
                 HookEvent.RUN_START,
                 HookContext(
                     event=HookEvent.RUN_START,
@@ -496,7 +553,12 @@ class SpawnSubagentTool(AsyncTool):
                 ),
             )
             while True:
+                if round_open:
+                    round_open = False
+                    await publish(HookEvent.ROUND_AFTER)
                 step += 1
+                round_open = True
+                await publish(HookEvent.ROUND_BEFORE)
                 # Token usage is observed per request. Convergence, time, and
                 # tool-call policies decide whether the subagent continues.
                 finalization_mode = bool(forced_finalization_reason)
@@ -600,47 +662,14 @@ class SpawnSubagentTool(AsyncTool):
                         "token_budget_stop_reason": "context_hard_limit",
                     })
                     return stopped_message("context hard limit")
-                before = get_hooks().trigger(
-                    HookEvent.LLM_BEFORE,
-                    HookContext(
-                        event=HookEvent.LLM_BEFORE,
-                        agent_name="spawn_subagent",
-                        run_id=child_runtime.run_id,
-                        runtime=child_runtime,
-                        messages=messages,
-                    ),
-                )
-                if isinstance(before, HookDecision) and before.action in {HookAction.STOP, "stop"}:
+                try:
+                    response = await self._call_model(messages, active_tools, finalization_mode, request_context, child_runtime)
+                except asyncio.TimeoutError:
+                    await publish(HookEvent.ERROR, error_type="TimeoutError", source="model")
+                    return safe_failure("LLM call timed out")
+                if response is None:
                     self.last_token_usage = budget.total_tokens
                     return budget_message("before the next model call")
-
-                from app.trace.tracing import trace_span
-                try:
-                    with trace_span(SUBAGENT_TRACE_SPAN):
-                        response = await asyncio.wait_for(
-                            self.llm.ainvoke_with_tools(
-                                messages=messages,
-                                tools=active_tools,
-                                tool_choice="none" if finalization_mode else "auto",
-                                temperature=0.3,
-                                trace_context=request_context,
-                            ),
-                            timeout=self.llm_timeout_seconds,
-                        )
-                except asyncio.TimeoutError:
-                    return safe_failure("LLM call timed out")
-
-                get_hooks().trigger(
-                    HookEvent.LLM_AFTER,
-                    HookContext(
-                        event=HookEvent.LLM_AFTER,
-                        agent_name="spawn_subagent",
-                        run_id=child_runtime.run_id,
-                        runtime=child_runtime,
-                        messages=messages,
-                        llm_response=response,
-                    ),
-                )
                 self.last_token_usage = budget.total_tokens
                 self.last_context_report.update({
                     "token_budget_used": budget.request_tokens,
@@ -662,7 +691,7 @@ class SpawnSubagentTool(AsyncTool):
                     if content.strip():
                         return content.strip()
                     child_runtime.control_decision = None
-                    get_hooks().emit(
+                    await get_hooks().aemit(
                         HookEvent.TOOL_BATCH_AFTER,
                         HookContext(
                             event=HookEvent.TOOL_BATCH_AFTER,
@@ -698,6 +727,7 @@ class SpawnSubagentTool(AsyncTool):
                 # this batch under the child span so blocking reviews and
                 # nested tools retain their real order without duplicates.
                 from app.trace.tracing import trace_span
+                await publish(HookEvent.TOOL_BATCH_BEFORE, tool_count=len(tool_calls))
                 with trace_span(SUBAGENT_TRACE_SPAN):
                     round_result = await executor.execute(tool_calls, step=step)
                 # ToolRoundExecutor returns an internal compact result shape.
@@ -705,7 +735,7 @@ class SpawnSubagentTool(AsyncTool):
                 # the parent FC loop does the same in fc_loop.py.
                 messages.extend(self._tool_messages(round_result.tool_results))
                 child_runtime.control_decision = None
-                get_hooks().emit(
+                await get_hooks().aemit(
                     HookEvent.TOOL_BATCH_AFTER,
                     HookContext(
                         event=HookEvent.TOOL_BATCH_AFTER,
@@ -732,21 +762,34 @@ class SpawnSubagentTool(AsyncTool):
                         forced_finalization_reason = decision.reason or "convergence_stalled"
 
         except AgentInterrupted:
+            terminal_status = "cancelled"
+            await publish(HookEvent.CANCEL)
             raise
         except asyncio.CancelledError:
+            terminal_status = "cancelled"
+            await publish(HookEvent.CANCEL)
             raise
         except Exception as exc:
+            await publish(HookEvent.ERROR, error_type=type(exc).__name__, source="subagent")
             logger.exception("[spawn_subagent] child run failed; degrading safely")
             return safe_failure("internal child-run error", exc)
         finally:
             try:
-                get_hooks().trigger(
+                from ...core.operations import current_operation
+                operation = current_operation()
+                if operation is not None:
+                    operation.status = terminal_status
+                if round_open:
+                    await publish(HookEvent.ROUND_AFTER, status=terminal_status)
+                await publish(HookEvent.FINALIZE, status=terminal_status)
+                await get_hooks().atrigger(
                     HookEvent.RUN_END,
                     HookContext(
                         event=HookEvent.RUN_END,
                         agent_name="spawn_subagent",
                         run_id=child_runtime.run_id,
                         runtime=child_runtime,
+                        payload={"status": terminal_status, "execution_only": True},
                     ),
                 )
             finally:

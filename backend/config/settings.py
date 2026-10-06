@@ -9,7 +9,7 @@ _os.environ.setdefault("OMP_NUM_THREADS", "1")
 import logging
 from pathlib import Path
 from pydantic_settings import BaseSettings
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from functools import lru_cache
 from typing import Literal
 
@@ -20,6 +20,11 @@ from .plugin_defaults import (
     DEFAULT_MEMORY_PROVIDER,
     DEFAULT_ORCHESTRATION_PROVIDER,
     DEFAULT_TRACE_PROVIDER,
+    DEFAULT_SKILLS_PROVIDER,
+)
+from .plugin_catalog import (
+    BUILTIN_PLUGIN_ROOT, scan_manifests, packaged_default, packaged_enabled,
+    deployment_overrides, resolved_settings, legacy_manifests,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,29 +90,29 @@ class Settings(BaseSettings):
     agent_main_subagent_enabled: bool = True
     # Optional architecture-aware scheduling. Disabling it preserves the
     # single-Agent flow; enabling it requires an available project graph.
-    agent_orchestration_enabled: bool = True
+    agent_orchestration_enabled: bool = packaged_enabled("orchestration")
     agent_orchestrator_provider: str = DEFAULT_ORCHESTRATION_PROVIDER
-    agent_architecture_scheduling_max_workers: int = 2
-    agent_architecture_scheduling_total_tokens: int = 64000
-    agent_architecture_scheduling_worker_seconds: float = 90.0
+    agent_architecture_scheduling_max_workers: int = packaged_default("orchestration", "max_workers", 0)
+    agent_architecture_scheduling_total_tokens: int = packaged_default("orchestration", "total_tokens", 0)
+    agent_architecture_scheduling_worker_seconds: float = packaged_default("orchestration", "worker_seconds", 0.0)
 
     # Optional cross-task memory.  The core only depends on MemoryPort; the
     # concrete SQLite adapter is loaded dynamically so it can be disabled or
     # replaced without changing the Agent main loop.
-    agent_memory_enabled: bool = True
+    agent_memory_enabled: bool = packaged_enabled("memory")
     agent_memory_provider: str = DEFAULT_MEMORY_PROVIDER
-    agent_memory_db_path: str = ""
-    agent_memory_recall_top_k: int = 3
-    agent_memory_recall_max_tokens: int = 500
+    agent_memory_db_path: str = packaged_default("memory", "db_path", "")
+    agent_memory_recall_top_k: int = packaged_default("memory", "recall_top_k", 0)
+    agent_memory_recall_max_tokens: int = packaged_default("memory", "recall_max_tokens", 0)
 
     # Optional trace backend.  The Agent core only depends on the tracing
     # port; the default JSONL provider remains compatible with existing logs.
-    agent_trace_enabled: bool = True
+    agent_trace_enabled: bool = packaged_enabled("trace")
     agent_trace_provider: str = DEFAULT_TRACE_PROVIDER
 
     # Optional evaluation backend.  The local Eval MVP is the default;
     # external CI or hosted evaluation services can implement the same port.
-    agent_evals_enabled: bool = True
+    agent_evals_enabled: bool = packaged_enabled("evals")
     agent_evals_provider: str = DEFAULT_EVALS_PROVIDER
 
     # Optional knowledge-graph backend.  Application services depend on the
@@ -115,14 +120,37 @@ class Settings(BaseSettings):
     # implementation replaceable by a remote or domain-specific backend.
     # The same plugin switch controls both graph backend availability and
     # whether graph tools are exposed to the main Agent.
-    agent_knowledge_graph_enabled: bool = True
+    agent_knowledge_graph_enabled: bool = packaged_enabled("knowledge_graph")
     agent_knowledge_graph_provider: str = DEFAULT_KNOWLEDGE_GRAPH_PROVIDER
-    agent_knowledge_graph_db_path: str = ""
+    agent_knowledge_graph_db_path: str = packaged_default("knowledge_graph", "db_path", "")
 
     # Optional design/source/test contract collector.  The core only depends
     # on the ContractProvider port so alternative analyzers can be installed.
-    agent_design_contract_enabled: bool = True
+    agent_design_contract_enabled: bool = packaged_enabled("design_contract")
     agent_design_contract_provider: str = DEFAULT_DESIGN_CONTRACT_PROVIDER
+
+    # Read-only on-demand skills; each Agent captures one provider catalog.
+    agent_skills_enabled: bool = packaged_enabled("skills")
+    agent_skills_provider: str = DEFAULT_SKILLS_PROVIDER
+    plugin_plan_dir: str = str(Path(__file__).resolve().parents[1] / ".architectcoder" / "plugins")
+    plugin_manifest_file: str = ""
+    # Additional roots; the repository extensions root is always scanned.
+    plugin_roots: list[str] = Field(default_factory=list)
+    plugin_config_file: str = ""
+
+    @model_validator(mode="after")
+    def resolve_plugin_configuration(self):
+        declarations = scan_manifests((BUILTIN_PLUGIN_ROOT, *self.plugin_roots))
+        extra = legacy_manifests(self.plugin_manifest_file)
+        if {item["id"] for item in declarations} & {item["id"] for item in extra}:
+            raise ValueError("Legacy plugin list duplicates a scanned plugin ID")
+        declarations = (*declarations, *extra)
+        overrides = deployment_overrides(self.plugin_config_file, {item["id"] for item in declarations})
+        effective = resolved_settings(self, declarations, overrides)
+        # Keep the original explicit field set so later discovery can distinguish
+        # environment overrides from default values inherited from manifests.
+        self.__dict__.update(effective.__dict__)
+        return self
 
     # Command execution is selected by the runtime.  ``auto`` uses the native
     # host environment; WSL is an explicit compatibility option for projects

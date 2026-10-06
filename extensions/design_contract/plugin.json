@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "design_contract",
+  "version": "1.0.0",
+  "slot": "design_contract",
+  "provider": "extensions.design_contract:create",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_design_contract_enabled",
+    "provider": "agent_design_contract_provider"
+  },
+  "interfaces": {
+    "collect": {
+      "stage": "finalize",
+      "required": true,
+      "async": false
+    },
+    "collect_facts": {
+      "stage": "finalize",
+      "required": false,
+      "async": false
+    },
+    "snapshot_from_facts": {
+      "stage": "finalize",
+      "required": false,
+      "async": false
+    }
+  },
+  "defaults": {},
+  "dependencies": []
+}

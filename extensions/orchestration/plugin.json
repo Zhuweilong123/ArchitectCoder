@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "orchestration",
+  "version": "1.0.0",
+  "slot": "orchestration",
+  "provider": "extensions.orchestration:create",
+  "contribution_loader": "extensions.orchestration:list_contributions",
+  "optional_dependencies": ["knowledge_graph"],
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_orchestration_enabled",
+    "provider": "agent_orchestrator_provider",
+    "prefix": "agent_architecture_scheduling_"
+  },
+  "interfaces": {
+    "prepare": {
+      "stage": "prepare",
+      "required": true,
+      "async": true
+    },
+    "create_tools": {
+      "stage": "initialize",
+      "required": false,
+      "async": false
+    },
+    "explore": {
+      "stage": "tool_before",
+      "required": false,
+      "async": true
+    }
+  },
+  "defaults": {
+    "max_workers": 2,
+    "total_tokens": 64000,
+    "worker_seconds": 90.0
+  },
+  "dependencies": []
+}

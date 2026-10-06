@@ -15,7 +15,7 @@ import {
   AppstoreOutlined, EyeInvisibleOutlined,
   DownOutlined, TableOutlined,
   ProjectOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
-  ExportOutlined,
+  ExportOutlined, ApartmentOutlined,
 } from '@ant-design/icons';
 import { selectActiveDiagram, useDiagramStore } from '../../stores/diagramStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -184,7 +184,7 @@ const Toolbar: React.FC = () => {
     showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
     projectRoot, designDir, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
-    setProjectRoot, setDesignDir, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible,
+    setProjectRoot, setDesignDir, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible, setPluginArchitectureVisible,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -1047,6 +1047,12 @@ const Toolbar: React.FC = () => {
         <Tooltip title="Trace 回放（查看会话 LLM / 工具调用记录）">
           <Button icon={<HistoryOutlined />} onClick={() => setTraceVisible(true)}>
             Trace
+          </Button>
+        </Tooltip>
+
+        <Tooltip title={interfaceLanguage === 'en' ? 'Inspect plugin organization and lifecycle scheduling' : '查看插件组织、生命周期阶段和接口调度顺序'}>
+          <Button icon={<ApartmentOutlined />} onClick={() => setPluginArchitectureVisible(true)}>
+            {interfaceLanguage === 'en' ? 'Plugin architecture' : '插件架构'}
           </Button>
         </Tooltip>
 

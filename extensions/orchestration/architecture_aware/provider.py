@@ -46,7 +46,7 @@ from .scheduler import (
 from .evidence import collect_file_evidence
 from .evidence_report import normalize_worker_report
 from .routing import routing_context, routing_map
-from .routing_checkpoint import register_routing_checkpoint_hooks
+from .routing_checkpoint import register_routing_checkpoint_hooks, list_contributions
 
 logger = logging.getLogger(__name__)
 
@@ -636,5 +636,6 @@ class ArchitectureAwareOrchestrator:
 
     def create_tools(self, **_kwargs):
         from .tool import ArchitectureRouteTool
+        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
 
-        return [ArchitectureRouteTool(self)]
+        return [ArchitectureRouteTool(schedule_tool_provider(self, "orchestration"))]

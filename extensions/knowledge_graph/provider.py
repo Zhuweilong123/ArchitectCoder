@@ -204,6 +204,7 @@ class LocalKnowledgeGraphProvider:
     ) -> list[Any]:
         """Create Agent tools while keeping the concrete factory in this extension."""
         from .tools import create_kg_v2_tools
+        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
 
         scoped = self if self.db_path or not project_file else LocalKnowledgeGraphProvider(
             settings=self.settings, project_file=project_file,
@@ -212,7 +213,7 @@ class LocalKnowledgeGraphProvider:
             project_file=project_file,
             source_dir=source_dir,
             include_compare=include_compare,
-            provider=scoped,
+            provider=schedule_tool_provider(scoped, "knowledge_graph"),
         )
 
     @staticmethod

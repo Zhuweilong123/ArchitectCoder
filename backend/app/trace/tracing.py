@@ -296,7 +296,7 @@ def load_trace(*, settings=None, **kwargs) -> TraceProvider:
     """Load trace through the central extension manager."""
     from app.agent_base.core.plugins import get_plugin_manager
 
-    instance = get_plugin_manager().load(
+    instance = get_plugin_manager().load_optional(
         "trace",
         settings=settings,
         kwargs=kwargs,

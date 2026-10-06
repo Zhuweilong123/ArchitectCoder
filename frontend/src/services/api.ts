@@ -2,6 +2,7 @@
 
 import axios from 'axios';
 import type { UmlDiagram, Project } from '../types/uml';
+import type { PluginExecutionPlan, PluginLoadReport } from '../types/plugins';
 
 // Read auth token from Vite env var (VITE_API_TOKEN in .env.local)
 const API_TOKEN = import.meta.env.VITE_API_TOKEN as string | undefined;
@@ -13,6 +14,19 @@ const api = axios.create({
     ? { Authorization: `Bearer ${API_TOKEN}` }
     : {},
 });
+
+export async function getPluginPlan(signal?: AbortSignal): Promise<PluginExecutionPlan> {
+  const { data } = await api.get<PluginExecutionPlan>('/plugins/plan', { signal });
+  if (data.schema_version !== 1 || !Array.isArray(data.plugins) || !Array.isArray(data.stages)) {
+    throw new Error('Unsupported plugin execution plan');
+  }
+  return data;
+}
+
+export async function getPluginDiagnostics(signal?: AbortSignal): Promise<PluginLoadReport> {
+  const { data } = await api.get<PluginLoadReport>('/plugins/diagnostics', { signal });
+  return data;
+}
 
 // ─── Files ──────────────────────────────────────────────
 
@@ -324,14 +338,15 @@ export async function publishTraceCaseDraft(draftId: string, req: {
   const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/publish`, req, { timeout: 15000 });
   return data;
 }
-export async function listTraces(): Promise<TraceMeta[]> {
-  const { data } = await api.get('/trace/list');
+export async function listTraces(signal?: AbortSignal): Promise<TraceMeta[]> {
+  const { data } = await api.get('/trace/list', { signal });
   return data.traces;
 }
 
-export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type']): Promise<TraceDetail> {
+export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type'], signal?: AbortSignal): Promise<TraceDetail> {
   const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`, {
     params: traceType ? { trace_type: traceType } : undefined,
+    signal,
   });
   return data;
 }

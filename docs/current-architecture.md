@@ -2,13 +2,15 @@
 
 > 状态：当前实现说明（非历史方案）
 >
-> 代码基线：`e1564b6`（`dev-4.0` 最新代码提交；后续文档同步提交另见 Git 历史）
+> 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-09-11；当前 HEAD 为文档提交 `89ae5b5`
+> 文档同步：2026-10-05
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
 ## 1. 总体流程
+
+全部七个内置插件槽位的领域接口已纳入统一计划。公共阶段收敛为 13 个：初始化、准备、执行开始、每轮前、模型前后、工具批次前、工具前后、工具批次后、每轮后、收尾和执行结束。异常、取消、审核结果与后台任务通知单独归类。`plugins.py` 负责发现与加载，`lifecycle.py` 编译计划，`plugin_dispatch.py` 按请求执行指定接口；接口调用继承活动操作的阶段，不重复发布阶段事件。HookRegistry 支持同步与异步调度。`operations.py` 记录模型、工具、插件和子任务的操作标识、父子关系、范围与状态，前端可从操作树定位回放。`run_end` 只表示执行区间结束，审批状态和后台归档状态分别管理。详见[插件生命周期](plugin-lifecycle.md)。
 
 ```text
 WebSocket / Evaluation / future HTTP or CLI
@@ -91,6 +93,8 @@ extensions.memory:create
 extensions.trace:create
 extensions.evals:create
 extensions.knowledge_graph:create
+extensions.design_contract:create
+extensions.skills:create
 ```
 
 应用层只依赖稳定端口：`MemoryPort`、`KnowledgeGraphProvider`、Trace
@@ -114,6 +118,8 @@ extensions.knowledge_graph:create
 
 - 当前架构、工具边界和代码路径：本文。
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
+- 生命周期贡献由 `core/lifecycle.py` 发现、校验和组织，后端启动生成执行计划及 Mermaid 图，并通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询，详见 [`plugin-lifecycle.md`](plugin-lifecycle.md)。
+- Skill 通过 `core/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
 - 评测运行链路和指标：`evaluation-system.md`。
 - Trace 转评测用例：`trace-to-eval-case-factory-design.md`。
 - memory、knowledge graph、trace 的领域细节：对应子系统设计文档。
@@ -135,8 +141,7 @@ extensions.knowledge_graph:create
   作为评测边界的参数与证据，不能复制一套工具或提示词装配链。
 - 知识图谱工具工厂只接受 `KnowledgeGraphProvider`。本地 SQLite Provider 必须由
   组合层创建后注入，工具层不得回退导入具体 Provider。
-- 内置插件 Provider 默认值只在 `config/plugin_defaults.py` 定义，`Settings` 和
-  `PluginManager` 只引用该定义。
+- 插件声明与默认配置由 `extensions/<plugin>/plugin.json` 维护；统一扫描仓库扩展目录和 PLUGIN_ROOTS，部署覆盖通过 PLUGIN_CONFIG_FILE 合并。`config/plugin_defaults.py` 和 DEFAULT_PLUGIN_SPECS 是从声明生成的兼容入口，不能再新增独立硬编码表。详见[插件目录发现](plugin-discovery.md)。
 - `agent_execution.py` 保持传输无关：新增进度事件先扩展独立的事件适配器，再接入
   执行生命周期，避免把 WebSocket 协议分支重新塞回主协调器。
 - `chat_session.py` 只协调会话、WebSocket 命令和连接生命周期；持久 Run 创建、
@@ -169,5 +174,4 @@ extensions.knowledge_graph:create
 
 当前前端分层优化基线已完成。后续维护新功能时，应优先复用上述公共运行时、请求边界
 和纯计算模块，避免把协议分支、API 批量请求或布局算法重新放回页面组件。所有迁移
-必须保持公开工具/Provider 契约不变；当前按用户要求不新增自动化测试，使用既有构建
-和检查命令验证变更。
+必须保持公开工具/Provider 契约不变，验证应覆盖实际配置、调度及故障路径，并运行相关构建和检查命令。

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "plugins": {
+    "memory": {
+      "enabled": true,
+      "config": {
+        "recall_top_k": 3,
+        "recall_max_tokens": 500
+      }
+    }
+  }
+}

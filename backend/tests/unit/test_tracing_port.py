@@ -1,6 +1,8 @@
 """Tests for the provider-neutral tracing boundary."""
 
 from types import SimpleNamespace
+import json
+from pathlib import Path
 
 from app.trace.tracing import (
     NoOpTraceProvider,
@@ -9,6 +11,23 @@ from app.trace.tracing import (
     emit_trace,
     load_trace,
 )
+
+
+def test_jsonl_event_merges_run_metadata_and_preserves_recorder_identity(tmp_path):
+    from extensions.trace.chat_trace import ChatTraceLogger
+    sink = ChatTraceLogger("metadata", log_dir=str(tmp_path))
+    sink.set_run_id("bound-run")
+    events = [
+        sink.event("default"),
+        sink.event("explicit", run_id="child-run", trace_id="caller-trace", plan_id="plan-1"),
+        sink.event("empty", run_id=""),
+    ]
+    stored = [json.loads(line) for line in Path(sink.path).read_text(encoding="utf-8").splitlines()]
+    assert stored == events
+    assert [event["run_id"] for event in stored] == ["bound-run", "child-run", "bound-run"]
+    assert all(event["trace_id"] == sink.trace_id for event in stored)
+    assert stored[1]["plan_id"] == "plan-1"
+    assert sink.run_id == "bound-run"
 
 
 class _Sink:

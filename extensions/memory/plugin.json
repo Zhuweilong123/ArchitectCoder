@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "memory",
+  "version": "1.0.0",
+  "slot": "memory",
+  "provider": "extensions.memory:create",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_memory_enabled",
+    "provider": "agent_memory_provider",
+    "prefix": "agent_memory_"
+  },
+  "interfaces": {
+    "recall": {
+      "stage": "prepare",
+      "required": true,
+      "async": true
+    },
+    "archive": {
+      "stage": "finalize",
+      "required": true,
+      "async": true
+    },
+    "reinforce": {
+      "stage": "prepare",
+      "required": true,
+      "async": true
+    }
+  },
+  "defaults": {
+    "db_path": "",
+    "recall_top_k": 3,
+    "recall_max_tokens": 500
+  },
+  "dependencies": []
+}

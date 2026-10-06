@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "knowledge_graph",
+  "version": "1.0.0",
+  "slot": "knowledge_graph",
+  "provider": "extensions.knowledge_graph:create",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_knowledge_graph_enabled",
+    "provider": "agent_knowledge_graph_provider",
+    "prefix": "agent_knowledge_graph_"
+  },
+  "interfaces": {
+    "rebuild_project": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "search_diagrams": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "map_project": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "locate": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "expand": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "impact": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "diff": {
+      "stage": "tool_before",
+      "required": true,
+      "async": false
+    },
+    "contract_facts": {
+      "stage": "tool_before",
+      "required": false,
+      "async": false
+    },
+    "index_facts": {
+      "stage": "tool_before",
+      "required": false,
+      "async": false
+    },
+    "sync_facts": {
+      "stage": "tool_before",
+      "required": false,
+      "async": false
+    },
+    "create_tools": {
+      "stage": "initialize",
+      "required": false,
+      "async": false
+    }
+  },
+  "defaults": {
+    "db_path": ""
+  },
+  "dependencies": []
+}

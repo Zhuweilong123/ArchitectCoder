@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "trace",
+  "version": "1.0.0",
+  "slot": "trace",
+  "provider": "extensions.trace:create",
+  "contribution_loader": "extensions.trace:list_contributions",
+  "enabled_by_default": true,
+  "settings": {
+    "enabled": "agent_trace_enabled",
+    "provider": "agent_trace_provider"
+  },
+  "interfaces": {
+    "create": {
+      "stage": "initialize",
+      "required": true,
+      "async": false
+    },
+    "query": {
+      "stage": "run_start",
+      "required": false,
+      "async": false,
+      "wrap_result": true
+    },
+    "replay": {
+      "stage": "run_start",
+      "required": false,
+      "async": true
+    },
+    "list_traces": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "read_trace": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "summarize_trace": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    },
+    "reconstruct_history": {
+      "stage": "run_start",
+      "required": false,
+      "async": false
+    }
+  },
+  "defaults": {},
+  "dependencies": [],
+  "router": "extensions.trace.api:router"
+}

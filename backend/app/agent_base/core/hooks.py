@@ -25,6 +25,10 @@ Usage::
 from __future__ import annotations
 
 import logging
+import copy
+import time
+import inspect
+import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
@@ -38,13 +42,58 @@ logger = logging.getLogger(__name__)
 
 
 class HookEvent(str, Enum):
+    INITIALIZE = "initialize"
+    PREPARE = "prepare"
     RUN_START = "run_start"
-    RUN_END = "run_end"
-    LLM_BEFORE = "llm_before"
-    LLM_AFTER = "llm_after"
+    ROUND_BEFORE = "round_before"
+    MODEL_BEFORE = "model_before"
+    MODEL_AFTER = "model_after"
+    TOOL_BATCH_BEFORE = "tool_batch_before"
     TOOL_BEFORE = "tool_before"
     TOOL_AFTER = "tool_after"
     TOOL_BATCH_AFTER = "tool_batch_after"
+    ROUND_AFTER = "round_after"
+    FINALIZE = "finalize"
+    RUN_END = "run_end"
+    # Notifications are deliberately outside PUBLIC_STAGES.
+    ERROR = "error"
+    CANCEL = "cancel"
+    REVIEW_AFTER = "review_after"
+    BACKGROUND_BEFORE = "background_before"
+    BACKGROUND_AFTER = "background_after"
+    LLM_BEFORE = "model_before"
+    LLM_AFTER = "model_after"
+    RUN_FINALIZE = "finalize"
+    AGENT_INITIALIZE = "initialize"
+    CONTEXT_PREPARE = "prepare"
+    MEMORY_REINFORCE = "prepare"
+    ORCHESTRATION_PREPARE = "prepare"
+    TASK_ARCHIVE = "finalize"
+    TRACE_INITIALIZE = "initialize"
+    SKILL_READ = "tool_before"
+    ORCHESTRATION_EXECUTE = "tool_before"
+    TRACE_QUERY = "run_start"
+    TRACE_REPLAY = "run_start"
+    EVALUATION_QUERY = "run_start"
+    EVALUATION_RUN = "run_start"
+    EVALUATION_UPDATE = "run_start"
+    GRAPH_QUERY = "tool_before"
+    GRAPH_UPDATE = "tool_before"
+    CONTRACT_COLLECT = "finalize"
+    PLUGIN_SERVICE = "run_start"
+
+    @classmethod
+    def _missing_(cls, value):
+        name = STAGE_ALIASES.get(value)
+        return cls[name] if name else None
+
+
+PUBLIC_STAGES = tuple(HookEvent[name] for name in (
+    "INITIALIZE", "PREPARE", "RUN_START", "ROUND_BEFORE", "MODEL_BEFORE", "MODEL_AFTER",
+    "TOOL_BATCH_BEFORE", "TOOL_BEFORE", "TOOL_AFTER", "TOOL_BATCH_AFTER", "ROUND_AFTER", "FINALIZE", "RUN_END",
+))
+NOTIFICATIONS = tuple(stage for stage in HookEvent if stage not in PUBLIC_STAGES)
+STAGE_ALIASES = {name.lower(): name for name in HookEvent.__members__ if HookEvent[name].value != name.lower()}
 
 
 class HookAction(str, Enum):
@@ -83,6 +132,7 @@ class HookContext:
     phase: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     runtime: Optional["AgentRuntime"] = None
+    invocation: Any = None  # Private per-call service state; hidden from observers.
 
 
 @dataclass
@@ -106,6 +156,12 @@ class AgentRuntime:
     convergence_controller: Optional[ConvergenceController] = None
     control_decision: Optional[HookDecision] = None
     policy_metadata: dict[str, Any] = field(default_factory=dict)
+    plugin_plan_id: str = ""
+    run_operation_id: str = ""
+    lifecycle_round_open: bool = False
+    lifecycle_step: int = 0
+    lifecycle_status: str = "running"
+    lifecycle_finalized: bool = False
 
 
 def todo_plan_complete(runtime: AgentRuntime | None = None) -> bool:
@@ -153,6 +209,8 @@ class HookRegistry:
 
     def __init__(self):
         self._hooks: dict[HookEvent, list] = {e: [] for e in HookEvent}
+        self._metadata: dict[tuple[HookEvent, int], dict] = {}
+        self.plan_id = ""
 
     def register(
         self,
@@ -161,9 +219,19 @@ class HookRegistry:
         *,
         priority: int = 0,
         fail_closed: bool = False,
+        contribution_id: str = "",
+        plugin: str = "",
+        mode: str = "legacy",
+        interface_id: str = "",
+        plugin_version: str = "",
+        plugin_revision: str = "",
     ) -> None:
         """注册 hook。priority 越高越先触发；fail_closed 的 hook 抛异常视为 veto。"""
         self._hooks[event].append((priority, fail_closed, hook))
+        self._metadata[event, id(hook)] = {
+            "id": contribution_id, "plugin": plugin, "mode": mode, "interface_id": interface_id,
+            "plugin_version": plugin_version, "plugin_revision": plugin_revision,
+        }
         self._hooks[event].sort(key=lambda item: item[0], reverse=True)
 
     def unregister(self, event: HookEvent, hook: Hook) -> None:
@@ -171,38 +239,165 @@ class HookRegistry:
         self._hooks[event] = [
             item for item in self._hooks[event] if item[2] is not hook
         ]
+        self._metadata.pop((event, id(hook)), None)
 
     def clear(self, event: Optional[HookEvent] = None) -> None:
         """清空 hook（不传 event 则清空所有事件），主要用于测试隔离。"""
         if event is None:
             for e in self._hooks:
                 self._hooks[e].clear()
+            self._metadata.clear()
         else:
             self._hooks[event].clear()
+            self._metadata = {key: value for key, value in self._metadata.items() if key[0] != event}
+
+    def clear_managed(self):
+        for stage, hooks in tuple(self._hooks.items()):
+            for _, _, handler in tuple(hooks):
+                if self._metadata.get((stage, id(handler)), {}).get("id"):
+                    self.unregister(stage, handler)
+
+    def has_contribution(self, identifier):
+        return any(meta.get("id") == identifier for meta in self._metadata.values())
+
+    @staticmethod
+    def _drive_sync(iterator):
+        try:
+            value = next(iterator)
+            while True:
+                if inspect.isawaitable(value):
+                    close = getattr(value, "close", None)
+                    if close is not None:
+                        close()
+                    value = iterator.throw(ValueError("async contribution requires asynchronous dispatch"))
+                else:
+                    value = iterator.send(value)
+        except StopIteration as done:
+            return done.value
+        finally:
+            iterator.close()
+
+    @staticmethod
+    async def _drive_async(iterator):
+        try:
+            value = next(iterator)
+            while True:
+                try:
+                    result = await value if inspect.isawaitable(value) else value
+                except BaseException as exc:
+                    value = iterator.throw(exc)
+                else:
+                    value = iterator.send(result)
+        except StopIteration as done:
+            return done.value
+        finally:
+            iterator.close()
 
     def trigger(self, event: HookEvent, ctx: HookContext) -> HookResult:
-        """按 priority 降序触发 hook，首个非 None 返回值短路。"""
-        for _, fail_closed, hook in self._hooks[event]:
+        return self._drive_sync(self._trigger(event, ctx))
+
+    async def atrigger(self, event: HookEvent, ctx: HookContext) -> HookResult:
+        return await self._drive_async(self._trigger(event, ctx))
+
+    def emit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
+        return self._drive_sync(self._emit(event, ctx))
+
+    async def aemit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
+        return await self._drive_async(self._emit(event, ctx))
+
+    def invoke(self, ctx: HookContext):
+        return self._drive_sync(self._invoke(ctx))
+
+    async def ainvoke(self, ctx: HookContext):
+        return await self._drive_async(self._invoke(ctx))
+
+    def _invoke(self, ctx):
+        """Execute only the requested interface plus its stage observers."""
+        if ctx.invocation is None:
+            raise ValueError("service dispatch requires an invocation")
+        for _, _, hook in tuple(self._hooks[ctx.event]):
+            meta = self._metadata.get((ctx.event, id(hook)), {})
+            mode = meta.get("mode")
+            if not (mode == "service" and meta.get("interface_id") == ctx.invocation.interface_id):
+                continue
+            started = time.monotonic()
             try:
-                result = hook(ctx)
-            except AgentInterrupted:
+                result = yield hook(self._observer_context(ctx) if mode == "observer" else ctx)
+                self._validate_result(ctx.event, mode, result)
+            except BaseException as exc:
+                self._record(ctx.event, hook, ctx, "interrupted" if isinstance(exc, (asyncio.CancelledError, AgentInterrupted)) else "error",
+                             time.monotonic() - started, error_type=type(exc).__name__, error_message=str(exc),
+                             failure_effect="propagate" if mode == "service" else "continue")
+                if mode == "service" or not isinstance(exc, Exception):
+                    raise
+            else:
+                self._record(ctx.event, hook, ctx, "executed", time.monotonic() - started)
+
+    def _trigger(self, event: HookEvent, ctx: HookContext):
+        """首个有效结果短路后续处理器，观察接口仍收到独立快照。"""
+        decision = None
+        decision_id = ""
+        from .operations import current_operation
+        operation = current_operation()
+        if operation is not None and event in PUBLIC_STAGES:
+            operation.stage = event.value
+        for _, fail_closed, hook in tuple(self._hooks[event]):
+            mode = self._metadata.get((event, id(hook)), {}).get("mode", "legacy")
+            if mode == "service":
+                continue  # Provider executors activate only through invoke/ainvoke.
+            if ctx.payload.get("observers_only") and mode != "observer":
+                continue
+            if decision is not None and mode != "observer":
+                self._record(event, hook, ctx, "skipped", 0, result=decision, blocked_by=decision_id)
+                continue
+            started = time.monotonic()
+            try:
+                result = yield hook(self._observer_context(ctx) if mode == "observer" else ctx)
+                self._validate_result(event, mode, result)
+            except asyncio.CancelledError as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, failure_effect="interrupt")
+                raise
+            except AgentInterrupted as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc),
+                             failure_effect="continue" if mode == "observer" else "interrupt")
+                if mode == "observer":
+                    logger.warning("[Hooks] observer cannot interrupt execution")
+                    continue
                 raise
             except Exception as exc:
                 if fail_closed:
                     logger.exception(
                         "[Hooks] fail-closed hook %r for %s", hook, event.value
                     )
-                    return f"Hook error (fail-closed): {type(exc).__name__}: {exc}"
+                    message = f"Hook error (fail-closed): {type(exc).__name__}: {exc}"
+                    decision = message if mode == "legacy" else HookDecision(
+                        HookAction.VETO if event == HookEvent.TOOL_BEFORE else HookAction.STOP,
+                        reason="hook_error", message=message,
+                    )
+                    decision_id = self._metadata.get((event, id(hook)), {}).get("id", "legacy")
+                    self._record(event, hook, ctx, "error", time.monotonic() - started, result=decision,
+                                 error_type=type(exc).__name__, error_message=str(exc), failure_effect="block")
+                    continue
+                self._record(event, hook, ctx, "error", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc), failure_effect="continue")
                 logger.warning(
                     "[Hooks] hook %r for %s failed (non-fatal)",
                     hook, event.value, exc_info=True,
                 )
                 continue
+            self._record(event, hook, ctx, "executed", time.monotonic() - started, result=result)
+            if mode == "observer":
+                continue
+            if isinstance(result, HookDecision) and result.action in {HookAction.CONTINUE, "continue"}:
+                continue
             if result is not None:
-                return result
-        return None
+                decision = result
+                decision_id = self._metadata.get((event, id(hook)), {}).get("id", "legacy")
+        return decision
 
-    def emit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
+    def _emit(self, event: HookEvent, ctx: HookContext):
         """Run every hook for broadcast-style lifecycle events.
 
         ``trigger`` remains the short-circuit API for veto/replace decisions;
@@ -210,10 +405,31 @@ class HookRegistry:
         end of a tool batch.
         """
         results: list[HookResult] = []
-        for _, fail_closed, hook in self._hooks[event]:
+        from .operations import current_operation
+        operation = current_operation()
+        if operation is not None and event in PUBLIC_STAGES:
+            operation.stage = event.value
+        for _, fail_closed, hook in tuple(self._hooks[event]):
+            mode = self._metadata.get((event, id(hook)), {}).get("mode", "legacy")
+            if mode == "service":
+                continue
+            if ctx.payload.get("observers_only") and mode != "observer":
+                continue
+            started = time.monotonic()
             try:
-                result = hook(ctx)
-            except AgentInterrupted:
+                result = yield hook(self._observer_context(ctx) if mode == "observer" else ctx)
+                self._validate_result(event, mode, result)
+            except asyncio.CancelledError as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, failure_effect="interrupt")
+                raise
+            except AgentInterrupted as exc:
+                self._record(event, hook, ctx, "interrupted", time.monotonic() - started,
+                             error_type=type(exc).__name__, error_message=str(exc),
+                             failure_effect="continue" if mode == "observer" else "interrupt")
+                if mode == "observer":
+                    logger.warning("[Hooks] observer cannot interrupt execution")
+                    continue
                 raise
             except Exception as exc:
                 if fail_closed:
@@ -222,20 +438,90 @@ class HookRegistry:
                     )
                     results.append(
                         HookDecision(
-                            action=HookAction.VETO,
+                            action=HookAction.FINALIZE if event == HookEvent.TOOL_BATCH_AFTER else HookAction.VETO,
                             reason="hook_error",
                             message=f"Hook error (fail-closed): {type(exc).__name__}: {exc}",
                         )
                     )
+                    self._record(event, hook, ctx, "error", time.monotonic() - started, result=results[-1],
+                                 error_type=type(exc).__name__, error_message=str(exc),
+                                 failure_effect="finalize" if event == HookEvent.TOOL_BATCH_AFTER else "block")
                 else:
+                    self._record(event, hook, ctx, "error", time.monotonic() - started,
+                                 error_type=type(exc).__name__, error_message=str(exc), failure_effect="continue")
                     logger.warning(
                         "[Hooks] hook %r for %s failed (non-fatal)",
                         hook, event.value, exc_info=True,
                     )
                 continue
-            if result is not None:
+            self._record(event, hook, ctx, "executed", time.monotonic() - started, result=result)
+            mode = self._metadata.get((event, id(hook)), {}).get("mode", "legacy")
+            if result is not None and mode != "observer":
                 results.append(result)
+        if event == HookEvent.TOOL_BATCH_AFTER and ctx.runtime is not None:
+            decisions = [item for item in results if isinstance(item, HookDecision)
+                         and item.action in {HookAction.RECOVER, HookAction.FINALIZE, "recover", "finalize"}]
+            if decisions:
+                ctx.runtime.control_decision = max(decisions, key=lambda item:
+                    int(item.action in {HookAction.FINALIZE, "finalize"}))
         return results
+
+    @staticmethod
+    def _validate_result(event, mode, result):
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+            raise ValueError("lifecycle handlers must not return awaitables")
+        if mode in {"observer", "legacy"} or result is None:
+            return
+        if mode == "transform":
+            if event == HookEvent.TOOL_AFTER and (isinstance(result, str) or
+                isinstance(result, HookDecision) and result.action in {HookAction.REPLACE, "replace"}):
+                return
+            raise ValueError("transform must mutate stage data and return None, or replace TOOL_AFTER output")
+        allowed = {
+            HookEvent.LLM_BEFORE: {HookAction.CONTINUE, HookAction.STOP},
+            HookEvent.TOOL_BEFORE: {HookAction.CONTINUE, HookAction.STOP, HookAction.VETO},
+            HookEvent.TOOL_BATCH_AFTER: {HookAction.CONTINUE, HookAction.RECOVER, HookAction.FINALIZE},
+        }
+        if not isinstance(result, HookDecision) or result.action not in allowed.get(event, set()):
+            raise ValueError("unsupported control decision for this stage")
+
+    def _observer_context(self, ctx):
+        from dataclasses import replace
+        payload = copy.deepcopy(ctx.payload)
+        payload["plugin_plan_id"] = (ctx.runtime.plugin_plan_id if ctx.runtime else "") or self.plan_id
+        return replace(ctx, runtime=None, invocation=None, payload=payload,
+                       messages=copy.deepcopy(ctx.messages), llm_response=copy.deepcopy(ctx.llm_response),
+                       tool_input=copy.deepcopy(ctx.tool_input))
+
+    def _record(self, event, hook, ctx, status, duration, result=None, **details):
+        meta = self._metadata.get((event, id(hook)), {})
+        if not meta.get("id"):
+            return
+        try:
+            from app.trace.tracing import current_trace_sink
+            from .operations import current_operation
+            operation = current_operation()
+            sink = current_trace_sink()
+            if sink is not None:
+                if operation is not None:
+                    details.update(operation_id=operation.operation_id, parent_operation_id=operation.parent_operation_id,
+                                   operation_kind=operation.operation_kind, scope=operation.scope,
+                                   binding_stage=event.value)
+                if isinstance(result, HookDecision) and meta.get("mode") != "observer":
+                    details.update(decision_action=result.action, decision_reason=result.reason,
+                                   decision_message=result.message)
+                sink.event("plugin_contribution", contribution_id=meta["id"], plugin=meta["plugin"],
+                           stage=operation.stage if operation else event.value, mode=meta["mode"], status=status,
+                           duration_ms=round(duration * 1000, 3), run_id=ctx.run_id,
+                           plan_id=(ctx.runtime.plugin_plan_id or self.plan_id) if ctx.runtime else self.plan_id,
+                           interface_id=meta.get("interface_id", ""),
+                           plugin_version=meta.get("plugin_version", ""),
+                           plugin_revision=meta.get("plugin_revision", ""), **details)
+        except Exception:
+            logger.debug("[Hooks] contribution tracing failed", exc_info=True)
 
 
 _registry = HookRegistry()
@@ -383,15 +669,27 @@ class RunPolicyHook:
         return None
 
 
+_run_policy_hook = RunPolicyHook()
+
+
+def default_hook_bindings():
+    bindings = [
+        (HookEvent.LLM_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.llm_before"),
+        (HookEvent.TOOL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.tool_before"),
+        (HookEvent.LLM_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),
+    ]
+    bindings.extend((stage, _run_policy_hook, 90, "control", f"core.policy.{stage.value}")
+                    for stage in (HookEvent.RUN_START, HookEvent.LLM_BEFORE, HookEvent.LLM_AFTER,
+                                  HookEvent.TOOL_BEFORE, HookEvent.TOOL_BATCH_AFTER))
+    return tuple(bindings)
+
+
 def _register_default_hooks() -> None:
-    get_hooks().register(HookEvent.LLM_BEFORE, _interrupt_hook, priority=100)
-    get_hooks().register(HookEvent.LLM_BEFORE, RunPolicyHook(), priority=90)
-    get_hooks().register(HookEvent.LLM_BEFORE, _todo_reminder_hook, priority=50)
-    get_hooks().register(HookEvent.TOOL_BEFORE, _interrupt_hook, priority=100)
-    get_hooks().register(HookEvent.RUN_START, RunPolicyHook(), priority=90)
-    get_hooks().register(HookEvent.TOOL_BEFORE, RunPolicyHook(), priority=90)
-    get_hooks().register(HookEvent.LLM_AFTER, RunPolicyHook(), priority=90)
-    get_hooks().register(HookEvent.TOOL_BATCH_AFTER, RunPolicyHook(), priority=90)
+    for stage, handler, priority, mode, identifier in default_hook_bindings():
+        get_hooks().register(
+            stage, handler, priority=priority,
+            contribution_id=identifier, plugin="core", mode=mode,
+        )
     # The ToolRoundExecutor pages every long tool result through its trace.
 
 

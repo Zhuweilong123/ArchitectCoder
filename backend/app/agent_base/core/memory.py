@@ -132,7 +132,7 @@ def load_memory(*, llm, settings, **kwargs) -> MemoryPort:
     """Load memory through the central extension manager."""
     from .plugins import get_plugin_manager
 
-    instance = get_plugin_manager().load(
+    instance = get_plugin_manager().load_optional(
         "memory",
         settings=settings,
         kwargs={"llm": llm, **kwargs},

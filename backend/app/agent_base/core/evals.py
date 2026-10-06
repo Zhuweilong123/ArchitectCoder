@@ -185,7 +185,7 @@ def load_evals(*, settings=None, **kwargs) -> EvalProvider:
     """Load evaluations through the central extension manager."""
     from .plugins import get_plugin_manager
 
-    instance = get_plugin_manager().load(
+    instance = get_plugin_manager().load_optional(
         "evals",
         settings=settings,
         kwargs=kwargs,

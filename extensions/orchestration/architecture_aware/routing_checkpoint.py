@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
 
-_registered = False
 _HEADING = "## Architecture routing checkpoint"
 
 
@@ -67,11 +66,19 @@ def _routing_checkpoint(ctx: HookContext):
 
 
 def register_routing_checkpoint_hooks() -> None:
-    global _registered
-    if _registered:
-        return
+    # Standalone provider users retain compatibility. Backend startup has already
+    # installed these explicit contributions; never add duplicate bindings.
     hooks = get_hooks()
-    hooks.register(HookEvent.TOOL_BATCH_AFTER, _routing_checkpoint, priority=50)
-    hooks.register(HookEvent.LLM_BEFORE, _routing_checkpoint, priority=55)
-    hooks.register(HookEvent.LLM_AFTER, _routing_checkpoint, priority=55)
-    _registered = True
+    for item in list_contributions():
+        if not hooks.has_contribution(item.id):
+            hooks.register(item.stage, item.resolve(), priority=item.priority,
+                           contribution_id=item.id, plugin="orchestration", mode=item.mode)
+
+
+def list_contributions(*, settings=None):
+    from app.agent_base.core.lifecycle import Contribution
+    return tuple(Contribution(
+        id=f"orchestration.routing.{stage.value}", stage=stage,
+        handler="extensions.orchestration.architecture_aware.routing_checkpoint:_routing_checkpoint",
+        mode="transform", priority=50 if stage == HookEvent.TOOL_BATCH_AFTER else 55,
+    ) for stage in (HookEvent.TOOL_BATCH_AFTER, HookEvent.LLM_BEFORE, HookEvent.LLM_AFTER))

@@ -47,4 +47,6 @@ def test_plugin_provider_defaults_have_one_owner():
     assert "extensions.trace:create" not in settings_source
     assert "extensions.trace:create" not in manager_source
     assert "plugin_defaults" in settings_source
-    assert "plugin_defaults" in manager_source
+    assert "plugin_catalog" in manager_source
+    defaults_source = (REPO_ROOT / "backend" / "config" / "plugin_defaults.py").read_text(encoding="utf-8")
+    assert "extensions.trace:create" not in defaults_source

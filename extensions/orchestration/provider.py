@@ -7,6 +7,11 @@ from app.agent_base.core.orchestration import (
 )
 
 
+def list_contributions(*, settings=None):
+    from .architecture_aware.routing_checkpoint import list_contributions as declarations
+    return declarations(settings=settings)
+
+
 class UnavailableArchitectureScheduler:
     """Explicit no-op result when graph-guided scheduling cannot be offered."""
 

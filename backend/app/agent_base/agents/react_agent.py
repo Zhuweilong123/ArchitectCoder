@@ -25,7 +25,7 @@ from ..core.agent import Agent
 from ..core.llm import BaseAgentsLLM
 from ..core.message import Message
 from backend.config import AgentConfig
-from ..core.hooks import get_runtime, todo_plan_complete
+from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
 from ..tools.registry import ToolRegistry
 from ..outcome import RunOutcome
 from ..core.policy import ExecutionBudget
@@ -209,7 +209,14 @@ class ReActAgent(Agent):
             final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
-    def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+    async def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+        runtime = get_runtime()
+        if runtime.lifecycle_round_open:
+            runtime.lifecycle_round_open = False
+            await get_hooks().aemit(HookEvent.ROUND_AFTER, HookContext(
+                event=HookEvent.ROUND_AFTER, agent_name=self.name, runtime=runtime,
+                run_id=runtime.run_id, payload={"step": runtime.lifecycle_step, "terminal": True},
+            ))
         request_tokens = total_tokens
         if self.execution_budget is not None:
             request_tokens = self.execution_budget.request_tokens
@@ -226,6 +233,12 @@ class ReActAgent(Agent):
                 not passed for passed in getattr(self, "_run_verifications", {}).values()
             ),
         )
+        runtime.lifecycle_status = outcome.status
+        runtime.lifecycle_finalized = True
+        await get_hooks().aemit(HookEvent.RUN_FINALIZE, HookContext(
+            event=HookEvent.RUN_FINALIZE, agent_name=self.name, runtime=runtime,
+            run_id=runtime.run_id, payload={"status": outcome.status, "stop_reason": outcome.stop_reason},
+        ))
         return ReActProgress(**kwargs, outcome=outcome)
 
     async def _arun_with_fc_stream(

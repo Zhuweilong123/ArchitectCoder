@@ -27,6 +27,7 @@ const TestCaseViewer = lazy(() => import('./components/TestCaseViewer/TestCaseVi
 const AgentChat = lazy(() => import('./components/AgentChat/AgentChat'));
 const TraceViewer = lazy(() => import('./components/TraceViewer/TraceViewer'));
 const EvaluationCenter = lazy(() => import('./components/EvaluationCenter/EvaluationCenter'));
+const PluginArchitecture = lazy(() => import('./components/PluginArchitecture/PluginArchitecture'));
 
 const LoadingFallback: React.FC = () => (
   <div className="empty-canvas" aria-live="polite">Loading...</div>
@@ -36,7 +37,7 @@ const App: React.FC = () => {
   const {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
-    showTestCaseInCanvas, agentChatVisible, interfaceLanguage,
+    showTestCaseInCanvas, agentChatVisible, interfaceLanguage, pluginArchitectureVisible,
     projectRoot, designDir, sourceDir, testDir, setProjectRoot, setDesignDir, setSourceDir, setTestDir,
   } = useUiStore();
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
@@ -242,6 +243,7 @@ const App: React.FC = () => {
 
       <Suspense fallback={null}><AgentChat /></Suspense>
       <Suspense fallback={null}><TraceViewer /></Suspense>
+      {pluginArchitectureVisible && <Suspense fallback={null}><PluginArchitecture /></Suspense>}
       <Suspense fallback={null}><EvaluationCenter /></Suspense>
     </Layout>
   );

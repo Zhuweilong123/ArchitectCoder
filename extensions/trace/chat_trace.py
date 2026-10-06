@@ -225,10 +225,12 @@ class ChatTraceLogger:
 
     def event(self, event_type: str, **payload) -> dict:
         """通用事件写入（供外部扩展）。返回已写入的事件 dict。"""
+        # Merge correlation fields once. A task event may identify a child run;
+        # an empty ID falls back to the bound run. Trace identity belongs to the sink.
+        payload["run_id"] = payload.get("run_id") or self.run_id
+        payload["trace_id"] = self._trace_id
         evt = _event(
             self.session_id, event_type,
-            trace_id=self._trace_id,
-            run_id=self.run_id,
             **payload,
         )
         self._write(evt)
