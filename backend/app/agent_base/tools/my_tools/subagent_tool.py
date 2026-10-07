@@ -14,6 +14,7 @@ from app.agent_base.core.hooks import (
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
+from app.agent_base.core.subagent_budget import CumulativeTokenBudget
 from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
 from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
@@ -186,7 +187,7 @@ class SpawnSubagentTool(AsyncTool):
         test_dir: str = "",
         design_dir: str = "",
         project_file: str = "",
-        max_total_tokens: int = 500000,
+        max_total_tokens: int | None = None,
         emergency_max_total_tokens: int | None = None,
         context_budget: ContextBudgetManager | None = None,
         max_tool_calls: int | None = None,
@@ -199,7 +200,7 @@ class SpawnSubagentTool(AsyncTool):
         workspace_root: str = "",
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
-        max_cumulative_tokens: int | None = None,
+        max_cumulative_tokens: int | None = 131072,
         child_run_name: str = "subagent",
         skill_catalog: SkillCatalog | None = None,
     ):
@@ -216,13 +217,16 @@ class SpawnSubagentTool(AsyncTool):
             ),
         )
         self.llm = llm
-        self.max_total_tokens = max(1, int(max_total_tokens))
-        self.emergency_max_total_tokens = (
-            max(1, int(emergency_max_total_tokens))
-            if emergency_max_total_tokens is not None else None
-        )
         from backend.config import get_settings
         settings = get_settings()
+        self.max_total_tokens = max(1, int(
+            max_total_tokens if max_total_tokens is not None
+            else settings.agent_context_soft_limit_tokens
+        ))
+        self.emergency_max_total_tokens = (
+            max(1, int(emergency_max_total_tokens))
+            if emergency_max_total_tokens is not None else settings.agent_context_hard_limit_tokens
+        )
         if command_executor is None:
             command_executor = build_command_executor(settings)
         if not workspace_root:
@@ -246,11 +250,12 @@ class SpawnSubagentTool(AsyncTool):
         self.last_token_usage = 0
         self.last_context_report: dict = {}
         self.last_evidence_summary: list[dict] = []
+        self.final_summary_max_tokens = settings.agent_final_summary_max_tokens
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
         self._single_use_used = False
-        # Optional task-level ceiling for scheduled explorers. The existing
-        # per-request budget semantics remain unchanged for other callers.
+        # Separate cumulative ceiling from the shared request context policy.
+        # Callers may explicitly pass None to disable this ceiling.
         self.max_cumulative_tokens = (
             max(1, int(max_cumulative_tokens))
             if max_cumulative_tokens is not None else None
@@ -435,6 +440,8 @@ class SpawnSubagentTool(AsyncTool):
                         messages=messages, tools=active_tools,
                         tool_choice="none" if finalization_mode else "auto",
                         temperature=0.3, trace_context=request_context,
+                        **({"max_tokens": request_context["output_token_limit"]}
+                           if "output_token_limit" in request_context else {}),
                     ), timeout=self.llm_timeout_seconds)
                 return response
             except (asyncio.CancelledError, AgentInterrupted):
@@ -513,6 +520,7 @@ class SpawnSubagentTool(AsyncTool):
             "soft_target_tokens": budget.max_total_tokens,
             "emergency_limit_tokens": budget.emergency_max_total_tokens,
             "task_total_tokens_observed": budget.total_tokens,
+            "cumulative_limit_tokens": self.max_cumulative_tokens,
         }
         forced_finalization_reason = ""
         finalization_added = False
@@ -520,6 +528,13 @@ class SpawnSubagentTool(AsyncTool):
         step = 0
         round_open = False
         terminal_status = "completed"
+        cumulative_budget = (
+            CumulativeTokenBudget(
+                self.max_cumulative_tokens, self.final_summary_max_tokens,
+                self.token_finalization_reserve_tokens,
+            )
+            if self.max_cumulative_tokens is not None else None
+        )
 
         async def publish(stage, **data):
             await get_hooks().aemit(stage, HookContext(stage, "spawn_subagent",
@@ -626,6 +641,23 @@ class SpawnSubagentTool(AsyncTool):
                     tools=active_tools,
                     current_user_index=current_user_index,
                 )
+                if finalization_mode and self.max_cumulative_tokens is not None:
+                    remaining = max(0, self.max_cumulative_tokens - budget.total_tokens)
+                    call_ids = [str(m.get("tool_call_id") or "") for m in messages
+                                if m.get("role") == "tool"]
+                    messages, current_user_index, dropped, dropped_tokens = (
+                        self.context_budget.compact_tool_history(
+                            messages, current_user_index=current_user_index,
+                            target_tokens=max(1, min(6000, remaining // 3)),
+                            evidence_by_call=evidence_ledger.summary_for(call_ids),
+                        )
+                    )
+                    self.last_context_report["compacted_messages"] = (
+                        self.last_context_report.get("compacted_messages", 0) + dropped
+                    )
+                    self.last_context_report["compacted_tokens"] = (
+                        self.last_context_report.get("compacted_tokens", 0) + dropped_tokens
+                    )
                 request_context = {
                     "scope": "single_llm_request",
                     "estimated_context_tokens": self.context_budget.estimate_request_tokens(
@@ -640,27 +672,31 @@ class SpawnSubagentTool(AsyncTool):
                     "context_compaction_threshold_ratio": self.context_budget.budget.compaction_trigger_ratio,
                     "context_hard_limit_tokens": self.context_budget.budget.max_context_tokens,
                     "task_total_tokens_observed": budget.total_tokens,
+                    "cumulative_limit_tokens": self.max_cumulative_tokens,
                 }
                 self.last_context_report["last_request_context"] = request_context
-                if (
-                    self.max_cumulative_tokens is not None
-                    and not finalization_mode
-                    and budget.total_tokens
-                    + request_context["estimated_context_tokens"]
-                    + max(2500, self.token_finalization_reserve_tokens)
-                    >= self.max_cumulative_tokens
-                ):
-                    forced_finalization_reason = "task token budget approaching"
-                    continue
-                if (
-                    self.max_cumulative_tokens is not None
-                    and budget.total_tokens
-                    + request_context["estimated_context_tokens"]
-                    + 600 >= self.max_cumulative_tokens
-                ):
-                    self.last_token_usage = budget.total_tokens
-                    self.last_context_report["token_budget_stop_reason"] = "task_token_limit"
-                    return stopped_message("task token limit")
+                if cumulative_budget is not None:
+                    allowance = cumulative_budget.allowance(
+                        budget.total_tokens, request_context["estimated_context_tokens"],
+                        finalizing=finalization_mode,
+                    )
+                    if allowance.finalize:
+                        forced_finalization_reason = "task token budget approaching"
+                        continue
+                    if allowance.output_tokens < 128:
+                        terminal_status = "partial"
+                        self.last_token_usage = budget.total_tokens
+                        self.last_context_report["token_budget_stop_reason"] = "task_token_limit"
+                        return stopped_message("task token limit") + "\nEvidence snapshot:\n" + json.dumps(
+                            {"status": "partial", "stop_reason": "task_token_limit",
+                             "evidence": [{
+                                 "tool_name": str(item.get("tool_name", ""))[:80],
+                                 "status": item.get("status"),
+                                 "facts": [str(fact)[:240] for fact in (item.get("facts") or [])[:6]],
+                             } for item in evidence_summary[-8:]]}, ensure_ascii=False, default=str,
+                        )
+                    request_context["output_token_limit"] = allowance.output_tokens
+                    request_context["input_token_allowance"] = allowance.input_tokens
                 if request_context["estimated_context_tokens"] >= self.context_budget.budget.max_context_tokens:
                     self.last_token_usage = budget.total_tokens
                     self.last_context_report.update({
@@ -678,6 +714,13 @@ class SpawnSubagentTool(AsyncTool):
                     self.last_token_usage = budget.total_tokens
                     return budget_message("before the next model call")
                 self.last_token_usage = budget.total_tokens
+                usage = (response.get("usage") or {}) if isinstance(response, dict) else {}
+                actual_input = int(usage.get("prompt_tokens") or 0)
+                if cumulative_budget is not None:
+                    cumulative_budget.observe_input(actual_input, request_context["estimated_context_tokens"])
+                self.last_context_report["cumulative_budget_overrun_tokens"] = max(
+                    0, budget.total_tokens - self.max_cumulative_tokens,
+                ) if self.max_cumulative_tokens is not None else 0
                 self.last_context_report.update({
                     "token_budget_used": budget.request_tokens,
                     "token_budget_remaining": budget.remaining_tokens,

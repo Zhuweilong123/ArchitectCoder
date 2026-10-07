@@ -82,9 +82,8 @@ class Settings(BaseSettings):
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
 
-    # Independent budget for a main-agent-managed subagent.  This budget is
-    # deliberately separate from the main agent's per-run execution budget.
-    agent_subagent_per_run_execution_budget_tokens: int = 500000
+    # Cumulative input + output budget; request context uses the main policy.
+    agent_subagent_per_run_execution_budget_tokens: int = 131072
     # Main-agent-managed subagent entry point. The optional orchestration layer
     # remains independently controlled by agent_orchestration_enabled.
     agent_main_subagent_enabled: bool = True

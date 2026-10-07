@@ -395,6 +395,60 @@ def test_spawn_subagent_finalizes_before_cumulative_limit(tmp_path):
     assert tool.last_token_usage == 7100
 
 
+@pytest.mark.parametrize("first_usage,expected_calls", [(7000, 2), (12000, 1)])
+def test_large_read_preserves_evidence_when_cumulative_budget_runs_low(tmp_path, first_usage, expected_calls):
+    (tmp_path / "large.txt").write_text("verified source evidence\n" * 1200, encoding="utf-8")
+
+    class LLM:
+        def __init__(self):
+            self.calls = []
+
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            self.calls.append((messages, tool_choice, kwargs))
+            if tool_choice == "none":
+                return {"content": "verified summary", "tool_calls": None,
+                        "usage": {"total_tokens": 1000}}
+            return {"content": "", "tool_calls": [{
+                "id": "large-read", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"large.txt"}'},
+            }], "usage": {"total_tokens": first_usage}}
+
+    llm = LLM()
+    tool = SpawnSubagentTool(llm=llm, source_dir=str(tmp_path), toolkits=("strategy",),
+                            max_cumulative_tokens=12000)
+    result = asyncio.run(tool._execute({"description": "Inspect the evidence in large.txt"}))
+
+    assert len(llm.calls) == expected_calls
+    assert tool.last_evidence_summary[0]["status"] == "success"
+    if expected_calls == 2:
+        assert result == "verified summary"
+        messages, choice, kwargs = llm.calls[-1]
+        assert choice == "none"
+        assert "large.txt" in json.dumps(messages)
+        assert "verified source evidence\n" * 100 not in json.dumps(messages)
+        assert tool.last_context_report["compacted_messages"] > 0
+        context = kwargs["trace_context"]
+        assert 0 < kwargs["max_tokens"] <= 12000 - first_usage - context["input_token_allowance"]
+        assert tool.last_token_usage <= 12000
+    else:
+        assert "Evidence snapshot" in result
+        assert "large.txt" in result
+        assert tool.last_context_report["token_budget_stop_reason"] == "task_token_limit"
+
+
+def test_subagent_inherits_main_context_policy_and_has_independent_cumulative_budget(tmp_path):
+    from backend.config import get_settings
+
+    settings = get_settings()
+    tool = SpawnSubagentTool(llm=_MockLLM(), source_dir=str(tmp_path))
+
+    assert tool.max_total_tokens == settings.agent_context_soft_limit_tokens
+    assert tool.emergency_max_total_tokens == settings.agent_context_hard_limit_tokens
+    assert tool.context_budget.budget.max_context_tokens == settings.agent_context_hard_limit_tokens
+    assert tool.context_budget.budget.compaction_trigger_ratio == settings.agent_context_compaction_threshold_ratio
+    assert tool.max_cumulative_tokens == 131072
+
+
 def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
     src = tmp_path / "src"
     src.mkdir()

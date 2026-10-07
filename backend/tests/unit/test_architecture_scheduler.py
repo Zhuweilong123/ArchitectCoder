@@ -21,6 +21,19 @@ from extensions.orchestration.architecture_aware.store import (
 )
 
 
+def test_default_shared_budget_funds_four_equal_128k_explorers():
+    items = tuple(WorkAssignment(str(i), (str(i),), float(i + 1), i % 2, 1)
+                  for i in range(4))
+    budgets = [scheduling.item_token_budget(item, 524288, items) for item in items]
+
+    assert budgets == [131072] * 4
+    assert sum(budgets) == 524288
+    assert scheduling.work_item_limit(524288, 2) == 4
+    assert scheduling.work_item_limit(262144, 2) == 2
+    constrained = [scheduling.item_token_budget(item, 5000, items) for item in items]
+    assert sum(constrained) <= 5000
+
+
 def test_dynamic_scheduler_rebalances_and_reuses_completed_work(tmp_path, monkeypatch):
     runs = RunStore(tmp_path / "runs.db")
     monkeypatch.setattr(scheduling, "get_run_store", lambda: runs)
@@ -42,6 +55,7 @@ def test_dynamic_scheduler_rebalances_and_reuses_completed_work(tmp_path, monkey
             "node_count": 1,
             "estimated_cost": package.cost,
         }
+
 
     async def run_once():
         return await scheduler.run(

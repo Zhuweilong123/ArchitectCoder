@@ -517,7 +517,7 @@ AGENT_ORCHESTRATOR_PROVIDER=extensions.orchestration:create
 AGENT_KNOWLEDGE_GRAPH_ENABLED=true
 ```
 
-当前代码新增的可选参数为 `AGENT_ARCHITECTURE_SCHEDULING_MAX_WORKERS`（默认 2，上限 2）、`AGENT_ARCHITECTURE_SCHEDULING_TOTAL_TOKENS`（默认 64000，较大切片的探索额度上限）和 `AGENT_ARCHITECTURE_SCHEDULING_WORKER_SECONDS`（默认 90）。少于 4 个文件或实体单元的切片最多使用 32000 Token。环境变量变更后按现有 Settings 生命周期重启 backend。
+当前代码新增的可选参数为 `AGENT_ARCHITECTURE_SCHEDULING_MAX_WORKERS`（默认 2，上限 2）、`AGENT_ARCHITECTURE_SCHEDULING_TOTAL_TOKENS`（默认 524288，较大切片的探索额度上限）和 `AGENT_ARCHITECTURE_SCHEDULING_WORKER_SECONDS`（默认 90）。少于 4 个文件或实体单元的切片最多使用分区数乘以 131072 Token，并受共享总额度限制。环境变量变更后按现有 Settings 生命周期重启 backend。
 
 当前执行路径：
 
@@ -533,7 +533,7 @@ AGENT_KNOWLEDGE_GRAPH_ENABLED=true
 
 ## 18. P2 有界动态只读调度的实现范围
 
-`scheduler.py` 按共享 Token 预算决定工作项粒度：小切片最多 32000 Token，两个分区通常各保留一个工作项；至少 4 个文件或实体单元的切片可使用配置额度（默认上限 64000 Token），按文件边界拆出后续波次。最多两个只读子 Agent 同时执行。`store.py` 使用 RunStore 所在 SQLite 数据库持久化计划版本、工作项归属、领取令牌、结果及重分区事件；每项执行另建关联根 Run 的子 Run，租约由 RunStore 管理。领取、结果提交和待启动任务迁移均以事务和版本条件保护。子 Agent 完成后，调度器用实际耗时与估计成本更新两个执行槽的速度估计；预测最大剩余耗时改善至少 10% 且目标槽空闲时，仅迁移未领取的工作项。每次成本估算同时写入 `architecture_cost_audit` Trace 事件，保存公式版本、每个节点的原始与归一化特征、测量来源、加权边和分区、Token 预算、工作项实际成本/耗时/证据状态及完整调度事件，供后续检查估算是否合理。
+`scheduler.py` 按共享 Token 预算决定工作项粒度：小切片按分区数预留每项最多 131072 Token，两个分区通常各保留一个工作项；至少 4 个文件或实体单元的切片可使用配置额度（默认上限 524288 Token），按文件边界拆出后续波次。最多两个只读子 Agent 同时执行。`store.py` 使用 RunStore 所在 SQLite 数据库持久化计划版本、工作项归属、领取令牌、结果及重分区事件；每项执行另建关联根 Run 的子 Run，租约由 RunStore 管理。领取、结果提交和待启动任务迁移均以事务和版本条件保护。子 Agent 完成后，调度器用实际耗时与估计成本更新两个执行槽的速度估计；预测最大剩余耗时改善至少 10% 且目标槽空闲时，仅迁移未领取的工作项。每次成本估算同时写入 `architecture_cost_audit` Trace 事件，保存公式版本、每个节点的原始与归一化特征、测量来源、加权边和分区、Token 预算、工作项实际成本/耗时/证据状态及完整调度事件，供后续检查估算是否合理。
 
 恢复时，匹配需求、所选图切片、项目文件及可定位源码文件指纹的计划可复用已提交摘要；终态子 Run 的结果从 RunStore 元数据补交，过期租约对应工作项可重新入队。取消的子 Run 保留终态，后续恢复重新领取对应工作项。单次执行仍受探索 Token 总额度与每个子 Agent 的时间、Token、工具调用上限约束；预算不足或图谱失效时工具返回 `unavailable`。计划事件保留 `plan_created`、`item_claimed`、`item_finished` 和 `repartition`，工具结果携带计划 ID、修订号、子 Run 及分片统计。
 

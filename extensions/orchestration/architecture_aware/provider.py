@@ -36,6 +36,8 @@ from .scheduler import (
     graph_fingerprint,
     item_token_budget,
     make_work_items,
+    PER_ITEM_TOKEN_LIMIT,
+    work_item_limit,
 )
 from .evidence import collect_file_evidence
 from .evidence_report import normalize_worker_report
@@ -132,11 +134,9 @@ class ArchitectureAwareOrchestrator:
         decision: PartitionDecision,
     ) -> tuple[list[dict[str, Any]], int, Any]:
         remaining = self._exploration_budget(impact, decision)
-        # Splitting a small shared budget four ways caused child agents to
-        # finalize before inspecting source. Keep one item per partition until
-        # each later-wave item can receive roughly 12k tokens.
+        # Raise worker budgets without creating more tiny work items.
         items = make_work_items(
-            impact, decision, max_items=max(len(decision.packages), remaining // 12000),
+            impact, decision, max_items=work_item_limit(remaining, len(decision.packages)),
         )
         if remaining < len(items) * 2500:
             raise GraphUnavailable("insufficient shared exploration budget")
@@ -152,9 +152,9 @@ class ArchitectureAwareOrchestrator:
                 design_dir=os.path.dirname(self.project_file) if self.project_file else "",
                 project_file=self.project_file,
                 toolkits=("strategy",), single_use=True,
-                max_total_tokens=min(limit, 12000), max_cumulative_tokens=limit,
+                max_cumulative_tokens=limit,
                 max_run_seconds=worker_seconds, llm_timeout_seconds=worker_seconds,
-                max_tool_calls=6, token_finalization_reserve_tokens=1000,
+                max_tool_calls=6,
                 child_run_name=package.id,
             )
             try:
@@ -295,9 +295,7 @@ class ArchitectureAwareOrchestrator:
                 "final_slot": final.slot if final else item.slot,
                 "assignment_revision": final.revision if final else item.revision,
                 "token_budget": item_token_budget(item, budget, tuple(initial_items)),
-                "single_request_token_cap": min(
-                    item_token_budget(item, budget, tuple(initial_items)), 12000,
-                ),
+                "single_request_token_cap": self.settings.agent_context_hard_limit_tokens,
                 "worker_seconds": result.get("worker_seconds", 0.0),
                 "actual_tokens": result.get("tokens", 0),
                 "actual_seconds": result.get("seconds", 0.0),
@@ -371,13 +369,11 @@ class ArchitectureAwareOrchestrator:
             },
             "scheduler": {
                 "token_budget": budget,
-                "per_item_token_cap": 16000,
-                "per_item_token_floor": 2500,
-                "item_budget_rule": "min(cap, max(floor, int(total_budget * item_cost / max(0.1, sum(item_costs)))))",
+                "per_item_token_cap": PER_ITEM_TOKEN_LIMIT,
+                "per_item_token_floor": 0,
+                "item_budget_rule": "min(cap, total_budget // max(1, item_count))",
                 "split_rule": "split each partition into at most two groups when max_items >= 2 * partition_count",
-                "requested_max_items": max(
-                    len(decision.packages), budget // 12000,
-                ),
+                "requested_max_items": work_item_limit(budget, len(decision.packages)),
                 "max_workers": max_workers,
                 "worker_seconds": worker_seconds,
                 "reserved_token_budget": sum(
@@ -402,7 +398,7 @@ class ArchitectureAwareOrchestrator:
             _unit_key(node_id, impact.nodes[node_id])
             for package in decision.packages for node_id in package.node_ids
         }
-        return cap if len(units) >= 4 else min(cap, 32000)
+        return cap if len(units) >= 4 else min(cap, PER_ITEM_TOKEN_LIMIT * max(1, len(decision.packages)))
 
     async def prepare(self, request: OrchestrationRequest) -> OrchestrationPreparation:
         route_available = "route_architecture" in request.available_tools
@@ -491,7 +487,7 @@ class ArchitectureAwareOrchestrator:
             planned_items = (
                 make_work_items(
                     impact, decision,
-                    max_items=max(len(decision.packages), budget // 12000),
+                    max_items=work_item_limit(budget, len(decision.packages)),
                 )
                 if len(decision.packages) >= 2 else ()
             )
