@@ -33,7 +33,7 @@ EVT_TASK_SUMMARY = "task_summary"
 
 def chat_log_dir() -> str:
     """Return the default chat-trace directory under the runtime root."""
-    from backend.config import get_settings
+    from app.agent_base.host_api.environment import configuration as get_settings
 
     settings = get_settings()
     return os.path.normpath(os.path.abspath(

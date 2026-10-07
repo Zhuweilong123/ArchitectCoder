@@ -40,7 +40,7 @@ def create(
     explorer_factory=None,
     **kwargs,
 ):
-    """Provider factory used by ``load_orchestrator``."""
+    """Provider factory resolved by the plugin's assembly contribution."""
 
     if not getattr(settings, "agent_knowledge_graph_enabled", False):
         return UnavailableArchitectureScheduler("knowledge graph is disabled")

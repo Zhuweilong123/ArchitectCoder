@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any
 
-from backend.config.project_storage import project_id_for
+from app.agent_base.host_api.environment import project_id as project_id_for
 
 from .thread_calls import graph_call
 

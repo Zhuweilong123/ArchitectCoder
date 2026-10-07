@@ -4,6 +4,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Awaitable, ContextManager, Protocol
+from pathlib import Path
+from collections.abc import Mapping
 from .runs import RunStorePort
 
 
@@ -46,6 +48,17 @@ class FileInspectionPort(Protocol):
     dependency_hints: int | None
 
 
+class ProjectStoragePort(Protocol):
+    root: Path
+    state_dir: Path
+    project_id: str
+
+
+class WorkspacePathsPort(Protocol):
+    workspace: Path | None
+    def resolve(self, path: str) -> Path: ...
+
+
 class HostServices(Protocol):
     """Capabilities resolved against the active request when they are called."""
 
@@ -75,6 +88,13 @@ class HostServices(Protocol):
     def bind_task(self, **kwargs) -> Any: ...
     def create_loop_agent(self, **kwargs) -> Any: ...
     def foundation_registry(self, source_dir: str, test_dir: str, allowed_tools: set[str]) -> Any: ...
+    def configuration(self) -> Any: ...
+    def plugin_config(self, plugin: str) -> Mapping[str, Any]: ...
+    def project_storage(self, project_file: str = "", **kwargs) -> ProjectStoragePort | None: ...
+    def project_id(self, project_file: str = "", **kwargs) -> str: ...
+    def runtime_path(self, area: str = "") -> Path: ...
+    def workspace_paths(self, *args, **kwargs) -> WorkspacePathsPort: ...
+    def decode_output(self, value: bytes) -> str: ...
 
 
 _services: ContextVar[HostServices | None] = ContextVar("host_services", default=None)

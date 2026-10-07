@@ -13,7 +13,7 @@ from typing import Any
 
 from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.host_api.services import get_host_services
-from backend.config.project_storage import project_id_for
+from app.agent_base.host_api.environment import project_id as project_id_for
 from app.agent_base.host_api.orchestration import OrchestrationPreparation, OrchestrationRequest
 from extensions.orchestration.plugin_api import (ExplorationDemand, ExplorationEvidence, ExplorationFinding, ExplorationReport)
 

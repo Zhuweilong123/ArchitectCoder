@@ -37,9 +37,17 @@ def scaffold(name, root):
         },
         "defaults": {"label": name}, "dependencies": [],
         "contributions": [{"id": f"{name}.prepare", "stage": "prepare",
-                           "handler": f"{name}:observe_prepare", "mode": "observer"}],
+                           "handler": f"{name}:observe_prepare", "mode": "observer"},
+                          {"id": f"{name}.bind", "stage": "initialize", "handler": f"{name}:bind",
+                           "mode": "service", "scope": "invocation", "interface_id": "assembly.bind"},
+                          {"id": f"{name}.check", "stage": "finalize", "handler": f"{name}:check",
+                           "mode": "service", "scope": "invocation", "interface_id": "execution.check"}],
     }
     source = '''"""Starter plugin: synchronous/asynchronous services and a phase observer."""
+
+
+from app.agent_base.host_api.services import get_host_services
+from app.agent_base.tools.base import Tool
 
 
 class Provider:
@@ -55,6 +63,37 @@ class Provider:
 
 def create(*, settings, **kwargs):
     return Provider(settings.plugin_configs["PLUGIN_ID"]["label"])
+
+
+class DescribeTool(Tool):
+    def __init__(self, provider):
+        super().__init__("PLUGIN_ID_describe", "Describe this plugin")
+        self.provider = provider
+        self.read_only = True
+
+    def get_parameters(self):
+        return []
+
+    def run(self, parameters):
+        return self.provider.describe()
+
+
+def bind(context):
+    request = context.invocation
+    provider = get_host_services().resolve_provider("PLUGIN_ID")
+    if provider is None:
+        raise RuntimeError("PLUGIN_ID provider is unavailable")
+    request.bind("PLUGIN_ID", provider)
+    request.tools.append(DescribeTool(provider))
+    request.required_bindings.setdefault("execution.check", []).append("PLUGIN_ID.check")
+
+
+def check(context):
+    # Add domain checks here. A rejection sets allowed=False and message.
+    # Preserve previous decisions: never reset allowed=True in this handler.
+    if get_host_services().extension_context().providers.get("PLUGIN_ID") is None:
+        context.invocation.allowed = False
+        context.invocation.message = "PLUGIN_ID provider is unavailable"
 
 
 def observe_prepare(context):
@@ -84,13 +123,17 @@ in a private registry. It closes any constructed provider after execution.
 Edit `plugin.json`, `__init__.py` and `smoke.json` together. Use `--root` to make
 external dependencies available, and `--output report.json` to save results.
 Declare asynchronous methods with `async=true`; keep import-time code free of
-resource creation. New services still need a business/tool assembly point.
+resource creation. The generated assembly.bind contribution binds the provider
+and exposes PLUGIN_ID_describe as a read-only tool. execution.check demonstrates
+a required transaction policy. Ordinary initialize/finalize broadcasts do not
+execute these service contributions. Use get_host_services().plugin_config("PLUGIN_ID")
+for plugin-owned configuration; it returns a detached snapshot.
 
 To discover this plugin in the application, add its parent directory to
 `PLUGIN_ROOTS` (paths there are relative to `backend/`) and restart. If the root
 is already configured, use **Discover plugins** in the architecture panel.
 See `docs/plugin-development.md` for fixture format and execution boundaries.
-'''
+'''.replace("PLUGIN_ID", name)
     files = {"plugin.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
              "__init__.py": source, "smoke.json": json.dumps(fixture, ensure_ascii=False, indent=2) + "\n",
              "README.md": readme}

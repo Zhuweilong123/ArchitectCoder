@@ -29,12 +29,18 @@ python backend/plugin_dev.py new team_checks --root temp/dev-plugins
 
 | 文件 | 用途 |
 |---|---|
-| `plugin.json` | 插件身份、版本、默认参数、同步/异步服务接口和 prepare 观察贡献 |
-| `__init__.py` | Provider、create 工厂及观察者的最小实现 |
+| `plugin.json` | 插件身份、版本、默认参数、服务接口、prepare 观察贡献和装配/执行检查贡献 |
+| `__init__.py` | Provider、create 工厂、只读工具、装配绑定及执行检查的最小实现 |
 | `smoke.json` | echo 服务试运行输入 |
 | `README.md` | 针对当前插件路径生成的开发命令和接入说明 |
 
 名称使用小写 Python 包名，不允许路径穿越、关键字、core 或标准库模块名。目标目录已存在时直接失败，不覆盖现有文件。省略 `--root` 时写入仓库 `examples/plugins/`。修改插件代码时同步维护接口声明；声明 service 不会自动向模型暴露工具。
+
+骨架的 `assembly.bind` 服务通过 `AssemblyRequest.bind` 绑定 provider，并向 `tools` 添加 `<插件名>_describe` 只读工具；`execution.check` 展示必需的事务检查。接入配置目录后即可参与生产装配，无需修改主流程。普通 initialize/finalize 广播不执行这些服务；阶段试运行仍用于观察者与控制贡献。装配链路由 `test_automatic_assembly.py` 验证。
+
+`AssemblyInputs` 列出宿主提供的路径和可选回调，`ProviderBinder` 定义绑定签名。插件自行定义领域数据；宿主验证输出工具及必需贡献，拒绝工具名称/别名冲突，以及不存在或未绑定到目标 slot 的检查。检查处理器只能保留或收紧已有拒绝决定，不应重新设置 `allowed=True`。
+
+插件内部读取自身配置时使用 `get_host_services().plugin_config(插件ID)`（或 `host_api.environment.plugin_config`），返回独立快照且顶层只读，修改嵌套数据也不影响任务配置。工厂的 `settings` 参数保持加载协议兼容；`configuration()` 保留用于现有共享部署配置，新插件不应依赖具体 Settings 类或其内部字段。
 
 ## 2. 检查清单与接口契约
 

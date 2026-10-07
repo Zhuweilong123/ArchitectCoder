@@ -165,8 +165,10 @@ class HookRegistry:
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
                     self.unregister(stage, handler)
 
-    def has_contribution(self, identifier):
-        return any(meta.get("id") == identifier for meta in self._metadata.values())
+    def has_contribution(self, identifier, *, interface_id=None):
+        return any(meta.get("id") == identifier and (interface_id is None or
+                   (meta.get("mode") == "service" and meta.get("interface_id") == interface_id))
+                   for meta in self._metadata.values())
 
     @staticmethod
     def _drive_sync(iterator):
@@ -230,8 +232,11 @@ class HookRegistry:
                 continue
             started = time.monotonic()
             try:
-                result = yield hook(self._observer_context(ctx) if mode == "observer" else ctx)
-                self._validate_result(ctx.event, mode, result)
+                from contextlib import nullcontext
+                scope = getattr(ctx.invocation, "contribution_scope", None)
+                with scope(meta.get("id", "")) if callable(scope) else nullcontext():
+                    result = yield hook(ctx)
+                    self._validate_result(ctx.event, mode, result)
             except BaseException as exc:
                 self._record(ctx.event, hook, ctx, "interrupted" if isinstance(exc, (asyncio.CancelledError, AgentInterrupted)) else "error",
                              time.monotonic() - started, error_type=type(exc).__name__, error_message=str(exc),

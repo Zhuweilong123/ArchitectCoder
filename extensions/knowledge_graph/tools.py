@@ -696,7 +696,7 @@ def create_kg_v2_tools(
 
     project_id = ""
     if project_file:
-        from backend.config.project_storage import project_id_for
+        from app.agent_base.host_api.environment import project_id as project_id_for
         project_id = project_id_for(project_file)
     tools: list[Tool] = [
         KgMapTool(provider, project_id),

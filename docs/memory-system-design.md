@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明
 > 更新日期：2026-10-07
-> 适用范围：当前仓库 HEAD。记忆公开契约以 `extensions/memory/plugin_api.py` 为准，宿主适配以 `backend/app/agent_base/adapters/memory.py` 为准。
+> 适用范围：当前仓库 HEAD。记忆公开契约以 `extensions/memory/plugin_api.py` 为准，装配与运行策略以 `extensions/memory/assembly.py`、`contributions.py` 为准。
 
 来源与有效性治理见 [记忆知识生命周期 v1](memory-knowledge-lifecycle.md)。
 
@@ -11,18 +11,18 @@
 记忆能力分为三层：
 
 - **插件 API 层**：`extensions/memory/plugin_api.py` 定义 `MemoryPort` 和请求/结果模型。
-- **宿主适配层**：`adapters/memory.py` 负责加载、NoOp 降级和 resilience wrapper。
+- **宿主接入层**：通用 `adapters/assembly.py` 派发装配请求，PluginManager 负责 provider 加载和接口调度。
 - **扩展层**：`extensions/memory` 提供 SQLite 存储、FTS5/BM25 检索、LLM 提取、写入治理，以及通过显式阶段贡献实现的召回、观察、刷新和归档策略。
 
-`backend/app/agent_base/core/plugins.py` 通过 `extensions.memory:create` 加载默认 provider。关闭或加载失败时，Agent 继续使用 `NoOpMemory`，不阻断主流程。
+`memory.assembly.bind` 通过宿主能力解析 `extensions.memory:create`。关闭或 provider 加载失败时不绑定记忆能力；贡献发现 provider 缺失后跳过。召回异常由插件贡献处理，观察异常由非阻断 hook 记录，后台归档失败由后台任务管理器记录，不阻断主 Agent。
 
 ## 2. 运行时调用链
 
 ```text
 create_dev_agent()
     │
-    ├─ load_memory(llm, settings)
-    │      └─ PluginManager.load("memory")
+    ├─ assembly.bind → memory.assembly.bind
+    │      └─ HostServices.resolve_provider("memory")
     │             └─ extensions.memory:create
     │                    └─ SQLiteMemoryProvider
     │
@@ -297,7 +297,7 @@ finally:
 | 文件 | 职责 |
 |---|---|
 | `extensions/memory/plugin_api.py` | 记忆请求、结果和 Provider Protocol |
-| `backend/app/agent_base/adapters/memory.py` | 加载、NoOp 和 resilience |
+| `extensions/memory/assembly.py`、`contributions.py` | 声明式绑定、运行策略与故障处理 |
 | `backend/app/agent_base/core/extension_context.py` | 通用能力绑定、请求隔离、任务结果通知和审核期间状态保留 |
 | `backend/app/agent_base/assembly.py` | 绑定 provider；通过 prepare 组装通用上下文 sections |
 | `backend/app/services/agent_execution.py` | 执行与最终检查后发布通用任务结果 |

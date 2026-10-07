@@ -157,13 +157,13 @@ def test_trace_case_factory_end_to_end_publish_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(trace_cases, "cases_dir", lambda: cases_root)
     monkeypatch.setattr(trace_cases, "fixtures_dir", lambda: fixtures_root)
     monkeypatch.setattr(trace_cases, "projects_dir", lambda: projects_root)
-    monkeypatch.setattr(trace_cases, "load_trace", lambda: SimpleNamespace(
+    monkeypatch.setattr(trace_cases, "get_host_services", lambda: SimpleNamespace(resolve_provider=lambda slot: SimpleNamespace(
         query=lambda: SimpleNamespace(read_trace=lambda _session_id: {"events": [
             {"event_type": "session_start", "user_message": "build it", "project_file": str(design / "project.umlproj"), "source_dir": str(source), "test_dir": str(tests)},
             {"event_type": "user_message", "message": "build it", "project_file": str(design / "project.umlproj"), "source_dir": str(source), "test_dir": str(tests)},
             {"event_type": "done", "answer": "done"},
         ]})
-    ))
+    )))
 
     class FakeRunner:
         async def run_case(self, case, result_metadata=None):

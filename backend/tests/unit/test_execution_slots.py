@@ -60,6 +60,12 @@ def test_missing_required_binding_and_handler_exception_cannot_approve(registry)
     with extension_scope(session), pytest.raises(RuntimeError, match="required execution"):
         asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
 
+    registry.register(HookEvent.FINALIZE, lambda ctx: None, contribution_id="required.check",
+                      mode="observer")
+    with extension_scope(session), pytest.raises(RuntimeError, match="required execution"):
+        asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
+    registry.clear()
+
     def broken(ctx):
         raise ValueError("check failed")
 
@@ -69,16 +75,73 @@ def test_missing_required_binding_and_handler_exception_cannot_approve(registry)
         asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
 
 
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_checks_preserve_first_rejection_and_record_additional_reasons(registry, synchronous):
+    def reject(ctx):
+        ctx.invocation.allowed = False
+        ctx.invocation.message = "first rejection"
+        ctx.invocation.stop_reason = "first_reason"
+        ctx.invocation.recovery_event = {"event": "first_recovery"}
+
+    def overwrite(ctx):
+        ctx.invocation.allowed = True
+        ctx.invocation.message = "approved"
+        ctx.invocation.recovery_event.clear()
+
+    def second_reject(ctx):
+        assert not ctx.invocation.allowed
+        assert ctx.invocation.message == "first rejection"
+        ctx.invocation.allowed = False
+        ctx.invocation.message = "second rejection"
+
+    for index, handler in enumerate((reject, overwrite, second_reject)):
+        registry.register(HookEvent.FINALIZE, handler, contribution_id=str(index),
+                          mode="service", interface_id=ExecutionSlots.CHECK)
+    request = ExecutionRequest(ExecutionSlots.CHECK)
+    if synchronous:
+        registry.invoke(HookContext(HookEvent.FINALIZE, "test", invocation=request))
+    else:
+        asyncio.run(dispatch_execution(request))
+    assert not request.allowed and request.message == "first rejection"
+    assert request.stop_reason == "first_reason" and request.recovery_event == {"event": "first_recovery"}
+    assert [item["message"] for item in request.rejections] == ["first rejection", "second rejection"]
+
+
 def test_execution_entry_does_not_select_plugin_policies_or_loaders():
     root = Path(__file__).resolve().parents[3]
     source = (root / "backend/app/services/agent_execution.py").read_text(encoding="utf-8-sig")
     assert all(marker not in source for marker in (
         "load_orchestrator", "contract_gate", "contract_failure_analyzer",
         "architecture_scheduling", "contract_graph_sync", "route_architecture"))
+    transports = {"trace/api.py", "evals/api.py", "evals/cli.py", "evals/full_api.py"}
+    forbidden = ("app.services", "app.agent_base.adapters", "app.agent_base.assembly",
+                 "app.agent_base.agents", "app.agent_base.core", "backend.config", "app.runtime")
     for path in (root / "extensions").rglob("*.py"):
-        if path.name in {"api.py", "cli.py", "full_api.py", "trace_cases.py"}:
-            continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith(("app.services", "app.agent_base.adapters",
-                    "app.agent_base.assembly", "app.agent_base.agents", "app.agent_base.core")), path
+        relative = path.relative_to(root / "extensions").as_posix()
+        for module in imported_modules(path.read_text(encoding="utf-8-sig")):
+            # Only the named transport entry points may use loader adapters.
+            if relative in transports and module.startswith("app.agent_base.adapters."):
+                continue
+            assert not any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden), (path, module)
+
+
+def imported_modules(source):
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            yield node.module
+        elif isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+
+
+def test_boundary_scanner_checks_both_import_styles_and_local_imports():
+    assert list(imported_modules("import app.runtime as runtime\ndef f():\n from backend.config import Settings")) == [
+        "app.runtime", "backend.config"]
+
+
+def test_host_protocols_do_not_import_implementations_or_plugins():
+    root = Path(__file__).resolve().parents[3] / "backend/app/agent_base/host_api"
+    forbidden = ("extensions", "backend.config", "app.services", "app.runtime",
+                 "app.agent_base.core", "app.agent_base.adapters", "app.agent_base.agents")
+    for path in root.rglob("*.py"):
+        for module in imported_modules(path.read_text(encoding="utf-8-sig")):
+            assert not any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden), (path, module)

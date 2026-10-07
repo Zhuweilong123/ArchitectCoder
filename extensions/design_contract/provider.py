@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from backend.config.project_storage import project_id_for
+from app.agent_base.host_api.environment import project_id as project_id_for
 
 from .plugin_api import ArtifactFacts, ContractEntity, ContractMapping, ContractSnapshot
 from extensions.design_contract.language_adapters import (ClangAstAdapter, LanguageAdapterRegistry, PythonAstAdapter, default_language_adapters)

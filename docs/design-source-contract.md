@@ -231,8 +231,8 @@ apply_changes → ContractHarness.check(index_graph=False)
 
 当前 Harness 提供基础的设计类实现、方法存在性、测试覆盖和解析诊断检查；复杂项目可通过替换或扩展校验器增加更严格的策略，而不改变 Agent 主循环。
 
-`agent_execution` 只依赖 `ContractGatePort` 的 `evaluate/finalize` 决策接口。默认实现由
-`load_contract_gate()` 注入到 Agent；替换校验引擎、审核策略或图谱后端时，不需要修改执行主流程。
+`agent_execution` 通过通用 execution slot 派发候选检查和提交后通知。契约插件通过
+`assembly.bind` 绑定 `evaluate/finalize` 能力；替换校验引擎、审核策略或图谱后端时，不需要修改执行主流程。缺少 evaluate 时由插件拒绝有变更的候选；缺少 analyze 时返回事实说明，不调用模型。
 
 执行状态投影中，Task 的顶层 `status` 继续表示看板状态（只有显式完成任务才变为
 `completed`）；本次运行的终态以 `result_status` 和 `execution.status` 为准。为避免

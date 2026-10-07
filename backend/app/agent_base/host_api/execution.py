@@ -1,6 +1,8 @@
 """Requests shared by execution slots; no agent or transaction implementation."""
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from contextlib import contextmanager
+from copy import deepcopy
 
 
 @dataclass
@@ -17,6 +19,25 @@ class ExecutionRequest:
     stop_reason: str = "execution_check_failed"
     recovery_event: dict[str, Any] = field(default_factory=lambda: {
         "event": "candidate_recovery_available", "action": "修复检查问题并继续"})
+    rejections: list[dict[str, Any]] = field(default_factory=list)
+
+    @contextmanager
+    def contribution_scope(self, identifier: str):
+        """Checks can add rejections, but cannot remove an earlier veto."""
+        if self.interface_id != ExecutionSlots.CHECK:
+            yield
+            return
+        prior = None if self.allowed else (self.message, self.stop_reason, deepcopy(self.recovery_event))
+        try:
+            yield
+        finally:
+            if not self.allowed and (prior is None or
+                    (self.message, self.stop_reason, self.recovery_event) != prior):
+                self.rejections.append({"contribution_id": identifier, "message": self.message,
+                                        "stop_reason": self.stop_reason})
+            if prior is not None:
+                self.allowed = False
+                self.message, self.stop_reason, self.recovery_event = prior
 
 
 class ExecutionSlots:

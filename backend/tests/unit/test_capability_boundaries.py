@@ -9,9 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from backend.config import Settings
-from app.agent_base.adapters.contract_analysis import load_contract_failure_analyzer
-from app.agent_base.adapters.contract_gate import build_contract_gate_context, load_contract_gate
-from app.agent_base.adapters.contracts import load_contracts
+from app.agent_base.adapters.assembly import assemble_extensions
+from app.agent_base.core.extension_context import ExtensionContext, extension_scope
+from app.agent_base.host_api.execution import ExecutionRequest
+from extensions.design_contract.assembly import UnavailableGate, UnavailableAnalyzer
+from extensions.design_contract.execution import _gate_context
 from app.agent_base.adapters.review import ReviewAdapter
 from app.agent_base.core import hooks, plugins
 from app.agent_base.core.hooks import HookRegistry
@@ -77,9 +79,9 @@ def test_extensions_use_public_host_api_instead_of_core_implementations():
 def test_host_context_is_a_snapshot_of_manifest_and_candidate_changes():
     manifest = {"workspace_root": "original", "project_files": ["one.uml"]}
     changes = [{"path": "one.py", "operation": "modify"}]
-    built = build_contract_gate_context(agent=SimpleNamespace(workspace_manifest=manifest),
-        change_set=SimpleNamespace(manifest=lambda: changes), review_manager=None,
-        emit=emit_ok, emit_review=emit_ok)
+    built = _gate_context(ExecutionRequest("execution.check", data={
+        "workspace_manifest": manifest, "changed_paths": changes}, capabilities={"emit": emit_ok}),
+        ExtensionContext(metadata={"execution_settings": SimpleNamespace()}))
     manifest["project_files"].append("two.uml")
     changes[0]["path"] = "two.py"
     assert built.workspace_manifest["project_files"] == ["one.uml"]
@@ -111,9 +113,10 @@ def test_configured_policy_provider_is_scheduled_for_gate_and_failure_analysis(m
     settings = Settings(_env_file=None, llm_api_key="test", llm_base_url="http://test/v1",
         llm_model_id="test", agent_design_contract_provider="test_contract_policy:create")
     install_plan(build_plan(manager, settings), registry)
-    provider = load_contracts(settings=settings)
-    gate = load_contract_gate(settings=settings, provider=provider)
-    analyzer = load_contract_failure_analyzer(settings=settings, provider=provider)
+    session = ExtensionContext()
+    asyncio.run(assemble_extensions(session, settings=settings, inputs={"llm": object()}))
+    binding = session.providers["design_contract"]
+    gate, analyzer = binding.gate, binding.analyzer
     token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **data: events.append(data)))
     async def run():
         assert (await gate.evaluate(context())).message == "custom decision"
@@ -142,11 +145,12 @@ def test_builtin_gate_collects_through_declared_interfaces(tmp_path, monkeypatch
     settings = Settings(_env_file=None, llm_api_key="test", llm_base_url="http://test/v1",
         llm_model_id="test", agent_knowledge_graph_enabled=False)
     install_plan(build_plan(manager, settings), registry)
-    provider = load_contracts(settings=settings)
+    session = ExtensionContext()
+    asyncio.run(assemble_extensions(session, settings=settings, inputs={"llm": object()}))
     events = []
     token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **data: events.append(data)))
     async def run():
-        gate = load_contract_gate(settings=settings, provider=provider)
+        gate = session.providers["design_contract"].gate
         ctx = ContractGateContext({"workspace_root": str(tmp_path), "source_root": str(source)},
                                   (str(path),), emit_ok)
         decision = await gate.evaluate(ctx)
@@ -210,16 +214,14 @@ def test_gate_does_not_commit_when_check_event_cannot_be_delivered(monkeypatch):
 
 
 def test_disabled_and_unavailable_capabilities_have_distinct_outcomes():
-    provider = SimpleNamespace(collect=lambda *args: None)
-    disabled = load_contract_gate(settings=SimpleNamespace(agent_design_contract_enabled=False), provider=provider)
-    unavailable = load_contract_gate(settings=SimpleNamespace(agent_design_contract_enabled=True), provider=provider)
-    assert asyncio.run(disabled.evaluate(context())).allowed
+    unavailable = UnavailableGate()
+    assert asyncio.run(unavailable.evaluate(context(contract_enabled=False))).allowed
     decision = asyncio.run(unavailable.evaluate(context()))
     assert not decision.allowed and decision.result.status == "inconclusive"
     assert asyncio.run(unavailable.evaluate(context(contract_enabled=False))).allowed
     async def invoke(request):
         pytest.fail("missing analysis capability must not invoke a model")
-    analysis = load_contract_failure_analyzer(provider=provider)
+    analysis = UnavailableAnalyzer()
     assert asyncio.run(analysis.analyze(ContractFailureAnalysisContext(
         decision.result, invoke, message="factual failure"))) == "factual failure"
 
