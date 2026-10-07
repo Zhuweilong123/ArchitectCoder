@@ -12,6 +12,7 @@ from app.agent_base.host_api.orchestration import OrchestrationRequest
 from extensions.orchestration.architecture_aware import scheduler as scheduling
 from extensions.orchestration.architecture_aware.evidence import collect_file_evidence
 from extensions.orchestration.architecture_aware.impact import ImpactSlice
+from extensions.orchestration.architecture_aware.graph_files import SliceReadiness
 from extensions.orchestration.architecture_aware.partition import ExplorationPackage, partition_impact
 from extensions.orchestration.architecture_aware.provider import ArchitectureAwareOrchestrator
 from extensions.orchestration.architecture_aware.store import (
@@ -32,6 +33,36 @@ def test_default_shared_budget_funds_four_equal_128k_explorers():
     assert scheduling.work_item_limit(262144, 2) == 2
     constrained = [scheduling.item_token_budget(item, 5000, items) for item in items]
     assert sum(constrained) <= 5000
+
+
+@pytest.mark.parametrize("phase", ["planned", "completed"])
+def test_cost_audit_records_instance_request_token_cap(monkeypatch, phase):
+    events = []
+    monkeypatch.setattr(
+        "extensions.orchestration.architecture_aware.provider.get_host_services",
+        lambda: SimpleNamespace(emit_event=lambda kind, payload: events.append((kind, payload))),
+    )
+    impact = ImpactSlice("trade", {
+        "sales": {"id": "sales", "name": "SalesService"},
+    }, (), ("sales",), ("SalesService",))
+    decision = partition_impact(impact)
+    items = (WorkAssignment("sales-item", ("sales",), 1.0, 0, 1),)
+    provider = ArchitectureAwareOrchestrator(
+        llm=object(), settings=SimpleNamespace(agent_context_hard_limit_tokens=12345),
+        project_file="trade.umlproj", source_dir="src", test_dir="test",
+        explorer_factory=object(),
+    )
+
+    provider._emit_cost_audit(
+        impact, decision, budget=5000, readiness=SliceReadiness(),
+        initial_items=items, phase=phase,
+    )
+
+    assert len(events) == 1
+    kind, audit = events[0]
+    assert kind == "architecture_cost_audit"
+    assert audit["phase"] == phase
+    assert audit["scheduler"]["items"][0]["single_request_token_cap"] == 12345
 
 
 def test_dynamic_scheduler_rebalances_and_reuses_completed_work(tmp_path, monkeypatch):

@@ -231,9 +231,8 @@ class ArchitectureAwareOrchestrator:
         )
         return list(outcome.results), outcome.worker_tokens, outcome.plan
 
-    @staticmethod
     def _emit_cost_audit(
-        impact: ImpactSlice, decision: PartitionDecision, *, budget: int,
+        self, impact: ImpactSlice, decision: PartitionDecision, *, budget: int,
         readiness: SliceReadiness, initial_items=(), schedule=None,
         phase: str = "completed", max_workers: int = 2,
         worker_seconds: float = 90.0, audit_id: str = "",
