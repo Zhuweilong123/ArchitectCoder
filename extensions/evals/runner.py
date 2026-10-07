@@ -18,12 +18,8 @@ from typing import Any, Awaitable, Callable
 
 from app.agent_base.host_api.services import get_host_services
 from app.agent_base.execution_summary import build_task_execution_summary
-from backend.config import (
-    evaluation_results_dir,
-    evaluation_root,
-    evaluation_traces_dir,
-    get_settings,
-)
+from .paths import evaluation_results_dir, evaluation_root, evaluation_traces_dir
+from app.agent_base.host_api.environment import configuration as get_settings
 
 from .checkers import build_checkers
 from .fixture_materializer import materialize_fixture

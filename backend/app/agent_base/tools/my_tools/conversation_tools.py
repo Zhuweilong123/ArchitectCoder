@@ -175,32 +175,6 @@ def create_conversation_tools(
         from app.agent_base.tools.task_system import create_task_system_tools
         tools.extend(create_task_system_tools(scope=task_scope))
 
-    # Architecture scheduling contributes only its routing/exploration tools.
-    # The scheduler queries the KG provider internally; standalone KG tools
-    # remain available from the plugin factory but are not main-Agent tools.
-    from app.agent_base.core.plugins import get_plugin_manager
-    settings = get_settings()
-    if (
-        project_file
-        and settings.agent_orchestration_enabled
-        and settings.agent_knowledge_graph_enabled
-    ):
-        from .subagent_tool import SpawnSubagentTool
-
-        tools.extend(get_plugin_manager().load_contribution(
-            "orchestration",
-            "create_tools",
-            settings=settings,
-            kwargs={
-                "llm": llm,
-                "project_file": project_file,
-                "source_dir": source_dir,
-                "test_dir": test_dir,
-                "explorer_factory": SpawnSubagentTool,
-            },
-            default=[],
-        ))
-
     if include_review:
         from app.agent_base.tools.review import SubmitUmlReviewTool
         tools.append(SubmitUmlReviewTool(

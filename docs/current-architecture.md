@@ -112,6 +112,10 @@ extensions.skills:create
 
 ### 插件架构与扩展契约
 
+Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 服务贡献完成。前者准备共享目录快照，后者绑定 provider、提供工具并声明必需的执行检查。`assembly.py` 统一派发请求、注册返回的工具并构造 Agent，不再显式加载或绑定 memory、skills、design_contract、orchestration provider。独立目录插件经扫描即可进入真实生产装配，新增同类能力不需要修改宿主装配入口；普通 initialize 广播不会执行装配服务。
+
+配置、项目身份、状态目录、运行目录、工作区路径解析和进程输出解码通过 `host_api/environment.py` / HostServices 提供。依赖解析沿用当前请求的配置和扫描目录，后台任务继承相同绑定。宿主管理项目状态目录，插件选择数据库文件名；评测插件管理运行目录内的评测布局。版本化用例与 fixture 保留在 `backend/evals`，UML Project 仍是宿主业务数据协议。API/CLI 接入层可以使用宿主 loader adapter，领域模块禁止直接导入 backend.config、app.runtime、宿主 services/core/agent 实现或插件宿主加载器，边界由 AST 回归测试验证。
+
 插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过 `HostServices`、公开运行状态协议和 `ExtensionContext` 获取。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
 
 统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。

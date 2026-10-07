@@ -150,7 +150,6 @@ def test_conversation_tools_omit_disabled_skills(tmp_path):
 def test_dev_agent_assembly_uses_one_catalog(monkeypatch, tmp_path, enabled):
     import asyncio
     from app.agent_base import assembly
-    from app.agent_base.adapters.memory import (NoOpMemory)
     from app.agent_base.adapters.skills import (NoOpSkillProvider)
     from backend.config import get_settings
     provider = MemoryProvider() if enabled else NoOpSkillProvider()
@@ -159,12 +158,17 @@ def test_dev_agent_assembly_uses_one_catalog(monkeypatch, tmp_path, enabled):
         calls.append(context)
         return MemoryProvider().list_skills() if enabled else ()
     provider.list_skills = listed
-    monkeypatch.setattr(assembly, "load_skills", lambda **kw: provider)
-    monkeypatch.setattr(assembly, "load_memory", lambda **kw: NoOpMemory())
+    from app.agent_base.adapters.host_services import ApplicationHostServices
+    host = ApplicationHostServices()
+    original = host.resolve_provider
+    monkeypatch.setattr(host, "resolve_provider", lambda slot, **kw:
+        provider if slot == "skills" else None if slot == "memory" else original(slot, **kw))
+    from app.agent_base.host_api.services import host_services_scope
     monkeypatch.setattr(assembly, "get_settings", lambda: get_settings().model_copy(update={
         "agent_main_subagent_enabled": True,
     }))
-    agent, _, prompt = asyncio.run(assembly.create_dev_agent(object(), workspace_root=str(tmp_path)))
+    with host_services_scope(host):
+        agent, _, prompt = asyncio.run(assembly.create_dev_agent(object(), workspace_root=str(tmp_path)))
     assert len(calls) == 1
     assert calls[0].workspace_root == str(tmp_path)
     skill = agent.tool_registry.get_tool("skill")

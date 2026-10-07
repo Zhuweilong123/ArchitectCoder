@@ -11,7 +11,7 @@ from .models import ProjectManifest
 def preindex_project_graph(workspace: Path, manifest: ProjectManifest) -> dict:
     """Index the same design and source snapshot for every comparison arm."""
     from app.models.uml import Project
-    from backend.config.project_storage import project_storage
+    from app.agent_base.host_api.environment import project_storage
     from extensions.knowledge_graph.builder import GraphBuilder
 
     project_file = (workspace / manifest.entry_file).resolve()
@@ -26,7 +26,7 @@ def preindex_project_graph(workspace: Path, manifest: ProjectManifest) -> dict:
     storage = project_storage(str(project_file), workspace_root=str(workspace))
     if storage is None:
         raise ValueError("could not create project-owned graph storage")
-    builder = GraphBuilder(db_path=str(storage.graph_db))
+    builder = GraphBuilder(db_path=str((storage.state_dir / "knowledge_graph.db")))
     try:
         design = builder.rebuild_project(
             project, storage.project_id, filepath=str(project_file),

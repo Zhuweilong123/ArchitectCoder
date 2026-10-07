@@ -45,9 +45,12 @@ class ExtensionContext:
         """Start a request with shared capabilities and fresh private state."""
         import copy
         return ExtensionContext(dict(self.providers), copy.deepcopy(self.metadata),
-                                _contributions=list(self._contributions), host_services=self.host_services)
+                                _contributions=list(self._contributions), _registry=self._registry,
+                                host_services=self.host_services)
 
     def hooks_for(self, fallback):
+        if self._registry is not None and self._registry.plan_id:
+            return self._registry
         if fallback.plan_id or not self._contributions:
             return fallback
         if self._registry is None:

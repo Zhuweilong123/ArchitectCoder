@@ -8,7 +8,6 @@ HTTP/CLI entry points) can build the same Agent without importing one another.
 from __future__ import annotations
 
 import os
-from types import SimpleNamespace
 from datetime import datetime
 
 from backend.config import get_settings
@@ -16,15 +15,14 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
-from app.agent_base.adapters.memory import (NoOpMemory, load_memory)
+from app.agent_base.adapters.assembly import assemble_extensions
 from app.agent_base.core.extension_context import ExtensionContext, extension_scope
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
     create_conversation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
-from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog, load_skills)
-from app.agent_base.host_api.contexts import SkillContext
+from app.agent_base.adapters.skills import (SkillCatalog, NoOpSkillProvider, capture_skill_catalog)
 from app.agent_base.tools.registry import ToolRegistry
 from app.runtime import (
     WorkspaceManifest,
@@ -35,9 +33,6 @@ from app.runtime import (
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
-from app.agent_base.adapters.contract_gate import (load_contract_gate)
-from app.agent_base.adapters.contracts import load_contracts
-from app.agent_base.adapters.contract_analysis import (load_contract_failure_analyzer)
 from app.runtime.language_runner import (broker_command_runner)
 from app.agent_base.core.plugin_runtime import pin_plugins
 
@@ -223,9 +218,15 @@ async def _create_dev_agent_impl(
     workspace_root = manifest.workspace_root
     change_set = ChangeSet(project_file=project_file)
     command_executor = build_command_executor(settings)
-    skill_catalog = capture_skill_catalog(
-        load_skills(settings=settings), context=SkillContext(workspace_root=workspace_root),
-    )
+    from backend.config.project_storage import project_id_for
+    extension_context = ExtensionContext(metadata={
+        "project_id": project_id_for(project_file) if project_file else "", "workspace": manifest.to_dict(),
+    })
+    catalogs = await assemble_extensions(extension_context, settings=settings,
+        interface_id="assembly.catalog", inputs={
+            "workspace_root": workspace_root, "capture_catalog": capture_skill_catalog,
+        })
+    skill_catalog = catalogs.values.get("skill_catalog", SkillCatalog(NoOpSkillProvider(), ()))
     tools, review_mgr = create_conversation_tools(
         llm,
         source_dir=source_dir,
@@ -263,20 +264,17 @@ async def _create_dev_agent_impl(
             ("test", test_dir),
         ),
     )
-    memory_provider = load_memory(
-        llm=llm, settings=settings, project_file=project_file, workspace_root=workspace_root,
-        source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
-        environment_context=environment_context,
-    )
-    from backend.config.project_storage import project_id_for
-    extension_context = ExtensionContext(metadata={
-        "project_id": project_id_for(project_file) if project_file else "", "workspace": manifest.to_dict(),
+    from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
+    run_task_tool = next((tool for tool in tools if tool.name == "run_task"), None)
+    broker = getattr(run_task_tool, "execution_broker", None)
+    assembled = await assemble_extensions(extension_context, settings=settings, inputs={
+        "llm": llm, "project_file": project_file, "workspace_root": workspace_root,
+        "source_dir": source_dir, "test_dir": test_dir, "design_dir": design_dir,
+        "environment_context": environment_context, "explorer_factory": SpawnSubagentTool,
+        "language_runner": broker_command_runner(broker) if broker else None,
     })
-    if not isinstance(memory_provider, NoOpMemory):
-        extension_context.bind("memory", memory_provider, settings=settings, options={
-            "recall_top_k": settings.agent_memory_recall_top_k,
-            "recall_max_tokens": settings.agent_memory_recall_max_tokens,
-        })
+    for tool in assembled.tools:
+        registry.register_tool(tool)
     prompt_builder = DevPromptBuilder(
         extension_context=extension_context,
         source_dir=source_dir,
@@ -319,32 +317,6 @@ async def _create_dev_agent_impl(
         )),
     )
     agent.change_set = change_set
-    # The composition root owns the wiring between execution and contract
-    # analysis.  ContractGate receives a capability, not a reference to the
-    # Agent's tool registry or a tool's private implementation fields.
-    run_task_tool = next(
-        (tool for tool in tools if getattr(tool, "name", "") == "run_task"),
-        None,
-    )
-    execution_broker = getattr(run_task_tool, "execution_broker", None)
-    language_runner = (
-        broker_command_runner(execution_broker)
-        if execution_broker is not None else None
-    )
-    contract_provider = load_contracts(settings=settings, language_runner=language_runner)
-    extension_context.metadata["execution_settings"] = settings
-    extension_context.bind("design_contract", SimpleNamespace(
-        gate=load_contract_gate(settings=settings, provider=contract_provider),
-        analyzer=load_contract_failure_analyzer(settings=settings, provider=contract_provider)), settings=settings)
-    if settings.agent_design_contract_enabled:
-        extension_context.metadata["required_execution_bindings"] = {
-            "execution.check": ("design_contract.execution.check",),
-        }
-    from app.agent_base.adapters.orchestration import load_orchestrator
-    from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
-    extension_context.bind("orchestration", load_orchestrator(
-        llm=llm, settings=settings, project_file=project_file, source_dir=source_dir,
-        test_dir=test_dir, explorer_factory=SpawnSubagentTool), settings=settings)
     agent.extension_context = prompt_builder.extension_context
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:

@@ -3,6 +3,41 @@ from contextlib import contextmanager
 
 
 class ApplicationHostServices:
+    def configuration(self):
+        session = self.extension_context()
+        if session is not None and session.metadata.get("execution_settings") is not None:
+            return session.metadata["execution_settings"]
+        from app.agent_base.core.plugin_runtime import current_snapshot
+        snapshot = current_snapshot()
+        if snapshot is not None:
+            return snapshot.settings
+        from backend.config import get_settings
+        return get_settings()
+
+    def project_storage(self, project_file="", **kwargs):
+        from backend.config.project_storage import project_storage
+        return project_storage(project_file, **kwargs)
+
+    def project_id(self, project_file="", **kwargs):
+        from backend.config.project_storage import project_id_for
+        return project_id_for(project_file, **kwargs)
+
+    def runtime_path(self, area=""):
+        from backend.config.paths import runtime_root
+        from pathlib import Path
+        relative = Path(area)
+        if relative.anchor or ".." in relative.parts:
+            raise ValueError("runtime area must be a relative path within the runtime root")
+        return runtime_root() / relative
+
+    def workspace_paths(self, *args, **kwargs):
+        from app.runtime.workspace_paths import WorkspacePathResolver
+        return WorkspacePathResolver(*args, **kwargs)
+
+    def decode_output(self, value):
+        from app.runtime.encoding import decode_process_output
+        return decode_process_output(value)
+
     def emit_event(self, event_type, payload):
         from app.agent_base.core.observability import emit_trace
         emit_trace("event", event_type=event_type, payload=payload)
@@ -85,6 +120,8 @@ class ApplicationHostServices:
 
     def resolve_provider(self, slot, *, settings=None, **kwargs):
         from app.agent_base.core.plugins import get_plugin_manager
+        if settings is None:
+            settings = self.configuration()
         return get_plugin_manager().load_optional(slot, settings=settings, kwargs=kwargs)
 
     def run_store(self):

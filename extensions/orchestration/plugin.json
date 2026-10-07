@@ -38,6 +38,7 @@
   },
   "dependencies": [],
   "contributions": [
+    {"id": "orchestration.assembly.bind", "stage": "initialize", "handler": "extensions.orchestration.assembly:bind", "mode": "service", "scope": "invocation", "interface_id": "assembly.bind"},
     {
       "id": "orchestration.execution.prepare",
       "stage": "prepare",

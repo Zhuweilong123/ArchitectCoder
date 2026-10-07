@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.config import evaluation_root
+from .paths import evaluation_root
 from .plugin_api import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
 
 from .models import EvalResult

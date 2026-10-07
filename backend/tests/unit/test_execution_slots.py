@@ -76,9 +76,10 @@ def test_execution_entry_does_not_select_plugin_policies_or_loaders():
         "load_orchestrator", "contract_gate", "contract_failure_analyzer",
         "architecture_scheduling", "contract_graph_sync", "route_architecture"))
     for path in (root / "extensions").rglob("*.py"):
-        if path.name in {"api.py", "cli.py", "full_api.py", "trace_cases.py"}:
+        if path.name in {"api.py", "cli.py", "full_api.py"}:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             if isinstance(node, ast.ImportFrom):
                 assert not (node.module or "").startswith(("app.services", "app.agent_base.adapters",
-                    "app.agent_base.assembly", "app.agent_base.agents", "app.agent_base.core")), path
+                    "app.agent_base.assembly", "app.agent_base.agents", "app.agent_base.core",
+                    "backend.config", "app.runtime")), path

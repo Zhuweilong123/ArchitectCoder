@@ -13,7 +13,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from app.runtime.encoding import decode_process_output
+from app.agent_base.host_api.environment import decode_output as decode_process_output
 
 from .models import CheckerResult, validate_answer_groups
 

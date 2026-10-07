@@ -22,5 +22,8 @@
     }
   },
   "defaults": {},
-  "dependencies": []
+  "dependencies": [],
+  "contributions": [
+    {"id": "skills.assembly.catalog", "stage": "initialize", "handler": "extensions.skills.assembly:catalog", "mode": "service", "scope": "invocation", "interface_id": "assembly.catalog"}
+  ]
 }

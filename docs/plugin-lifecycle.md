@@ -22,6 +22,16 @@
 
 所有公共阶段也允许声明 service 的默认绑定，但发布阶段不会自动执行服务。模型和工具执行仍由核心执行器负责，调度图保留独立执行节点。
 
+生产装配派发 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 请求。插件声明对应 service contribution，通过 `HookContext.invocation` 获得 `AssemblyRequest`，使用 `bind` 回调绑定自己的 provider，通过 `tools` 提供工具，通过 `required_bindings` 声明必需的执行检查。请求不携带 Agent 或工具注册表。新增插件只需要目录、manifest 与处理器，宿主按执行计划统一调用；配置启用但装配贡献缺失或错误时装配失败，避免跳过已配置的检查。
+
+例如插件可声明以下贡献：
+
+```json
+{"id": "quality.assembly", "stage": "initialize", "handler": "quality:bind", "mode": "service", "scope": "invocation", "interface_id": "assembly.bind"}
+```
+
+处理器可绑定 quality provider 并提供工具；另声明 `execution.check` 贡献即可参与提交检查，无需更改主循环或装配入口。
+
 执行服务另在事务边界派发通用 `ExecutionRequest`，接口定义于 `host_api/execution.py`：
 
 | 接入接口 | 所属阶段 | 宿主消费的结果 |

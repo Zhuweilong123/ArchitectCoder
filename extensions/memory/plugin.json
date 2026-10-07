@@ -39,6 +39,7 @@
   },
   "dependencies": [],
   "contributions": [
+    {"id": "memory.assembly.bind", "stage": "initialize", "handler": "extensions.memory.assembly:bind", "mode": "service", "scope": "invocation", "interface_id": "assembly.bind"},
     {"id": "memory.context.prepare", "stage": "prepare", "handler": "extensions.memory.contributions:prepare", "mode": "transform"},
     {"id": "memory.run.start", "stage": "run_start", "handler": "extensions.memory.contributions:run_start", "mode": "observer"},
     {"id": "memory.evidence.observe", "stage": "tool_after", "handler": "extensions.memory.contributions:tool_after", "mode": "observer"},

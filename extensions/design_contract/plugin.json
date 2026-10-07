@@ -44,6 +44,7 @@
   "defaults": {},
   "dependencies": [],
   "contributions": [
+    {"id": "design_contract.assembly.bind", "stage": "initialize", "handler": "extensions.design_contract.assembly:bind", "mode": "service", "scope": "invocation", "interface_id": "assembly.bind"},
     {
       "id": "design_contract.execution.check",
       "stage": "finalize",

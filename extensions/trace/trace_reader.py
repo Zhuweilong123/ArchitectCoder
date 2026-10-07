@@ -24,7 +24,11 @@ from extensions.trace.format import (
     iter_chat_trace_paths,
     safe_trace_session_id,
 )
-from backend.config import evaluation_traces_dir
+from app.agent_base.host_api.services import get_host_services
+
+
+def evaluation_traces_dir():
+    return get_host_services().runtime_path("evals/traces")
 
 
 def _trace_dir() -> str:

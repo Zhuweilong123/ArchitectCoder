@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
-from app.runtime.encoding import decode_process_output
+from app.agent_base.host_api.environment import decode_output as decode_process_output
 
 from extensions.evals.api import router as trace_case_router
 

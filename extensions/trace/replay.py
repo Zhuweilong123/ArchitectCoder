@@ -131,7 +131,7 @@ def _reconstruct_workspace(events: list[dict]) -> tuple[str, str, str, str]:
         design_dir = os.path.dirname(os.path.abspath(project_file))
     else:
         try:
-            from backend.config import get_settings
+            from app.agent_base.host_api.environment import configuration as get_settings
             design_dir = os.path.abspath(get_settings().project_dir)
         except Exception:
             design_dir = ""

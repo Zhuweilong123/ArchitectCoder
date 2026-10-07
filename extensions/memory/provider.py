@@ -8,7 +8,7 @@ import hashlib
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from backend.config.project_storage import project_storage
+from app.agent_base.host_api.environment import project_storage
 
 from .plugin_api import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
 
@@ -20,7 +20,7 @@ def _memory_db_path(settings, project_file: str = "", workspace_root: str = "") 
     if configured:
         return os.path.normpath(os.path.abspath(configured))
     storage = project_storage(project_file, workspace_root=workspace_root)
-    return str(storage.memory_db) if storage else ""
+    return str((storage.state_dir / "memories.db")) if storage else ""
 
 
 def _format_tool_steps(tool_steps: tuple[dict[str, Any], ...]) -> str:
@@ -57,7 +57,7 @@ class SQLiteMemoryProvider:
             settings, str(kwargs.get("project_file") or ""),
             str(kwargs.get("workspace_root") or ""),
         )
-        from app.runtime.workspace_paths import WorkspacePathResolver
+        from app.agent_base.host_api.environment import workspace_paths as WorkspacePathResolver
         self.paths = WorkspacePathResolver(
             str(kwargs.get("workspace_root") or ""), str(kwargs.get("source_dir") or ""),
             str(kwargs.get("test_dir") or ""), str(kwargs.get("design_dir") or ""),

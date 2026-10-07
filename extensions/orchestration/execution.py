@@ -22,10 +22,18 @@ async def prepare(context):
     })
     tools = tuple(data.get("available_tools", ()))
     if enabled:
-        result = await provider.prepare(OrchestrationRequest(
-            user_message=data["user_message"], project_file=data["project_file"],
-            source_dir=data["source_dir"], test_dir=data["test_dir"],
-            previous_checkpoint=previous, available_tools=tools, run_id=request.run_id))
+        try:
+            result = await provider.prepare(OrchestrationRequest(
+                user_message=data["user_message"], project_file=data["project_file"],
+                source_dir=data["source_dir"], test_dir=data["test_dir"],
+                previous_checkpoint=previous, available_tools=tools, run_id=request.run_id))
+            from app.agent_base.host_api.orchestration import OrchestrationPreparation
+            if not isinstance(result, OrchestrationPreparation):
+                raise TypeError("orchestrator prepare() returned an invalid result")
+        except Exception as exc:
+            from .provider import UnavailableArchitectureScheduler
+            result = await UnavailableArchitectureScheduler(
+                f"provider preparation failed: {type(exc).__name__}: {exc}").prepare(None)
         excluded = result.excluded_tools
         ready = result.metadata.get("architecture_scheduling") == "demand_driven_ready"
         request.context = "\n\n".join(filter(None, [request.context, result.context]))

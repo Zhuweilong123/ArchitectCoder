@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.config.project_storage import project_storage
+from app.agent_base.host_api.environment import project_storage
 
 from .builder import GraphBuilder
 from .database import KnowledgeGraphDB
@@ -58,14 +58,14 @@ class LocalKnowledgeGraphProvider:
     @staticmethod
     def _database_path(settings=None, *, db_path=None, project_file="", workspace_root="") -> str:
         if settings is None:
-            from backend.config import get_settings
+            from app.agent_base.host_api.environment import configuration as get_settings
 
             settings = get_settings()
         configured = str(db_path or getattr(settings, "agent_knowledge_graph_db_path", "") or "").strip()
         if configured:
             return str(Path(configured).resolve())
         storage = project_storage(project_file, workspace_root=workspace_root)
-        return str(storage.graph_db) if storage else ""
+        return str((storage.state_dir / "knowledge_graph.db")) if storage else ""
 
     def _path_for(self, *, project_file: str = "", workspace_root: str = "") -> str:
         if self.db_path:
