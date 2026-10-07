@@ -10,6 +10,8 @@ from typing import Any
 from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from backend.config.project_storage import project_id_for
 
+from .thread_calls import graph_call
+
 
 def _label(value: Any) -> str:
     return re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip()[:80]
@@ -51,13 +53,13 @@ async def routing_map(
         provider = load_knowledge_graph(settings=settings, project_file=project_file)
         project_id = project_id_for(project_file)
         facts = await asyncio.wait_for(
-            asyncio.to_thread(provider.contract_facts, project_id, 1), timeout=3.0,
+            graph_call(provider.contract_facts, project_id, 1), timeout=3.0,
         )
         if not isinstance(facts, dict) or not facts.get("available"):
             reason = str((facts or {}).get("error") or "project graph is unavailable or empty")
             return {}, reason[:300]
         raw = await asyncio.wait_for(
-            asyncio.to_thread(provider.map_project, project_id, 8), timeout=3.0,
+            graph_call(provider.map_project, project_id, 8), timeout=3.0,
         )
         if not isinstance(raw, dict) or raw.get("error"):
             reason = str(raw.get("error") if isinstance(raw, dict) else "invalid graph response")

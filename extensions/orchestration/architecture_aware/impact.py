@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 import re
 from dataclasses import dataclass
 from typing import Any
+
+from .thread_calls import graph_call
 
 
 class GraphUnavailable(RuntimeError):
@@ -62,14 +63,14 @@ async def collect_impact(
     requirement has no effect; the caller reports uncertainty to the main Agent.
     """
 
-    facts = await asyncio.to_thread(provider.contract_facts, project_id, 1)
+    facts = await graph_call(provider.contract_facts, project_id, 1)
     if not isinstance(facts, dict) or not facts.get("available"):
         raise GraphUnavailable("project graph is unavailable or empty")
 
     candidates: list[list[tuple[float, dict[str, Any]]]] = []
     unmatched: list[str] = []
     for query in queries[:4]:
-        result = await asyncio.to_thread(
+        result = await graph_call(
             provider.locate, project_id, query[:80], top_k=5,
         )
         if not isinstance(result, dict) or result.get("error"):
@@ -134,7 +135,7 @@ async def collect_impact(
 
     for seed in seeds:
         seed_id = str(seed["id"])
-        outward = await asyncio.to_thread(
+        outward = await graph_call(
             provider.expand, project_id, [seed_id],
             direction="outgoing", max_depth=1, max_nodes=8,
         )
@@ -153,7 +154,7 @@ async def collect_impact(
                         for relation in item.get("edge_types", ()):
                             edges.add((seed_id, node_id, str(relation)))
 
-        incoming = await asyncio.to_thread(
+        incoming = await graph_call(
             provider.impact, project_id, seed_id,
             max_depth=1, max_nodes=8,
         )

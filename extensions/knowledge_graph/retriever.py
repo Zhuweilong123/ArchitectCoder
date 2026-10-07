@@ -404,8 +404,10 @@ class GraphRetriever:
                     f"{' (force)' if force_rebuild else ' (stale)'}"
                 )
                 builder = GraphBuilder(self.db_path)
-                builder.rebuild_code_layer(project_id, source_dir)
-                builder.close()
+                try:
+                    builder.rebuild_code_layer(project_id, source_dir)
+                finally:
+                    builder.close()
 
         summary = DiffSummary()
         items: list[DiffItem] = []
