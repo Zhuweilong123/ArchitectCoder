@@ -5,12 +5,13 @@ Handlers access their provider without receiving an Agent or tool registry.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from functools import wraps
 import inspect
+from app.agent_base.host_api.services import HostServices, host_services_scope
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ExtensionContext:
     _states: dict[str, dict] = field(default_factory=dict, repr=False)
     _contributions: list = field(default_factory=list, repr=False)
     _registry: Any = field(default=None, repr=False)
+    host_services: HostServices | None = field(default=None, repr=False)
 
     def bind(self, name, provider, *, settings=None, options=None):
         """Bind a capability and its declared handlers for standalone use too."""
@@ -43,18 +45,19 @@ class ExtensionContext:
         """Start a request with shared capabilities and fresh private state."""
         import copy
         return ExtensionContext(dict(self.providers), copy.deepcopy(self.metadata),
-                                _contributions=list(self._contributions))
+                                _contributions=list(self._contributions), host_services=self.host_services)
 
     def hooks_for(self, fallback):
         if fallback.plan_id or not self._contributions:
             return fallback
         if self._registry is None:
             from .hooks import HookRegistry
+            from .lifecycle import resolve_contribution
             registry = HookRegistry()
             registry._hooks = {stage: list(items) for stage, items in fallback._hooks.items()}
             registry._metadata = dict(fallback._metadata)
             for order, (plugin, item) in enumerate(self._contributions):
-                registry.register(item.stage, item.resolve(), mode=item.mode,
+                registry.register(item.stage, resolve_contribution(item), mode=item.mode,
                     priority=len(self._contributions) - order, fail_closed=item.fail_closed,
                     contribution_id=item.id, plugin=plugin, interface_id=item.interface_id)
             self._registry = registry
@@ -72,7 +75,9 @@ def current_extension_context():
 def extension_scope(context=None):
     token = _context.set(context)
     try:
-        yield context
+        services = getattr(context, "host_services", None)
+        with host_services_scope(services) if services is not None else nullcontext():
+            yield context
     finally:
         _context.reset(token)
 

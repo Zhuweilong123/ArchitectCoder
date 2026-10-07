@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 
 from app.agent_base.core.background_tasks import submit_background
-from app.trace.tracing import TraceSession, emit_trace
+from app.runtime.trace_session import TraceSession
+from app.agent_base.core.observability import emit_trace
 from extensions.trace.chat_trace import ChatTraceLogger
 
 
@@ -35,8 +36,7 @@ def test_evaluation_settles_background_response_before_trace_closes(tmp_path):
 def test_online_background_has_independent_trace_after_foreground_closes(tmp_path):
     async def run():
         gate = asyncio.Event()
-        session = TraceSession(session_id="online", sink=ChatTraceLogger("online", log_dir=str(tmp_path)),
-                               trace_dir=str(tmp_path))
+        session = TraceSession(session_id="online", sink=ChatTraceLogger("online", log_dir=str(tmp_path)))
         async with session as sink:
             async def work():
                 span = emit_trace("llm_request", model="fake", messages=[])
@@ -50,6 +50,7 @@ def test_online_background_has_independent_trace_after_foreground_closes(tmp_pat
         foreground = rows(sink.path)
         record = session.background_registry.records[0]
         background = rows(record.metadata["trace_path"])
+        assert Path(record.metadata["trace_path"]).parent == Path(sink.path).parent
         assert not any(r["event_type"] == "llm_response" for r in foreground)
         assert any(r["event_type"] == "llm_response" for r in background)
         result = next(r for r in background if r["event_type"] == "background_result")

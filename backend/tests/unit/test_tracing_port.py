@@ -4,13 +4,10 @@ from types import SimpleNamespace
 import json
 from pathlib import Path
 
-from app.trace.tracing import (
-    NoOpTraceProvider,
-    TraceSession,
-    TraceSessionRequest,
-    emit_trace,
-    load_trace,
-)
+from app.agent_base.adapters.tracing import NoOpTraceProvider, load_trace
+from app.runtime.trace_session import TraceSession
+from app.agent_base.host_api.tracing import TraceSessionRequest
+from app.agent_base.core.observability import emit_trace
 
 
 def test_jsonl_event_merges_run_metadata_and_preserves_recorder_identity(tmp_path):
@@ -129,3 +126,21 @@ def test_trace_provider_factory_is_pluggable(monkeypatch):
     provider = load_trace(settings=settings)
     sink = provider.create(TraceSessionRequest(session_id="plugin-session"))
     assert sink.trace_id == "fake-trace"
+
+
+def test_provider_without_fork_keeps_its_background_factory(monkeypatch):
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider
+    provider = _ResilientTraceProvider(_Provider())
+    assert provider.fork(_Sink()) is provider
+
+
+def test_provider_fork_failure_degrades_without_breaking_background_work():
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider
+
+    class BrokenProvider(_Provider):
+        def fork(self, sink):
+            raise OSError("storage unavailable")
+
+    child = _ResilientTraceProvider(BrokenProvider()).fork(_Sink())
+    assert isinstance(child, NoOpTraceProvider)
+    assert not child.create(TraceSessionRequest(session_id="background")).path

@@ -11,9 +11,9 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
-from app.trace.tracing import emit_trace
+from app.agent_base.host_api.services import get_host_services
 from backend.config.project_storage import project_id_for
 from app.agent_base.host_api.orchestration import OrchestrationPreparation, OrchestrationRequest
 from extensions.orchestration.plugin_api import (ExplorationDemand, ExplorationEvidence, ExplorationFinding, ExplorationReport)
@@ -386,9 +386,7 @@ class ArchitectureAwareOrchestrator:
                 "events": list(getattr(schedule, "events", ()) or ()),
             },
         }
-        emit_trace(
-            "event", event_type="architecture_cost_audit", payload=audit,
-        )
+        get_host_services().emit_event("architecture_cost_audit", audit)
 
     def _exploration_budget(
         self, impact: ImpactSlice, decision: PartitionDecision,
@@ -626,6 +624,5 @@ class ArchitectureAwareOrchestrator:
 
     def create_tools(self, **_kwargs):
         from .tool import ArchitectureRouteTool
-        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
 
-        return [ArchitectureRouteTool(schedule_tool_provider(self, "orchestration"))]
+        return [ArchitectureRouteTool(get_host_services().schedule_provider(self, "orchestration"))]

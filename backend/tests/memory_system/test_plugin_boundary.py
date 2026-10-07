@@ -9,7 +9,8 @@ import pytest
 
 from app.agent_base.core import hooks
 from app.agent_base.core.extension_context import ExtensionContext, extension_request, extension_scope, publish_task_result
-from app.agent_base.core.hooks import AgentRuntime, HookContext, HookEvent, HookRegistry, reset_runtime, set_runtime
+from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+from app.agent_base.core.hooks import AgentRuntime, HookRegistry, reset_runtime, set_runtime
 from app.agent_base.core.lifecycle import discover_plan, install_plan
 from extensions.memory.plugin_api import (MemoryArchiveResult, MemoryEventResult, MemoryRecallResult)
 from app.agent_base.core.plugins import PluginManager

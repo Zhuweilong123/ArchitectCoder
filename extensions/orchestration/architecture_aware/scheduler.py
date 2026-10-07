@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.services.run_state import RunConflict, RunStatus, get_run_store
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted
 
 from .impact import ImpactSlice
 from .partition import ExplorationPackage, PartitionDecision, _unit_key

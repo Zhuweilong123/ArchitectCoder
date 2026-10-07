@@ -21,7 +21,7 @@ from app.agent_base.assembly import (
     create_dev_agent,
 )
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.host_api.services import get_host_services
 from app.agent_base.execution_summary import build_task_execution_summary
 from backend.config import (
     evaluation_results_dir,
@@ -32,7 +32,7 @@ from backend.config import (
 from app.services.agent_execution import handle_agent_execution
 from app.services.agent_metrics import get_agent_metrics
 from app.services.run_state import get_run_store
-from app.trace.tracing import TraceSession
+from app.runtime.trace_session import TraceSession
 
 from .checkers import build_checkers
 from .fixture_materializer import materialize_fixture
@@ -291,7 +291,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     """
     settings = get_settings()
     first_prompt = case.prompts()[0]
-    llm = BaseAgentsLLM.from_settings(temperature=0.3)
+    llm = get_host_services().create_model(temperature=0.3)
     manifest = load_projects().get(case.project_id) if case.project_id else None
     source_dir = workspace / manifest.source_dir if manifest else workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
@@ -529,9 +529,6 @@ class EvalRunner:
                     async def consume() -> None:
                         """Run a legacy single prompt or a shared multi-turn script."""
                         nonlocal execution_error, failure_phase
-                        from app.agent_base.core.hooks import (
-                            AgentRuntime, get_runtime, set_runtime, reset_runtime,
-                        )
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
                         turn_records: list[dict[str, Any]] = []
@@ -556,7 +553,7 @@ class EvalRunner:
                                 return
                             try:
                                 task_binding.sync(
-                                    todos=list(get_runtime().todos or []),
+                                    todos=list(get_host_services().runtime().todos or []),
                                     checkpoint=checkpoint,
                                 )
                             except Exception:
@@ -795,8 +792,7 @@ class EvalRunner:
                                 # Keep the lightweight direct path for injected
                                 # test doubles; official evaluations use the
                                 # production coordinator above.
-                                runtime_token = set_runtime(AgentRuntime())
-                                try:
+                                with get_host_services().runtime_scope():
                                     stream = agent.arun_stream(prompt, context=context)
                                     async for progress in stream:
                                         details = progress.tool_calls_detail or []
@@ -821,8 +817,6 @@ class EvalRunner:
                                         if progress.is_final:
                                             final_answer = progress.final_answer or ""
                                             tracer.done(answer=final_answer)
-                                finally:
-                                    reset_runtime(runtime_token)
 
                             # Tool-call details do not carry LLM usage. Use the
                             # trace delta and this turn's report for aggregation,

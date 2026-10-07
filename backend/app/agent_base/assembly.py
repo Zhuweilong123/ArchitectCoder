@@ -145,7 +145,8 @@ class DevPromptBuilder:
         return "\n".join(prompt_parts)
 
     async def build_context(self, *args, **kwargs):
-        from app.agent_base.core.hooks import HookEvent, get_runtime
+        from app.agent_base.host_api.lifecycle import HookEvent
+        from app.agent_base.core.hooks import get_runtime
         from app.agent_base.core.operations import operation_scope, current_operation
         parent = current_operation()
         with extension_scope(self.extension_context.fork()), operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
@@ -155,7 +156,8 @@ class DevPromptBuilder:
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
-        from app.agent_base.core.hooks import HookEvent, HookContext, get_hooks, get_runtime
+        from app.agent_base.host_api.lifecycle import HookEvent, HookContext
+        from app.agent_base.core.hooks import get_hooks, get_runtime
         from backend.config.project_storage import project_id_for
         project_id = project_id_for(project_file) if project_file else ""
         sections: dict[str, str] = {}
@@ -178,7 +180,8 @@ class DevPromptBuilder:
 
 @pin_plugins
 async def create_dev_agent(*args, **kwargs):
-    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+    from app.agent_base.core.hooks import get_hooks
     from app.agent_base.core.operations import operation_scope
     with operation_scope("initialize", stage=HookEvent.INITIALIZE.value, scope="agent"):
         await get_hooks().aemit(HookEvent.INITIALIZE, HookContext(HookEvent.INITIALIZE, "DevAgent"))

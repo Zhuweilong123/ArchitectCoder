@@ -13,7 +13,7 @@ from app.agent_base.core import hooks
 from app.agent_base.core.hooks import HookRegistry
 from app.agent_base.core.lifecycle import discover_plan, install_plan
 from app.agent_base.core.plugins import PluginManager
-from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
 
 
 def plugin(tmp_path, **changes):

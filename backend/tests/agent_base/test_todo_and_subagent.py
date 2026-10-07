@@ -4,10 +4,8 @@ import json
 
 import pytest
 
-from app.agent_base.core.hooks import (
-    AgentRuntime, HookContext, HookEvent, get_runtime,
-    set_runtime, reset_runtime, _todo_reminder_hook,
-)
+from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+from app.agent_base.core.hooks import AgentRuntime, get_runtime, set_runtime, reset_runtime, _todo_reminder_hook
 from app.agent_base.tools.my_tools.todo_tools import TodoWriteTool
 from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 from app.services.context_manager import ContextBudget, ContextBudgetManager
@@ -493,7 +491,7 @@ def test_spawn_subagent_compacts_context_before_continuing(tmp_path):
         )),
     )
 
-    from app.trace.tracing import TraceSession
+    from app.runtime.trace_session import TraceSession
     from extensions.trace.chat_trace import ChatTraceLogger
 
     with TraceSession(session_id="subagent_context", sink=ChatTraceLogger(

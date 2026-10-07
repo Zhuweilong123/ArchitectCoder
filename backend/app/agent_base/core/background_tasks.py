@@ -40,7 +40,7 @@ class BackgroundTaskRegistry:
     def submit(self, work: Awaitable, *, owner: str, run_id: str = "", source_trace_id: str = ""):
         record = BackgroundTaskRecord(owner, run_id, source_trace_id)
         self.records.append(record)
-        from app.trace.tracing import emit_trace
+        from app.agent_base.core.observability import emit_trace
         emit_trace("event", event_type="background_scheduled", payload={
             "task_id": record.task_id, "owner": owner, "source_run_id": run_id,
             "source_trace_id": source_trace_id, "status": "pending",
@@ -133,7 +133,7 @@ def reset_background_registry(token):
 def submit_background(work: Awaitable, *, owner: str, run_id: str = "", source_trace_id: str = ""):
     registry = _registry.get()
     if registry is None:
-        from app.trace.tracing import background_trace
+        from app.runtime.trace_session import background_trace
         registry = BackgroundTaskRegistry(background_trace)
     return registry.submit(work, owner=owner, run_id=run_id, source_trace_id=source_trace_id)
 

@@ -59,10 +59,8 @@ def create(*, settings, **kwargs):
 
 def observe_prepare(context):
     # Observers receive a data snapshot; they do not control execution.
-    from app.trace.tracing import current_trace_sink
-    sink = current_trace_sink()
-    if sink is not None:
-        sink.event("plugin_example", plugin="PLUGIN_ID", stage=context.event.value,
+    from app.agent_base.host_api.services import get_host_services
+    get_host_services().record_event("plugin_example", plugin="PLUGIN_ID", stage=context.event.value,
                    run_id=context.run_id, agent_name=context.agent_name)
 '''.replace("PLUGIN_ID", name)
     fixture = {"config": {"label": name}, "factory_kwargs": {}, "args": [],
@@ -171,12 +169,11 @@ async def close_provider(instance):
 
 
 async def inspect_plugin(args):
-    from app.agent_base.core.hooks import (
-        AgentRuntime, HookContext, HookEvent, HookRegistry, reset_runtime, set_runtime,
-    )
+    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+    from app.agent_base.core.hooks import AgentRuntime, HookRegistry, reset_runtime, set_runtime
     from app.agent_base.core.lifecycle import ExecutionPlan, build_plan, install_plan
     from app.agent_base.core.plugin_runtime import PluginSnapshot, plugin_scope
-    from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+    from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
 
     report = {"status": "passed", "action": args.command, "diagnostics": [], "events": [],
               "provider_instantiated": False}

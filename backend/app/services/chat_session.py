@@ -44,16 +44,12 @@ from app.agent_base.adapters.contract_gate import (resolve_contract_enabled)
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
 )
-from app.trace.tracing import (
-    TraceSessionRequest,
-    TraceSink,
-    current_trace_spans,
-    load_trace,
-    pop_trace_hook,
-    push_trace_hook,
-    reset_current_trace_sink,
-    set_current_trace_sink,
+from app.agent_base.host_api.tracing import TraceSessionRequest, TraceSink
+from app.agent_base.core.observability import (
+    current_trace_spans, pop_trace_hook, push_trace_hook,
+    reset_current_trace_sink, set_current_trace_sink,
 )
+from app.agent_base.adapters.tracing import load_trace
 from app.runtime.agent_runtime import get_or_create, runtime as agent_runtime
 from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.services.audit_log import record_audit as _record_audit
@@ -904,7 +900,8 @@ class ChatSessionCoordinator:
                             candidate_recovery=bool(candidate_recovery),
                         )
                         logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
-                        from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+                        from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+                        from app.agent_base.core.hooks import get_hooks
                         from app.agent_base.core.operations import operation_scope
                         review_run_id = (reviewed_checkpoint or {}).get("run_id", "") or fallback_review_runs.get(review_id, "") or (dev_agent.last_run_checkpoint or {}).get("run_id", "")
                         from app.agent_base.core.plugin_runtime import plugin_scope, snapshot_for_plan

@@ -12,6 +12,7 @@ from functools import wraps
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.agent_base.host_api.lifecycle import Contribution
 from .hooks import HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
 from .plugin_dispatch import SERVICE_STAGES, service_contributions
 
@@ -28,28 +29,15 @@ for stage in SERVICE_STAGES:
     PHASE_MODES[stage] |= {"service"}
 
 
-@dataclass(frozen=True)
-class Contribution:
-    id: str
-    stage: HookEvent
-    handler: str
-    mode: str = "observer"
-    priority: int = 0
-    before: tuple[str, ...] = ()
-    after: tuple[str, ...] = ()
-    scope: str = "run"
-    fail_closed: bool = False
-    interface_id: str = ""
-
-    def resolve(self):
-        module, separator, attribute = self.handler.partition(":")
-        if not separator or not module or not attribute:
-            raise ValueError("handler must use module:callable syntax")
-        handler = getattr(importlib.import_module(module), attribute)
-        if not callable(handler):
-            raise ValueError("lifecycle handlers must be callables")
-        inspect.signature(handler).bind(object())
-        return handler
+def resolve_contribution(item):
+    module, separator, attribute = item.handler.partition(":")
+    if not separator or not module or not attribute:
+        raise ValueError("handler must use module:callable syntax")
+    handler = getattr(importlib.import_module(module), attribute)
+    if not callable(handler):
+        raise ValueError("lifecycle handlers must be callables")
+    inspect.signature(handler).bind(object())
+    return handler
 
 
 def core_contributions():
@@ -207,7 +195,7 @@ def validate_contributions(declared):
                 raise ValueError("ordering dependencies must be tuples of contribution IDs")
         if item.mode != "control" and item.fail_closed:
             raise ValueError("fail_closed requires a control contribution")
-        item.resolve()
+        resolve_contribution(item)
         if item.mode == "service" and not item.interface_id:
             raise ValueError("service contribution requires an interface ID")
         if item.scope == "invocation" and item.mode != "service":
@@ -307,7 +295,7 @@ def build_plan(manager, settings):
 def install_plan(plan: ExecutionPlan, registry: HookRegistry) -> None:
     """Replace managed bindings idempotently, preserving manually registered hooks."""
     # Resolve everything before mutating the active registry.
-    resolved = [(plugin, item, item.resolve()) for plugin, item in plan.contributions]
+    resolved = [(plugin, item, resolve_contribution(item)) for plugin, item in plan.contributions]
     versions = {row["name"]: row for row in plan.plugins}
     registry.clear_managed()
     for order, (plugin, item, handler) in enumerate(resolved):

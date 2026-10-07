@@ -5,12 +5,10 @@ import json
 import pytest
 
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.hooks import (
-    get_hooks, HookEvent, HookContext, AgentRuntime, set_runtime, reset_runtime,
-    HookAction, HookDecision, TruncateHook,
-)
+from app.agent_base.host_api.lifecycle import HookEvent, HookContext, HookAction, HookDecision
+from app.agent_base.core.hooks import get_hooks, AgentRuntime, set_runtime, reset_runtime, TruncateHook
 from app.agent_base.core.policy import ExecutionBudget
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.my_tools.todo_tools import TodoWriteTool

@@ -1,5 +1,6 @@
 """skill_loader 单元测试。"""
-from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+from app.agent_base.core.hooks import get_hooks
 from app.agent_base.tools.my_tools.skill_loader import (
     SkillTool, build_skills_section, discover_skills,
 )

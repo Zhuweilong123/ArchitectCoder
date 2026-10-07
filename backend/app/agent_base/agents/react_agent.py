@@ -19,6 +19,7 @@ Usage::
 """
 
 import logging
+from contextlib import aclosing
 from typing import Optional, List, AsyncIterator
 
 from ..core.agent import Agent
@@ -184,8 +185,9 @@ class ReActAgent(Agent):
         用于前端实时展示、编排层监控等需要逐轮获取进度的场景。
 
         """
-        async for progress in self._arun_with_fc_stream(input_text, context=context, **kwargs):
-            yield progress
+        async with aclosing(self._arun_with_fc_stream(input_text, context=context, **kwargs)) as stream:
+            async for progress in stream:
+                yield progress
 
     def run(self, input_text: str, **kwargs) -> str:
         """同步入口不支持；请使用异步 Function Calling 入口。"""
@@ -202,9 +204,10 @@ class ReActAgent(Agent):
     async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs) -> str:
         """一次性 FC 循环 — 收集流式输出，返回最终答案。"""
         final_answer = ""
-        async for progress in self._arun_with_fc_stream(input_text, context=context, **kwargs):
-            if progress.is_final:
-                final_answer = progress.final_answer
+        async with aclosing(self._arun_with_fc_stream(input_text, context=context, **kwargs)) as stream:
+            async for progress in stream:
+                if progress.is_final:
+                    final_answer = progress.final_answer
         if not final_answer:
             final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
@@ -244,5 +247,8 @@ class ReActAgent(Agent):
     async def _arun_with_fc_stream(
         self, input_text: str, context: str = "", **kwargs
     ) -> AsyncIterator[ReActProgress]:
-        async for progress in run_fc_loop(self, input_text, context=context, **kwargs):
-            yield progress
+        # Each forwarding generator owns its child. Closing the public stream
+        # must unwind run scopes in this task, before asyncgen GC takes over.
+        async with aclosing(run_fc_loop(self, input_text, context=context, **kwargs)) as stream:
+            async for progress in stream:
+                yield progress

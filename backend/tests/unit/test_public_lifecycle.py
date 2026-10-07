@@ -5,12 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_base.core import hooks
-from app.agent_base.core.hooks import AgentRuntime, HookContext, HookDecision, HookEvent, HookRegistry, PUBLIC_STAGES
+from app.agent_base.host_api.lifecycle import HookContext, HookDecision, HookEvent, PUBLIC_STAGES
+from app.agent_base.core.hooks import AgentRuntime, HookRegistry
 from app.agent_base.core.lifecycle import discover_plan
 from app.agent_base.core.operations import current_operation, operation_scope
 from app.agent_base.core.plugins import PluginManager, PluginSpec
 from app.agent_base.core.plugin_dispatch import ScheduledProvider
-from app.trace.tracing import set_current_trace_sink, reset_current_trace_sink
+from app.agent_base.core.observability import set_current_trace_sink, reset_current_trace_sink
 
 
 @pytest.fixture
@@ -110,6 +111,43 @@ def test_stream_close_after_final_output_preserves_completed_run(recording):
     assert [stage for stage, _ in seen] == [HookEvent.FINALIZE, HookEvent.RUN_END]
     assert seen[-1][1]["execution_only"] is True
     assert [row["status"] for row in events if row["event_type"] == "operation" and row["operation_kind"] == "run"] == ["running", "completed"]
+
+
+@pytest.mark.parametrize("final", [True, False])
+def test_public_stream_close_unwinds_all_scopes_in_the_consuming_task(recording, final):
+    from app.agent_base.agents.react_agent import ReActAgent
+    from app.agent_base.core.extension_context import ExtensionContext, current_extension_context
+    from app.agent_base.core.plugin_runtime import current_snapshot
+    from app.agent_base.tools.registry import ToolRegistry
+    registry, events = recording
+    seen = []
+    registry.register(HookEvent.RUN_END, lambda ctx: seen.append(ctx.payload["status"]), mode="observer")
+
+    async def model(**kwargs):
+        return {"content": "done" if final else "working", "tool_calls": None if final else [
+            {"id": "one", "type": "function", "function": {"name": "missing", "arguments": "{}"}}]}
+
+    agent = ReActAgent("test", SimpleNamespace(ainvoke_with_tools=model), ToolRegistry())
+    agent.extension_context = ExtensionContext()
+
+    async def consume():
+        parent_context = current_extension_context()
+        parent_snapshot = current_snapshot()
+        parent_operation = current_operation()
+        stream = agent.arun_stream("hello")
+        progress = await anext(stream)
+        assert progress.is_final is final
+        assert current_operation() is not parent_operation
+        await stream.aclose()
+        # These must be restored immediately, before event-loop asyncgen shutdown.
+        assert current_operation() is parent_operation
+        assert current_extension_context() is parent_context
+        assert current_snapshot() is parent_snapshot
+        assert seen == ["completed" if final else "cancelled"]
+
+    asyncio.run(consume())
+    assert [row["status"] for row in events if row["event_type"] == "operation"
+            and row["operation_kind"] == "run"] == ["running", "completed" if final else "cancelled"]
 
 
 @pytest.mark.parametrize("outcome", ["blocked", "cancel"])

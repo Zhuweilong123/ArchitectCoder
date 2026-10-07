@@ -51,10 +51,11 @@ WebSocket / Evaluation / future HTTP or CLI
 | 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
 | 扩展能力 | `extensions/*` + `backend/app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
 | 宿主协议 | `backend/app/agent_base/host_api/` | 主流程与插件之间的上下文、回调和通用编排请求 |
+| 扩展接入边界 | `host_api/lifecycle.py`、`host_api/services.py`、`adapters/host_services.py`（均在 `backend/app/agent_base/` 下） | 阶段和贡献协议、可注入的宿主能力、实现绑定；扩展禁止直接导入 core |
 | 插件 API | `extensions/*/plugin_api.py` | 各插件自己的请求、结果和 Provider Protocol |
 | 宿主适配 | `backend/app/agent_base/adapters/` | 加载、验证、降级，以及模型调用和审核传输的适配 |
 | 设计契约策略 | `extensions/design_contract/` | 一致性检查、审核策略、失败分析提示词、事实编排和语言解析 |
-| Trace 端口 | `backend/app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
+| Trace 边界 | `agent_base/host_api/tracing.py`、`adapters/tracing.py`、`core/observability.py`、`runtime/trace_session.py`（均在 `backend/app/` 下） | 协议、加载降级、事件路由和会话生命周期；存储/回放实现在 `extensions/trace` |
 | 评测 API | `extensions/evals/plugin_api.py` | Case、Runner、批次、性能和归档的 provider 契约 |
 | 请求上下文压缩 | `backend/app/services/context_manager.py`、`session_compression.py` | 单请求预算裁剪与会话级语义压缩分离 |
 | 图表历史 | `frontend/src/stores/diagramHistory.ts` | 撤销、重做、批处理和快照；`diagramStore` 只负责状态组合 |
@@ -120,8 +121,10 @@ extensions.skills:create
   `extensions/memory`。
 - 记忆的召回、观察、刷新和归档由插件阶段贡献触发。主循环只发布通用事件，
   `ExtensionContext` 隔离请求能力与插件状态；`task_after` 表示最终检查或审核后的任务结果。
-- Trace 的运行时 hook 位于 `backend/app/trace/tracing.py`，JSONL 写入、读取和回放位于
-  `extensions/trace`。
+- Trace 协议位于 `backend/app/agent_base/host_api/tracing.py`，加载与降级位于
+  `adapters/tracing.py`，运行时 hook 位于 `core/observability.py`，会话生命周期位于
+  `backend/app/runtime/trace_session.py`。JSONL 写入、读取、回放及后台存储策略位于
+  `extensions/trace`。工具输出续读由 `runtime/tool_outputs.py` 独立管理，关闭 Trace 后仍可使用。
 - 记忆、Trace 和上下文都是参考数据，当前用户指令优先级最高。
 
 ## 6. 文档使用规则

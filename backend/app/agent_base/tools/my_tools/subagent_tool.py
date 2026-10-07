@@ -7,11 +7,9 @@ import asyncio
 import json
 
 from app.agent_base.convergence import ConvergenceController
-from app.agent_base.core.hooks import (
-    AgentRuntime, HookAction, HookContext, HookDecision, HookEvent,
-    get_hooks, get_runtime, reset_runtime, set_runtime,
-)
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
+from app.agent_base.core.hooks import AgentRuntime, get_hooks, get_runtime, reset_runtime, set_runtime
+from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.core.subagent_budget import CumulativeTokenBudget
@@ -424,7 +422,7 @@ class SpawnSubagentTool(AsyncTool):
 
     async def _call_model(self, messages, active_tools, finalization_mode, request_context, runtime):
         from ...core.operations import operation_scope
-        from app.trace.tracing import trace_span
+        from app.agent_base.core.observability import trace_span
         with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
             response = None
             try:
@@ -776,7 +774,7 @@ class SpawnSubagentTool(AsyncTool):
                 # ToolRoundExecutor records the live call/result span. Keep
                 # this batch under the child span so blocking reviews and
                 # nested tools retain their real order without duplicates.
-                from app.trace.tracing import trace_span
+                from app.agent_base.core.observability import trace_span
                 await publish(HookEvent.TOOL_BATCH_BEFORE, tool_count=len(tool_calls))
                 with trace_span(SUBAGENT_TRACE_SPAN):
                     round_result = await executor.execute(tool_calls, step=step)

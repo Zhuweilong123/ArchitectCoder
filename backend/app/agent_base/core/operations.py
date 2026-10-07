@@ -32,7 +32,7 @@ def current_operation():
 
 def _record(operation, status, **details):
     try:
-        from app.trace.tracing import current_trace_sink
+        from app.agent_base.core.observability import current_trace_sink
         from .hooks import get_hooks
         sink = current_trace_sink()
         if sink is not None:

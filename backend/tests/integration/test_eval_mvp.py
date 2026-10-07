@@ -161,8 +161,8 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
 
     monkeypatch.setattr("extensions.evals.runner.get_settings", lambda: settings)
     monkeypatch.setattr(
-        "extensions.evals.runner.BaseAgentsLLM.from_settings",
-        lambda **kwargs: "fake-llm",
+        "extensions.evals.runner.get_host_services",
+        lambda: SimpleNamespace(create_model=lambda **kwargs: "fake-llm"),
     )
 
     async def _create_agent(llm, **kwargs):

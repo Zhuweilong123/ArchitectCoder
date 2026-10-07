@@ -31,83 +31,16 @@ import inspect
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, Optional
 
+from app.agent_base.host_api.lifecycle import (
+    HookEvent, PUBLIC_STAGES, NOTIFICATIONS, HookAction, HookDecision, HookContext,
+)
 from .exceptions import AgentInterrupted
 from .policy import ExecutionBudget
 from ..convergence import ConvergenceController
 
 logger = logging.getLogger(__name__)
-
-
-class HookEvent(str, Enum):
-    INITIALIZE = "initialize"
-    PREPARE = "prepare"
-    RUN_START = "run_start"
-    ROUND_BEFORE = "round_before"
-    MODEL_BEFORE = "model_before"
-    MODEL_AFTER = "model_after"
-    TOOL_BATCH_BEFORE = "tool_batch_before"
-    TOOL_BEFORE = "tool_before"
-    TOOL_AFTER = "tool_after"
-    TOOL_BATCH_AFTER = "tool_batch_after"
-    ROUND_AFTER = "round_after"
-    FINALIZE = "finalize"
-    RUN_END = "run_end"
-    # Notifications are deliberately outside PUBLIC_STAGES.
-    ERROR = "error"
-    CANCEL = "cancel"
-    REVIEW_AFTER = "review_after"
-    BACKGROUND_BEFORE = "background_before"
-    BACKGROUND_AFTER = "background_after"
-    TASK_AFTER = "task_after"
-
-
-PUBLIC_STAGES = tuple(HookEvent[name] for name in (
-    "INITIALIZE", "PREPARE", "RUN_START", "ROUND_BEFORE", "MODEL_BEFORE", "MODEL_AFTER",
-    "TOOL_BATCH_BEFORE", "TOOL_BEFORE", "TOOL_AFTER", "TOOL_BATCH_AFTER", "ROUND_AFTER", "FINALIZE", "RUN_END",
-))
-NOTIFICATIONS = tuple(stage for stage in HookEvent if stage not in PUBLIC_STAGES)
-
-
-class HookAction(str, Enum):
-    CONTINUE = "continue"
-    REPLACE = "replace"
-    VETO = "veto"
-    RECOVER = "recover"
-    FINALIZE = "finalize"
-    STOP = "stop"
-
-
-@dataclass(frozen=True)
-class HookDecision:
-    """Generic control result shared by policy and application hooks."""
-
-    action: HookAction | str = HookAction.CONTINUE
-    reason: str = ""
-    message: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class HookContext:
-    """Hook 触发时的上下文快照（纯数据，不携带 agent/registry 活对象）。"""
-
-    event: HookEvent
-    agent_name: str
-    tool_name: Optional[str] = None
-    tool_input: Optional[dict] = None
-    tool_status: Optional[str] = None       # TOOL_AFTER result status
-    error_code: Optional[str] = None        # TOOL_AFTER normalized error code
-    tool_output: Optional[str] = None      # 仅 TOOL_AFTER
-    messages: Optional[list] = None        # 仅 MODEL_BEFORE / MODEL_AFTER
-    llm_response: Optional[dict] = None    # 仅 MODEL_AFTER
-    run_id: str = ""
-    phase: str = ""
-    payload: dict[str, Any] = field(default_factory=dict)
-    runtime: Optional["AgentRuntime"] = None
-    invocation: Any = None  # Private per-call service state; hidden from observers.
 
 
 @dataclass
@@ -476,7 +409,7 @@ class HookRegistry:
         if not meta.get("id"):
             return
         try:
-            from app.trace.tracing import current_trace_sink
+            from app.agent_base.core.observability import current_trace_sink
             from .operations import current_operation
             operation = current_operation()
             sink = current_trace_sink()
@@ -673,7 +606,7 @@ def _register_default_hooks() -> None:
             stage, handler, priority=priority,
             contribution_id=identifier, plugin="core", mode=mode,
         )
-    # The ToolRoundExecutor pages every long tool result through its trace.
+    # Tool output continuation is managed independently by ToolRoundExecutor.
 
 
 _register_default_hooks()

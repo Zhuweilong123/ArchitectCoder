@@ -13,7 +13,7 @@ from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import command_result
 from app.core.capabilities import CapabilityPolicy
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
-from app.trace.tracing import TraceSession
+from app.runtime.trace_session import TraceSession
 from extensions.trace.chat_trace import ChatTraceLogger
 
 

@@ -78,8 +78,7 @@ plugin_contribution 还保存执行绑定的 plugin_version 与 plugin_revision�
 接口未指定阶段时默认 run_start。声明 ID 和槽位不得冲突；必需依赖缺失、禁用、声明失败或形成循环时，插件标记 unavailable。元数据解析后，计划编译才导入指定模块并校验工厂，读取 JSON contributions 或显式 contribution_loader；不创建需要 LLM、项目或数据库的 Provider。discovered 表示声明可用，不代表已实例化或通过健康检查。代码声明函数示例，需在 plugin.json 的 contribution_loader 中配置其入口：
 
 ```python
-from app.agent_base.core.hooks import HookEvent
-from app.agent_base.core.lifecycle import Contribution
+from app.agent_base.host_api.lifecycle import HookEvent, Contribution
 
 def list_contributions(*, settings=None):
     return (Contribution(id="team_checks.inspect", stage=HookEvent.TOOL_BEFORE,

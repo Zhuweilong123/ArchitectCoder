@@ -38,15 +38,15 @@ class DesignContractProvider:
 
     async def evaluate(self, context):
         from .gate import DefaultContractGate
-        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
+        from app.agent_base.host_api.services import get_host_services
         return await DefaultContractGate(language_runner=self._language_runner,
-            collector=schedule_tool_provider(self, "design_contract")).evaluate(context)
+            collector=get_host_services().schedule_provider(self, "design_contract")).evaluate(context)
 
     async def finalize(self, context, prior_result=None):
         from .gate import DefaultContractGate
-        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
+        from app.agent_base.host_api.services import get_host_services
         return await DefaultContractGate(language_runner=self._language_runner,
-            collector=schedule_tool_provider(self, "design_contract")).finalize(context, prior_result)
+            collector=get_host_services().schedule_provider(self, "design_contract")).finalize(context, prior_result)
 
     async def analyze(self, context):
         from .analysis import ModelContractFailureAnalyzer

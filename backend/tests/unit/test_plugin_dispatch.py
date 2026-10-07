@@ -8,11 +8,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_base.core import hooks
-from app.agent_base.core.hooks import HookContext, HookDecision, HookEvent, HookRegistry
+from app.agent_base.host_api.lifecycle import HookContext, HookDecision, HookEvent
+from app.agent_base.core.hooks import HookRegistry
 from app.agent_base.core.lifecycle import discover_plan, install_plan
 from app.agent_base.core.plugins import DEFAULT_PLUGIN_SPECS, PluginManager, PluginSpec
 from app.agent_base.core.plugin_dispatch import ASYNC_INTERFACES, service_contributions
-from app.trace.tracing import set_current_trace_sink, reset_current_trace_sink
+from app.agent_base.core.observability import set_current_trace_sink, reset_current_trace_sink
 
 
 @pytest.mark.parametrize("slot", [spec.name for spec in DEFAULT_PLUGIN_SPECS])
@@ -32,7 +33,7 @@ def test_every_plugin_declared_interface_runs_via_its_compiled_stage(monkeypatch
         else:
             def target(value, method=method):
                 calls.append((method, value))
-                return provider if slot == "trace" and method == "query" else value
+                return provider if method in spec.wrapped_results else value
         setattr(provider, method, target)
     monkeypatch.setitem(sys.modules, module, SimpleNamespace(create=lambda **kwargs: provider))
     registry = HookRegistry()
@@ -49,7 +50,7 @@ def test_every_plugin_declared_interface_runs_via_its_compiled_stage(monkeypatch
         for method in methods:
             call = getattr(scheduled, method)
             result = asyncio.run(call(method)) if inspect.iscoroutinefunction(call) else call(method)
-            if slot == "trace" and method == "query":
+            if method in spec.wrapped_results:
                 assert result._provider is provider
             else:
                 assert result == method

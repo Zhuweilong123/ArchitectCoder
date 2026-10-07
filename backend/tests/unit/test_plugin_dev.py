@@ -12,7 +12,7 @@ import pytest
 from backend.plugin_dev import main, scaffold
 from app.agent_base.core.hooks import get_hooks, get_runtime
 from app.agent_base.core.plugin_runtime import current_snapshot
-from app.trace.tracing import current_trace_sink
+from app.agent_base.core.observability import current_trace_sink
 
 
 def command(capsys, *args):
