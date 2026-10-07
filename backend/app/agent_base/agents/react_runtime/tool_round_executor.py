@@ -23,6 +23,7 @@ from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
 from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
 from app.trace.tracing import current_trace_sink, emit_trace
+from .failure_recovery import EDIT_REFRESH_CODES, RecoveryScopes
 
 
 @dataclass
@@ -37,13 +38,7 @@ class ToolRoundResult:
 class ToolRoundExecutor:
     """Own tool-call parsing, execution, evidence, and tool lifecycle Hooks."""
 
-    _EDIT_RECOVERY_CODES = {
-        "PATCH_TEXT_NOT_FOUND",
-        "PATCH_AMBIGUOUS",
-        "EXPECTED_SHA_MISMATCH",
-        "CONCURRENT_CHANGE",
-        "PROJECT_REVISION_CONFLICT",
-    }
+    _EDIT_RECOVERY_CODES = EDIT_REFRESH_CODES
 
     def __init__(
         self,
@@ -69,6 +64,7 @@ class ToolRoundExecutor:
         # deliberately local to one task execution, not persisted in session
         # history, so a later user turn starts with a clean recovery boundary.
         self._edit_recovery_paths: set[str] = set()
+        self._recovery_scopes = RecoveryScopes(tool_registry)
 
     async def execute(self, tool_calls: list[dict], *, step: int) -> ToolRoundResult:
         parsed_calls = self._parse_calls(tool_calls)
@@ -193,36 +189,18 @@ class ToolRoundExecutor:
     def _normalise_path(value: object) -> str:
         return os.path.normcase(os.path.normpath(str(value).replace("/", os.sep)))
 
-    @classmethod
-    def _paths_for_call(cls, tool_name: str, tool_args: object) -> set[str]:
-        if not isinstance(tool_args, dict):
-            return set()
-        if tool_name == "apply_changes":
-            changes = tool_args.get("changes")
-            if not isinstance(changes, list):
-                return set()
-            values = {
-                change.get(field)
-                for change in changes
-                if isinstance(change, dict)
-                for field in ("path", "from", "to")
-                if isinstance(change.get(field), str) and change.get(field).strip()
-            }
-        elif tool_name in {"read_file", "search_text"}:
-            values = {tool_args.get("path")}
-        else:
-            values = set()
-        return {cls._normalise_path(value) for value in values if value}
+    def _paths_for_call(self, tool_name: str, tool_args: object,
+                        tool_result: ToolResult | None = None) -> set[str]:
+        detail = {"name": tool_name, "arguments": tool_args}
+        if tool_result is not None:
+            detail.update(status=tool_result.status, observation=tool_result.text)
+        return set(self._recovery_scopes.paths(detail))
 
     @classmethod
     def _paths_overlap(cls, left: str, right: str) -> bool:
         left = cls._normalise_path(left)
         right = cls._normalise_path(right)
-        return (
-            left == right
-            or left.endswith(os.sep + right)
-            or right.endswith(os.sep + left)
-        )
+        return left == right
 
     def _update_edit_recovery_state(
         self,
@@ -230,7 +208,7 @@ class ToolRoundExecutor:
         tool_args: object,
         tool_result: ToolResult,
     ) -> None:
-        paths = self._paths_for_call(tool_name, tool_args)
+        paths = self._paths_for_call(tool_name, tool_args, tool_result)
         if tool_name == "apply_changes":
             if tool_result.error_code in self._EDIT_RECOVERY_CODES:
                 self._edit_recovery_paths.update(paths)
@@ -240,6 +218,10 @@ class ToolRoundExecutor:
                     if not any(self._paths_overlap(pending, path) for path in paths)
                 }
         elif tool_name in {"read_file", "search_text"} and tool_result.status == "success":
+            paths = self._recovery_scopes.fresh_content_paths({
+                "name": tool_name, "arguments": tool_args,
+                "status": tool_result.status, "observation": tool_result.text,
+            })
             self._edit_recovery_paths = {
                 pending for pending in self._edit_recovery_paths
                 if not any(self._paths_overlap(pending, path) for path in paths)

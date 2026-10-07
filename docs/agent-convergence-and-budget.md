@@ -57,6 +57,24 @@ Trace、Evidence Ledger 和 `last_context_report` 记录这些策略的决定；
 默认构造参数：`max_stalled_rounds=3`、`max_recovery_rounds=2`、
 `repeat_action_threshold=3`。控制器没有全局步数上限；正常有进展的任务可以继续运行。
 
+### 3.1 当前失败的恢复提示
+
+`react_runtime/failure_recovery.py` 中的 `FailureRecoveryController` 独立管理当前未解决的
+工具问题。它按读取/搜索/列表、编辑、执行等类型给出恢复建议，只维护一条
+`Active tool recovery` 系统消息，更新其内容而不逐轮追加；成功恢复后移除对应问题，
+全部恢复后删除消息。历史失败仍保留在 Trace 和 Evidence Ledger 中。
+
+读取失败不会生成编辑失败约束。同一目标通过公共路径解析器识别，别名与绝对路径
+可以对应同一文件，不以相同文件名的后缀判断不同目录下的文件相同。
+批量编辑依据结构化 `change_index` 约束实际失败项；成功读取其他文件不解除该约束。
+对编辑内容/版本冲突，成功读取目标或搜索得到该目标的匹配内容可解除刷新要求；
+搜索没有匹配项不能作为编辑内容已经刷新的证据。缺失路径只有唯一候选被成功读取时
+才可认定路径已修正，多候选不自动选择。
+
+执行失败按工具和规范化调用参数跟踪，其他目标的验证成功不会清除失败提示。
+同一问题恢复后重新失败，从第一次尝试重新计数；上下文压缩后同步当前状态，
+保持提示只有一份。底层 `ToolRoundExecutor` 的编辑重试保护继续生效。
+
 ## 4. Hook 接入
 
 位置：`backend/app/agent_base/core/hooks.py`。
