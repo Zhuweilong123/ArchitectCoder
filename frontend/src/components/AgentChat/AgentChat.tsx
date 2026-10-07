@@ -17,7 +17,7 @@ import {
 import {
   SendOutlined, StopOutlined, RobotOutlined,
   CheckCircleOutlined, CloseCircleOutlined,
-  ToolOutlined, UserOutlined,
+  ToolOutlined, UserOutlined, FormOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
   PlusOutlined, HistoryOutlined, SwapOutlined, DownOutlined, RightOutlined,
 } from '@ant-design/icons';
@@ -71,6 +71,7 @@ const AgentChat: React.FC = () => {
   });
   const {
     inputValue, setInputValue, resetInputHistory, activateInputSession, recallInput,
+    recallMessage, restoreDraft,
     canRecallOlder, canRecallNewer, historyPosition, historyCount,
   } = useChatInputHistory(messages, getCurrentSessionId());
   const [busy, setBusy] = useState(false);
@@ -820,6 +821,18 @@ const AgentChat: React.FC = () => {
                   </div>
                   {msg.content.length > 0 && (
                     <MessageCopyButton content={msg.content} language={interfaceLanguage}>
+                      {msg.role === 'user' && msg.content.trim() && (
+                        <Tooltip title={copy('refillMessage')}>
+                          <Button type="text" size="small" className="agent-message-refill"
+                            icon={<FormOutlined />} aria-label={copy('refillMessage')}
+                            disabled={sessionsLoading}
+                            onClick={() => {
+                              recallMessage(msg.id);
+                              window.requestAnimationFrame(() => inputRef.current?.focus({ cursor: 'end' }));
+                            }}
+                          />
+                        </Tooltip>
+                      )}
                       {msg.role === 'agent' && !msg.id.startsWith('stream_') && (
                         <MessageReadButton content={msg.content} language={interfaceLanguage} messageId={msg.id} />
                       )}
@@ -996,11 +1009,18 @@ const AgentChat: React.FC = () => {
             />
             <div className="agent-chat-input-actions">
               {historyPosition !== null && (
-                <span className="agent-chat-input-history-position" aria-live="polite">
-                  {`${copy('inputHistory')} ${historyPosition}/${historyCount}`}
-                </span>
+                <div className="agent-chat-input-history-position">
+                  <span aria-live="polite">{`${copy('inputHistory')} ${historyPosition}/${historyCount}`}</span>
+                  <Button type="link" size="small" disabled={sessionsLoading}
+                    onClick={() => {
+                      restoreDraft();
+                      window.requestAnimationFrame(() => inputRef.current?.focus({ cursor: 'end' }));
+                    }}>
+                    {copy('restoreInputDraft')}
+                  </Button>
+                </div>
               )}
-              {busy && (
+              {busy && historyPosition === null && (
                 <span className="agent-chat-input-hint">{copy('draftWhileRunning')}</span>
               )}
               {busy ? (

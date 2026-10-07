@@ -51,25 +51,40 @@ export function useChatInputHistory(messages: ChatMessage[], initialSessionId: s
     editsRef.current.clear();
   }, []);
 
-  const recallInput = useCallback((direction: -1 | 1) => {
-    const nextIndex = currentIndex + direction;
-    if (nextIndex < 0 || nextIndex > history.length) return;
+  const fillHistoryInput = useCallback((next: ChatMessage | undefined, original = false) => {
     if (selectedIndex < 0) {
       draftRef.current = inputValue;
     } else {
       editsRef.current.set(history[selectedIndex].id, inputValue);
     }
-    const next = history[nextIndex];
+    if (next && original) editsRef.current.delete(next.id);
     setSelectedId(next?.id ?? null);
     updateInputValue(next
       ? editsRef.current.get(next.id) ?? next.content
       : draftRef.current);
     // Browsing historical messages must not overwrite the unsent draft.
     if (!next) saveDraft(sessionRef.current, draftRef.current);
-  }, [currentIndex, history, inputValue, selectedIndex]);
+  }, [history, inputValue, selectedIndex]);
+
+  const recallInput = useCallback((direction: -1 | 1) => {
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex > history.length) return;
+    fillHistoryInput(history[nextIndex]);
+  }, [currentIndex, history, fillHistoryInput]);
+
+  const recallMessage = useCallback((messageId: string) => {
+    const target = history.find((item) => item.id === messageId);
+    // Clicking a bubble always fills its recorded original, without sending it.
+    if (target) fillHistoryInput(target, true);
+  }, [history, fillHistoryInput]);
+
+  const restoreDraft = useCallback(() => {
+    if (selectedIndex >= 0) fillHistoryInput(undefined);
+  }, [selectedIndex, fillHistoryInput]);
 
   return {
     inputValue, setInputValue, resetInputHistory, activateInputSession, recallInput,
+    recallMessage, restoreDraft,
     canRecallOlder: currentIndex > 0,
     canRecallNewer: selectedIndex >= 0,
     historyPosition: selectedIndex >= 0 ? selectedIndex + 1 : null,

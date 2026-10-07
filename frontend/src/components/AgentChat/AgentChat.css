@@ -374,7 +374,8 @@
 }
 
 .agent-message-copy.ant-btn,
-.agent-message-read.ant-btn {
+.agent-message-read.ant-btn,
+.agent-message-refill.ant-btn {
   color: #666;
   font-size: 12px;
 }
@@ -586,6 +587,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-chat-input-history-position {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-chat-input-history-position .ant-btn {
+  padding: 0 4px;
+  font-size: 12px;
 }
 
 /* ── Trigger button ─────────────────────────────────── */
