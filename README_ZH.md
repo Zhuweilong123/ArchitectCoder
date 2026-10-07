@@ -6,20 +6,16 @@
 
 [English](README.md) | **中文**
 
-[快速开始](#快速开始) · [产品演示](#产品演示) · [插件上手演示](#插件上手演示) · [核心能力](#核心能力) · [真实工程案例](#真实工程案例轻量级车辆仿真) · [文档](#文档)
+[快速开始](#快速开始) · [产品演示](#产品演示) · [核心能力](#核心能力) · [真实工程案例](#真实工程案例轻量级车辆仿真) · [插件架构](#插件上手演示) · [文档](#文档)
 
 </div>
 
 ArchitectCoder 是一个以 UML 为设计入口的 **AI 协同开发工作台**，将架构设计、代码修改、测试验证、人工审核和执行回放串成可追踪的开发闭环。
 
-内置 **DevAgent 开发助手**、**全局 UML 优化**、**一键式 DevAgent 能力基准中心**、**TestHub 测试中心**、**Trace 追踪与回放**、**知识图谱**、**记忆系统**及 **BaseAgents 框架**，支持从设计到实现、验证与复盘的完整流程。
-
-根据任务选择设计契约模式：
-
-- **开启设计契约：先设计，后开发。** 涉及架构、接口或交互变化时，先更新 UML 并审核设计，再实现代码和验证；提交前执行设计契约检查。
-- **关闭设计契约：从代码同步设计。** 可以从现有代码仓库出发，让 DevAgent 分析实现、补充或更新 UML；本次任务跳过设计契约门禁。设计同步由用户发起，不会自动发生。
-
-架构采用稳定主流程与插件扩展机制：通过公共阶段组织执行，通过 slot 契约组合能力。
+- **设计与代码协同**：从需求完善 UML 并指导开发，也能从现有源码补齐设计。
+- **可审核的变更**：对比设计修改，通过人工审核和设计契约检查控制候选变更提交。
+- **可追踪、可验证**：记录模型与工具调用，通过 Trace 回放和版本化评测检查执行结果。
+- **稳定流程、插件扩展**：公共阶段组织执行，slot 契约组合能力，新增能力优先在插件内部完成。
 
 ## 产品演示
 
@@ -47,13 +43,215 @@ ArchitectCoder 是一个以 UML 为设计入口的 **AI 协同开发工作台**�
 </tr>
 </table>
 
+## 核心能力
+
+### 架构设计与导航
+
+- **三类设计图**：类图描述结构，组件图描述模块边界和接口，时序图描述交互流程。
+- **跨图关联**：将类图、时序图关联到组件，通过组件右键菜单创建或切换详细设计。
+- **关系驱动布局**：按依赖和包含关系组织类图、组件图，紧凑排列独立分组，分离组件依赖线路；时序图按时间轴排列生命线与消息。
+- **画布编辑**：属性面板、复制粘贴、撤销重做、网格吸附、直角连线折点调整，以及四种画布主题。
+- **项目工作区**：从选定根目录识别常规 `design/`、`src/`、`test/`，也可单独指定目录；刷新后重新打开上次保存的设计。
+
+### 可审核的 AI 开发
+
+**DevAgent** 通过流式对话分析工作区、修改设计和文件、执行检查并报告结果。**全局优化**也通过同一 Agent 流程提交跨图检查与优化请求。
+
+根据任务选择设计契约模式：
+
+- **开启设计契约：先设计，后开发。** 涉及架构、接口或交互变化时，先更新 UML 并审核设计，再实现代码和验证；提交前执行设计契约检查。
+- **关闭设计契约：从代码同步设计。** 可以从现有代码仓库出发，让 DevAgent 分析实现、补充或更新 UML；本次任务跳过设计契约门禁。设计同步由用户发起，不会自动发生。
+
+- **设计审核**：比较原始与提议版本，按语义高亮元素、成员和关系变化；批准变更或反馈修改意见。
+- **设计契约**：启用后采集设计、源码和测试事实，检查一致性，并将失败结果接入执行与审核生命周期；聊天中的契约开关控制下一次运行。
+- **执行进度**：查看任务清单和工具步骤，停止运行，并显式恢复支持的执行检查点。
+- **项目历史**：切换会话、恢复对话历史，并通过可配置 Provider 使用项目级记忆。
+- **受控变更**：工作区边界、限定文件修改范围、冲突检测、命令策略及敏感命令审批。
+
+### 导出与交付
+
+| 格式 | 用途 |
+|---|---|
+| **HTML** | 整个项目导出为一个离线只读文件，支持图目录、缩放、拖动平移、适应窗口和中英文界面 |
+| **PNG / SVG** | 当前图，用于演示、文档插图及矢量展示 |
+| **`.umlproj`** | 完整可编辑项目，可在 ArchitectCoder 中重新打开 |
+| **Markdown ZIP** | 当前图或全项目设计文档，附带 SVG 图形 |
+
+HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形展示内容。需要继续编辑时使用 `.umlproj`。详见 [HTML 导出说明](docs/project-html-export.md)。
+
+## 真实工程案例：轻量级车辆仿真
+
+我们在一个包含 **93 个 Python 文件、约 1.2 万行 Python 代码**的车辆仿真工程中使用 DevAgent。它对照源码检查现有 UML，发现设计覆盖缺口，并更新组件图与类图。设计从 **8 张图扩展到 11 张图**，新增路线规划、参考线和分析模块的类图。更新通过 UML 结构校验和人工审核后，提交到仿真工程仓库。
+
+[查看设计提交](https://github.com/Zhuweilong123/my_carla_sim/commit/998a6c813683dd76234a85432b29a807d694c9e3)
+
+**整体架构 · Engine Architecture**
+
+组件图展示仿真内核、规划、控制、路由、参考线、分析及 ROS 2 适配模块，以及它们的接口、依赖和子组件。
+
+[![轻量级车辆仿真的组件架构图](docs/media/lightweight-sim/engine-architecture.png)](docs/media/lightweight-sim/engine-architecture.png)
+
+**核心结构 · Simulator Core Classes**
+
+类图展开 `SimulationEngine` 与 `World`、`EgoVehicle`、`ObstacleManager`、`SteeringActuator` 的组合关系，以及反向仿真引擎的继承关系。
+
+[![仿真核心类图：类成员、组合与继承关系](docs/media/lightweight-sim/simulator-core-classes.png)](docs/media/lightweight-sim/simulator-core-classes.png)
+
+**运行流程 · Autonomous Driving Loop**
+
+时序图串起路由与参考线生成、仿真状态发布、路径规划、车辆控制和指令回传，并展示控制指令过期时的处理分支。
+
+[![自动驾驶循环时序图：规划、控制与仿真协作](docs/media/lightweight-sim/autonomous-driving-loop.png)](docs/media/lightweight-sim/autonomous-driving-loop.png)
+
+点击图片查看完整尺寸，或打开 SVG 放大查看：[组件图](docs/media/lightweight-sim/engine-architecture.svg) · [类图](docs/media/lightweight-sim/simulator-core-classes.svg) · [时序图](docs/media/lightweight-sim/autonomous-driving-loop.svg)。
+
+## 插件上手演示
+
+新增检查、记忆或编排能力时，优先扩展插件，让主流程保持稳定。
+
+**一个阶段可以承载多个 slot，一个 slot 可以接入多个插件能力。**
+
+公共阶段定义执行时机，扩展槽位（slot）定义能力接入契约；宿主按声明统一调度插件。新增能力优先通过已有 slot 接入，将修改范围控制在插件内部。例如，多个检查插件可以共同接入 `execution.check`，任一检查拒绝，都会阻止候选变更提交。
+
+### 13 个公共阶段
+
+阶段覆盖装配、上下文准备、推理与工具循环，以及执行收尾。下图展示逻辑位置：每轮可以重复，无工具调用时跳过工具批次，批次内工具可以按执行策略并发。
+
+```mermaid
+flowchart TD
+    init["initialize · 初始化装配"] --> prep["prepare · 上下文准备"]
+    prep --> start["run_start · 运行开始"]
+    start --> rb
+    subgraph round["每轮推理与工具执行"]
+        rb["round_before · 回合开始"] --> mb["model_before · 模型调用前"]
+        mb --> ma["model_after · 模型尝试结束"]
+        ma --> bb["tool_batch_before · 工具批次开始"]
+        bb --> tb["tool_before · 工具执行前"]
+        tb --> ta["tool_after · 工具尝试结束"]
+        ta --> ba["tool_batch_after · 工具批次结束"]
+        ba --> ra["round_after · 回合结束"]
+        ma -. 无工具调用 .-> ra
+    end
+    ra -. 下一轮 .-> rb
+    ra --> fin["finalize · 整理结果"]
+    fin --> endrun["run_end · 执行区间结束"]
+```
+
+这是生命周期总览；prepare 可重复进入，异常或取消可能提前进入收尾。model_after 和 tool_after 也覆盖失败、取消或阻断的尝试。slot 服务需要明确请求，普通阶段广播不会自动执行它们。
+
+### 独立通知（Notifications）
+
+通知报告特定事件，与 13 个公共阶段分开，不构成固定的顺序流程。
+
+| 通知 | 含义 |
+|---|---|
+| `error` | 发生错误 |
+| `cancel` | 执行被取消 |
+| `review_after` | 审核结果已产生 |
+| `background_before` | 后台工作开始 |
+| `background_after` | 后台工作结束，携带完成或失败等状态 |
+| `task_after` | 发布检查或审核后的任务结果；可包含等待审核等状态 |
+
+`run_end` 表示执行区间结束；审核和后台工作可能仍未完成。阶段、通知及贡献模式的完整契约见[插件生命周期](docs/plugin-lifecycle.md)。
+
+### 接入示例
+
+无需视频也能体验框架扩展：**主流程总览 → 插件详情 → 接口搜索**，再本地验证 `task_notes`，查看它在 DevAgent 任务中的实际执行。每个插件自行声明接口和阶段贡献，系统统一扫描配置的目录加载。
+
+[![task_notes 的接口与公共阶段绑定](docs/media/plugin-demo/task-notes-zh.svg)](docs/plugin-quickstart.md)
+
+*根据示例真实声明生成的架构预览图。*
+
+[按步骤跑通示例](docs/plugin-quickstart.md) · [下载离线 HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html)
+
+在 GitHub 下载 **HTML 原始文件**，用浏览器打开即可，无需安装或配置模型。本地插件验证需要后端依赖；应用内演示需要配置模型并启用 Trace。
+
+## 验证与高级能力
+
+- **DevAgent 能力基准中心**：在隔离工作区中用生产 Agent 执行版本化用例，查看 Checker 结果、工具与 Token 用量、耗时和 Trace；比较版本并归档结果。
+- **Trace 追踪与回放**：查看模型与工具调用记录，对比回放步骤；`mock` 使用记录数据且不调用模型，`rerun`、`live` 按各自策略执行模型与工具。
+- **TestHub**：在画布中加载、编辑和保存 Excel 测试用例，保留审核记录；测试代码的编写与更新由 DevAgent 通过工作区流程完成。
+- **知识图谱与记忆**：通过可配置 Provider 提供设计、源码、测试索引和项目级记忆检索。
+- **可扩展运行时**：通过插件契约替换编排、记忆、Trace、评测、知识图谱及设计契约实现；阶段与 slot 的关系见[插件上手演示](#插件上手演示)。
+
+### 评测中心演示
+
+<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4"><img src="docs/media/architectcoder-evaluation-demo-preview.gif" alt="ArchitectCoder 评测中心演示预览" width="100%"></a>
+
+<p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
+
+<p align="center"><sub>真实浏览器录屏：性能结果 → 三版本趋势对比 → 用例级 Trace 回放 → 归档中心。</sub></p>
+
+## 语言与工具链支持
+
+界面提供 12 种目标语言选项。**任务执行与源码理解的支持范围不同**：
+
+- 项目任务解析覆盖 Python、Node.js、CMake/CTest、Cargo、Maven/Gradle、Go、.NET 和显式 `.architectcoder/tasks.json` 任务。能否执行取决于可用工具链与执行策略。
+- 源码事实采集包含 Python AST，以及支持编译数据库的 C++ Clang 适配基础；其他语言选项不代表具有同等的结构解析和设计契约覆盖。
+- 内置快启案例展示 Python 设计、源码和测试流程。详见[多语言执行说明](docs/multilanguage-execution-design.md)，了解实现范围与前置条件。
+
+## 文档
+
+| 主题 | 入口 |
+|---|---|
+| 全部文档 | [文档导航](docs/README.md) |
+| Agent 架构与框架 | [当前架构](docs/current-architecture.md) · [BaseAgents](docs/baseagents-design.md) |
+| 设计—源码一致性 | [设计契约](docs/design-source-contract.md) |
+| 项目 HTML 交付 | [HTML 导出](docs/project-html-export.md) |
+| 任务执行与语言支持 | [命令执行](docs/runtime-command-execution.md) · [多语言执行](docs/multilanguage-execution-design.md) |
+| 评测与回放 | [评测体系](docs/evaluation-system.md) · [Trace 回放](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
+| 上下文与项目知识 | [上下文管理](docs/context-management-design.md) · [记忆](docs/memory-system-design.md) · [知识图谱](docs/knowledge-graph-design.md) |
+| 扩展开发 | [当前架构](docs/current-architecture.md) · [插件生命周期](docs/plugin-lifecycle.md) |
+| 插件骨架、契约检查与试运行 | [插件开发工具包](docs/plugin-development.md) |
+| 插件上手与离线示例 | [逐步教程](docs/plugin-quickstart.md) · [HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html) |
+| 可复用 Agent 指南 | [Skill 插件](docs/skills-plugin.md) |
+| 插件组织与调度 | [阶段贡献、执行计划和调度图](docs/plugin-lifecycle.md) |
+
+## 开发
+
+**技术栈：** React 18、TypeScript、AntV X6、Zustand、Ant Design 5、FastAPI、WebSocket、SQLite 和 Vite。
+
+```text
+frontend/         UML 编辑、Agent 对话、审核、导出和评测界面
+backend/app/      API、Agent 核心、执行生命周期与运行时端口
+backend/config/   应用与 Agent 配置
+extensions/       编排、记忆、Trace、评测、知识图谱、设计契约
+examples/         内置案例
+skills/           可加载的 Agent 指南
+docs/             使用、设计与实现文档
+temp/             运行时产物
+```
+
+- 后端检查：在 `backend/` 运行 `python -m pytest -q`。
+- 前端检查：在 `frontend/` 运行 `npm run build`、`npm run test:layout` 和 `npm run test:html`。
+- Agent 评测：在仓库根目录运行 `python -m extensions.evals.cli --suite understanding`，也可选择 `single`、`multiturn`。
+- API 文档：**http://localhost:8001/api/docs**；Agent WebSocket：`/api/agent/ws/chat`。
+
+### 快捷键
+
+| 快捷键 | 功能 |
+|---|---|
+| Ctrl+Z / Ctrl+Y | 撤销 / 重做 |
+| Ctrl+C / Ctrl+V | 复制 / 粘贴 |
+| Ctrl+S | 保存工程 |
+| Delete | 删除选中 |
+| Ctrl+滚轮 | 缩放 |
+| 空格+拖拽 | 平移 |
+
 ## 快速开始
 
 需要先安装 Python 和 Node.js/npm。仓库 CI 使用 Python 3.12。AI 功能需要兼容 OpenAI API 的模型服务；手动编辑 UML 和导出不需要调用模型。
 
-### 1. 安装与配置
+### 1. 获取项目、安装与配置
 
-在仓库根目录执行：
+先获取项目：
+
+```bash
+git clone https://github.com/Zhuweilong123/ArchitectCoder.git
+cd ArchitectCoder
+```
+
+然后在仓库根目录执行：
 
 ```powershell
 python -m pip install -r backend/requirements.txt
@@ -107,103 +305,6 @@ python -m pytest test -q
 
 详见[案例说明](examples/quickstart/README.md)。其中的性能参考是历史摘要，不代表当前环境重新执行后的结果。
 
-## 插件上手演示
-
-**一个阶段可以承载多个 slot，一个 slot 可以接入多个插件能力。**
-
-公共阶段定义执行时机，扩展槽位（slot）定义能力接入契约；宿主按声明统一调度插件。新增能力优先通过已有 slot 接入，将修改范围控制在插件内部。例如，多个检查插件可以共同接入 `execution.check`，任一检查拒绝，都会阻止候选变更提交。
-
-无需视频也能体验框架扩展：**主流程总览 → 插件详情 → 接口搜索**，再本地验证 `task_notes`，查看它在 DevAgent 任务中的实际执行。每个插件自行声明接口和阶段贡献，系统统一扫描配置的目录加载。
-
-[![task_notes 的接口与公共阶段绑定](docs/media/plugin-demo/task-notes-zh.svg)](docs/plugin-quickstart.md)
-
-*根据示例真实声明生成的架构预览图。*
-
-[按步骤跑通示例](docs/plugin-quickstart.md) · [下载离线 HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html)
-
-在 GitHub 下载 **HTML 原始文件**，用浏览器打开即可，无需安装或配置模型。本地插件验证需要后端依赖；应用内演示需要配置模型并启用 Trace。
-
-## 核心能力
-
-### 架构设计与导航
-
-- **三类设计图**：类图描述结构，组件图描述模块边界和接口，时序图描述交互流程。
-- **跨图关联**：将类图、时序图关联到组件，通过组件右键菜单创建或切换详细设计。
-- **关系驱动布局**：按依赖和包含关系组织类图、组件图，紧凑排列独立分组，分离组件依赖线路；时序图按时间轴排列生命线与消息。
-- **画布编辑**：属性面板、复制粘贴、撤销重做、网格吸附、直角连线折点调整，以及四种画布主题。
-- **项目工作区**：从选定根目录识别常规 `design/`、`src/`、`test/`，也可单独指定目录；刷新后重新打开上次保存的设计。
-
-### 可审核的 AI 开发
-
-**DevAgent** 通过流式对话分析工作区、修改设计和文件、执行检查并报告结果。**全局优化**也通过同一 Agent 流程提交跨图检查与优化请求。
-
-- **设计审核**：比较原始与提议版本，按语义高亮元素、成员和关系变化；批准变更或反馈修改意见。
-- **设计契约**：启用后采集设计、源码和测试事实，检查一致性，并将失败结果接入执行与审核生命周期；聊天中的契约开关控制下一次运行。
-- **执行进度**：查看任务清单和工具步骤，停止运行，并显式恢复支持的执行检查点。
-- **项目历史**：切换会话、恢复对话历史，并通过可配置 Provider 使用项目级记忆。
-- **受控变更**：工作区边界、限定文件修改范围、冲突检测、命令策略及敏感命令审批。
-
-### 导出与交付
-
-| 格式 | 用途 |
-|---|---|
-| **HTML** | 整个项目导出为一个离线只读文件，支持图目录、缩放、拖动平移、适应窗口和中英文界面 |
-| **PNG / SVG** | 当前图，用于演示、文档插图及矢量展示 |
-| **`.umlproj`** | 完整可编辑项目，可在 ArchitectCoder 中重新打开 |
-| **Markdown ZIP** | 当前图或全项目设计文档，附带 SVG 图形 |
-
-HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形展示内容。需要继续编辑时使用 `.umlproj`。详见 [HTML 导出说明](docs/project-html-export.md)。
-
-## 真实工程案例：轻量级车辆仿真
-
-我们在一个包含 **93 个 Python 文件、约 1.2 万行 Python 代码**的车辆仿真工程中使用 DevAgent。它对照源码检查现有 UML，发现设计覆盖缺口，并更新组件图与类图。设计从 **8 张图扩展到 11 张图**，新增路线规划、参考线和分析模块的类图。更新通过 UML 结构校验和人工审核后，提交到仿真工程仓库。
-
-[查看设计提交](https://github.com/Zhuweilong123/my_carla_sim/commit/998a6c813683dd76234a85432b29a807d694c9e3)
-
-**整体架构 · Engine Architecture**
-
-组件图展示仿真内核、规划、控制、路由、参考线、分析及 ROS 2 适配模块，以及它们的接口、依赖和子组件。
-
-[![轻量级车辆仿真的组件架构图](docs/media/lightweight-sim/engine-architecture.png)](docs/media/lightweight-sim/engine-architecture.png)
-
-**核心结构 · Simulator Core Classes**
-
-类图展开 `SimulationEngine` 与 `World`、`EgoVehicle`、`ObstacleManager`、`SteeringActuator` 的组合关系，以及反向仿真引擎的继承关系。
-
-[![仿真核心类图：类成员、组合与继承关系](docs/media/lightweight-sim/simulator-core-classes.png)](docs/media/lightweight-sim/simulator-core-classes.png)
-
-**运行流程 · Autonomous Driving Loop**
-
-时序图串起路由与参考线生成、仿真状态发布、路径规划、车辆控制和指令回传，并展示控制指令过期时的处理分支。
-
-[![自动驾驶循环时序图：规划、控制与仿真协作](docs/media/lightweight-sim/autonomous-driving-loop.png)](docs/media/lightweight-sim/autonomous-driving-loop.png)
-
-点击图片查看完整尺寸，或打开 SVG 放大查看：[组件图](docs/media/lightweight-sim/engine-architecture.svg) · [类图](docs/media/lightweight-sim/simulator-core-classes.svg) · [时序图](docs/media/lightweight-sim/autonomous-driving-loop.svg)。
-
-## 验证与高级能力
-
-- **DevAgent 能力基准中心**：在隔离工作区中用生产 Agent 执行版本化用例，查看 Checker 结果、工具与 Token 用量、耗时和 Trace；比较版本并归档结果。
-- **Trace 追踪与回放**：查看模型与工具调用记录，对比回放步骤；`mock` 使用记录数据且不调用模型，`rerun`、`live` 按各自策略执行模型与工具。
-- **TestHub**：在画布中加载、编辑和保存 Excel 测试用例，保留审核记录；测试代码的编写与更新由 DevAgent 通过工作区流程完成。
-- **知识图谱与记忆**：通过可配置 Provider 提供设计、源码、测试索引和项目级记忆检索。
-- **可扩展运行时**：通过插件契约替换编排、记忆、Trace、评测、知识图谱及设计契约实现；阶段与 slot 的关系见[插件上手演示](#插件上手演示)。
-
-### 评测中心演示
-
-<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4"><img src="docs/media/architectcoder-evaluation-demo-preview.gif" alt="ArchitectCoder 评测中心演示预览" width="100%"></a>
-
-<p align="center"><sub>动态浏览器预览。<a href="https://raw.githubusercontent.com/Zhuweilong123/ArchitectCoder/dev-4.0/docs/media/architectcoder-evaluation-demo.mp4">打开完整 MP4 演示</a>。</sub></p>
-
-<p align="center"><sub>真实浏览器录屏：性能结果 → 三版本趋势对比 → 用例级 Trace 回放 → 归档中心。</sub></p>
-
-## 语言与工具链支持
-
-界面提供 12 种目标语言选项。**任务执行与源码理解的支持范围不同**：
-
-- 项目任务解析覆盖 Python、Node.js、CMake/CTest、Cargo、Maven/Gradle、Go、.NET 和显式 `.architectcoder/tasks.json` 任务。能否执行取决于可用工具链与执行策略。
-- 源码事实采集包含 Python AST，以及支持编译数据库的 C++ Clang 适配基础；其他语言选项不代表具有同等的结构解析和设计契约覆盖。
-- 内置快启案例展示 Python 设计、源码和测试流程。详见[多语言执行说明](docs/multilanguage-execution-design.md)，了解实现范围与前置条件。
-
 ## 配置
 
 运行配置位于 `backend/.env`，定义集中在 `backend/config/`。从 [`.env.example`](backend/.env.example) 开始配置。
@@ -215,51 +316,3 @@ HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形
 - **API 鉴权**：设置 `INTERNAL_API_TOKEN` 后，在 `frontend/.env.local` 配置相同的 `VITE_API_TOKEN`。
 
 详细配置与策略见[当前架构](docs/current-architecture.md)及[命令执行说明](docs/runtime-command-execution.md)。
-
-## 文档
-
-| 主题 | 入口 |
-|---|---|
-| 全部文档 | [文档导航](docs/README.md) |
-| Agent 架构与框架 | [当前架构](docs/current-architecture.md) · [BaseAgents](docs/baseagents-design.md) |
-| 设计—源码一致性 | [设计契约](docs/design-source-contract.md) |
-| 项目 HTML 交付 | [HTML 导出](docs/project-html-export.md) |
-| 任务执行与语言支持 | [命令执行](docs/runtime-command-execution.md) · [多语言执行](docs/multilanguage-execution-design.md) |
-| 评测与回放 | [评测体系](docs/evaluation-system.md) · [Trace 回放](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
-| 上下文与项目知识 | [上下文管理](docs/context-management-design.md) · [记忆](docs/memory-system-design.md) · [知识图谱](docs/knowledge-graph-design.md) |
-| 扩展开发 | [当前架构](docs/current-architecture.md) · [插件生命周期](docs/plugin-lifecycle.md) |
-| 插件骨架、契约检查与试运行 | [插件开发工具包](docs/plugin-development.md) |
-| 插件上手与离线示例 | [逐步教程](docs/plugin-quickstart.md) · [HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html) |
-| 可复用 Agent 指南 | [Skill 插件](docs/skills-plugin.md) |
-| 插件组织与调度 | [阶段贡献、执行计划和调度图](docs/plugin-lifecycle.md) |
-
-## 开发
-
-**技术栈：** React 18、TypeScript、AntV X6、Zustand、Ant Design 5、FastAPI、WebSocket、SQLite 和 Vite。
-
-```text
-frontend/         UML 编辑、Agent 对话、审核、导出和评测界面
-backend/app/      API、Agent 核心、执行生命周期与运行时端口
-backend/config/   应用与 Agent 配置
-extensions/       编排、记忆、Trace、评测、知识图谱、设计契约
-examples/         内置案例
-skills/           可加载的 Agent 指南
-docs/             使用、设计与实现文档
-temp/             运行时产物
-```
-
-- 后端检查：在 `backend/` 运行 `python -m pytest -q`。
-- 前端检查：在 `frontend/` 运行 `npm run build`、`npm run test:layout` 和 `npm run test:html`。
-- Agent 评测：在仓库根目录运行 `python -m extensions.evals.cli --suite understanding`，也可选择 `single`、`multiturn`。
-- API 文档：**http://localhost:8001/api/docs**；Agent WebSocket：`/api/agent/ws/chat`。
-
-## 快捷键
-
-| 快捷键 | 功能 |
-|---|---|
-| Ctrl+Z / Ctrl+Y | 撤销 / 重做 |
-| Ctrl+C / Ctrl+V | 复制 / 粘贴 |
-| Ctrl+S | 保存工程 |
-| Delete | 删除选中 |
-| Ctrl+滚轮 | 缩放 |
-| 空格+拖拽 | 平移 |
