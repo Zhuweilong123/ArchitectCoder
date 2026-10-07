@@ -497,11 +497,18 @@ class KnowledgeGraphDB:
     # ── Edge CRUD ──────────────────────────────────────────
 
     def upsert_edge(self, edge: GraphEdge) -> int:
-        """INSERT 或 REPLACE 一条边."""
+        """按稳定 ID 更新边, 同时保留自然键去重."""
         sql = """\
             INSERT INTO kg_edges (id, source_id, target_id, edge_type,
                                   properties, weight, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                source_id = excluded.source_id,
+                target_id = excluded.target_id,
+                edge_type = excluded.edge_type,
+                properties = excluded.properties,
+                weight = excluded.weight,
+                created_at = excluded.created_at
             ON CONFLICT(source_id, target_id, edge_type, properties) DO UPDATE SET
                 id = excluded.id,
                 weight = excluded.weight,
@@ -520,7 +527,7 @@ class KnowledgeGraphDB:
         return cur.lastrowid or 0
 
     def upsert_edges_batch(self, edges: list[GraphEdge]) -> int:
-        """批量 upsert 边."""
+        """批量按稳定 ID 更新边, 同时保留自然键去重."""
         now = _utc_now()
         rows = []
         for edge in edges:
@@ -536,6 +543,13 @@ class KnowledgeGraphDB:
             INSERT INTO kg_edges (id, source_id, target_id, edge_type,
                                   properties, weight, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                source_id = excluded.source_id,
+                target_id = excluded.target_id,
+                edge_type = excluded.edge_type,
+                properties = excluded.properties,
+                weight = excluded.weight,
+                created_at = excluded.created_at
             ON CONFLICT(source_id, target_id, edge_type, properties) DO UPDATE SET
                 id = excluded.id,
                 weight = excluded.weight,
