@@ -60,6 +60,12 @@ def test_missing_required_binding_and_handler_exception_cannot_approve(registry)
     with extension_scope(session), pytest.raises(RuntimeError, match="required execution"):
         asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
 
+    registry.register(HookEvent.FINALIZE, lambda ctx: None, contribution_id="required.check",
+                      mode="observer")
+    with extension_scope(session), pytest.raises(RuntimeError, match="required execution"):
+        asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
+    registry.clear()
+
     def broken(ctx):
         raise ValueError("check failed")
 
@@ -75,11 +81,35 @@ def test_execution_entry_does_not_select_plugin_policies_or_loaders():
     assert all(marker not in source for marker in (
         "load_orchestrator", "contract_gate", "contract_failure_analyzer",
         "architecture_scheduling", "contract_graph_sync", "route_architecture"))
+    transports = {"trace/api.py", "evals/api.py", "evals/cli.py", "evals/full_api.py"}
+    forbidden = ("app.services", "app.agent_base.adapters", "app.agent_base.assembly",
+                 "app.agent_base.agents", "app.agent_base.core", "backend.config", "app.runtime")
     for path in (root / "extensions").rglob("*.py"):
-        if path.name in {"api.py", "cli.py", "full_api.py"}:
-            continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith(("app.services", "app.agent_base.adapters",
-                    "app.agent_base.assembly", "app.agent_base.agents", "app.agent_base.core",
-                    "backend.config", "app.runtime")), path
+        relative = path.relative_to(root / "extensions").as_posix()
+        for module in imported_modules(path.read_text(encoding="utf-8-sig")):
+            # Only the named transport entry points may use loader adapters.
+            if relative in transports and module.startswith("app.agent_base.adapters."):
+                continue
+            assert not any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden), (path, module)
+
+
+def imported_modules(source):
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            yield node.module
+        elif isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+
+
+def test_boundary_scanner_checks_both_import_styles_and_local_imports():
+    assert list(imported_modules("import app.runtime as runtime\ndef f():\n from backend.config import Settings")) == [
+        "app.runtime", "backend.config"]
+
+
+def test_host_protocols_do_not_import_implementations_or_plugins():
+    root = Path(__file__).resolve().parents[3] / "backend/app/agent_base/host_api"
+    forbidden = ("extensions", "backend.config", "app.services", "app.runtime",
+                 "app.agent_base.core", "app.agent_base.adapters", "app.agent_base.agents")
+    for path in root.rglob("*.py"):
+        for module in imported_modules(path.read_text(encoding="utf-8-sig")):
+            assert not any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden), (path, module)

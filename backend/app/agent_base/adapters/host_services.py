@@ -3,6 +3,12 @@ from contextlib import contextmanager
 
 
 class ApplicationHostServices:
+    def plugin_config(self, plugin):
+        """Return a detached snapshot so plugins cannot mutate request settings."""
+        from copy import deepcopy
+        from types import MappingProxyType
+        return MappingProxyType(deepcopy(self.configuration().plugin_configs.get(plugin, {})))
+
     def configuration(self):
         session = self.extension_context()
         if session is not None and session.metadata.get("execution_settings") is not None:

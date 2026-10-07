@@ -165,8 +165,10 @@ class HookRegistry:
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
                     self.unregister(stage, handler)
 
-    def has_contribution(self, identifier):
-        return any(meta.get("id") == identifier for meta in self._metadata.values())
+    def has_contribution(self, identifier, *, interface_id=None):
+        return any(meta.get("id") == identifier and (interface_id is None or
+                   (meta.get("mode") == "service" and meta.get("interface_id") == interface_id))
+                   for meta in self._metadata.values())
 
     @staticmethod
     def _drive_sync(iterator):

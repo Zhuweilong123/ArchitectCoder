@@ -24,6 +24,8 @@
 
 生产装配派发 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 请求。插件声明对应 service contribution，通过 `HookContext.invocation` 获得 `AssemblyRequest`，使用 `bind` 回调绑定自己的 provider，通过 `tools` 提供工具，通过 `required_bindings` 声明必需的执行检查。请求不携带 Agent 或工具注册表。新增插件只需要目录、manifest 与处理器，宿主按执行计划统一调用；配置启用但装配贡献缺失或错误时装配失败，避免跳过已配置的检查。
 
+公开协议包含 `AssemblySlots`、`AssemblyInputs`、`ProviderBinder` 和 `AssemblyTool`。宿主验证装配输出，并拒绝工具名称或别名重复、覆盖已注册工具、无效的必需贡献列表。必需贡献必须以 service 模式绑定到声明的目标 slot，只有贡献 ID 相同不足以通过校验；多个装配阶段的必需贡献按 slot 合并保留。
+
 例如插件可声明以下贡献：
 
 ```json

@@ -274,6 +274,8 @@ async def _create_dev_agent_impl(
         "language_runner": broker_command_runner(broker) if broker else None,
     })
     for tool in assembled.tools:
+        if any(registry.get_tool(name) is not None for name in (tool.name, *getattr(tool, "aliases", ()))):
+            raise ValueError(f"Plugin tool conflicts with an existing tool: {tool.name}")
         registry.register_tool(tool)
     prompt_builder = DevPromptBuilder(
         extension_context=extension_context,

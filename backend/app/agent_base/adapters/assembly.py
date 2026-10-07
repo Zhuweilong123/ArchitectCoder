@@ -27,7 +27,7 @@ async def assemble_extensions(context, *, settings, inputs, interface_id="assemb
             continue
         required = [item["id"] for item in spec.contributions
                     if item.get("interface_id") == interface_id]
-        if any(not registry.has_contribution(identifier) for identifier in required):
+        if any(not registry.has_contribution(identifier, interface_id=interface_id) for identifier in required):
             raise RuntimeError(f"plugin assembly binding is unavailable: {spec.name}")
     request = AssemblyRequest(inputs, lambda name, provider, **kwargs:
         context.bind(name, provider, settings=settings, **kwargs))
@@ -36,6 +36,11 @@ async def assemble_extensions(context, *, settings, inputs, interface_id="assemb
     with extension_scope(context):
         await registry.ainvoke(HookContext(HookEvent.INITIALIZE, "DevAgent", invocation=request,
             payload={"interface_id": request.interface_id}))
-    context.metadata.setdefault("required_execution_bindings", {}).update(request.required_bindings)
+    request.validate()
+    for slot, identifiers in request.required_bindings.items():
+        if any(not registry.has_contribution(identifier, interface_id=slot) for identifier in identifiers):
+            raise RuntimeError(f"required assembly capability is unavailable: {slot}")
+        bindings = context.metadata.setdefault("required_execution_bindings", {}).setdefault(slot, [])
+        bindings.extend(identifier for identifier in identifiers if identifier not in bindings)
     context._registry = registry
     return request

@@ -18,7 +18,8 @@ from app.agent_base.host_api.services import host_services_scope
 from app.agent_base.adapters.host_services import ApplicationHostServices
 
 
-def test_new_directory_binds_tools_and_policy_without_host_registration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("generated", [False, True, "conflicting"])
+def test_new_directory_binds_tools_and_policy_without_host_registration(tmp_path, monkeypatch, generated):
     directory = tmp_path / "auto_policy_demo"
     directory.mkdir()
     (directory / "__init__.py").write_text('''
@@ -50,6 +51,13 @@ def check(ctx):
             {"id": "auto_policy_demo.check", "stage": "finalize", "handler": "auto_policy_demo:check",
              "mode": "service", "scope": "invocation", "interface_id": "execution.check"},
         ]}), encoding="utf-8")
+    if generated:
+        from backend.plugin_dev import scaffold
+        directory = Path(scaffold("generated_policy_demo", tmp_path)["directory"])
+        if generated == "conflicting":
+            source = directory / "__init__.py"
+            source.write_text(source.read_text(encoding="utf-8").replace(
+                '"generated_policy_demo_describe"', '"read_file"'), encoding="utf-8")
     settings = Settings(_env_file=None, llm_api_key="test", llm_base_url="http://test/v1", llm_model_id="test",
         plugin_roots=[str(tmp_path)], agent_memory_enabled=False, agent_skills_enabled=False,
         agent_orchestration_enabled=False, agent_design_contract_enabled=False,
@@ -59,14 +67,44 @@ def check(ctx):
     monkeypatch.setattr(plugin_runtime, "_active", None)
     monkeypatch.setattr(hooks, "_registry", HookRegistry())
     monkeypatch.setattr(assembly, "get_settings", lambda: settings)
+    import sys
+    monkeypatch.delitem(sys.modules, "generated_policy_demo", raising=False)
+    if generated == "conflicting":
+        with pytest.raises(ValueError, match="conflicts with an existing tool"):
+            asyncio.run(assembly.create_dev_agent(object(), workspace_root=str(tmp_path)))
+        return
     agent, _, _ = asyncio.run(assembly.create_dev_agent(object(), workspace_root=str(tmp_path)))
-    assert agent.tool_registry.get_tool("auto_probe").run({}) == "probe ready"
+    if generated:
+        assert agent.tool_registry.get_tool("generated_policy_demo_describe").run({}) == {"label": "generated_policy_demo"}
+        assert "generated_policy_demo" in agent.extension_context.providers
+        assert "generated_policy_demo.check" in agent.extension_context.metadata["required_execution_bindings"][ExecutionSlots.CHECK]
+    else:
+        assert agent.tool_registry.get_tool("auto_probe").run({}) == "probe ready"
     session = agent.extension_context.fork()
     with extension_scope(session):
         assert session.providers["auto_policy_demo"].ping() == "bound"
         request = asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
     assert not request.allowed and request.message == "new plugin policy"
     assert session.state("auto_policy_demo") is not agent.extension_context.state("auto_policy_demo")
+
+
+@pytest.mark.parametrize("tools,bindings", [([object()], {}), ([], {"execution.check": [""]}),
+                                          ([], {"execution.check": "not-a-list"})])
+def test_malformed_assembly_outputs_fail_before_registration(tools, bindings):
+    from app.agent_base.host_api.assembly import AssemblyRequest
+    with pytest.raises(ValueError):
+        AssemblyRequest({}, lambda *a, **k: None, tools=tools, required_bindings=bindings).validate()
+
+
+def test_plugin_configuration_is_an_isolated_snapshot():
+    from types import SimpleNamespace
+    host = ApplicationHostServices()
+    host.configuration = lambda: SimpleNamespace(plugin_configs={"demo": {"nested": ["original"]}})
+    config = host.plugin_config("demo")
+    config["nested"].append("changed")
+    assert host.plugin_config("demo")["nested"] == ["original"]
+    with pytest.raises(TypeError):
+        config["new"] = 1
 
 
 def test_assembly_has_no_builtin_provider_loading_or_binding():

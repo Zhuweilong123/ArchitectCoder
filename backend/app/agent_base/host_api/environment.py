@@ -6,6 +6,11 @@ def configuration():
     return get_host_services().configuration()
 
 
+def plugin_config(plugin: str):
+    """Detached plugin-owned configuration; callers do not need host Settings."""
+    return get_host_services().plugin_config(plugin)
+
+
 def project_storage(project_file="", **kwargs):
     return get_host_services().project_storage(project_file, **kwargs)
 
