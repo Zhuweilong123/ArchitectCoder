@@ -6,14 +6,16 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from app.runtime.encoding import decode_process_output
 
-from .models import CheckerResult
+from .models import CheckerResult, validate_answer_groups
 
 
 def _safe_path(workspace: Path, relative_path: str) -> Path:
@@ -197,8 +199,52 @@ class AnswerContainsAllChecker(Checker):
             checker=self.name,
             passed=passed,
             score=1.0 if passed else 0.0,
-            message="answer contains all required facts" if passed else f"missing answer facts: {missing}",
+            message="answer contains all required expressions" if passed else f"missing answer expressions: {missing}",
             details={"missing": missing},
+        )
+
+
+class AnswerContainsGroupsChecker(Checker):
+    """Text coverage only; artifact and execution checkers establish correctness."""
+
+    name = "answer_contains_groups"
+
+    def __init__(self, groups: list[dict[str, Any]], answer: str = "", texts: list[str] | None = None):
+        validate_answer_groups(groups, texts)
+        self.groups = groups
+        self.answer = answer
+        self.texts = texts or []
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip().casefold()
+
+    @classmethod
+    def _matches(cls, expression: str, answer: str) -> bool:
+        expression = cls._normalize(expression)
+        pattern = re.escape(expression)
+        # English words must not match unrelated substrings such as resource.
+        if expression[0].isascii() and (expression[0].isalnum() or expression[0] == "_"):
+            pattern = r"(?<![A-Za-z0-9_])" + pattern
+        if expression[-1].isascii() and (expression[-1].isalnum() or expression[-1] == "_"):
+            pattern += r"(?![A-Za-z0-9_])"
+        return re.search(pattern, answer) is not None
+
+    async def check(self, workspace: Path) -> CheckerResult:
+        normalized = self._normalize(self.answer)
+        matched = {group["id"]: [text for text in group["any_of"] if self._matches(text, normalized)]
+                   for group in self.groups}
+        missing_groups = [group_id for group_id, expressions in matched.items() if not expressions]
+        # Identifiers retain the old exact, case-sensitive substring contract.
+        missing_texts = [text for text in self.texts if text not in self.answer]
+        passed = not missing_groups and not missing_texts
+        return CheckerResult(
+            checker=self.name, passed=passed, score=1.0 if passed else 0.0,
+            message="answer covers all required expressions" if passed else (
+                f"missing answer expressions: groups={missing_groups}, exact_texts={missing_texts}"
+            ),
+            details={"matched_groups": matched, "missing_groups": missing_groups,
+                     "missing_texts": missing_texts, "scope": "text_coverage"},
         )
 
 
@@ -727,6 +773,8 @@ def build_checkers(
             result.append(HiddenPytestChecker(config.get("path", "."), config.get("args"), config.get("timeout", 120)))
         elif kind == "answer_contains_all":
             result.append(AnswerContainsAllChecker(config.get("texts", []), answer))
+        elif kind == "answer_contains_groups":
+            result.append(AnswerContainsGroupsChecker(config["groups"], answer, config.get("texts")))
         elif kind == "answer_ordered_contains":
             result.append(AnswerOrderedContainsChecker(config.get("texts", []), answer))
         elif kind == "trace_policy":

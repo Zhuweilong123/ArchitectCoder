@@ -13,7 +13,7 @@
     {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
     {"type": "paths_unchanged", "paths": ["src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/echo.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
   ],
-  "checkers": [{"type": "answer_contains_all", "texts": ["DebugTrace", "源码", "UML", "测试"]}],
+  "checkers": [{"type": "answer_contains_groups", "texts": ["DebugTrace", "UML"], "groups": [{"id": "source", "any_of": ["源码", "源代码", "source", "source code"]}, {"id": "verification", "any_of": ["测试", "test", "tests", "pytest", "full suite"]}]}],
   "max_seconds": 180,
   "max_tool_calls": 50,
   "max_total_tokens": 70000,
