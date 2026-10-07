@@ -208,7 +208,7 @@ HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形
 - **Provider**：通过 `AGENT_*_ENABLED` 和 `AGENT_*_PROVIDER` 控制可选能力；示例配置关闭知识图谱和编排，可按需启用。
 - **API 鉴权**：设置 `INTERNAL_API_TOKEN` 后，在 `frontend/.env.local` 配置相同的 `VITE_API_TOKEN`。
 
-详细配置与策略见[插件架构](docs/plugin-architecture-design.md)及[命令执行说明](docs/runtime-command-execution.md)。
+详细配置与策略见[当前架构](docs/current-architecture.md)及[命令执行说明](docs/runtime-command-execution.md)。
 
 ## 文档
 
@@ -221,7 +221,7 @@ HTML 内嵌图形、样式和脚本，无外部依赖，保留导出时的图形
 | 任务执行与语言支持 | [命令执行](docs/runtime-command-execution.md) · [多语言执行](docs/multilanguage-execution-design.md) |
 | 评测与回放 | [评测体系](docs/evaluation-system.md) · [Trace 回放](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
 | 上下文与项目知识 | [上下文管理](docs/context-management-design.md) · [记忆](docs/memory-system-design.md) · [知识图谱](docs/knowledge-graph-design.md) |
-| 扩展开发 | [插件架构](docs/plugin-architecture-design.md) |
+| 扩展开发 | [当前架构](docs/current-architecture.md) · [插件生命周期](docs/plugin-lifecycle.md) |
 | 插件骨架、契约检查与试运行 | [插件开发工具包](docs/plugin-development.md) |
 | 插件上手与离线示例 | [逐步教程](docs/plugin-quickstart.md) · [HTML 示例](docs/media/plugin-demo/plugin-architecture-zh.html) |
 | 可复用 Agent 指南 | [Skill 插件](docs/skills-plugin.md) |

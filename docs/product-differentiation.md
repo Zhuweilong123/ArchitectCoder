@@ -430,4 +430,4 @@ draft → analyzing → design_pending → waiting_approval
 | [`trace-replay-design.md`](trace-replay-design.md) | 证据回放和历史场景回归基础 |
 | [`memory-system-design.md`](memory-system-design.md) | 当前 MemoryPort、SQLite provider、检索与生命周期实现 |
 | [`context-management-design.md`](context-management-design.md) | Run/Session 上下文预算与恢复 |
-| [`plugin-architecture-design.md`](plugin-architecture-design.md) | Provider 边界和后续生态扩展 |
+| [`current-architecture.md`](current-architecture.md) | Provider 边界和后续生态扩展 |

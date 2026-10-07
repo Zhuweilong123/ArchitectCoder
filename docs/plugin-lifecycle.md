@@ -74,6 +74,20 @@ plugin_contribution 还保存执行绑定的 plugin_version 与 plugin_revision�
 
 一次请求只执行指定接口；不运行其他同阶段服务，也不重复广播阶段观察器。图谱和编排工具工厂返回的工具绑定调度 Provider，避免绕过计划。未声明公共方法被拒绝；资源关闭、内部算法、存储实现及 Trace sink 写入原语保持原边界，避免递归追踪。
 
+### 三种 slot 的区别
+
+代码中有三种含义不同的 slot，不能互相替代：
+
+| 名称 | 定义位置 | 作用 | 示例 |
+|---|---|---|---|
+| 插件能力 slot | `PluginSpec.slot`、`plugin.json` | 为一个可替换 provider 预留能力位置；同一 slot 只能绑定一个插件实现 | `knowledge_graph`、`memory` |
+| 执行接口 slot | `host_api/execution.py` 的 `ExecutionSlots` | 表示宿主事务边界，通过 service contribution 接入统一调度 | `execution.prepare`、`execution.check`、`execution.committed` |
+| 编排 worker slot | `extensions/orchestration/architecture_aware/scheduler.py` 的 `WorkAssignment.slot` | 表示一次探索任务分配到哪个并发 worker，用于负载均衡和任务迁移 | `slot=0`、`slot=1` |
+
+插件能力 slot 决定“哪个 provider 占据能力位置”；接口声明中的 `stage` 决定“该 provider 的哪个方法挂在哪个公共阶段”；`Contribution` 决定 handler、mode、优先级和排序依赖。执行接口 slot 是宿主提供的固定 service 接口，不是插件目录中的 provider slot。编排 worker slot 只属于并发调度数据，不参与插件发现、贡献排序或生命周期阶段注册。
+
+当前执行接口与公共阶段的映射由 `adapters/execution.py` 统一处理：`execution.prepare` 映射到 `prepare`，`execution.check`、`execution.rejected` 和 `execution.committed` 目前都映射到 `finalize`，再通过 `interface_id` 区分具体事务语义。调用执行接口时只运行匹配的 service contribution；发布公共阶段不会自动调用这些 service，也不会重复广播阶段观察器。
+
 记忆插件另行声明 prepare、run_start、tool_after、model_before 和 task_after 的自动贡献。`ExtensionContext` 提供请求隔离的能力与插件私有状态；prepare 的 sections、tool_after 的结构化结果、model_before 的当前用户消息位置以及 task_after 的最终任务数据都是通用宿主契约。记忆刷新、证据版本和归档门槛位于插件内部，工具结果和主循环不携带记忆专用字段。无应用启动计划的独立运行使用同一声明与校验规则构建局部贡献注册表。
 
 ## 配置、发现与贡献

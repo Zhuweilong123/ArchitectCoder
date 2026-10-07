@@ -208,7 +208,7 @@ Configuration lives in `backend/.env`; definitions are in `backend/config/`. Sta
 - **Providers**: `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` control optional capabilities. Knowledge graph and orchestration are disabled in the example configuration; enable them when needed.
 - **API authentication**: if `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`.
 
-See [plugin architecture](docs/plugin-architecture-design.md) and [command execution](docs/runtime-command-execution.md) for detailed configuration and policy.
+See [current architecture](docs/current-architecture.md) and [command execution](docs/runtime-command-execution.md) for detailed configuration and policy.
 
 ## Documentation
 
@@ -221,7 +221,7 @@ See [plugin architecture](docs/plugin-architecture-design.md) and [command execu
 | Task execution and language support | [Command execution](docs/runtime-command-execution.md) · [Multilanguage execution](docs/multilanguage-execution-design.md) |
 | Evaluation and replay | [Evaluation system](docs/evaluation-system.md) · [Trace replay](docs/trace-replay-design.md) · [Trace Case Factory](docs/trace-to-eval-case-factory-design.md) |
 | Context and project knowledge | [Context management](docs/context-management-design.md) · [Memory](docs/memory-system-design.md) · [Knowledge graph](docs/knowledge-graph-design.md) |
-| Extension development | [Plugin architecture](docs/plugin-architecture-design.md) |
+| Extension development | [Current architecture](docs/current-architecture.md) · [Plugin lifecycle](docs/plugin-lifecycle.md) |
 | Plugin scaffolding and local checks | [Plugin development toolkit](docs/plugin-development.md) |
 | Plugin walkthrough and offline example | [Step-by-step guide](docs/plugin-quickstart.en.md) · [HTML example](docs/media/plugin-demo/plugin-architecture-en.html) |
 | Reusable Agent guides | [Skill plugin](docs/skills-plugin.md) |
