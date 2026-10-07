@@ -22,6 +22,17 @@
 
 所有公共阶段也允许声明 service 的默认绑定，但发布阶段不会自动执行服务。模型和工具执行仍由核心执行器负责，调度图保留独立执行节点。
 
+执行服务另在事务边界派发通用 `ExecutionRequest`，接口定义于 `host_api/execution.py`：
+
+| 接入接口 | 所属阶段 | 宿主消费的结果 |
+|---|---|---|
+| `execution.prepare` | prepare | 上下文补充、工具限制、checkpoint 元数据 |
+| `execution.check` | finalize | 提交是否允许、拒绝原因、恢复提示 |
+| `execution.rejected` | finalize | 回滚完成后的分析与恢复建议 |
+| `execution.committed` | finalize | 已提交变更的派生投影与结果记录 |
+
+插件在 manifest 中声明 `mode=service`、`scope=invocation` 和对应 `interface_id`。处理器通过 `HookContext.invocation` 访问请求；普通阶段发布不会触发这些事务处理器，也不会重复执行记忆召回。服务异常向宿主传播；配置为必需的提交检查缺失时禁止提交。宿主管理候选保存、回滚和提交，插件管理编排策略、契约决策及提交后的图谱同步。
+
 阶段可以重复、嵌套或按分支跳过，不要求每次调用从头走完 13 步。主 Agent 与子 Agent 都发布模型、工具、轮次与收尾边界。失败后的 model_after / tool_after 只运行观察器，避免对缺失的正常响应执行变换。
 
 **run_end 只表示执行区间结束**，不表示审批已接受、业务任务已完成或后台归档已完成。业务 checkpoint 与操作状态分别管理。

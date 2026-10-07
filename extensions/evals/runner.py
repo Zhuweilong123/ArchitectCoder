@@ -16,11 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app.agent_base.assembly import (
-    ProgressRelay,
-    create_dev_agent,
-)
-from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.host_api.services import get_host_services
 from app.agent_base.execution_summary import build_task_execution_summary
 from backend.config import (
@@ -29,10 +24,6 @@ from backend.config import (
     evaluation_traces_dir,
     get_settings,
 )
-from app.services.agent_execution import handle_agent_execution
-from app.services.agent_metrics import get_agent_metrics
-from app.services.run_state import get_run_store
-from app.runtime.trace_session import TraceSession
 
 from .checkers import build_checkers
 from .fixture_materializer import materialize_fixture
@@ -281,7 +272,7 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     }
 
 
-async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
+async def dev_agent_factory(workspace: Path, case: EvalCase) -> Any:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
     The interactive WebSocket path and this factory share the same agent
@@ -296,9 +287,9 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> ReActAgent:
     source_dir = workspace / manifest.source_dir if manifest else workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
-    progress = ProgressRelay()
+    progress = get_host_services().create_progress()
     budget = _agent_budget(case, settings)
-    agent, review_mgr, prompt_builder = await create_dev_agent(
+    agent, review_mgr, prompt_builder = await get_host_services().create_agent(
         llm,
         source_dir=str(source_dir),
         test_dir=str(test_dir),
@@ -431,7 +422,7 @@ class EvalRunner:
                 source_dir = workspace / manifest.source_dir if manifest else workspace
                 test_dir = workspace / manifest.test_dir if manifest else workspace
                 first_prompt = case.prompts()[0]
-                trace_session = TraceSession(
+                trace_session = get_host_services().trace_session(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
                     trace_dir=str(self.trace_dir),
@@ -444,7 +435,7 @@ class EvalRunner:
                     failure_phase = "agent"
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
                     result.metadata["agent"] = "devagent"
-                    production_agent = isinstance(agent, ReActAgent)
+                    production_agent = get_host_services().is_production_agent(agent)
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()
@@ -452,10 +443,9 @@ class EvalRunner:
                     task_finalized = False
                     if not production_agent and hasattr(agent, "tool_registry"):
                         try:
-                            from app.agent_base.tools.task_system import create_task_execution
 
                             task_subject = (case.name or "").strip() or first_prompt
-                            task_binding = create_task_execution(
+                            task_binding = get_host_services().bind_task(
                                 scope=f"eval_{case.id}",
                                 run_id=run_id,
                                 owner=f"run:{run_id}",
@@ -543,7 +533,7 @@ class EvalRunner:
                         review_offset = 0
                         approval_offset = 0
                         prompt_builder = getattr(agent, "_eval_prompt_builder", None)
-                        production_agent = isinstance(agent, ReActAgent)
+                        production_agent = get_host_services().is_production_agent(agent)
                         coordinated_agent = production_agent or hasattr(
                             agent, "tool_registry"
                         )
@@ -723,7 +713,7 @@ class EvalRunner:
 
                                 turn_run_id = f"{run_id}_turn_{turn_index}"
                                 turn_owner = f"eval:{run_id}:{turn_index}"
-                                eval_run = get_run_store().create(
+                                eval_run = get_host_services().run_store().create(
                                     kind="agent_chat",
                                     session_id=f"eval_{case.id}",
                                     run_id=turn_run_id,
@@ -734,14 +724,14 @@ class EvalRunner:
                                         "message": prompt[:500],
                                     },
                                 )
-                                get_run_store().claim(eval_run.run_id, turn_owner)
+                                get_host_services().run_store().claim(eval_run.run_id, turn_owner)
                                 result.metadata.setdefault("execution_runs", []).append(
                                     turn_run_id
                                 )
                                 before_tool_calls = _trace_event_count(
                                     tracer.path, "tool_call"
                                 )
-                                await handle_agent_execution(
+                                await get_host_services().execute_agent(
                                     agent,
                                     review_mgr,
                                     prompt,
@@ -1084,7 +1074,7 @@ class EvalRunner:
         ) = _trace_prompt_prefix_reuse(result.trace_path)
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         self._append_result(result)
-        get_agent_metrics().record_run(f"eval_{result.status}")
+        get_host_services().record_run(f"eval_{result.status}")
         return result
 
     @staticmethod

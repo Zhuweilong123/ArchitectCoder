@@ -1,11 +1,12 @@
 """Deterministic design/source/test consistency rules owned by the plugin."""
 
 from __future__ import annotations
+
+from app.agent_base.host_api.services import get_host_services
 import uuid
 from pathlib import Path
 from typing import Any
 from .contract_pipeline import assemble_contract
-from app.agent_base.adapters.contracts import load_contracts
 from .language_adapters import LanguageAdapterRegistry, default_language_adapters
 
 from app.agent_base.host_api.contract_checks import CheckStatus, ContractCheckResult, ContractViolation
@@ -47,7 +48,7 @@ class ContractHarness:
             )
 
         if contract_provider is None and language_runner is not None:
-            contract_provider = load_contracts(
+            contract_provider = get_host_services().resolve_provider("design_contract",
                 settings=settings,
                 language_runner=language_runner,
                 language_adapters=adapters,

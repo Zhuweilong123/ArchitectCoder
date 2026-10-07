@@ -12,7 +12,6 @@ from dataclasses import asdict
 from typing import Any
 
 from app.agent_base.host_api.errors import AgentInterrupted
-from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from app.agent_base.host_api.services import get_host_services
 from backend.config.project_storage import project_id_for
 from app.agent_base.host_api.orchestration import OrchestrationPreparation, OrchestrationRequest
@@ -457,7 +456,7 @@ class ArchitectureAwareOrchestrator:
             run_id=demand.run_id,
         )
         try:
-            provider = load_knowledge_graph(settings=self.settings, project_file=self.project_file)
+            provider = get_host_services().resolve_provider("knowledge_graph", settings=self.settings, project_file=self.project_file)
             project_id = project_id_for(self.project_file)
             async with asyncio.timeout(30):
                 impact = await collect_impact(provider, project_id, demand.search_queries)

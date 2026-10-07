@@ -28,6 +28,10 @@ Contribution 是纯数据声明；处理器解析、校验与注册由宿主执�
 
 自动参与阶段需要另外声明 `contributions`。记忆插件通过这些贡献完成召回、证据观察、上下文刷新及后台归档；宿主只提供通用 sections、结构化工具结果、当前消息位置和最终任务通知 `task_after`。`core/extension_context.py` 绑定请求能力并隔离插件状态，不包含领域策略。后续修改记忆行为应留在 `extensions/memory`，而不是向主循环增加记忆条件分支。
 
+执行入口通过 `execution.prepare/check/rejected/committed` 四个通用请求接口接入领域策略。编排与契约的处理器由插件 manifest 声明，`agent_execution.py` 不再选择编排器、判断架构调度状态、执行契约失败分析或安排图谱同步；它消费通用检查结果并管理事务。新增同类策略只需声明对应贡献，无需在执行入口增加插件名称分支。
+
+扩展通过 `HostServices.resolve_provider(slot, ...)` 获取插件依赖，使用公开运行状态协议和 `run_store()` 管理租约，通过宿主文件检查能力获得统计信息。评测和 trace 回放通过宿主能力组装并执行 Agent，具体 Agent 类型、执行服务、运行数据库实现和工具工厂留在宿主适配器中。HTTP/CLI 接入层可以使用宿主 adapter；领域实现禁止直接导入宿主内部 services、core、agent 实现或其他插件的宿主加载器。
+
 ## 2. 代码布局
 
 ```text

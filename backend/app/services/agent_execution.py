@@ -17,9 +17,9 @@ from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
-from app.agent_base.adapters.contract_gate import (build_contract_gate_context, NoOpContractGate, resolve_contract_enabled)
-from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
-from app.agent_base.adapters.contract_analysis import (NoOpContractFailureAnalyzer)
+from app.agent_base.adapters.review import ReviewAdapter
+from app.agent_base.adapters.execution import dispatch_execution
+from app.agent_base.host_api.execution import ExecutionRequest, ExecutionSlots
 from app.agent_base.core.hooks import (
     AgentRuntime,
     get_hooks,
@@ -29,13 +29,10 @@ from app.agent_base.core.hooks import (
 )
 from app.agent_base.core.extension_context import extension_request, publish_task_result
 from app.agent_base.core.plugin_runtime import pin_plugins
-from app.agent_base.host_api.orchestration import OrchestrationRequest
-from app.agent_base.adapters.orchestration import (exclude_tools, load_orchestrator)
 from app.agent_base.execution_summary import build_task_execution_summary
 from app.agent_base.evidence import update_checkpoint_evidence
 from app.agent_base.outcome import RunOutcome
 from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
-from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
 from app.services.audit_log import record_audit as _record_audit
 from app.services.candidate_artifact import CandidateArtifactError, CandidateArtifactStore
 from app.services.run_state import (
@@ -345,97 +342,6 @@ async def _load_review_baseline_async(project_file: str):
     )
 
 
-async def _prepare_orchestration(
-    agent: ReActAgent, **kwargs,
-) -> tuple[str, Any, str]:
-    from app.agent_base.core.operations import operation_scope
-    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
-    from app.agent_base.core.hooks import get_hooks
-    with operation_scope("prepare", run_id=kwargs.get("run_id", ""), stage=HookEvent.PREPARE.value):
-        await get_hooks().aemit(HookEvent.PREPARE, HookContext(
-            HookEvent.PREPARE, getattr(agent, "name", "DevAgent"), run_id=kwargs.get("run_id", ""),
-            payload={"source": "orchestration"},
-        ))
-        return await _prepare_orchestration_impl(agent, **kwargs)
-
-
-async def _prepare_orchestration_impl(
-    agent: ReActAgent,
-    *,
-    user_message: str,
-    context: str,
-    project_file: str,
-    source_dir: str,
-    test_dir: str,
-    resume_checkpoint: dict,
-    trace_log: TraceSink | None,
-    run_id: str,
-) -> tuple[str, Any, str]:
-    """Prepare optional architecture routing and return its tool allowlist."""
-    logger.info("[AgentExecution] loading orchestrator run=%s", run_id)
-    settings = get_settings()
-    if resume_checkpoint.get("architecture_scheduling_mode") is False:
-        settings = settings.model_copy(update={"agent_orchestration_enabled": False})
-    orchestrator = load_orchestrator(
-        llm=agent.llm,
-        settings=settings,
-        project_file=project_file,
-        source_dir=source_dir,
-        test_dir=test_dir,
-        explorer_factory=SpawnSubagentTool,
-    )
-    logger.info(
-        "[AgentExecution] orchestrator loaded run=%s type=%s",
-        run_id,
-        type(orchestrator).__name__,
-    )
-    result = await orchestrator.prepare(OrchestrationRequest(
-        user_message=user_message,
-        project_file=project_file,
-        source_dir=source_dir,
-        test_dir=test_dir,
-        previous_checkpoint=resume_checkpoint,
-        available_tools=tuple(agent.tool_registry.list_tools()),
-        run_id=run_id,
-    ))
-    if trace_log:
-        trace_log.event(
-            "orchestration_preparation",
-            **result.metadata,
-            phase=result.phase,
-        )
-    scheduling_available = (
-        result.metadata.get("architecture_scheduling") == "demand_driven_ready"
-    )
-    get_runtime().policy_metadata["architecture_scheduling_enabled"] = scheduling_available
-    if not scheduling_available:
-        reason = str(
-            result.metadata.get("architecture_scheduling_reason")
-            or result.metadata.get("architecture_scheduling")
-            or "orchestration is disabled"
-        )
-        log = (
-            logger.warning
-            if result.metadata.get("architecture_scheduling") == "unavailable"
-            else logger.info
-        )
-        log(
-            "[AgentExecution] architecture scheduling unavailable; using single-agent path: %s",
-            reason,
-        )
-    if result.context:
-        context = "\n\n".join(filter(None, [context, result.context]))
-    excluded_tools = result.excluded_tools
-    if not getattr(settings, "agent_orchestration_enabled", False):
-        excluded_tools = (*excluded_tools, "route_architecture", "explore_architecture")
-    allowed_tools = None
-    if excluded_tools:
-        allowed_tools = exclude_tools(
-            agent.tool_registry.list_tools(), excluded_tools,
-        )
-    return context, allowed_tools, result.phase
-
-
 async def _request_fallback_uml_review(
     *,
     review_manager: Any,
@@ -657,39 +563,6 @@ def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -
     )
 
 
-def _record_contract_check(
-    trace_log: TraceSink | None,
-    *,
-    result: Any = None,
-    allowed: bool,
-    message: str = "",
-    phase: str,
-) -> None:
-    """Persist the authoritative contract decision in the execution trace.
-
-    The contract gate already emits a transport event for the UI.  That event
-    is not automatically persisted by the trace sink, so a trace previously
-    lost the most important decision in the run.  Keep the trace payload
-    structured and include the post-review decision (`allowed`) separately
-    from the harness status.
-    """
-    if trace_log is None:
-        return
-    payload = result.to_dict() if result is not None else {
-        "status": "skipped",
-        "changed_paths": [],
-        "violations": [],
-        "can_commit": bool(allowed),
-        "requires_confirmation": False,
-    }
-    payload.update({
-        "phase": phase,
-        "allowed": bool(allowed),
-        "decision_message": message or "",
-    })
-    trace_log.event("contract_check", **payload)
-
-
 def _stream_progress_event(step: dict, todo_state: dict) -> dict:
     """Build the bounded transport payload for a stream step."""
     return {
@@ -751,15 +624,6 @@ async def handle_agent_execution(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     progress_forwarder = _ExecutionProgressForwarder(send, trace_log)
-    contract_gate = getattr(agent, "contract_gate", None) or NoOpContractGate()
-    contract_failure_analyzer = (
-        getattr(agent, "contract_failure_analyzer", None)
-        or NoOpContractFailureAnalyzer()
-    )
-    contract_enabled = resolve_contract_enabled(
-        design_contract_enabled,
-        get_settings(),
-    )
     resume_checkpoint = dict(resume_checkpoint or {})
     checkpoint_request_summary = str(
         resume_checkpoint.get("request_summary") or user_message
@@ -778,18 +642,7 @@ async def handle_agent_execution(
         "last_error": None,
         "stop_reason": None,
         "resume_available": False,
-        "contract_enabled": contract_enabled,
         "resume_of": resume_checkpoint.get("run_id", ""),
-        "architecture_schedule_root": (
-            resume_checkpoint.get("architecture_schedule_root")
-            or resume_checkpoint.get("run_id") or run_id
-        ),
-        "architecture_scheduling_mode": bool(
-            getattr(get_settings(), "agent_orchestration_enabled", False)
-            and getattr(get_settings(), "agent_knowledge_graph_enabled", False)
-            and resume_checkpoint.get("architecture_scheduling_mode") is not False
-        ),
-        "architecture_schedule_version": 2,
         "candidate_artifact": resume_checkpoint.get("candidate_artifact"),
         "candidate_recovery": bool(resume_checkpoint.get("candidate_artifact")),
         "project_file": project_file,
@@ -813,14 +666,6 @@ async def handle_agent_execution(
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
         run_id=run_id,
-        policy_metadata={
-            "architecture_schedule_root": agent.last_run_checkpoint.get(
-                "architecture_schedule_root", run_id,
-            ),
-            "architecture_scheduling_enabled": agent.last_run_checkpoint.get(
-                "architecture_scheduling_mode", False,
-            ),
-        },
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None
@@ -989,22 +834,18 @@ async def handle_agent_execution(
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
         ]))
-        context, main_allowed_tools, orchestration_phase = await _prepare_orchestration(
-            agent,
-            user_message=user_message,
-            context=context,
-            project_file=project_file,
-            source_dir=source_dir,
-            test_dir=test_dir,
-            resume_checkpoint=resume_checkpoint,
-            trace_log=trace_log,
-            run_id=run_id,
-        )
-        logger.info(
-            "[AgentExecution] entering agent stream run=%s phase=%s",
-            run_id,
-            orchestration_phase,
-        )
+        preparation = await dispatch_execution(ExecutionRequest(
+            ExecutionSlots.PREPARE, run_id=run_id, context=context,
+            checkpoint=agent.last_run_checkpoint, data={
+                "user_message": user_message, "project_file": project_file,
+                "source_dir": source_dir, "test_dir": test_dir,
+                "previous_checkpoint": resume_checkpoint,
+                "available_tools": tuple(agent.tool_registry.list_tools()),
+                "record_event": trace_log.event if trace_log else None,
+            }), agent_name=getattr(agent, "name", "Agent"))
+        context, main_allowed_tools = preparation.context, preparation.allowed_tools
+        _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+        logger.info("[AgentExecution] entering agent stream run=%s", run_id)
         archive_conversation_history = recent_conversation_history(agent, turns=4)
         previous_compaction_callback = getattr(agent, "on_context_compacted", None)
         if trace_log:
@@ -1061,43 +902,21 @@ async def handle_agent_execution(
                     run_id=run_id,
                 )
 
-                gate_decision = await contract_gate.evaluate(build_contract_gate_context(
-                    agent=agent,
-                    change_set=change_set,
-                    review_manager=review_mgr,
-                    emit=send,
-                    emit_review=progress_forwarder,
-                    project_file=project_file,
-                    source_dir=source_dir,
-                    test_dir=test_dir,
-                    run_id=run_id,
-                    settings=get_settings(),
-                    contract_enabled=contract_enabled,
-                ))
-                contract_ok = gate_decision.allowed
-                contract_result = gate_decision.result
-                contract_message = gate_decision.message
-                _record_contract_check(
-                    trace_log,
-                    result=contract_result,
-                    allowed=contract_ok,
-                    message=contract_message,
-                    phase="pre_commit",
-                )
-                contract_checkpoint = (
-                    contract_result.to_dict() if contract_result is not None else {
-                        "status": "skipped",
-                        "changed_paths": [],
-                        "violations": [],
-                    }
-                )
-                contract_checkpoint.update({
-                    "allowed": bool(contract_ok),
-                    "decision_message": contract_message or "",
-                })
-                agent.last_run_checkpoint["contract_check"] = contract_checkpoint
+                execution_check = await dispatch_execution(ExecutionRequest(
+                    ExecutionSlots.CHECK, run_id=run_id,
+                    checkpoint=agent.last_run_checkpoint, allowed_tools=main_allowed_tools,
+                    data={
+                        "workspace_manifest": dict(getattr(agent, "workspace_manifest", {}) or {}),
+                        "changed_paths": change_set.manifest() if change_set is not None else (),
+                        "design_contract_enabled": design_contract_enabled,
+                        "record_event": trace_log.event if trace_log else None,
+                    }, capabilities={
+                        "emit": send,
+                        "request_review": ReviewAdapter(review_mgr, progress_forwarder).ask if review_mgr else None,
+                        "analyze": ReadOnlyAnalysisAdapter(agent).invoke,
+                    }), agent_name=getattr(agent, "name", "Agent"))
                 _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
-                if not contract_ok:
+                if not execution_check.allowed:
                     rollback_completed = False
                     candidate_artifact = None
                     if change_set is not None and change_set.has_changes:
@@ -1117,14 +936,13 @@ async def handle_agent_execution(
                             if trace_log:
                                 trace_log.event(
                                     "candidate_artifact",
-                                    phase="contract_rejected",
+                                    phase="check_rejected",
                                     artifact_id=candidate_artifact.get("artifact_id", ""),
                                     file_count=candidate_artifact.get("file_count", 0),
                                 )
                             await send({
-                                "event": "contract_recovery_available",
+                                **execution_check.recovery_event,
                                 "run_id": run_id,
-                                "action": "修复设计契约并继续",
                                 "file_count": candidate_artifact.get("file_count", 0),
                             })
                         change_set.rollback()
@@ -1132,25 +950,13 @@ async def handle_agent_execution(
                         if trace_log:
                             trace_log.event(
                                 "candidate_rollback",
-                                phase="contract_rejected",
+                                phase="check_rejected",
                                 candidate_saved=bool(candidate_artifact),
                             )
-                    if contract_result is not None:
-                        failure_analysis = await contract_failure_analyzer.analyze(
-                            ContractFailureAnalysisContext(
-                                invoke=ReadOnlyAnalysisAdapter(agent).invoke,
-                                result=contract_result,
-                                message=contract_message,
-                                run_id=run_id,
-                                rollback_completed=rollback_completed,
-                                allowed_tools=(
-                                    tuple(main_allowed_tools)
-                                    if main_allowed_tools is not None else None
-                                ),
-                            )
-                        )
-                    else:
-                        failure_analysis = contract_message or "设计契约校验阻止提交，变更已回滚。"
+                    execution_check.interface_id = ExecutionSlots.REJECTED
+                    execution_check.data["rollback_completed"] = rollback_completed
+                    await dispatch_execution(execution_check, agent_name=getattr(agent, "name", "Agent"))
+                    failure_analysis = execution_check.message
                     terminal_status, todos = _finalize_terminal_checkpoint(
                         agent,
                         outcome=step_progress.outcome,
@@ -1163,13 +969,12 @@ async def handle_agent_execution(
                     terminal_status = "partial"
                     agent.last_run_checkpoint.update({
                         "status": terminal_status,
-                        "stop_reason": "contract_check_failed",
-                        "contract_failure_analysis": failure_analysis,
+                        "stop_reason": execution_check.stop_reason,
                     })
                     _sync_checkpoint_outcome(
                         agent.last_run_checkpoint,
                         status=terminal_status,
-                        stop_reason="contract_check_failed",
+                        stop_reason=execution_check.stop_reason,
                         final_answer=failure_analysis,
                         preserve_as="pre_gate_outcome",
                     )
@@ -1208,7 +1013,7 @@ async def handle_agent_execution(
                     if trace_log:
                         trace_log.event(
                             "changes_committed",
-                            phase="post_contract_check",
+                            phase="post_execution_check",
                             file_count=len(manifest),
                             paths=[
                                 str(item.get("path", ""))
@@ -1216,37 +1021,10 @@ async def handle_agent_execution(
                                 if isinstance(item, dict) and item.get("path")
                             ],
                         )
-                    # Persist the accepted candidate facts only after the
-                    # contract gate has passed.  The pre-commit check uses a
-                    # read-only graph projection to avoid poisoning the
-                    # canonical graph on rejection.
-                    if contract_result is not None:
-                        finalizer = getattr(contract_gate, "finalize", None)
-                        post_commit = await finalizer(build_contract_gate_context(
-                            agent=agent,
-                            change_set=change_set,
-                            review_manager=review_mgr,
-                            emit=send,
-                            emit_review=progress_forwarder,
-                            project_file=project_file,
-                            source_dir=source_dir,
-                            test_dir=test_dir,
-                            run_id=run_id,
-                            settings=get_settings(),
-                            contract_enabled=contract_enabled,
-                        ), contract_result) if callable(finalizer) else None
-                        agent.last_run_checkpoint["contract_graph_sync"] = {
-                            "status": post_commit.status if post_commit else "not_requested",
-                            "graph_status": post_commit.graph_status if post_commit else "not_requested",
-                            "check_id": post_commit.check_id if post_commit else "",
-                        }
-                        if trace_log:
-                            trace_log.event(
-                                "contract_graph_sync",
-                                phase="post_commit",
-                                **agent.last_run_checkpoint["contract_graph_sync"],
-                            )
-                        _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
+                    execution_check.interface_id = ExecutionSlots.COMMITTED
+                    execution_check.data["changed_paths"] = manifest
+                    await dispatch_execution(execution_check, agent_name=getattr(agent, "name", "Agent"))
+                    _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 else:
                     manifest = []
                 terminal_status, todos = _finalize_terminal_checkpoint(

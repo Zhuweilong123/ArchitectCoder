@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any
 
-from app.agent_base.tools.my_tools.file_inventory import inspect_file
+from app.agent_base.host_api.services import get_host_services
 
 from .graph_files import resolve_node_file
 from .impact import ImpactSlice
@@ -89,7 +89,7 @@ def estimate_costs(
             node, project_file=project_file, source_dir=source_dir,
             test_dir=test_dir,
         ) if node.get("source") in {"code", "test"} else None
-        signals = inspect_file(path) if path else None
+        signals = get_host_services().inspect_file(path) if path else None
         if signals:
             if node_type in {"source_file", "test_file"}:
                 token_count = max(80, math.ceil(signals.bytes / 4))

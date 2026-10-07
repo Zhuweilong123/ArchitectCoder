@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+from app.agent_base.host_api.services import get_host_services
+
 import asyncio
 import json
 import logging
@@ -688,8 +690,9 @@ def create_kg_v2_tools(
         [KgMapTool, KgLocateTool, KgExpandTool]；include_compare=True 时追加 KgDiffTool
     """
     if provider is None:
-        from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
-        provider = load_knowledge_graph(project_file=project_file)
+        provider = get_host_services().resolve_provider("knowledge_graph", project_file=project_file)
+    if provider is None:
+        return []
 
     project_id = ""
     if project_file:

@@ -160,16 +160,14 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
     fake_agent = SimpleNamespace(llm=SimpleNamespace(model="fake-model"))
 
     monkeypatch.setattr("extensions.evals.runner.get_settings", lambda: settings)
-    monkeypatch.setattr(
-        "extensions.evals.runner.get_host_services",
-        lambda: SimpleNamespace(create_model=lambda **kwargs: "fake-llm"),
-    )
 
     async def _create_agent(llm, **kwargs):
         captured.update(kwargs)
         return fake_agent, object(), SimpleNamespace()
 
-    monkeypatch.setattr("extensions.evals.runner.create_dev_agent", _create_agent)
+    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: SimpleNamespace(
+        create_model=lambda **kwargs: "fake-llm", create_agent=_create_agent,
+        create_progress=lambda: SimpleNamespace()))
     case = EvalCase(
         id="production-contract",
         prompt="只传递这条用户消息",
@@ -218,9 +216,12 @@ def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeyp
         def claim(self, run_id, owner_id):
             return None
 
-    monkeypatch.setattr("extensions.evals.runner.ReActAgent", _ProductionAgent)
-    monkeypatch.setattr("extensions.evals.runner.handle_agent_execution", _execute)
-    monkeypatch.setattr("extensions.evals.runner.get_run_store", lambda: _RunStore())
+    from app.agent_base.adapters.host_services import ApplicationHostServices
+    host = ApplicationHostServices()
+    monkeypatch.setattr(host, "is_production_agent", lambda agent: isinstance(agent, _ProductionAgent))
+    monkeypatch.setattr(host, "execute_agent", _execute)
+    monkeypatch.setattr(host, "run_store", lambda: _RunStore())
+    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: host)
 
     case = EvalCase(
         id="production-execution-path",

@@ -13,25 +13,12 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
 
-class RunStatus(str, Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    WAITING_APPROVAL = "waiting_approval"
-    PAUSED = "paused"
-    SUCCEEDED = "succeeded"
-    PARTIAL = "partial"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    BUDGET_EXCEEDED = "budget_exceeded"
-    CANCELED = "canceled"
-    ORPHANED = "orphaned"
+from app.agent_base.host_api.runs import (RunStatus, RunRecord, RunStateError, RunNotFound, RunConflict, InvalidRunTransition)
 
 
 TERMINAL_STATUSES = frozenset({
@@ -82,45 +69,6 @@ def run_status_for_completion(completion_status: str) -> RunStatus:
         "canceled": RunStatus.CANCELED,
         "stopped": RunStatus.CANCELED,
     }.get(completion_status, RunStatus.FAILED)
-
-
-class RunStateError(RuntimeError):
-    """Base error for invalid run state operations."""
-
-
-class RunNotFound(RunStateError):
-    pass
-
-
-class RunConflict(RunStateError):
-    pass
-
-
-class InvalidRunTransition(RunStateError):
-    pass
-
-
-@dataclass(frozen=True)
-class RunRecord:
-    run_id: str
-    kind: str
-    status: str
-    session_id: str
-    idempotency_key: str
-    owner_id: str
-    attempt: int
-    version: int
-    created_at: str
-    updated_at: str
-    started_at: str
-    finished_at: str
-    heartbeat_at: float | None
-    lease_expires_at: float | None
-    error: str
-    metadata: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 def default_run_state_path() -> Path:
