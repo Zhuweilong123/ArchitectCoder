@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import time
 import uuid
@@ -1346,14 +1347,14 @@ class EvalRunner:
         # failures are observational only and must not alter the Agent result.
         snapshot_root = evaluation_root() / "artifacts" / run_id
         try:
+            from .workspace_snapshot import copy_workspace_snapshot
+
             snapshot_root.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(
-                workspace, snapshot_root, symlinks=True, dirs_exist_ok=True,
-            )
+            copy_workspace_snapshot(workspace, snapshot_root)
             result.workspace = str(snapshot_root)
             result.metadata["workspace_ephemeral"] = False
             result.metadata["workspace_snapshot"] = str(snapshot_root)
-        except (OSError, shutil.Error) as exc:
+        except (OSError, shutil.Error, sqlite3.Error) as exc:
             logger.warning(
                 "[Eval] Could not persist workspace snapshot for %s: %s",
                 run_id, exc,
