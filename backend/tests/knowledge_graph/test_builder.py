@@ -68,6 +68,30 @@ def test_idempotent_build(tmp_path):
     db.close()
 
 
+def test_rebuild_project_updates_contains_edges_after_diagram_reorder(tmp_path):
+    builder = GraphBuilder(db_path=str(tmp_path / "kg.db"))
+    domain = _class_diagram()
+    flow = UmlDiagram(name="Flow", diagram_type="sequence",
+                      lifelines=[SeqLifeline(id="client", name="Client")])
+    try:
+        builder.build_from_project(Project(name="p", diagrams=[domain, flow]), "p")
+        project_node = builder.db.find_nodes("p", node_type="project")[0]
+        original_edges = {edge.target_id: edge.id for edge in
+                          builder.db.find_edges(source_id=project_node.id, edge_type="contains")}
+
+        reordered = Project(name="p", diagrams=[flow, domain])
+        builder.rebuild_project(reordered, "p")
+        builder.rebuild_project(reordered, "p")
+
+        edges = builder.db.find_edges(source_id=project_node.id, edge_type="contains")
+        assert len(edges) == 2
+        assert {edge.target_id: edge.id for edge in edges} == original_edges
+        assert {builder.db.get_node(edge.target_id).name: edge.properties["index"]
+                for edge in edges} == {"Flow": 0, "Domain": 1}
+    finally:
+        builder.close()
+
+
 def test_cross_reference_class_ref(tmp_path):
     """时序图 lifeline 的 class_ref 应建立 REFERENCES 边指向类节点。"""
     db_path = str(tmp_path / "kg.db")

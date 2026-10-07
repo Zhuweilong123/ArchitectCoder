@@ -82,3 +82,56 @@ class ApplicationHostServices:
     def create_model(self, **kwargs):
         from app.agent_base.core.llm import BaseAgentsLLM
         return BaseAgentsLLM.from_settings(**kwargs)
+
+    def resolve_provider(self, slot, *, settings=None, **kwargs):
+        from app.agent_base.core.plugins import get_plugin_manager
+        return get_plugin_manager().load_optional(slot, settings=settings, kwargs=kwargs)
+
+    def run_store(self):
+        from app.services.run_state import get_run_store
+        return get_run_store()
+
+    def inspect_file(self, path):
+        from app.agent_base.tools.my_tools.file_inventory import inspect_file
+        return inspect_file(path)
+
+    async def create_agent(self, *args, **kwargs):
+        from app.agent_base.assembly import create_dev_agent
+        return await create_dev_agent(*args, **kwargs)
+
+    def is_production_agent(self, agent):
+        from app.agent_base.agents.react_agent import ReActAgent
+        return isinstance(agent, ReActAgent)
+
+    async def execute_agent(self, *args, **kwargs):
+        from app.services.agent_execution import handle_agent_execution
+        return await handle_agent_execution(*args, **kwargs)
+
+    def create_progress(self):
+        from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
+        return ProgressRelay()
+
+    def trace_session(self, **kwargs):
+        from app.runtime.trace_session import TraceSession
+        return TraceSession(**kwargs)
+
+    def record_run(self, status):
+        from app.services.agent_metrics import get_agent_metrics
+        get_agent_metrics().record_run(status)
+
+    def bind_task(self, **kwargs):
+        from app.agent_base.tools.task_system import create_task_execution
+        return create_task_execution(**kwargs)
+
+    def create_loop_agent(self, **kwargs):
+        from app.agent_base.agents.react_agent import ReActAgent
+        return ReActAgent(**kwargs)
+
+    def foundation_registry(self, source_dir, test_dir, allowed_tools):
+        from app.agent_base.tools.registry import ToolRegistry
+        from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
+        registry = ToolRegistry()
+        for tool in create_foundation_tools(source_dir, test_dir):
+            if tool.name in allowed_tools:
+                registry.register_tool(tool)
+        return registry

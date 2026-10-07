@@ -500,7 +500,7 @@ P0 先证明图谱能产生可靠工作包；P1 检验探索成本与委派价�
 - [当前架构](current-architecture.md)：生产执行链与模块边界。
 - [知识图谱](knowledge-graph-design.md)：图实体、构建与查询基础；具体行为以当前源码为准。
 - [设计—源码契约](design-source-contract.md)：权威关系、影响分析、审核和一致性规则。
-- [插件架构](plugin-architecture-design.md)：Provider 加载与可选扩展边界。
+- [当前架构](current-architecture.md)：Provider 加载与可选扩展边界。
 - [预算与收敛](agent-convergence-and-budget.md)：现有执行治理基础。
 - [评测体系](evaluation-system.md)：生产链路一致的评测与结果归档。
 - [METIS 官方手册](https://karypis.github.io/glaros/files/sw/metis/manual.pdf)：加权、多约束图划分以及边切割量/通信量目标，可用于后续候选算法选型。本文的工程成本、冲突与迁移目标为项目自定义设计，METIS 不直接提供完整的 Agent 调度语义。

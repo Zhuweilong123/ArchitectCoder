@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from app.agent_base.host_api.services import get_host_services
+
 import asyncio
 import json
 import re
 from typing import Any
 
-from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from backend.config.project_storage import project_id_for
 
 from .thread_calls import graph_call
@@ -50,7 +51,7 @@ async def routing_map(
     if not getattr(settings, "agent_knowledge_graph_enabled", False):
         return {}, "knowledge graph is disabled"
     try:
-        provider = load_knowledge_graph(settings=settings, project_file=project_file)
+        provider = get_host_services().resolve_provider("knowledge_graph", settings=settings, project_file=project_file)
         project_id = project_id_for(project_file)
         facts = await asyncio.wait_for(
             graph_call(provider.contract_facts, project_id, 1), timeout=3.0,

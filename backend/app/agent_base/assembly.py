@@ -8,6 +8,7 @@ HTTP/CLI entry points) can build the same Agent without importing one another.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from datetime import datetime
 
 from backend.config import get_settings
@@ -331,8 +332,19 @@ async def _create_dev_agent_impl(
         if execution_broker is not None else None
     )
     contract_provider = load_contracts(settings=settings, language_runner=language_runner)
-    agent.contract_gate = load_contract_gate(settings=settings, provider=contract_provider)
-    agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings, provider=contract_provider)
+    extension_context.metadata["execution_settings"] = settings
+    extension_context.bind("design_contract", SimpleNamespace(
+        gate=load_contract_gate(settings=settings, provider=contract_provider),
+        analyzer=load_contract_failure_analyzer(settings=settings, provider=contract_provider)), settings=settings)
+    if settings.agent_design_contract_enabled:
+        extension_context.metadata["required_execution_bindings"] = {
+            "execution.check": ("design_contract.execution.check",),
+        }
+    from app.agent_base.adapters.orchestration import load_orchestrator
+    from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
+    extension_context.bind("orchestration", load_orchestrator(
+        llm=llm, settings=settings, project_file=project_file, source_dir=source_dir,
+        test_dir=test_dir, explorer_factory=SpawnSubagentTool), settings=settings)
     agent.extension_context = prompt_builder.extension_context
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:

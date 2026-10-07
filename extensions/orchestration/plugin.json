@@ -5,7 +5,9 @@
   "slot": "orchestration",
   "provider": "extensions.orchestration:create",
   "contribution_loader": "extensions.orchestration:list_contributions",
-  "optional_dependencies": ["knowledge_graph"],
+  "optional_dependencies": [
+    "knowledge_graph"
+  ],
   "enabled_by_default": true,
   "settings": {
     "enabled": "agent_orchestration_enabled",
@@ -34,5 +36,15 @@
     "total_tokens": 524288,
     "worker_seconds": 90.0
   },
-  "dependencies": []
+  "dependencies": [],
+  "contributions": [
+    {
+      "id": "orchestration.execution.prepare",
+      "stage": "prepare",
+      "handler": "extensions.orchestration.execution:prepare",
+      "mode": "service",
+      "scope": "invocation",
+      "interface_id": "execution.prepare"
+    }
+  ]
 }

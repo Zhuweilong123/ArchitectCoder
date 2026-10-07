@@ -10,7 +10,7 @@
 
 ## 1. 总体流程
 
-全部七个内置插件槽位的领域接口已纳入统一计划。公共阶段收敛为 13 个：初始化、准备、执行开始、每轮前、模型前后、工具批次前、工具前后、工具批次后、每轮后、收尾和执行结束。异常、取消、审核结果与后台任务通知单独归类。`plugins.py` 负责发现与加载，`lifecycle.py` 编译计划，`plugin_dispatch.py` 按请求执行指定接口；接口调用继承活动操作的阶段，不重复发布阶段事件。HookRegistry 支持同步与异步调度。`operations.py` 记录模型、工具、插件和子任务的操作标识、父子关系、范围与状态，前端可从操作树定位回放。`run_end` 只表示执行区间结束，审批状态和后台归档状态分别管理。详见[插件生命周期](plugin-lifecycle.md)。
+全部七个内置插件槽位的领域接口已纳入统一计划。公共阶段收敛为 13 个：初始化、准备、执行开始、每轮前、模型前后、工具批次前、工具前后、工具批次后、每轮后、收尾和执行结束。异常、取消、审核结果与后台任务通知单独归类。`plugins.py` 负责发现与加载，`lifecycle.py` 编译计划，`plugin_dispatch.py` 按请求执行指定接口；接口调用继承活动操作的阶段，不重复发布阶段事件。HookRegistry 支持同步与异步调度。`operations.py` 记录模型、工具、插件和子任务的操作标识、父子关系、范围与状态，前端可从操作树定位回放。`run_end` 只表示执行区间结束，审批状态和后台归档状态分别管理。插件能力 slot、执行接口 slot 与编排 worker slot 的区别，以及具体挂接规则，详见[插件生命周期](plugin-lifecycle.md)。
 
 ```text
 WebSocket / Evaluation / future HTTP or CLI
@@ -110,6 +110,34 @@ extensions.skills:create
 `inconclusive` 并阻止候选变更提交，避免把加载失败当作校验通过。
 迁移后的路径与自定义插件兼容说明见[能力边界](capability-boundaries.md)。
 
+### 插件架构与扩展契约
+
+插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过 `HostServices`、公开运行状态协议和 `ExtensionContext` 获取。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
+
+统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。
+
+插件 provider 的边界如下：
+
+| 所有者 | 负责内容 |
+|---|---|
+| `backend/config` | 环境变量、部署覆盖、扫描根目录、共享基础设施和 Agent 配置 |
+| `backend/app` | 稳定端口、通用生命周期、认证、传输适配和 Trace 运行时桥接 |
+| `extensions` | `plugin.json`、provider 工厂、领域算法、领域存储、路由和插件内部策略 |
+
+插件拥有的 HTTP router 由扩展声明，主应用统一挂载认证依赖；主应用不承载 Trace、评测或其他领域实现。Provider 的加载失败与运行失败分别处理：前者进入 `unavailable` 并由领域层降级，后者由领域层 resilience wrapper 记录并返回端口约定的降级值。降级不等同于健康检查；已有插件代码、配置、provider、路由或编译贡献更新通常需要重启，新增插件才支持受控刷新。
+
+代码布局和稳定依赖关系如下：
+
+```text
+backend/app/agent_base/host_api/   宿主协议、请求/结果模型、Trace 和执行边界
+backend/app/agent_base/adapters/   provider 加载、校验、降级和宿主能力适配
+backend/app/agent_base/core/       插件管理、生命周期、调度、操作和运行时设施
+backend/app/runtime/               Trace 会话、工具结果和后台资源生命周期
+extensions/<plugin>/               plugin.json、provider、存储和领域算法
+```
+
+新增插件应只增加自己的声明、provider 和贡献，不修改 `DEFAULT_PLUGIN_SPECS`、默认阶段映射或主流程中的插件名称分支；只有新增通用执行语义时才调整宿主协议。插件的具体开发、契约检查和独立试运行见[插件开发工具包](plugin-development.md)，阶段和 service 调度见[插件生命周期](plugin-lifecycle.md)。
+
 ## 5. 上下文、记忆和 Trace
 
 - 上下文预算由 `backend/app/services/context_manager.py` 管理；它只负责本次请求的
@@ -130,7 +158,7 @@ extensions.skills:create
 ## 6. 文档使用规则
 
 - 当前架构、工具边界和代码路径：本文。
-- 插件加载和扩展所有权：`plugin-architecture-design.md`。
+- 插件架构与扩展所有权：本文“插件架构与扩展契约”章节；具体发现、配置和刷新见 `plugin-discovery.md`。
 - 插件开发工具入口为 `backend/plugin_dev.py`，复用生产清单与接口校验，支持骨架生成、显式实例检查和独立阶段／服务试运行，详见[插件开发工具包](plugin-development.md)。
 - 生命周期贡献由 `core/lifecycle.py` 发现、校验和组织，后端启动生成执行计划及 Mermaid 图，并通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询，详见 [`plugin-lifecycle.md`](plugin-lifecycle.md)。
 - Skill 通过 `extensions/skills/plugin_api.py` 定义只读协议，宿主 `host_api/contexts.py` 只提供工作区上下文；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。

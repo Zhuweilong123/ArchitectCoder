@@ -67,7 +67,7 @@ def test_cost_audit_records_instance_request_token_cap(monkeypatch, phase):
 
 def test_dynamic_scheduler_rebalances_and_reuses_completed_work(tmp_path, monkeypatch):
     runs = RunStore(tmp_path / "runs.db")
-    monkeypatch.setattr(scheduling, "get_run_store", lambda: runs)
+    monkeypatch.setattr(scheduling, "get_host_services", lambda: SimpleNamespace(run_store=lambda: runs))
     scheduler = scheduling.DynamicExplorationScheduler(max_workers=2, worker_seconds=1)
     items = tuple(
         WorkAssignment(item_id, (item_id,), 1.0, slot, 1)
@@ -194,7 +194,7 @@ def test_file_evidence_stays_inside_project_roots(tmp_path):
 
 def test_excerpt_only_exploration_is_partial(tmp_path, monkeypatch):
     runs = RunStore(tmp_path / "runs.db")
-    monkeypatch.setattr(scheduling, "get_run_store", lambda: runs)
+    monkeypatch.setattr(scheduling, "get_host_services", lambda: SimpleNamespace(run_store=lambda: runs))
     source = tmp_path / "src"
     source.mkdir()
     file = source / "sales.py"

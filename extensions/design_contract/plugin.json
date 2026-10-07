@@ -42,5 +42,34 @@
     }
   },
   "defaults": {},
-  "dependencies": []
+  "dependencies": [],
+  "contributions": [
+    {
+      "id": "design_contract.execution.check",
+      "stage": "finalize",
+      "handler": "extensions.design_contract.execution:check",
+      "mode": "service",
+      "scope": "invocation",
+      "interface_id": "execution.check"
+    },
+    {
+      "id": "design_contract.execution.rejected",
+      "stage": "finalize",
+      "handler": "extensions.design_contract.execution:rejected",
+      "mode": "service",
+      "scope": "invocation",
+      "interface_id": "execution.rejected"
+    },
+    {
+      "id": "design_contract.execution.committed",
+      "stage": "finalize",
+      "handler": "extensions.design_contract.execution:committed",
+      "mode": "service",
+      "scope": "invocation",
+      "interface_id": "execution.committed"
+    }
+  ],
+  "optional_dependencies": [
+    "knowledge_graph"
+  ]
 }

@@ -380,8 +380,7 @@ def _build_live_registry(
     full：foundation 工具全部真实执行（写盘/跑命令有副作用，风险自负）；
          shell 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
     """
-    from app.agent_base.tools.registry import ToolRegistry
-    from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
+    from app.agent_base.host_api.services import get_host_services
 
     if tool_policy not in ("readonly", "full"):
         tool_policy = "readonly"
@@ -392,10 +391,7 @@ def _build_live_registry(
             "apply_changes", "run_program", "run_task", "shell",
         }
 
-    real = ToolRegistry()
-    for tool in create_foundation_tools(source_dir, test_dir):
-        if tool.name in real_policy:
-            real.register_tool(tool)
+    real = get_host_services().foundation_registry(source_dir, test_dir, real_policy)
 
     return HybridToolRegistry(events, real, real_policy, graceful=True)
 
@@ -432,7 +428,7 @@ async def replay_agent_session(
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
     from extensions.trace.trace_reader import read_trace
-    from app.agent_base.agents.react_agent import ReActAgent
+    from app.agent_base.host_api.services import get_host_services
 
     if mode not in ("mock", "rerun", "live"):
         raise ValueError(f"未知回放模式: {mode}（可选 mock / rerun / live）")
@@ -504,7 +500,7 @@ async def replay_agent_session(
         default=5,
     )
 
-    agent = ReActAgent(
+    agent = get_host_services().create_loop_agent(
         name="replay",
         llm=llm,
         tool_registry=registry,
