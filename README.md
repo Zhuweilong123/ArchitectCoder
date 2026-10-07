@@ -19,6 +19,8 @@ Choose the design contract mode for the task:
 - **Design contract on: design first, then develop.** For changes to architecture, interfaces, or interactions, update and review the UML before implementing and verifying code. A design contract check runs before changes are committed.
 - **Design contract off: synchronize design from code.** Start from an existing codebase and ask DevAgent to analyze the implementation and add or update UML. The design contract gate is skipped for that run; synchronization starts when you request it.
 
+The architecture combines a stable main workflow with plugin extensions: public lifecycle stages organize execution, and slot contracts compose capabilities.
+
 ## Product tour
 
 <table>
@@ -107,6 +109,10 @@ See the [example guide](examples/quickstart/README.md). Its performance referenc
 
 ## Plugin walkthrough
 
+**A stage can host multiple slots, and a slot can accept capabilities from multiple plugins.**
+
+Public lifecycle stages define when execution happens; slots define the contracts for connecting capabilities. The host dispatches plugins according to their declarations. New capabilities should use existing slots where possible, keeping changes within the plugin. For example, multiple checks can share `execution.check`; any rejection prevents candidate changes from being committed.
+
 Explore the framework without a video: **main flow → plugin details → interface search**, then verify `task_notes` locally and inspect its execution in a DevAgent task. Plugins declare their own interfaces and phase contributions and are discovered from configured directories.
 
 [![task_notes interfaces and public phase bindings](docs/media/plugin-demo/task-notes-en.svg)](docs/plugin-quickstart.en.md)
@@ -180,7 +186,7 @@ Click an image for its full size, or open an SVG to zoom in: [component diagram]
 - **Trace Viewer & Replay**: inspect recorded model/tool events and compare replayed steps. `mock` replay uses recorded data without model calls; `rerun` and `live` modes have different model/tool execution policies.
 - **TestHub**: load, edit, and save Excel test cases in the canvas, with review records. Ask DevAgent to write or update test code through the workspace workflow.
 - **Knowledge graph and memory**: configurable providers for design/code/test indexing and project-scoped recall.
-- **Extensible runtime**: BaseAgents and provider ports keep orchestration, memory, Trace, evaluation, knowledge graph, and design-contract implementations replaceable.
+- **Extensible runtime**: replace orchestration, memory, Trace, evaluation, knowledge graph, and design-contract implementations through plugin contracts. See the [plugin walkthrough](#plugin-walkthrough) for the stage and slot model.
 
 ### Evaluation Center demo
 
