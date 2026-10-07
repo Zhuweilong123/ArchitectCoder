@@ -87,8 +87,8 @@ Trace、Evidence Ledger 和 `last_context_report` 记录这些策略的决定；
 | 事件 | 处理 |
 |---|---|
 | `RUN_START` | 初始化运行时预算和控制器 |
-| `LLM_BEFORE` | 检查时间/请求边界 |
-| `LLM_AFTER` | 记录响应 token |
+| `MODEL_BEFORE` | 检查时间/请求边界 |
+| `MODEL_AFTER` | 记录响应 token |
 | `TOOL_BEFORE` | 检查工具额度和权限，必要时 veto |
 | `TOOL_AFTER` | 规范化工具结果或替换喂给模型的内容 |
 | `TOOL_BATCH_AFTER` | 将整批 evidence detail 交给 `ConvergenceController.observe()` |
@@ -107,7 +107,7 @@ RUN_START
         ↓
 ContextBudgetManager 估算/压缩请求
         ↓
-LLM_BEFORE → LLM 调用 → LLM_AFTER
+MODEL_BEFORE → LLM 调用 → MODEL_AFTER
         ↓
 TOOL_BEFORE → 工具执行 → TOOL_AFTER
         ↓

@@ -101,7 +101,9 @@ def inspect_tool(context):
 
 ## 兼容与生成文件
 
-旧标识作为单一别名解析，例如 llm_before → model_before、llm_after → model_after、run_finalize → finalize、context_prepare / memory_reinforce → prepare、skill_read / graph_query → tool_before。新计划和记录只写规范阶段，不同时派发新旧标识。手工 Hook 注册仍兼容，运行期间新增注册不属于初始化计划快照。
+`HookEvent` 只定义 13 个通用阶段和独立通知，不包含领域名称或重复值的枚举别名。当前代码使用 `MODEL_BEFORE`、`MODEL_AFTER`、`FINALIZE` 等规范成员。
+
+历史字符串输入由 `app/agent_base/compat/hook_events.py` 集中转换，例如 llm_before → model_before、llm_after → model_after、run_finalize → finalize、context_prepare / memory_reinforce → prepare、skill_read / graph_query → tool_before。`HookEvent("graph_query")` 仍可读取旧配置；`HookEvent.GRAPH_QUERY` 等旧枚举属性已经移除。兼容映射只解释历史标识，不规定当前插件接口的执行阶段。新计划和记录只写规范阶段，不同时派发新旧标识。手工 Hook 注册仍兼容，运行期间新增注册不属于初始化计划快照。
 
 后端默认生成 backend/.architectcoder/plugins/，可配置 PLUGIN_PLAN_DIR：
 

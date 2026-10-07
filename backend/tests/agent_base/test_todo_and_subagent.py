@@ -87,7 +87,7 @@ def test_todo_reminder_hook_injects_after_three_rounds():
         messages = []
         for _ in range(3):
             _todo_reminder_hook(HookContext(
-                event=HookEvent.LLM_BEFORE, agent_name="t", messages=messages,
+                event=HookEvent.MODEL_BEFORE, agent_name="t", messages=messages,
             ))
         # 第 3 轮触发时注入 reminder 并清零计数
         assert any("<reminder>" in m.get("content", "") for m in messages)
@@ -104,7 +104,7 @@ def test_todo_reminder_hook_skips_when_no_open_todos():
         messages = []
         for _ in range(5):
             _todo_reminder_hook(HookContext(
-                event=HookEvent.LLM_BEFORE, agent_name="t", messages=messages,
+                event=HookEvent.MODEL_BEFORE, agent_name="t", messages=messages,
             ))
         assert not any("<reminder>" in m.get("content", "") for m in messages)
     finally:

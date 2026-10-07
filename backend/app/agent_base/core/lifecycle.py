@@ -19,8 +19,8 @@ from .plugin_dispatch import SERVICE_STAGES, service_contributions
 # Remaining lifecycle phases are observation-only until their contracts expand.
 PHASE_MODES = {stage: {"observer"} for stage in HookEvent}
 PHASE_MODES[HookEvent.PREPARE] |= {"transform"}
-PHASE_MODES[HookEvent.LLM_BEFORE] |= {"transform", "control"}
-PHASE_MODES[HookEvent.LLM_AFTER] |= {"transform"}
+PHASE_MODES[HookEvent.MODEL_BEFORE] |= {"transform", "control"}
+PHASE_MODES[HookEvent.MODEL_AFTER] |= {"transform"}
 PHASE_MODES[HookEvent.TOOL_BEFORE] |= {"control"}
 PHASE_MODES[HookEvent.TOOL_AFTER] |= {"transform"}
 PHASE_MODES[HookEvent.TOOL_BATCH_AFTER] |= {"control", "transform"}

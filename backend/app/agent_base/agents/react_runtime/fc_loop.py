@@ -68,9 +68,9 @@ async def _invoke_fc_model_impl(
     intentional terminal condition, either stopped by a hook or timed out.
     """
     before_decision = await get_hooks().atrigger(
-        HookEvent.LLM_BEFORE,
+        HookEvent.MODEL_BEFORE,
         HookContext(
-            event=HookEvent.LLM_BEFORE,
+            event=HookEvent.MODEL_BEFORE,
             agent_name=agent.name,
             run_id=runtime.run_id,
             runtime=runtime,

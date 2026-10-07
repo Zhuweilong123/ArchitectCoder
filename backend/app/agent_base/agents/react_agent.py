@@ -235,8 +235,8 @@ class ReActAgent(Agent):
         )
         runtime.lifecycle_status = outcome.status
         runtime.lifecycle_finalized = True
-        await get_hooks().aemit(HookEvent.RUN_FINALIZE, HookContext(
-            event=HookEvent.RUN_FINALIZE, agent_name=self.name, runtime=runtime,
+        await get_hooks().aemit(HookEvent.FINALIZE, HookContext(
+            event=HookEvent.FINALIZE, agent_name=self.name, runtime=runtime,
             run_id=runtime.run_id, payload={"status": outcome.status, "stop_reason": outcome.stop_reason},
         ))
         return ReActProgress(**kwargs, outcome=outcome)

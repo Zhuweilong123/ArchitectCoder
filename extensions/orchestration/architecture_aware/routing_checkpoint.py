@@ -34,7 +34,7 @@ def _routing_checkpoint(ctx: HookContext):
                     and not state.get("architecture_route_checkpoint_sent")):
                 state["architecture_route_pending"] = True
         return None
-    if ctx.event == HookEvent.LLM_BEFORE and state.pop("architecture_route_pending", False):
+    if ctx.event == HookEvent.MODEL_BEFORE and state.pop("architecture_route_pending", False):
         if state.get("architecture_route_decided") or state.get("architecture_route_checkpoint_sent"):
             return None
         if ctx.messages is None:
@@ -55,7 +55,7 @@ def _routing_checkpoint(ctx: HookContext):
             ),
         })
         state["architecture_route_checkpoint_sent"] = True
-    if ctx.event == HookEvent.LLM_AFTER and state.get("architecture_route_checkpoint_sent"):
+    if ctx.event == HookEvent.MODEL_AFTER and state.get("architecture_route_checkpoint_sent"):
         if ctx.messages is not None:
             ctx.messages[:] = [
                 message for message in ctx.messages
@@ -81,4 +81,4 @@ def list_contributions(*, settings=None):
         id=f"orchestration.routing.{stage.value}", stage=stage,
         handler="extensions.orchestration.architecture_aware.routing_checkpoint:_routing_checkpoint",
         mode="transform", priority=50 if stage == HookEvent.TOOL_BATCH_AFTER else 55,
-    ) for stage in (HookEvent.TOOL_BATCH_AFTER, HookEvent.LLM_BEFORE, HookEvent.LLM_AFTER))
+    ) for stage in (HookEvent.TOOL_BATCH_AFTER, HookEvent.MODEL_BEFORE, HookEvent.MODEL_AFTER))

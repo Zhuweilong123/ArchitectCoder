@@ -181,8 +181,8 @@ def test_async_handler_is_awaited_in_real_agent_model_phase(monkeypatch):
     async def finalize(ctx):
         await asyncio.sleep(0)
         seen.append("finalize")
-    registry.register(HookEvent.LLM_BEFORE, before, mode="transform")
-    registry.register(HookEvent.RUN_FINALIZE, finalize, mode="observer")
+    registry.register(HookEvent.MODEL_BEFORE, before, mode="transform")
+    registry.register(HookEvent.FINALIZE, finalize, mode="observer")
     class Model:
         async def ainvoke_with_tools(self, **kwargs):
             assert seen == ["before"]

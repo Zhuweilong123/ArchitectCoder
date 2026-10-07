@@ -138,7 +138,7 @@ def test_failed_contribution_records_error_and_actual_failure_policy(dispatch, f
     events = []
     token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **payload: events.append(payload)))
     registry = HookRegistry()
-    stage = HookEvent.LLM_BEFORE if dispatch == "trigger" else HookEvent.TOOL_BATCH_AFTER
+    stage = HookEvent.MODEL_BEFORE if dispatch == "trigger" else HookEvent.TOOL_BATCH_AFTER
     def broken(ctx):
         raise ValueError("configuration missing")
     registry.register(stage, broken, contribution_id="broken", plugin="demo", mode="control", fail_closed=fail_closed)
@@ -175,11 +175,11 @@ def test_failed_control_blocks_model_and_observers_still_run():
     seen = []
     def broken(ctx):
         raise RuntimeError("failure")
-    registry.register(HookEvent.LLM_BEFORE, broken, priority=50, mode="control", fail_closed=True)
-    registry.register(HookEvent.LLM_BEFORE, lambda ctx: seen.append(ctx.event), mode="observer")
-    result = registry.trigger(HookEvent.LLM_BEFORE, HookContext(HookEvent.LLM_BEFORE, "test"))
+    registry.register(HookEvent.MODEL_BEFORE, broken, priority=50, mode="control", fail_closed=True)
+    registry.register(HookEvent.MODEL_BEFORE, lambda ctx: seen.append(ctx.event), mode="observer")
+    result = registry.trigger(HookEvent.MODEL_BEFORE, HookContext(HookEvent.MODEL_BEFORE, "test"))
     assert result.action == HookAction.STOP
-    assert seen == [HookEvent.LLM_BEFORE]
+    assert seen == [HookEvent.MODEL_BEFORE]
 
 
 def test_manifest_discovers_extra_plugins_without_changing_slots(monkeypatch, tmp_path):
@@ -380,11 +380,11 @@ def test_agent_emits_complete_lifecycle_and_terminal_status(failure):
         for stage in HookEvent:
             registry.unregister(stage, observe)
     stages = [stage for stage, _ in seen]
-    assert stages[:3] == [HookEvent.RUN_START, HookEvent.ROUND_BEFORE, HookEvent.LLM_BEFORE]
+    assert stages[:3] == [HookEvent.RUN_START, HookEvent.ROUND_BEFORE, HookEvent.MODEL_BEFORE]
     assert stages[-1] == HookEvent.RUN_END
     assert stages.count(HookEvent.ROUND_AFTER) == 1
     assert seen[-1][1]["status"] == {"none": "completed", "error": "failed", "cancel": "cancelled"}[failure]
     if failure == "none":
-        assert stages[-3:] == [HookEvent.ROUND_AFTER, HookEvent.RUN_FINALIZE, HookEvent.RUN_END]
+        assert stages[-3:] == [HookEvent.ROUND_AFTER, HookEvent.FINALIZE, HookEvent.RUN_END]
     else:
         assert (HookEvent.ERROR if failure == "error" else HookEvent.CANCEL) in stages
