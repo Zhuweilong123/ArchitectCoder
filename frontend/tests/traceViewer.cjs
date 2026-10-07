@@ -55,6 +55,14 @@ test('conversation folds processes; search reveals truncated output; error navig
   assert.equal(document.querySelectorAll('.trace-process-group .trace-tool').length, 0);
   assert.match(document.querySelector('.trace-timeline').textContent, /执行长任务.*中途回复.*最终结果/s);
   assert.match(document.querySelectorAll('.trace-process-group')[1].textContent, /1 处异常/);
+  assert.ok(button('展开过程'));
+  assert.equal(button('收起过程'), undefined);
+  await act(async () => button('展开过程').click());
+  assert.equal(document.querySelectorAll('.trace-process-group > .ant-collapse-item > .ant-collapse-content-active').length, 2);
+  assert.ok(button('收起过程'));
+  assert.equal(button('展开过程'), undefined);
+  await act(async () => button('收起过程').click());
+  assert.equal(document.querySelectorAll('.trace-process-group .ant-collapse-content-active').length, 0);
 
   const input = document.querySelector('input[aria-label="搜索当前 Trace"]');
   await act(async () => {
@@ -74,6 +82,8 @@ test('conversation folds processes; search reveals truncated output; error navig
 
   await act(async () => button('收起过程').click());
   assert.equal(document.querySelectorAll('.trace-process-group .ant-collapse-content-active').length, 0);
+  assert.ok(button('展开过程'));
+  assert.equal(button('收起过程'), undefined);
 
   await act(async () => [...document.querySelectorAll('.ant-segmented-item')]
     .find(node => node.textContent === '详细时间线').click());

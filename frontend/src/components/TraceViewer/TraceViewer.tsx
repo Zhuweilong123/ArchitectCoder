@@ -981,6 +981,8 @@ const TraceViewer: React.FC = () => {
     && !['done', 'error', 'summary', 'review'].includes(row.item.kind);
   const groups = useMemo(() => groupTraceRows(rows, isProcess), [rows]);
   const groupId = (group: Row[]) => `process-${rowId(group[0])}`;
+  const processGroupKeys = groups.filter((group) => isProcess(group[0])).map(groupId);
+  const hasExpandedProcess = processGroupKeys.some((key) => expandedGroups.includes(key));
   const searchDocuments = useMemo(() => rows.map((row) => ({
     id: rowId(row), value: row.kind === 'turn'
       ? { message: row.turn.userMessage, project_file: row.turn.projectFile } : row.item,
@@ -1220,12 +1222,13 @@ const TraceViewer: React.FC = () => {
               const current = errorRows.findIndex((row) => rowId(row) === locatedId);
               revealRow(rowId(errorRows[(current + 1) % errorRows.length]));
             }}>{tx(interfaceLanguage, '下一处错误', 'Next error')} ({errorRows.length})</Button>
-            {viewMode === 'conversation' ? <>
-              <Button size="small" disabled={!detail || loadingDetail} onClick={() => setExpandedGroups(groups.filter((group) => isProcess(group[0])).map(groupId))}>
-                {tx(interfaceLanguage, '展开过程', 'Expand processes')}</Button>
-              <Button size="small" disabled={!detail || loadingDetail} onClick={() => { setPlaying(false); setExpandedGroups([]); }}>
-                {tx(interfaceLanguage, '收起过程', 'Collapse processes')}</Button>
-            </> : null}
+            {viewMode === 'conversation' ? (
+              <Button size="small" disabled={!processGroupKeys.length || loadingDetail}
+                aria-expanded={hasExpandedProcess}
+                onClick={() => { setPlaying(false); setExpandedGroups(hasExpandedProcess ? [] : processGroupKeys); }}>
+                {hasExpandedProcess ? tx(interfaceLanguage, '收起过程', 'Collapse processes') : tx(interfaceLanguage, '展开过程', 'Expand processes')}
+              </Button>
+            ) : null}
           </div>
           <div className="trace-toolbar-row trace-content-search">
             <Input size="small" allowClear value={contentQuery} disabled={!detail || loadingDetail}
