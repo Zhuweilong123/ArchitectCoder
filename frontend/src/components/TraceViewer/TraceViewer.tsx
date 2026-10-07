@@ -22,6 +22,7 @@ import {
   type TraceMeta, type TraceDetail, type TraceReplayResult, type TraceReplayTurn, type TraceReplayStep,
 } from '../../services/api';
 import './TraceViewer.css';
+import { groupTraceRows, searchTrace, traceErrorCount, type TraceSearchHit } from './traceNavigation';
 
 const { Text } = Typography;
 
@@ -491,7 +492,7 @@ function renderDone(ev: TraceEvent, language: TraceLanguage = 'zh'): React.React
         <CheckCircleOutlined className="trace-icon done" />
         <span className="trace-title">{tx(language, '完成', 'Completed')}</span>
       </div>
-      <div className="trace-thought">{truncate(String(ev.answer || ''), 2000, language)}</div>
+      <ExpandablePre text={String(ev.answer || '')} limit={2000} language={language} />
       {runtime?.token_budget_stop_reason ? (
         <Tag color={String(runtime.token_budget_stop_reason).includes('budget') ? 'orange' : 'blue'}>
           {String(runtime.token_budget_stop_reason)}
@@ -805,6 +806,12 @@ const TraceViewer: React.FC = () => {
 
   const [playing, setPlaying] = useState(false);
   const [playIndex, setPlayIndex] = useState(-1);
+  const [viewMode, setViewMode] = useState<'conversation' | 'detail'>('conversation');
+  const [contentQuery, setContentQuery] = useState('');
+  const [hitIndex, setHitIndex] = useState(0);
+  const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+  const [locatedId, setLocatedId] = useState('');
+  const [navigationTick, setNavigationTick] = useState(0);
 
   const [replaying, setReplaying] = useState(false);
   const [singleStepTurn, setSingleStepTurn] = useState<number | null>(null);
@@ -874,6 +881,11 @@ const TraceViewer: React.FC = () => {
     setLoadingDetail(true);
     setPlaying(false);
     setPlayIndex(-1);
+    setContentQuery('');
+    setHitIndex(0);
+    setExpandedGroups([]);
+    setLocatedId('');
+    setDetail(null);
     clearReplay();
     try {
       setDetail(await getTrace(sessionId, nextScope));
@@ -948,20 +960,91 @@ const TraceViewer: React.FC = () => {
   }, [detail]);
 
   // 渲染行：轮次头 + 事件项（事件项带全局播放序号）
-  type Row = { kind: 'turn'; turn: Turn } | { kind: 'item'; item: Item; playIndex: number };
+  type Row = { kind: 'turn'; turn: Turn } | { kind: 'item'; item: Item; playIndex: number; conversationText?: string };
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
     let play = 0;
     for (const turn of turns) {
       out.push({ kind: 'turn', turn });
       for (const item of turn.items) {
-        out.push({ kind: 'item', item, playIndex: play });
+        const text = item.kind === 'llm' ? String(item.response?.content || '') : '';
+        const repeatedFinal = text && turn.items.some((other) => other.kind === 'done' && other.event.answer === text);
+        out.push({ kind: 'item', item, playIndex: play, conversationText: repeatedFinal ? '' : text });
         play++;
       }
     }
     return out;
   }, [turns]);
   const totalItems = rows.filter((r) => r.kind === 'item').length;
+  const rowId = (row: Row) => row.kind === 'turn' ? `trace-turn-${row.turn.id}` : `trace-item-${row.playIndex}`;
+  const isProcess = (row: Row) => row.kind === 'item' && !row.conversationText
+    && !['done', 'error', 'summary', 'review'].includes(row.item.kind);
+  const groups = useMemo(() => groupTraceRows(rows, isProcess), [rows]);
+  const groupId = (group: Row[]) => `process-${rowId(group[0])}`;
+  const searchDocuments = useMemo(() => rows.map((row) => ({
+    id: rowId(row), value: row.kind === 'turn'
+      ? { message: row.turn.userMessage, project_file: row.turn.projectFile } : row.item,
+  })), [rows]);
+  const searchHits = useMemo(() => searchTrace(searchDocuments, contentQuery), [searchDocuments, contentQuery]);
+  const selectedHit = searchHits[hitIndex];
+  const errorRows = useMemo(() => rows.filter((row) => row.kind === 'item' && traceErrorCount(row.item) > 0), [rows]);
+
+  const revealRow = (id: string) => {
+    const group = groups.find((candidate) => isProcess(candidate[0]) && candidate.some((row) => rowId(row) === id));
+    if (group) setExpandedGroups((previous) => previous.includes(groupId(group)) ? previous : [...previous, groupId(group)]);
+    setLocatedId(id);
+    setNavigationTick((tick) => tick + 1);
+  };
+  useEffect(() => {
+    if (selectedHit) revealRow(selectedHit.id);
+    // Navigation depends on the selected occurrence, not expansion changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedHit]);
+  useEffect(() => {
+    if (!locatedId || !traceVisible) return;
+    const frame = requestAnimationFrame(() => document.getElementById(locatedId)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    return () => cancelAnimationFrame(frame);
+  }, [locatedId, navigationTick, expandedGroups, selectedHit, viewMode, traceVisible]);
+
+  const renderHit = (hit: TraceSearchHit) => (
+    <div className="trace-search-match" aria-live="polite">
+      <Text type="secondary">{hit.field}</Text>
+      <div className="trace-search-snippet">
+        {hit.offset > 160 ? '…' : ''}{hit.text.slice(Math.max(0, hit.offset - 160), hit.offset)}
+        <mark>{hit.text.slice(hit.offset, hit.offset + hit.length)}</mark>
+        {hit.text.slice(hit.offset + hit.length, hit.offset + hit.length + 160)}
+        {hit.offset + hit.length + 160 < hit.text.length ? '…' : ''}
+      </div>
+      <Collapse ghost items={[{ key: 'full-match', label: tx(interfaceLanguage, '查看完整字段', 'Show full field'),
+        children: <ExpandablePre text={hit.text} language={interfaceLanguage} /> }]} />
+    </div>
+  );
+  const renderRow = (row: Row) => {
+    const id = rowId(row);
+    const hit = selectedHit?.id === id ? selectedHit : undefined;
+    if (row.kind === 'turn') return (
+      <div id={id} key={id} className="trace-turn-message">
+        <div className="trace-turn-header"><UserOutlined />
+          {tx(interfaceLanguage, '用户', 'User')}
+          {row.turn.projectFile ? <Tag>{baseName(row.turn.projectFile)}</Tag> : null}
+        </div>
+        <ExpandablePre text={row.turn.userMessage || tx(interfaceLanguage, '（会话开始 / 独立优化）', '(Session start / standalone optimization)')} limit={1200} language={interfaceLanguage} />
+        {hit ? renderHit(hit) : null}
+      </div>
+    );
+    const active = (row.playIndex === playIndex && playing) || hit || locatedId === id;
+    return <div id={id} key={id} className={`trace-item${active ? ' trace-item-active' : ''}`}>
+      {viewMode === 'conversation' && row.conversationText ? (
+        <div className="trace-card trace-assistant">
+          <div className="trace-card-head"><RobotOutlined /><span className="trace-title">{tx(interfaceLanguage, '助手', 'Assistant')}</span></div>
+          <ExpandablePre text={row.conversationText} language={interfaceLanguage} />
+          <Collapse ghost items={[{ key: 'llm-details', label: tx(interfaceLanguage, '调用详情', 'Call details'), children: renderItem(row.item, interfaceLanguage) }]} />
+        </div>
+      ) : renderItem(row.item, interfaceLanguage)}
+      {hit ? renderHit(hit) : null}
+    </div>;
+  };
 
   // 自动播放推进
   useEffect(() => {
@@ -985,9 +1068,9 @@ const TraceViewer: React.FC = () => {
   // 高亮项滚动到可视区
   useEffect(() => {
     if (playIndex >= 0) {
-      document.getElementById(`trace-item-${playIndex}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      revealRow(`trace-item-${playIndex}`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playIndex]);
 
   const startPlay = () => {
@@ -1122,6 +1205,40 @@ const TraceViewer: React.FC = () => {
               </Button>
             </div>
           </div>
+          <div className="trace-toolbar-row trace-reading-toolbar">
+            <Segmented size="small" value={viewMode} onChange={(value) => setViewMode(value as 'conversation' | 'detail')}
+              options={[{ value: 'conversation', label: tx(interfaceLanguage, '对话视图', 'Conversation') },
+                { value: 'detail', label: tx(interfaceLanguage, '详细时间线', 'Detailed timeline') }]} />
+            <Select className="trace-turn-select" size="small" showSearch optionFilterProp="label"
+              value={undefined} placeholder={tx(interfaceLanguage, '跳转到轮次', 'Jump to turn')}
+              aria-label={tx(interfaceLanguage, '跳转到轮次', 'Jump to turn')} disabled={!detail || loadingDetail}
+              onChange={(id: string) => { setPlaying(false); revealRow(id); }}
+              options={turns.map((turn, i) => ({ value: `trace-turn-${turn.id}`,
+                label: `${i + 1}. ${truncate(turn.userMessage || tx(interfaceLanguage, '会话开始', 'Session start'), 60, interfaceLanguage)}` }))} />
+            <Button size="small" disabled={!errorRows.length || loadingDetail} onClick={() => {
+              setPlaying(false);
+              const current = errorRows.findIndex((row) => rowId(row) === locatedId);
+              revealRow(rowId(errorRows[(current + 1) % errorRows.length]));
+            }}>{tx(interfaceLanguage, '下一处错误', 'Next error')} ({errorRows.length})</Button>
+            {viewMode === 'conversation' ? <>
+              <Button size="small" disabled={!detail || loadingDetail} onClick={() => setExpandedGroups(groups.filter((group) => isProcess(group[0])).map(groupId))}>
+                {tx(interfaceLanguage, '展开过程', 'Expand processes')}</Button>
+              <Button size="small" disabled={!detail || loadingDetail} onClick={() => { setPlaying(false); setExpandedGroups([]); }}>
+                {tx(interfaceLanguage, '收起过程', 'Collapse processes')}</Button>
+            </> : null}
+          </div>
+          <div className="trace-toolbar-row trace-content-search">
+            <Input size="small" allowClear value={contentQuery} disabled={!detail || loadingDetail}
+              placeholder={tx(interfaceLanguage, '搜索当前 Trace：对话、工具、参数、返回值…', 'Search this Trace: messages, tools, arguments, results…')}
+              aria-label={tx(interfaceLanguage, '搜索当前 Trace', 'Search this Trace')}
+              onChange={(event) => { setPlaying(false); setContentQuery(event.target.value); setHitIndex(0); setLocatedId(''); }}
+              onPressEnter={(event) => { if (searchHits.length) setHitIndex((index) => (index + (event.shiftKey ? searchHits.length - 1 : 1)) % searchHits.length); }} />
+            <span className="trace-search-count" aria-live="polite">{contentQuery.trim()
+              ? searchHits.length ? `${hitIndex + 1} / ${searchHits.length}` : tx(interfaceLanguage, '无匹配', 'No matches')
+              : tx(interfaceLanguage, '全文搜索', 'Full-text search')}</span>
+            <Button size="small" disabled={!searchHits.length} onClick={() => setHitIndex((index) => (index + searchHits.length - 1) % searchHits.length)}>{tx(interfaceLanguage, '上一个', 'Previous')}</Button>
+            <Button size="small" disabled={!searchHits.length} onClick={() => setHitIndex((index) => (index + 1) % searchHits.length)}>{tx(interfaceLanguage, '下一个', 'Next')}</Button>
+          </div>
         </div>
 
         <div className="trace-viewer-body">
@@ -1199,30 +1316,19 @@ const TraceViewer: React.FC = () => {
           ) : !detail ? (
             <Empty description={tx(interfaceLanguage, '选择一个会话查看', 'Select a session to view')} style={{ marginTop: 48 }} />
           ) : (
-            rows.map((row, i) => {
-              if (row.kind === 'turn') {
-                return (
-                  <div className="trace-turn-header" key={`turn-${row.turn.id}`}>
-                    <UserOutlined style={{ marginRight: 6 }} />
-                    {row.turn.userMessage
-                      ? truncate(row.turn.userMessage, 120, interfaceLanguage)
-                      : tx(interfaceLanguage, '（会话开始 / 独立优化）', '(Session start / standalone optimization)')}
-                    {row.turn.projectFile
-                      ? <Tag style={{ marginLeft: 8 }}>{baseName(row.turn.projectFile)}</Tag>
-                      : null}
-                  </div>
-                );
-              }
-              const active = row.playIndex === playIndex && playing;
-              return (
-                <div
-                  id={`trace-item-${row.playIndex}`}
-                  key={`item-${row.playIndex}`}
-                  className={active ? 'trace-item trace-item-active' : 'trace-item'}
-                >
-                  {renderItem(row.item, interfaceLanguage)}
-                </div>
-              );
+            viewMode === 'detail' ? rows.map(renderRow) : groups.map((group) => {
+              if (!isProcess(group[0])) return renderRow(group[0]);
+              const key = groupId(group);
+              const errors = group.reduce((count, row) => count + (row.kind === 'item' ? traceErrorCount(row.item) : 0), 0);
+              const tools = group.filter((row) => row.kind === 'item' && row.item.kind === 'tool').length;
+              return <Collapse key={key} className="trace-process-group"
+                activeKey={expandedGroups.includes(key) ? [key] : []}
+                onChange={(keys) => setExpandedGroups((previous) => (keys.length ? [...previous.filter((id) => id !== key), key] : previous.filter((id) => id !== key)))}
+                items={[{ key, label: <span>{tx(interfaceLanguage, '执行过程', 'Execution process')}
+                  <Tag>{group.length} {tx(interfaceLanguage, '条记录', 'records')}</Tag>
+                  {tools ? <Tag>{tools} {tx(interfaceLanguage, '次工具调用', 'tool calls')}</Tag> : null}
+                  {errors ? <Tag color="red">{errors} {tx(interfaceLanguage, '处异常', 'errors')}</Tag> : null}
+                </span>, children: group.map(renderRow) }]} />;
             })
           )}
         </div>
