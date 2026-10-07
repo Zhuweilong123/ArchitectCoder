@@ -287,6 +287,12 @@ class SpawnSubagentTool(AsyncTool):
                 prompt = SUBAGENT_SYSTEM
             if kind != "read_only" and skills:
                 prompt = f"{prompt}\n\n{skills}"
+            prompt += (
+                "\n.architectcoder is an internal project state directory managed "
+                "by the host, not source code, tests, or design content. Exclude "
+                "it from exploration and do not read, edit, or delete its contents. "
+                "Task configuration is resolved by the host through run_task."
+            )
             self.system_prompts[kind] = prompt
 
     @staticmethod

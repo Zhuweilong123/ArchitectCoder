@@ -119,6 +119,7 @@ class DevPromptBuilder:
             "## Execution rules",
             "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
             "- Read the smallest useful context before editing. Preserve unrelated user changes and do not invent files, tool results, tests, or completion.",
+            "- .architectcoder is an internal project state directory managed by the host, not source code, tests, or design content. Exclude it from project exploration and do not read, edit, or delete its contents. Task configuration is resolved by the host through run_task.",
             "- Make the minimal correct change and verify each completed phase before moving to the next phase. For repairs, run the focused existing test early and rerun it after the fix.",
             "- For a multi-step task with two or more meaningful phases, call todo_write before other tools and create 3-5 concise todos. Include one verification item, keep one item in_progress, update statuses as phases finish, and complete all items before the final response. Do not use it for greetings, simple single-step edits, pure review, or status questions.",
             "- Treat a human-review pause as a normal phase boundary. Preserve the latest accepted state and resume from the review result.",

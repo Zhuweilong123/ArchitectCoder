@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.runtime.task_contracts import ApprovalClass, NetworkPolicy, TaskKind
 from app.runtime.task_contracts import TaskKind, TaskSpec, ToolchainProfile
 from app.runtime.task_resolver import CallableTaskAdapter, TaskResolution, TaskResolver
@@ -41,6 +43,52 @@ def test_resolves_python_tasks_and_build_metadata(tmp_path):
 
     assert test_result.task.argv == ("python", "-m", "pytest")
     assert build_result.task.argv == ("python", "-m", "build")
+
+
+@pytest.mark.parametrize("manifest,content,expected", [
+    ("pyproject.toml", "[tool.pytest.ini_options]\n", ("python", "-m", "pytest")),
+    ("package.json", '{"scripts": {"test": "vitest run"}}', ("npm", "run", "test")),
+])
+def test_state_directory_does_not_override_project_tasks(tmp_path, manifest, content, expected):
+    (tmp_path / manifest).write_text(content, encoding="utf-8")
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    # A nested state directory must not stop ancestor project discovery either.
+    for root in (tmp_path, test_dir):
+        state = root / ".architectcoder"
+        state.mkdir()
+        (state / "knowledge_graph.db").write_bytes(b"internal-state")
+
+    result = TaskResolver().resolve("test", str(test_dir))
+
+    assert result.resolved
+    assert result.task.argv == expected
+    assert result.project_root == str(tmp_path)
+
+
+def test_state_directory_alone_does_not_declare_project_tasks(tmp_path):
+    (tmp_path / ".architectcoder").mkdir()
+
+    result = TaskResolver().resolve("test", str(tmp_path))
+
+    assert not result.resolved
+    assert result.reason == "no supported project manifest found"
+
+
+@pytest.mark.parametrize("content,reason", [
+    ("{", "invalid tasks.json"),
+    ('{"tasks": {}}', "no literal argv for 'test'"),
+])
+def test_explicit_task_configuration_errors_do_not_fall_back(tmp_path, content, reason):
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    state = tmp_path / ".architectcoder"
+    state.mkdir()
+    (state / "tasks.json").write_text(content, encoding="utf-8")
+
+    result = TaskResolver().resolve("test", str(tmp_path))
+
+    assert not result.resolved
+    assert reason in result.reason
 
 
 def test_unknown_task_does_not_fall_back_to_unrelated_command(tmp_path):
