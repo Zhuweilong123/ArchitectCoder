@@ -23,7 +23,7 @@ Trace、Evidence Ledger 和 `last_context_report` 记录这些策略的决定；
 `ExecutionBudget` 的 token 限制是**单次 LLM 请求**口径，任务累计 token 仅用于观测：
 
 - `max_tool_calls`：一次 run 的工具调用上限。
-- `max_run_seconds`：一次 run 的时间上限。
+- `max_run_seconds`：一次 run 的时间上限，`0` 表示不限时。
 - `max_total_tokens`：当前请求软目标，来自 `agent_context_soft_limit_tokens`。
 - `emergency_max_total_tokens`：当前请求紧急上限，来自 `agent_context_hard_limit_tokens`。
 - `token_finalization_reserve_tokens`：为最终答案保留的空间。
@@ -108,7 +108,7 @@ continue / recover（追加策略提示）/ finalize（工具列表置空）
 | 配置 | 默认值 | 作用 |
 |---|---:|---|
 | `agent_max_tool_calls` | 100 | 单次 run 工具调用上限 |
-| `agent_max_run_seconds` | 600 | 单次 run 时间上限 |
+| `agent_max_run_seconds` | 0 | 单次 run 不限时；正数显式启用时间上限（秒） |
 | `agent_context_hard_limit_tokens` | 256000 | 请求紧急 token 上限 |
 | `agent_context_soft_threshold_ratio` | 0.78125 | 请求软目标比例 |
 | `agent_context_compaction_threshold_ratio` | 0.9 | 上下文压缩触发比例 |
@@ -118,13 +118,17 @@ continue / recover（追加策略提示）/ finalize（工具列表置空）
 | `agent_convergence_repeat_action_threshold` | 3 | 相同动作无新结果触发次数 |
 | `agent_evidence_max_records` | 128 | Evidence Ledger 记录上限 |
 
+主任务和普通子代理默认没有总时长限制。环境变量 `AGENT_MAX_RUN_SECONDS=0`
+表示不限时，正数可恢复指定的总时长限制。单次模型调用、命令执行、显式指定期限的
+编排工作单元和评测用例仍使用各自的超时，不受这一默认值影响。
+
 `agent_subagent_per_run_execution_budget_tokens=500000` 只用于主 Agent 管理的子代理，
 与主 Agent 的 `ExecutionBudget` 分开。上下文语义压缩的模型和触发参数属于
 `agent_session_compression_*`，详见 `context-management-design.md`。
 
 ## 7. 失败与可观测性
 
-- 时间到达时返回 `time_limit`；工具额度耗尽时返回 `tool_call_limit`。
+- 显式启用的时间上限到达时返回 `time_limit`；工具额度耗尽时返回 `tool_call_limit`。
 - 重复失败先进入 recover，超过恢复机会后 finalize，并在最终答案中要求明确报告 blocker。
 - 无进展连续达到 `max_stalled_rounds` 后 finalize。
 - `last_context_report` 保存 token budget、convergence events、stalled/recovery 计数和最终化原因。

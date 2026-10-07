@@ -229,7 +229,7 @@ class SpawnSubagentTool(AsyncTool):
         self.max_tool_calls = max(1, int(
             max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
         ))
-        self.max_run_seconds = max(1.0, float(
+        self.max_run_seconds = max(0.0, float(
             max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
         ))
         self.token_finalization_reserve_tokens = (

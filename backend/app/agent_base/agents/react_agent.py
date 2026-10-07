@@ -67,7 +67,7 @@ class ReActAgent(Agent):
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
         max_tool_calls: int = 100,
-        max_run_seconds: float = 600.0,
+        max_run_seconds: float = 0.0,
         max_total_tokens: int = 200000,
         emergency_max_total_tokens: int | None = None,
         token_finalization_reserve_tokens: int = 12000,
@@ -85,7 +85,7 @@ class ReActAgent(Agent):
         self.current_history: List[str] = []
         self.execution_budget = execution_budget
         self.max_tool_calls = max(1, max_tool_calls)
-        self.max_run_seconds = max(1.0, max_run_seconds)
+        self.max_run_seconds = max(0.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.emergency_max_total_tokens = (
             max(1, int(emergency_max_total_tokens))

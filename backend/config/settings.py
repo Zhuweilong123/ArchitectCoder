@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     )
 
     agent_max_tool_calls: int = 100
-    agent_max_run_seconds: int = 600
+    agent_max_run_seconds: int = 0  # 0 disables the overall run deadline.
     # One explicit request-context hard limit. Soft convergence and compaction
     # thresholds are ratios of this value so deployments can scale it once.
     agent_context_hard_limit_tokens: int = 256000

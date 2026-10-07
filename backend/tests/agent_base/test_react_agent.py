@@ -502,6 +502,35 @@ def test_veto_hook_blocks_tool():
     assert detail["fed_truncated"] is False
 
 
+@pytest.mark.parametrize("max_run_seconds, expected", [(0, None), (60, "time_limit")])
+def test_execution_budget_optional_deadline_after_long_run(max_run_seconds, expected):
+    budget = ExecutionBudget(
+        max_tool_calls=2, max_run_seconds=max_run_seconds, max_total_tokens=1000,
+    )
+    budget.start()
+    budget.started_at -= 3600
+
+    assert budget.before_llm() == expected
+
+
+def test_default_agent_continues_after_ten_minutes():
+    class LongRunLLM(MockLLM):
+        async def ainvoke_with_tools(self, messages, tools, tool_choice="auto", **kwargs):
+            if self.count == 0:
+                agent.execution_budget.started_at -= 3600
+            return await super().ainvoke_with_tools(messages, tools, tool_choice, **kwargs)
+
+    llm = LongRunLLM(rounds=1)
+    agent = ReActAgent("Test", llm, _registry())
+    events = asyncio.run(_collect(agent))
+
+    assert agent.max_run_seconds == 0
+    assert agent.llm_timeout_seconds == 120
+    assert llm.count == 2
+    assert events[-1].is_final is True
+    assert events[-1].final_answer == "完成"
+
+
 def test_execution_budget_policy_is_owned_by_hook():
     budget = ExecutionBudget(max_tool_calls=2, max_run_seconds=60, max_total_tokens=1000)
     runtime = AgentRuntime(execution_budget=budget)
