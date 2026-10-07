@@ -13,7 +13,7 @@ from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import command_result
 from app.core.capabilities import CapabilityPolicy
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
-from app.trace.tracing import TraceSession
+from app.runtime.trace_session import TraceSession
 from extensions.trace.chat_trace import ChatTraceLogger
 
 
@@ -37,6 +37,29 @@ def workspace(tmp_path):
 
 def execute(registry, name, params):
     return asyncio.run(registry.aexecute_tool_result_with_params(name, params))
+
+
+def test_project_state_is_excluded_from_workspace_discovery_and_protected(workspace):
+    root, registry = workspace
+    state = root / ".architectcoder"
+    state.mkdir()
+    secret = state / "internal.py"
+    secret.write_text("actual_marker = 'internal'\n", encoding="utf-8")
+
+    listed = execute(registry, "list_files", {"path": "workspace", "pattern": "**/*.py", "details": False})
+    searched = execute(registry, "search_text", {"pattern": "actual_marker"})
+
+    assert listed.status == searched.status == "success"
+    assert "test_real.py" in listed.text and "test_real.py" in searched.text
+    assert ".architectcoder" not in listed.text
+    assert ".architectcoder" not in searched.text
+    read = execute(registry, "read_file", {"path": ".architectcoder/internal.py"})
+    assert read.error_code == "PROJECT_STATE_PROTECTED"
+    changed = execute(registry, "apply_changes", {"changes": [{
+        "op": "delete", "path": ".architectcoder/internal.py",
+    }]})
+    assert changed.status == "error"
+    assert secret.read_text(encoding="utf-8") == "actual_marker = 'internal'\n"
 
 
 @pytest.mark.parametrize("separator", ["/", "\\"])

@@ -10,11 +10,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.agent_base.core.hooks import (
-    AgentRuntime, HookAction, HookContext, HookDecision, HookEvent, HookRegistry,
-    get_hooks, reset_runtime, set_runtime,
-)
-from app.agent_base.core.lifecycle import Contribution, discover_plan, install_plan
+from app.agent_base.host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
+from app.agent_base.core.hooks import AgentRuntime, HookRegistry, get_hooks, reset_runtime, set_runtime
+from app.agent_base.host_api.lifecycle import Contribution
+from app.agent_base.core.lifecycle import discover_plan, install_plan
 from app.agent_base.core.plugins import PluginManager, PluginSpec
 
 
@@ -97,7 +96,7 @@ def test_invalid_declarations_are_explained_and_not_installed(monkeypatch, contr
 
 
 def test_control_short_circuit_preserves_observers_and_records_skips():
-    from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+    from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
     events, called = [], []
     sink = SimpleNamespace(event=lambda kind, **payload: events.append((kind, payload)))
     token = set_current_trace_sink(sink)
@@ -134,7 +133,7 @@ def test_control_short_circuit_preserves_observers_and_records_skips():
 
 @pytest.mark.parametrize("dispatch,fail_closed", [("trigger", True), ("trigger", False), ("emit", True), ("emit", False)])
 def test_failed_contribution_records_error_and_actual_failure_policy(dispatch, fail_closed):
-    from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+    from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
     events = []
     token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **payload: events.append(payload)))
     registry = HookRegistry()
@@ -230,7 +229,7 @@ def test_builtin_routing_contributions_are_discovered_and_fallback_does_not_dupl
 
 
 def test_trace_contribution_preserves_phase_outcome_and_plan_id():
-    from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+    from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
     from extensions.trace.lifecycle import observe
     events = []
     token = set_current_trace_sink(SimpleNamespace(event=lambda kind, **data: events.append((kind, data))))
@@ -250,7 +249,9 @@ def test_lifecycle_and_contribution_events_reach_real_jsonl_on_stream_close(tmp_
     from app.agent_base.agents.react_runtime.fc_loop import run_fc_loop
     from app.agent_base.tools.registry import ToolRegistry
     from app.agent_base.core.plugins import DEFAULT_PLUGIN_SPECS
-    from app.trace.tracing import TraceSession, TraceSessionRequest, load_trace
+    from app.runtime.trace_session import TraceSession
+    from app.agent_base.host_api.tracing import TraceSessionRequest
+    from app.agent_base.adapters.tracing import load_trace
     settings = SimpleNamespace(agent_trace_enabled=True, agent_trace_provider="extensions.trace:create")
     spec = next(spec for spec in DEFAULT_PLUGIN_SPECS if spec.name == "trace")
     plan = discover_plan(PluginManager((spec,)), settings)

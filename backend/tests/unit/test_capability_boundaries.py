@@ -19,7 +19,7 @@ from app.agent_base.core.lifecycle import build_plan, install_plan
 from app.agent_base.core.plugins import PluginManager
 from app.agent_base.host_api.contexts import ContractFailureAnalysisContext, ContractGateContext, ContractGateDecision, ReviewPrompt
 from app.agent_base.host_api.contract_checks import ContractCheckResult
-from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
 from extensions.design_contract.gate import DefaultContractGate
 
 
@@ -34,14 +34,16 @@ def context(**kwargs):
 
 def test_host_api_contains_no_loading_or_concrete_extension_dependencies():
     base = Path(__file__).resolve().parents[2] / "app/agent_base"
+    assert not (base.parent / "trace").exists()
     for path in (base / "host_api").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 assert not any(part in (node.module or "").split(".")
-                               for part in ("extensions", "adapters", "plugins")), path
+                               for part in ("extensions", "adapters", "plugins", "core")), path
             elif isinstance(node, ast.Import):
-                assert all(not item.name.startswith("extensions") for item in node.names), path
+                assert all(not item.name.startswith(("extensions", "app.agent_base.core"))
+                           for item in node.names), path
     for name in ("memory", "skills", "orchestration", "knowledge_graph", "evals", "contracts",
                  "contract_gate", "contract_analysis", "contract_harness", "contract_pipeline", "language_adapters"):
         assert not (base / "core" / f"{name}.py").exists()
@@ -55,6 +57,21 @@ def test_host_api_contains_no_loading_or_concrete_extension_dependencies():
                or (node.module or "").endswith("plugin_api") for node in ast.walk(tree))
     assert not {"agent", "change_set", "review_manager"} & {f.name for f in fields(ContractGateContext)}
     assert "agent" not in {f.name for f in fields(ContractFailureAnalysisContext)}
+
+
+def test_extensions_use_public_host_api_instead_of_core_implementations():
+    root = Path(__file__).resolve().parents[3]
+    paths = [*(root / "extensions").rglob("*.py"),
+             *(root / "examples/plugins/task_notes").rglob("*.py")]
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith("app.agent_base.core"), path
+                assert not (node.module == "app.agent_base" and
+                            any(item.name == "core" for item in node.names)), path
+            elif isinstance(node, ast.Import):
+                assert all(not item.name.startswith("app.agent_base.core") for item in node.names), path
 
 
 def test_host_context_is_a_snapshot_of_manifest_and_candidate_changes():

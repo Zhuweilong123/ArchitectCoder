@@ -10,10 +10,11 @@ import pytest
 from backend.config import Settings
 from backend.config.plugin_catalog import BUILTIN_PLUGIN_ROOT, scan_manifests
 from app.agent_base.core import hooks
-from app.agent_base.core.hooks import HookContext, HookEvent, HookRegistry
+from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+from app.agent_base.core.hooks import HookRegistry
 from app.agent_base.core.lifecycle import build_plan, discover_plan, install_plan
 from app.agent_base.core.plugins import PluginManager
-from app.trace.tracing import set_current_trace_sink, reset_current_trace_sink
+from app.agent_base.core.observability import set_current_trace_sink, reset_current_trace_sink
 
 
 def write_plugin(root, name, **changes):
@@ -34,7 +35,10 @@ def settings(**changes):
 def test_builtin_catalog_is_owned_by_seven_directories_and_keeps_all_interfaces():
     declarations = scan_manifests((BUILTIN_PLUGIN_ROOT,))
     assert {item["id"] for item in declarations} == {"skills", "memory", "trace", "evals", "orchestration", "knowledge_graph", "design_contract"}
-    assert sum(len(item["interfaces"]) for item in declarations) == 61
+    assert sum(len(item["interfaces"]) for item in declarations) == 62
+    trace = next(item for item in declarations if item["id"] == "trace")
+    assert trace["interfaces"]["fork"]["required"] is False
+    assert trace["interfaces"]["fork"]["wrap_result"] is True
     memory = next(item for item in declarations if item["id"] == "memory")
     assert memory["interfaces"]["observe"]["required"] is False
     assert all(Path(item["source"]).name == "plugin.json" for item in declarations)
@@ -169,7 +173,7 @@ def test_repository_example_runs_through_real_jsonl_and_generated_graph(tmp_path
     from app.agent_base.agents.react_agent import ReActAgent
     from app.agent_base.tools.registry import ToolRegistry
     from app.agent_base.core.operations import operation_scope
-    from app.trace.tracing import TraceSessionRequest
+    from app.agent_base.host_api.tracing import TraceSessionRequest
     roots = [str(BUILTIN_PLUGIN_ROOT.parent / "examples" / "plugins")]
     override = tmp_path / "config.json"
     override.write_text(json.dumps({"schema_version": 1, "plugins": {"task_notes": {
@@ -247,7 +251,7 @@ def test_core_is_reserved_for_framework_contributions(tmp_path):
 def test_optional_domain_ports_degrade_when_plugin_directory_is_absent(monkeypatch):
     from app.agent_base.core import plugins
     from app.agent_base.adapters.memory import (load_memory, NoOpMemory)
-    from app.trace.tracing import load_trace, NoOpTraceProvider
+    from app.agent_base.adapters.tracing import load_trace, NoOpTraceProvider
     monkeypatch.setattr(plugins, "_default_manager", PluginManager(()))
     assert isinstance(load_memory(llm=object(), settings=SimpleNamespace()), NoOpMemory)
     assert isinstance(load_trace(settings=SimpleNamespace()), NoOpTraceProvider)

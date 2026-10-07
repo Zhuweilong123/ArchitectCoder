@@ -11,7 +11,7 @@
     {"type": "uml_valid", "path": "design/radar_design_0730.umlproj"},
     {"type": "paths_unchanged", "paths": ["src/main.py", "src/radar_sim/__init__.py", "src/radar_sim/common.py", "src/radar_sim/mode_control.py", "src/radar_sim/pulse_compression.py", "src/radar_sim/transmit.py", "test/conftest.py", "test/test_design_source_consistency.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
   ],
-  "checkers": [{"type": "answer_contains_all", "texts": ["DelayProcessor", "向后", "回归测试"]}],
+  "checkers": [{"type": "answer_contains_groups", "texts": ["DelayProcessor"], "groups": [{"id": "delay_direction", "any_of": ["向后", "后移", "shift right", "shifted right", "shift to the right", "positive delay"]}, {"id": "regression", "any_of": ["回归测试", "regression test", "regression tests", "pytest"]}]}],
   "max_seconds": 180,
   "max_tool_calls": 50,
   "max_total_tokens": 70000,

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import os
 
-from app.trace.tracing import TraceReplayExhausted
+from app.agent_base.host_api.tracing import TraceReplayExhausted
 
 logger = logging.getLogger(__name__)
 
@@ -200,15 +200,6 @@ def _extract_recorded_steps(turn_events: list[dict]) -> list[dict]:
     if cur is not None:
         steps.append(cur)
     return steps
-
-
-def _suppress_trace_hook(kind: str, *args, **kwargs):
-    """no-op trace 钩子：回放期间屏蔽 LLM 调用写入任何 trace。
-
-    rerun 模式会真调 LLM，若全局 trace 钩子仍指向某会话，回放自身的调用
-    （span_path="replay"）会被写进该会话的 trace 文件，污染后续回放的游标对齐。
-    """
-    return None
 
 
 class ReplayLLM:
@@ -411,8 +402,8 @@ def _build_live_registry(
 
 def _build_rerun_llm():
     """构建真实 LLM（rerun 模式）。"""
-    from app.agent_base.core.llm import BaseAgentsLLM
-    return BaseAgentsLLM.from_settings(temperature=0.3)
+    from app.agent_base.host_api.services import get_host_services
+    return get_host_services().create_model(temperature=0.3)
 
 
 async def replay_agent_session(
@@ -521,12 +512,11 @@ async def replay_agent_session(
         max_steps=max(max_step, 5),
     )
 
-    from app.trace.tracing import push_trace_hook, pop_trace_hook
+    from app.agent_base.host_api.services import get_host_services
 
     # 回放期间屏蔽 trace 写入：rerun 模式真调 LLM，若全局 trace 钩子仍指向
     # 某会话，会把回放自身的调用写进该会话 trace，污染后续回放。压入 no-op 隔离。
-    push_trace_hook(_suppress_trace_hook)
-    try:
+    with get_host_services().suppress_tracing():
         results = []
         for idx, t in enumerate(turns):
             steps: list[dict] = []
@@ -564,8 +554,6 @@ async def replay_agent_session(
                 "steps": steps,
                 "recorded_steps": recorded_steps,
             })
-    finally:
-        pop_trace_hook(_suppress_trace_hook)
 
     llm_total = len(_step_level_events(events, "llm_response"))
     tool_total = len(_pick(events, "tool_result"))

@@ -119,6 +119,7 @@ class DevPromptBuilder:
             "## Execution rules",
             "- Do only what was asked. For a greeting or pure chat, reply briefly without tools.",
             "- Read the smallest useful context before editing. Preserve unrelated user changes and do not invent files, tool results, tests, or completion.",
+            "- .architectcoder is an internal project state directory managed by the host, not source code, tests, or design content. Exclude it from project exploration and do not read, edit, or delete its contents. Task configuration is resolved by the host through run_task.",
             "- Make the minimal correct change and verify each completed phase before moving to the next phase. For repairs, run the focused existing test early and rerun it after the fix.",
             "- For a multi-step task with two or more meaningful phases, call todo_write before other tools and create 3-5 concise todos. Include one verification item, keep one item in_progress, update statuses as phases finish, and complete all items before the final response. Do not use it for greetings, simple single-step edits, pure review, or status questions.",
             "- Treat a human-review pause as a normal phase boundary. Preserve the latest accepted state and resume from the review result.",
@@ -144,7 +145,8 @@ class DevPromptBuilder:
         return "\n".join(prompt_parts)
 
     async def build_context(self, *args, **kwargs):
-        from app.agent_base.core.hooks import HookEvent, get_runtime
+        from app.agent_base.host_api.lifecycle import HookEvent
+        from app.agent_base.core.hooks import get_runtime
         from app.agent_base.core.operations import operation_scope, current_operation
         parent = current_operation()
         with extension_scope(self.extension_context.fork()), operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
@@ -154,7 +156,8 @@ class DevPromptBuilder:
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
-        from app.agent_base.core.hooks import HookEvent, HookContext, get_hooks, get_runtime
+        from app.agent_base.host_api.lifecycle import HookEvent, HookContext
+        from app.agent_base.core.hooks import get_hooks, get_runtime
         from backend.config.project_storage import project_id_for
         project_id = project_id_for(project_file) if project_file else ""
         sections: dict[str, str] = {}
@@ -177,7 +180,8 @@ class DevPromptBuilder:
 
 @pin_plugins
 async def create_dev_agent(*args, **kwargs):
-    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+    from app.agent_base.core.hooks import get_hooks
     from app.agent_base.core.operations import operation_scope
     with operation_scope("initialize", stage=HookEvent.INITIALIZE.value, scope="agent"):
         await get_hooks().aemit(HookEvent.INITIALIZE, HookContext(HookEvent.INITIALIZE, "DevAgent"))

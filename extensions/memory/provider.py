@@ -79,8 +79,8 @@ class SQLiteMemoryProvider:
 
     @staticmethod
     def _trace(event, **fields):
-        from app.trace.tracing import emit_trace
-        emit_trace(event, **fields)
+        from app.agent_base.host_api.services import get_host_services
+        get_host_services().emit_event(event, fields)
 
     def _file_resource(self, path):
         try:
@@ -222,8 +222,8 @@ class SQLiteMemoryProvider:
             async def extract(prompt: str) -> str:
                 # Keep background extraction visible in trace without making
                 # it part of the foreground Agent turn.
-                from app.trace.tracing import trace_span
-                with trace_span("MemoryArchive"):
+                from app.agent_base.host_api.services import get_host_services
+                with get_host_services().trace_span("MemoryArchive"):
                     return await self.llm.ainvoke(
                         [{"role": "user", "content": prompt}],
                         max_tokens=None,
@@ -247,7 +247,8 @@ class SQLiteMemoryProvider:
                         terminal_status=request.terminal_status, **manager.last_write_report)
             return MemoryArchiveResult(
                 stored_count=manager.last_write_report.get("inserted", 0) + manager.last_write_report.get("updated", 0),
-                metadata={"provider": "sqlite", **manager.last_write_report},
+                metadata={"provider": "sqlite", **manager.last_write_report,
+                          "degraded": manager.last_write_report.get("skipped") == "extraction_failed"},
             )
         finally:
             manager.close()

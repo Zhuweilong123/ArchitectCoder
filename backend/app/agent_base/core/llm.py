@@ -110,7 +110,7 @@ async def _await_with_retry(fn, *, max_retries: int = 2, on_error=None):
 # 延迟导入避免循环依赖。
 def _trace_hook(kind, *args, **kwargs):
     try:
-        from app.trace.tracing import emit_trace
+        from app.agent_base.core.observability import emit_trace
         return emit_trace(kind, *args, **kwargs)
     except Exception:
         return None

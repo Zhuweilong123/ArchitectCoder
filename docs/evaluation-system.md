@@ -90,7 +90,46 @@ Fixture 采用 `design/`、`src/`、`test/` 三类资源边界，可选 `base_fi
 
 Runner 会分别执行两组 Checker，并把结果合并到最终结果中；当前 hard checker 是结果证据和门禁输入，不采用失败即停止的短路执行。发布流程应按 Case 的 `release_gate` 和 Checker 配置解释结果，不能只看自然语言回答或单一平均分。
 
+### 1.4.1 回答表达覆盖与功能证据
+
+`answer_contains_all` 保留大小写敏感的精确子串匹配，适用于方法名、文件名等约束。
+`answer_contains_groups` 用于描述性表达：所有组都必须命中，每组的 `any_of`
+命中任意表达即可；可选 `texts` 同时保留精确匹配。这使一个原有 Checker 可以原位
+迁移，不改变该检查项在平均分中的权重。结果仍为通过 1 分、失败 0 分。
+
+```json
+{
+  "type": "answer_contains_groups",
+  "texts": ["removeTarget", "bool"],
+  "groups": [
+    {"id": "verification", "any_of": ["测试", "test", "tests", "pytest", "full suite"]}
+  ]
+}
+```
+
+组内表达会统一 Unicode 兼容形式、大小写及连续空白；英文词边界避免将
+`resource` 命中为 `source`。配置要求组 ID 唯一，分组和候选表达不能为空。
+结果记录 `matched_groups`、`missing_groups`、`missing_texts` 和
+`scope=text_coverage`，便于定位未覆盖的表达。
+
+这是文本覆盖检查，不是语义事实判定：“未运行测试”同样提到了测试。
+文件、UML、隐藏测试和保护路径 Checker 负责产物正确性，Trace 策略负责对应的
+执行证据。评测器运行 pytest 成功不代表 Agent 自己运行过测试，不能混用两种证据。
+已有批次保留原始评分；迁移后的表达规则仅用于新评测，不回写历史结果。
+
 ### 1.5 EvalResult 与 EvalSummary
+
+后台任务通过通用 `BackgroundTaskRegistry` 注册，宿主不依赖记忆插件实现。
+评测 TraceSession 在退出前给予后台任务 30 秒收尾窗口，超时取消并等待取消清理完成，
+随后关闭 trace、复制工作区快照、清理临时目录及结算用量。取消清理可能超过该窗口，
+宿主必须优先保证后台不再持有工作区资源。前台耗时单独记录为
+`metadata.foreground_duration_ms`，总耗时包含评测与后台收尾。
+
+`metadata.background_tasks` 保存任务来源、运行状态和已知用量；
+`background_usage_complete` 标识记录是否完整，`background_total_tokens_known`
+只表示已获得的 usage。请求无响应或响应没有 usage 时不得把这些已知值理解成完整成本。
+在线后台任务使用独立 trace，`background_result` 关联 `source_trace_id` 和来源 run，
+即使前台 trace 已关闭也能记录响应及归档状态，不阻塞前台返回。
 
 `EvalResult.status` 当前包括 `running`、`passed`、`failed`、`timeout`、`budget_exceeded`、`budget_finalized` 和 `error`。`budget_finalized` 表示 Agent 在预算边界完成了可交付的最终答案；只有 Checker 通过时才计入 `passed`，否则同时计入 `failed`，不能把预算收敛误报为成功。
 

@@ -1,20 +1,26 @@
 # 插件架构与扩展契约
 
 > 状态：当前实现说明
-> 更新日期：2026-10-06
+> 更新日期：2026-10-07
 > 适用范围：当前仓库 HEAD。本文描述运行时代码的实际边界；代码提交继续演进时，以源码和配置为最终依据。
 
 ## 1. 当前边界
 
 插件机制把稳定的 Agent 端口与可替换的领域实现分开：
 
-- `backend/app/agent_base/core/` 定义端口、协议、生命周期管理器和降级实现。
-- `backend/app/trace/tracing.py` 保留 Trace 的运行时端口、会话生命周期和协程上下文桥接。
+- `backend/app/agent_base/host_api/` 定义宿主协议；`adapters/` 负责加载和降级；`core/` 管理通用生命周期、事件路由和操作上下文。
+- `backend/app/runtime/trace_session.py` 管理 Trace 会话与后台资源生命周期；`runtime/tool_outputs.py` 独立管理工具结果续读。
 - `extensions/` 保存具体 provider、存储、序列化和领域算法。
 - `backend/app/main.py` 只负责加载插件拥有的 HTTP router，并统一附加认证依赖。
 - `extensions/<plugin>/plugin.json` 是插件声明及默认配置的来源；`backend/config/` 负责解析和部署覆盖。
 
 当前由统一管理器维护七个插件槽位：`orchestration`、`memory`、`trace`、`evals`、`knowledge_graph`、`design_contract`、`skills`。Skill 的协议与版本快照详见 [Skill 插件](skills-plugin.md)。
+
+演化目标是保持主流程稳定，通过 slot 接入新增能力。新扩展在自己的 `plugin.json` 中声明 slot、接口、阶段贡献和配置，由统一发现与调度机制接入；领域请求、结果和策略放在扩展自己的 `plugin_api.py` 与实现中。只有新增通用执行语义时才调整主流程，新增领域能力不应增加核心分支或插件专用字段。
+
+扩展不得直接导入 `app.agent_base.core`。公共阶段、Hook 数据和 Contribution 声明位于 `host_api/lifecycle.py`，公共异常位于 `host_api/errors.py`；事件、运行上下文、后台任务、操作范围、模型创建与工具 Provider 调度通过 `host_api/services.py` 的 `HostServices` 接口访问。实现由 `adapters/host_services.py` 绑定到核心，并在应用装配入口安装；请求可通过 `host_services_scope` 或 `ExtensionContext.host_services` 注入替代实现，子任务继承当前请求绑定。该接口只承载通用宿主能力，不吸收各插件的领域接口。
+
+Contribution 是纯数据声明；处理器解析、校验与注册由宿主执行，插件不操作核心 HookRegistry 或 ContextVar token。稳定的工具基类与执行入口仍属于宿主提供的公共工具能力。
 
 七个内置扩展与新增扩展均通过自己的 `plugin.json` 声明。系统扫描仓库 `extensions/` 和 `PLUGIN_ROOTS` 指定根目录的直接子目录，发现元数据后合并部署配置，再导入工厂与贡献声明并编译计划。Provider 保持按需创建。阶段贡献可以写入 JSON，或通过显式 contribution_loader 提供；路由入口也由插件声明。`DEFAULT_PLUGIN_SPECS` 仅是从插件文件生成的兼容快照。详见[目录发现与独立配置](plugin-discovery.md)和[阶段贡献说明](plugin-lifecycle.md)。
 
@@ -33,15 +39,15 @@ backend/
 │   └── agent_config.py          # 单个 Agent 的运行参数模型
 └── app/
     ├── agent_base/
+    │   ├── host_api/            # 宿主上下文、通用请求与 Trace 协议
+    │   ├── adapters/            # Provider 加载、校验、降级与宿主能力适配
     │   └── core/
     │       ├── plugins.py       # PluginSpec、PluginManager、PluginState
-    │       ├── skills.py        # SkillProvider、SkillCatalog 和 NoOp 实现
-    │       ├── orchestration.py # OrchestrationPort 和 NoOpOrchestrator
-    │       ├── memory.py        # MemoryPort 和 NoOpMemory
-    │       ├── evals.py         # EvalProvider 和 NoOpEvalProvider
-    │       └── knowledge_graph.py # KnowledgeGraphProvider 和 NoOp 实现
-    ├── trace/
-    │   └── tracing.py           # TraceProvider、TraceSession 和 NoOpTraceProvider
+    │       ├── observability.py # 协程上下文、事件路由和 span
+    │       └── background_tasks.py # 通用后台任务调度与结算
+    ├── runtime/
+    │   ├── trace_session.py     # Provider 无关的会话生命周期
+    │   └── tool_outputs.py      # 有界工具结果存储与会话隔离
     └── main.py                  # 扩展 router 的应用挂载点
 
 extensions/

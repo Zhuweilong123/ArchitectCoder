@@ -15,6 +15,7 @@ EVAL_CHECKER_PROTOCOL_VERSION = "deterministic-checkers-v1"
 
 SUPPORTED_CHECKER_TYPES = frozenset({
     "answer_contains_all",
+    "answer_contains_groups",
     "answer_ordered_contains",
     "file_absent",
     "file_contains",
@@ -49,6 +50,7 @@ EVAL_TRACE_TOOL_NAMES = frozenset({
 
 CHECKER_REQUIRED_FIELDS = {
     "answer_contains_all": ("texts",),
+    "answer_contains_groups": ("groups",),
     "answer_ordered_contains": ("texts",),
     "file_absent": ("path",),
     "file_contains": ("path", "text"),
@@ -68,6 +70,29 @@ CHECKER_REQUIRED_FIELDS = {
 }
 
 
+def validate_answer_groups(groups: Any, texts: Any = None) -> None:
+    """Reject empty alternatives and ambiguous group IDs before evaluation."""
+    if not isinstance(groups, list) or not groups:
+        raise ValueError("answer_contains_groups requires non-empty groups")
+    ids: set[str] = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            raise ValueError("answer group must be an object")
+        group_id = group.get("id")
+        if not isinstance(group_id, str) or not group_id.strip() or group_id in ids:
+            raise ValueError("answer group id must be a unique non-empty string")
+        ids.add(group_id)
+        alternatives = group.get("any_of")
+        if not isinstance(alternatives, list) or not alternatives or any(
+            not isinstance(text, str) or not text.strip() for text in alternatives
+        ):
+            raise ValueError("answer group any_of must contain non-empty strings")
+    if texts is not None and (not isinstance(texts, list) or any(
+        not isinstance(text, str) or not text.strip() for text in texts
+    )):
+        raise ValueError("answer group texts must be a list of non-empty strings")
+
+
 def _validate_checker_contract(configs: list[dict[str, Any]], scope: str) -> None:
     for index, config in enumerate(configs):
         kind = str(config.get("type") or "")
@@ -81,6 +106,8 @@ def _validate_checker_contract(configs: list[dict[str, Any]], scope: str) -> Non
             raise ValueError(
                 f"{scope}[{index}] is missing required fields: {missing_fields}"
             )
+        if kind == "answer_contains_groups":
+            validate_answer_groups(config["groups"], config.get("texts"))
         if kind != "trace_policy":
             continue
         required_tools = {

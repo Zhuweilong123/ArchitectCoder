@@ -6,7 +6,7 @@ import json
 import uuid
 from dataclasses import asdict
 
-from app.agent_base.core.hooks import get_runtime
+from app.agent_base.host_api.services import get_host_services
 from extensions.orchestration.plugin_api import ExplorationDemand, ExplorationPort
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool, ToolParameter
@@ -62,7 +62,7 @@ class ExploreArchitectureTool(AsyncTool):
         if not queries:
             return "Error: provide at least one observed graph search term"
 
-        runtime = get_runtime()
+        runtime = get_host_services().runtime()
         if runtime.policy_metadata.get("architecture_scheduling_enabled") is False:
             return json.dumps({
                 "status": "unavailable",
@@ -122,7 +122,7 @@ class ArchitectureRouteTool(AsyncTool):
         if decision not in {"direct", "explore"} or not reason:
             return json.dumps({"status": "invalid", "reason":
                                "decision must be direct or explore and reason is required"})
-        if get_runtime().policy_metadata.get("architecture_scheduling_enabled") is False:
+        if get_host_services().runtime().policy_metadata.get("architecture_scheduling_enabled") is False:
             return json.dumps({"status": "unavailable", "reason":
                                "architecture scheduling disabled for this run"})
         if decision == "direct":

@@ -140,8 +140,11 @@ continue / recover（追加策略提示）/ finalize（工具列表置空）
 表示不限时，正数可恢复指定的总时长限制。单次模型调用、命令执行、显式指定期限的
 编排工作单元和评测用例仍使用各自的超时，不受这一默认值影响。
 
-`agent_subagent_per_run_execution_budget_tokens=500000` 只用于主 Agent 管理的子代理，
-与主 Agent 的 `ExecutionBudget` 分开。上下文语义压缩的模型和触发参数属于
+`agent_subagent_per_run_execution_budget_tokens=131072` 是普通子代理累计输入与输出预算，
+与主 Agent 的 `ExecutionBudget` 分开；单次上下文沿用主 Agent 的额度与压缩配置。
+架构探索每项上限同为 131072，共享默认预算 524288，最多两个任务并发。
+累计预算收尾会预留总结输入与输出、压缩工具历史为证据检查点，并显式限制模型输出。
+上下文语义压缩的模型和触发参数属于
 `agent_session_compression_*`，详见 `context-management-design.md`。
 
 ## 7. 失败与可观测性

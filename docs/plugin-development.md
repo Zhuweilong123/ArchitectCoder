@@ -1,5 +1,18 @@
 # 插件开发工具包
 
+新增能力通过插件清单中的 slot、interfaces 和 contributions 接入统一主流程。阶段与贡献声明从 `app.agent_base.host_api.lifecycle` 导入；需要宿主能力时使用 `app.agent_base.host_api.services.get_host_services()`，不直接导入 `app.agent_base.core`。插件自己的领域请求和结果留在插件目录。
+
+```python
+from app.agent_base.host_api.services import get_host_services
+
+def observe_prepare(context):
+    get_host_services().record_event(
+        "plugin_example", stage=context.event.value, run_id=context.run_id,
+    )
+```
+
+宿主在装配入口绑定服务实现；测试或请求可通过 `host_services_scope` 注入替代服务，无需替换核心函数。
+
 首次体验可先阅读[插件快速上手](plugin-quickstart.md)（[English](plugin-quickstart.en.md)），包含 `task_notes` 的可复制命令、预期结果和离线 HTML 示例。
 
 工具入口：[backend/plugin_dev.py](../backend/plugin_dev.py)。使用后端 Python 环境运行，无需启动服务、配置模型密钥或创建 DevAgent 会话。CLI 不读取应用 `.env`，只使用插件默认值及明确传入的开发输入。命令路径相对当前工作目录解析；应用中的 `PLUGIN_ROOTS` 相对 `backend/` 解析。

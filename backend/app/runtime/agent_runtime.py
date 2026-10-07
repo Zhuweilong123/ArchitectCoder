@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
-from app.trace.tracing import TraceSink
+from app.agent_base.host_api.tracing import TraceSink
 
 
 DEFAULT_SESSION_TTL_SECONDS = 2 * 3600

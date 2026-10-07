@@ -28,7 +28,9 @@ package:
   and optional knowledge-graph relationship enrichment through the stable provider port
 
 Only stable application-facing host APIs, generic tool/runtime infrastructure and
-the central `PluginManager` remain in `backend/`. The old paths under
-`backend/memory_system`, `backend/knowledge_graph`, `backend/app/evals`,
-`backend/app/trace` and `backend/app/agent_base/orchestration` are compatibility
-facades; they contain no plugin implementation logic.
+the central `PluginManager` remain in `backend/`. Trace contracts live in
+`agent_base/host_api/tracing.py`, loading and fault isolation in
+`agent_base/adapters/tracing.py`, event routing in `agent_base/core/observability.py`,
+and session lifetimes in `runtime/trace_session.py` (all under `backend/app`).
+Tool result continuation uses `runtime/tool_outputs.py` independently of tracing.
+The old `backend/app/trace` package has been removed; no compatibility facade is retained.

@@ -1,4 +1,4 @@
-"""The model can recover every character of a long tool result from its trace."""
+"""The model can recover complete tool results independently of tracing."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExe
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.tool_output import MAX_FED_CHARS, ReadToolOutputTool
-from app.trace.tracing import TraceSession
+from app.runtime.trace_session import TraceSession
+from app.runtime.tool_outputs import current_tool_output_store, ToolOutputStore
+from app.agent_base.adapters.tracing import NoOpTraceProvider
 from extensions.trace.chat_trace import ChatTraceLogger
 
 
@@ -33,7 +35,7 @@ def _call(name: str, arguments: dict, call_id: str) -> dict:
     }
 
 
-def test_long_tool_output_is_paged_from_current_trace(tmp_path):
+def test_long_tool_output_is_paged_and_recorded(tmp_path):
     original = "A" * 2800 + "中🙂" + "B" * 5200
     registry = ToolRegistry()
     registry.register_tool(_TextTool(original))
@@ -53,7 +55,7 @@ def test_long_tool_output_is_paged_from_current_trace(tmp_path):
         output_id, offset_text = match.groups()
         offset = int(offset_text)
         assert first[:offset] == original[:offset]
-        assert trace.read_tool_output(output_id) == original
+        assert current_tool_output_store().read(output_id) == original
 
         chunks = [first[:offset]]
         while offset < len(original):
@@ -104,3 +106,41 @@ def test_short_tool_output_is_unchanged(tmp_path):
         ))
     assert result.tool_results[0]["content"] == "short result"
     assert result.details[0]["fed_truncated"] is False
+
+
+def test_paging_without_trace_and_registry_isolation():
+    original = "中🙂" * 4000
+    registry = ToolRegistry()
+    registry.register_tool(_TextTool(original))
+    reader = ReadToolOutputTool()
+    registry.register_tool(reader)
+    executor = ToolRoundExecutor(registry, agent_name="Test")
+    result = asyncio.run(executor.execute([_call("text_tool", {}, "c")], step=1))
+    first = result.tool_results[0]["content"]
+    output_id, offset = re.search(r"output_id=([0-9a-f]{16}); next_offset=(\d+)", first).groups()
+    assert registry.output_store.read(output_id) == original
+    assert original[int(offset):int(offset) + 2600] in reader.run({"output_id": output_id, "offset": offset})
+    other = ToolRegistry()
+    other_reader = ReadToolOutputTool()
+    other.register_tool(other_reader)
+    assert other_reader.run_result({"output_id": output_id, "offset": 0}).error_code == "TOOL_OUTPUT_NOT_FOUND"
+    with TraceSession(session_id="disabled", provider=NoOpTraceProvider()) as sink:
+        assert not sink.path
+        result = asyncio.run(executor.execute([_call("text_tool", {}, "d")], step=1))
+        output_id = re.search(r"output_id=([0-9a-f]{16})", result.tool_results[0]["content"]).group(1)
+        assert current_tool_output_store().read(output_id) == original
+        assert original[:2600] in reader.run({"output_id": output_id, "offset": 0})
+    assert current_tool_output_store() is None
+    assert registry.output_store.read(output_id) is None
+
+
+def test_output_store_evicts_old_results_and_rejects_oversized_results():
+    store = ToolOutputStore(max_bytes=12, max_records=2)
+    first = store.put("tool", "中🙂")
+    second = store.put("tool", "abc")
+    third = store.put("tool", "xyz")
+    assert store.read(first) is None
+    assert store.read(second) == "abc"
+    assert store.read(third) == "xyz"
+    assert store.put("tool", "中" * 5) == ""
+    assert store.read(second) == "abc"

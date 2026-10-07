@@ -1,11 +1,12 @@
 # Trace 记录、回放与使用手册
 
-> 状态：当前实现说明；更新日期：2026-09-11。
+> 状态：当前实现说明；更新日期：2026-10-07。
 > 本文描述当前 Trace provider、JSONL 格式、查看 API 和三种回放模式。
 
-> 当前路径说明：运行时 Trace 端口位于 `backend/app/trace/tracing.py`；具体写入、读取和回放实现位于
-> `extensions/trace/`。文中 `backend/app/trace/chat_trace.py`、`replay.py` 和 `trace_reader.py`
-> 为旧实现路径。
+> 当前路径说明：Trace 协议位于 `backend/app/agent_base/host_api/tracing.py`，加载与降级位于
+> `adapters/tracing.py`，事件路由位于 `core/observability.py`；会话生命周期位于
+> `backend/app/runtime/trace_session.py`。具体写入、读取和回放实现位于 `extensions/trace/`。
+> 旧 `backend/app/trace` 包已移除。
 > JSONL 事件常量与默认目录由 `extensions/trace/format.py` 独立维护，写入器和读取器都依赖该模块。
 > 回放器按当前 foundation 工具契约工作，不再维护旧工具名兼容层；历史 trace 需先迁移。
 > `list_files`/`apply_changes`/`run_task`/`run_program`/`shell` 契约以
@@ -46,7 +47,7 @@ ReActAgent 循环
 ## 4. trace 记录格式
 
 - **文件**：`temp/chat_log/YYYY-MM-DD/trace_{session_id}.jsonl`。读取端同时兼容历史平铺文件。
-- **写入**：`extensions/trace/chat_trace.py` 的 `ChatTraceLogger`；核心 Trace Port 与全局 hook 位于 `backend/app/trace/tracing.py`，LLM 通过 `_trace_hook` 转发。
+- **写入**：`extensions/trace/chat_trace.py` 的 `ChatTraceLogger`；宿主 Trace 协议位于 `backend/app/agent_base/host_api/tracing.py`，协程事件路由位于 `core/observability.py`，LLM 通过 `_trace_hook` 转发。后台 trace 通过可选 `fork` 接口继承插件存储策略，宿主不解析具体文件路径。工具输出分页使用独立会话存储，关闭 Trace 后仍可续读。
 - **事件类型**：
 
 | event_type | 含义 |
@@ -203,7 +204,11 @@ rerun = 真 LLM + mock 工具，真 LLM 可能偏离原始轨迹（多调工具 
 | 文件 | 职责 |
 |---|---|
 | `extensions/trace/chat_trace.py` | JSONL trace 记录（ChatTraceLogger；user_message 带 source_dir/test_dir） |
-| `backend/app/trace/tracing.py` | Trace Port、Provider loader、TraceSession、span 与全局 hook |
+| `backend/app/agent_base/host_api/tracing.py` | Trace 请求、Provider、Sink、查询与可选 fork 协议 |
+| `backend/app/agent_base/adapters/tracing.py` | Provider 加载、NoOp 与故障降级 |
+| `backend/app/agent_base/core/observability.py` | 协程事件路由、span 与 hook |
+| `backend/app/runtime/trace_session.py` | Trace 会话与后台记录生命周期 |
+| `backend/app/runtime/tool_outputs.py` | 与 Trace 无关的有界工具输出续读存储 |
 | `backend/app/agent_base/core/llm.py` | BaseAgentsLLM + `_trace_hook` 转发 |
 | `extensions/trace/trace_reader.py` | 读取解析 JSONL（list / read） |
 | `extensions/trace/replay.py` | 回放引擎（ReplayLLM / MockToolRegistry / HybridToolRegistry / replay_agent_session / 上下文与 workspace 重建 / 原始侧还原 / 污染隔离） |

@@ -11,7 +11,7 @@
     {"type": "uml_method_signature", "path": "design/radar_design_0730.umlproj", "diagram": "EchoSimulation Domain Model", "class_name": "TargetSceneManager", "method": "removeTarget", "params": "distance: float", "return_type": "bool"},
     {"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
   ],
-  "checkers": [{"type": "answer_contains_all", "texts": ["removeTarget", "bool", "测试"]}],
+  "checkers": [{"type": "answer_contains_groups", "texts": ["removeTarget", "bool"], "groups": [{"id": "verification", "any_of": ["测试", "test", "tests", "pytest", "full suite"]}]}],
   "max_seconds": 240,
   "max_tool_calls": 60,
   "max_total_tokens": 80000,

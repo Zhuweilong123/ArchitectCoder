@@ -11,13 +11,14 @@ from fastapi.testclient import TestClient
 
 from backend.config import Settings
 from app.agent_base.core import hooks
-from app.agent_base.core.hooks import AgentRuntime, HookContext, HookEvent, HookRegistry
+from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+from app.agent_base.core.hooks import AgentRuntime, HookRegistry
 from app.agent_base.core.lifecycle import build_plan, install_plan
 from app.agent_base.core.plugins import PluginManager
 from app.agent_base.core.plugin_runtime import (
     PluginRefreshService, PluginSnapshot, current_snapshot, plugin_scope, publish_snapshot,
 )
-from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
+from app.agent_base.core.observability import reset_current_trace_sink, set_current_trace_sink
 
 
 @pytest.fixture(autouse=True)

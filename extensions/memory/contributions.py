@@ -5,23 +5,22 @@ import asyncio
 import logging
 import re
 
-from app.agent_base.core.extension_context import current_extension_context
+from app.agent_base.host_api.services import get_host_services
 from .plugin_api import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest
 
 logger = logging.getLogger(__name__)
-_background_tasks: set[asyncio.Task] = set()
 _MEMORY_BLOCK = re.compile(r"<project_memory>.*?</project_memory>", re.DOTALL)
 
 
 def _binding():
-    context = current_extension_context()
+    context = get_host_services().extension_context()
     if context is None:
         return None, None, None
     return context, context.providers.get("memory"), context.state("memory")
 
 
 async def _recall(provider, project_id, query):
-    session = current_extension_context()
+    session = get_host_services().extension_context()
     options = session.metadata.get("plugin_options", {}).get("memory", {}) if session else {}
     return await provider.recall(MemoryRecallRequest(
         project_id, query, top_k=options.get("recall_top_k", getattr(provider, "recall_top_k", 3)),
@@ -130,31 +129,32 @@ def task_after(context):
     )
     state["archive_scheduled"] = True
     # The snapshot is frozen before background work; future runs cannot rebind evidence.
-    task = asyncio.create_task(archive_task(provider, request))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    get_host_services().submit_background(archive_task(provider, request), owner="memory_archive",
+                      run_id=request.run_id, source_trace_id=request.trace_id)
 
 
 async def archive_task(memory, request):
-    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks, get_runtime
-    from app.agent_base.core.operations import operation_scope
-    runtime = get_runtime()
+    from app.agent_base.host_api.lifecycle import HookEvent
+    host = get_host_services()
+    runtime = host.runtime()
     parent_id = runtime.run_operation_id if request.run_id and runtime.run_id == request.run_id else None
     async def publish(stage, **data):
-        await get_hooks().aemit(stage, HookContext(stage, "memory", run_id=request.run_id,
-            payload={"source": "memory_archive", **data}))
+        await host.publish(stage, agent_name="memory", run_id=request.run_id,
+                           payload={"source": "memory_archive", **data})
     status = "failed"
-    with operation_scope("background", run_id=request.run_id, stage="finalize", scope="background",
+    with host.operation_scope("background", run_id=request.run_id, stage="finalize", scope="background",
                          parent_operation_id=parent_id or None) as operation:
         try:
             await publish(HookEvent.BACKGROUND_BEFORE)
             result = await memory.archive(request)
             status = "degraded" if result.metadata.get("degraded") else "completed"
+            return result
         except asyncio.CancelledError:
             status = "cancelled"
             raise
         except Exception:
             logger.warning("[Memory] background archive failed", exc_info=True)
+            raise
         finally:
             operation.status = status
             await publish(HookEvent.BACKGROUND_AFTER, status=status)

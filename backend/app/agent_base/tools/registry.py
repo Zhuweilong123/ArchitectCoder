@@ -21,6 +21,8 @@ class ToolRegistry:
     """Register tools/functions and expose their model schemas."""
 
     def __init__(self, policy: CapabilityPolicy | None = None):
+        from app.runtime.tool_outputs import ToolOutputStore
+        self.output_store = ToolOutputStore()
         self._tools: dict[str, Tool] = {}
         self._functions: dict[str, dict[str, Any]] = {}
         self.executor = ToolExecutor(
@@ -38,6 +40,9 @@ class ToolRegistry:
         self.policy.set_allowed_tools(names)
 
     def register_tool(self, tool: Tool) -> None:
+        bind = getattr(tool, "bind_output_store", None)
+        if callable(bind):
+            bind(self.output_store)
         if tool.name in self._tools:
             print(f"Warning: tool '{tool.name}' already exists and will be replaced")
         self._tools[tool.name] = tool

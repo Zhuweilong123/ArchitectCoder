@@ -14,14 +14,18 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.services.run_state import RunConflict, RunStatus, get_run_store
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted
 
 from .impact import ImpactSlice
 from .partition import ExplorationPackage, PartitionDecision, _unit_key
 from .store import ScheduleConflict, SchedulePlan, ScheduleStore, WorkAssignment
 
 logger = logging.getLogger(__name__)
-_MAX_ITEM_TOKENS = 16000
+PER_ITEM_TOKEN_LIMIT = 131072
+
+
+def work_item_limit(total_tokens: int, partitions: int) -> int:
+    return max(partitions, min(4, total_tokens // PER_ITEM_TOKEN_LIMIT))
 
 
 def make_work_items(
@@ -96,9 +100,8 @@ class ScheduleOutcome:
 
 def item_token_budget(item: WorkAssignment, total_tokens: int,
                       items: tuple[WorkAssignment, ...]) -> int:
-    """Reproduce the scheduler's deterministic reservation for one item."""
-    total_cost = max(0.1, sum(entry.cost for entry in items))
-    return min(_MAX_ITEM_TOKENS, max(2500, int(total_tokens * item.cost / total_cost)))
+    """Give each explorer the same ceiling within the shared reservation."""
+    return min(PER_ITEM_TOKEN_LIMIT, max(0, total_tokens // max(1, len(items))))
 
 
 class DynamicExplorationScheduler:

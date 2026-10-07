@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.trace.tracing import TraceReplayExhausted, load_trace
+from app.agent_base.host_api.tracing import TraceReplayExhausted
+from app.agent_base.adapters.tracing import load_trace
 
 router = APIRouter(prefix="/api/trace", tags=["trace"])
 

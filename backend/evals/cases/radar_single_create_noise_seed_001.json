@@ -12,7 +12,7 @@
     {"type": "file_contains", "path": "design/radar_design_0730.umlproj", "text": "seed"},
     {"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}
   ],
-  "checkers": [{"type": "answer_contains_all", "texts": ["seed", "兼容", "测试"]}],
+  "checkers": [{"type": "answer_contains_groups", "texts": ["seed"], "groups": [{"id": "compatibility", "any_of": ["兼容", "backward compatible", "backward compatibility", "existing calls", "without seed", "unseeded"]}, {"id": "verification", "any_of": ["测试", "test", "tests", "pytest", "full suite"]}]}],
   "max_seconds": 240,
   "max_tool_calls": 60,
   "max_total_tokens": 80000,

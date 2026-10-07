@@ -65,6 +65,7 @@ const CHECKER_ENGLISH_LABELS: Record<string, { label: string; fields: Record<str
   pytest: { label: 'pytest', fields: { path: 'Test path', args: 'Arguments', timeout: 'Timeout (seconds)' } },
   hidden_pytest: { label: 'Hidden pytest', fields: { path: 'Test path', args: 'Arguments', timeout: 'Timeout (seconds)' } },
   answer_contains_all: { label: 'Answer contains all', fields: { texts: 'Required content' } },
+  answer_contains_groups: { label: 'Answer expression groups', fields: { texts: 'Exact required content', groups: 'Expression groups (JSON)' } },
   answer_ordered_contains: { label: 'Answer contains in order', fields: { texts: 'Ordered content' } },
   trace_policy: { label: 'Trace tool policy', fields: { max_tool_calls: 'Max tool calls', required_tools: 'Required tools', forbidden_tools: 'Forbidden tools' } },
   paths_unchanged: { label: 'Paths unchanged', fields: { paths: 'Paths' } },
@@ -105,6 +106,7 @@ export const TRACE_CHECKER_DEFINITIONS: CheckerDefinition[] = [
   { type: 'pytest', label: 'pytest', fields: [{ key: 'path', label: '测试路径', placeholder: '.' }, { key: 'args', label: '参数', kind: 'list' }, { key: 'timeout', label: '超时（秒）', kind: 'number' }] },
   { type: 'hidden_pytest', label: '隐藏 pytest', fields: [{ key: 'path', label: '测试路径', placeholder: '.' }, { key: 'args', label: '参数', kind: 'list' }, { key: 'timeout', label: '超时（秒）', kind: 'number' }] },
   { type: 'answer_contains_all', label: '回答包含全部内容', fields: [{ key: 'texts', label: '必含内容', kind: 'list', required: true }] },
+  { type: 'answer_contains_groups', label: '回答表达分组', fields: [{ key: 'texts', label: '精确必含内容', kind: 'list' }, { key: 'groups', label: '表达分组（JSON）', kind: 'json', required: true }] },
   { type: 'answer_ordered_contains', label: '回答按顺序包含', fields: [{ key: 'texts', label: '有序内容', kind: 'list', required: true }] },
   { type: 'trace_policy', label: 'Trace 工具策略', fields: [{ key: 'max_tool_calls', label: '最大工具调用', kind: 'number' }, { key: 'required_tools', label: '必须使用工具', kind: 'list' }, { key: 'forbidden_tools', label: '禁止使用工具', kind: 'list' }] },
   { type: 'paths_unchanged', label: '路径保持不变', fields: [{ key: 'paths', label: '路径', kind: 'list', required: true }] },
@@ -133,5 +135,21 @@ export function validateCheckerConfigs(configs: Array<Record<string, any>>, scop
       || (Array.isArray(config[field.key]) && config[field.key].length === 0)
     ));
     if (missing.length) throw new Error(`${scope}[${index}] 缺少：${missing.map((field) => field.label).join('、')}`);
+    if (config.type === 'answer_contains_groups') {
+      const ids = new Set<string>();
+      if (!Array.isArray(config.groups) || !config.groups.length) {
+        throw new Error(`${scope}[${index}] 表达分组必须是非空数组`);
+      }
+      config.groups.forEach((group: any) => {
+        if (!group || typeof group.id !== 'string' || !group.id.trim() || ids.has(group.id)) {
+          throw new Error(`${scope}[${index}] 分组 id 必须是唯一的非空字符串`);
+        }
+        ids.add(group.id);
+        if (!Array.isArray(group.any_of) || !group.any_of.length
+          || group.any_of.some((text: any) => typeof text !== 'string' || !text.trim())) {
+          throw new Error(`${scope}[${index}] any_of 必须是非空字符串数组`);
+        }
+      });
+    }
   });
 }

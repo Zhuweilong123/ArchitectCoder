@@ -8,7 +8,7 @@
     {"prompt": "你好", "hard_checkers": [{"type": "answer_contains_all", "texts": ["你好"]}, {"type": "trace_policy", "max_tool_calls": 0}]},
     {"prompt": "为 TargetSceneManager 增加 removeTarget(distance) -> bool。先完成源码实现。", "hard_checkers": [{"type": "hidden_pytest", "path": "project_radar/test_remove_target.py", "timeout": 60}, {"type": "trace_policy", "required_tools": ["apply_changes"]}]},
     {"prompt": "继续同步 UML 方法契约，并运行相关测试。", "hard_checkers": [{"type": "hidden_pytest", "path": "project_radar/test_remove_target.py", "timeout": 60}, {"type": "uml_method_signature", "path": "design/radar_design_0730.umlproj", "diagram": "EchoSimulation Domain Model", "class_name": "TargetSceneManager", "method": "removeTarget", "params": "distance: float", "return_type": "bool"}, {"type": "pytest", "path": "test", "timeout": 60}]},
-    {"prompt": "说明新增能力、修改文件和测试结果。", "hard_checkers": [{"type": "answer_contains_all", "texts": ["removeTarget", "源码", "UML", "测试"]}]}
+    {"prompt": "说明新增能力、修改文件和测试结果。", "hard_checkers": [{"type": "answer_contains_groups", "texts": ["removeTarget", "UML"], "groups": [{"id": "source", "any_of": ["源码", "源代码", "source", "source code"]}, {"id": "verification", "any_of": ["测试", "test", "tests", "pytest", "full suite"]}]}]}
   ],
   "hard_checkers": [{"type": "paths_unchanged", "paths": ["test/conftest.py", "test/test_design_source_consistency.py", "test/test_echo.py", "test/test_mode_control.py", "test/test_pulse_compression.py", "test/test_transmit.py"]}],
   "max_seconds": 360,

@@ -15,7 +15,7 @@ from backend.config import get_settings
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
-from app.agent_base.core.exceptions import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.adapters.contract_gate import (build_contract_gate_context, NoOpContractGate, resolve_contract_enabled)
 from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
@@ -44,7 +44,7 @@ from app.services.run_state import (
     get_run_store,
     run_status_for_completion,
 )
-from app.trace.tracing import TraceSink
+from app.agent_base.host_api.tracing import TraceSink
 
 logger = logging.getLogger(__name__)
 
@@ -349,7 +349,8 @@ async def _prepare_orchestration(
     agent: ReActAgent, **kwargs,
 ) -> tuple[str, Any, str]:
     from app.agent_base.core.operations import operation_scope
-    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
+    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+    from app.agent_base.core.hooks import get_hooks
     with operation_scope("prepare", run_id=kwargs.get("run_id", ""), stage=HookEvent.PREPARE.value):
         await get_hooks().aemit(HookEvent.PREPARE, HookContext(
             HookEvent.PREPARE, getattr(agent, "name", "DevAgent"), run_id=kwargs.get("run_id", ""),

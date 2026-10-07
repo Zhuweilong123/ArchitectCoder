@@ -32,10 +32,10 @@ def test_settings_default_context_limit_and_ratios():
     assert settings.agent_session_compression_trigger_ratio == 0.7
 
 
-def test_settings_default_subagent_budget_is_500k():
+def test_settings_default_subagent_cumulative_budget_is_128k():
     settings = _settings()
 
-    assert settings.agent_subagent_per_run_execution_budget_tokens == 500000
+    assert settings.agent_subagent_per_run_execution_budget_tokens == 131072
 
 
 def test_settings_default_toolchain_version_policy_is_observational():

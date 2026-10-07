@@ -84,7 +84,7 @@ async def _invoke_fc_model_impl(
     ):
         return None, "hook_stop", before_decision.reason
 
-    from app.trace.tracing import trace_span
+    from app.agent_base.core.observability import trace_span
 
     with trace_span(agent.name):
         try:

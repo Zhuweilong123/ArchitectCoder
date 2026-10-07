@@ -95,7 +95,10 @@ class TaskResolver:
         return (
             CallableTaskAdapter(
                 "architectcoder-manifest",
-                lambda root: (root / ".architectcoder").exists(),
+                # The directory also stores internal project state. Only an
+                # explicit manifest should override standard project metadata.
+                lambda root: (root / ".architectcoder" / "tasks.json").is_file()
+                or (root / ".architectcoder").is_file(),
                 lambda owner, root, task, target: owner._from_architectcoder_manifest(root, task, target),
             ),
             CallableTaskAdapter(

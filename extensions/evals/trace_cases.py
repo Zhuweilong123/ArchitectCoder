@@ -54,7 +54,7 @@ class TraceCasePublishRequest(BaseModel):
     suite: str = Field(default="", max_length=100)
 
 from backend.config import evaluation_root, get_settings
-from app.trace.tracing import load_trace
+from app.agent_base.adapters.tracing import load_trace
 
 from .models import EVAL_TRACE_TOOL_NAMES, EvalCase, EvalTurn, ProjectManifest
 from .paths import cases_dir, fixtures_dir, projects_dir

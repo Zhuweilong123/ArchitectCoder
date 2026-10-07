@@ -31,7 +31,7 @@
   },
   "defaults": {
     "max_workers": 2,
-    "total_tokens": 64000,
+    "total_tokens": 524288,
     "worker_seconds": 90.0
   },
   "dependencies": []

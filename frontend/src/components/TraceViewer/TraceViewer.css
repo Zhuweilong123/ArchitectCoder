@@ -310,6 +310,21 @@
   overflow: auto;
 }
 
+.trace-reading-toolbar { flex-wrap: wrap; justify-content: flex-start; }
+.trace-turn-select { width: 230px; }
+.trace-content-search .ant-input-affix-wrapper { flex: 1; min-width: 180px; }
+.trace-search-count { font-size: 12px; color: #595959; white-space: nowrap; }
+.trace-process-group { margin: 10px 0; background: #fafafa; }
+.trace-process-group .ant-collapse-header .ant-tag { margin-left: 8px; }
+.trace-turn-header { gap: 6px; }
+.trace-turn-message > .trace-expandable { margin: 6px 0 12px; }
+.trace-assistant { border-color: #bae0ff; }
+.trace-search-match { padding: 8px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 4px; margin-top: 6px; }
+.trace-search-match .ant-typography { font-size: 11px; overflow-wrap: anywhere; }
+.trace-search-snippet { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.trace-search-snippet mark { background: #ffd666; font-weight: 600; }
+.trace-content-search { flex-wrap: wrap; }
+
 @media (max-width: 820px) {
   .trace-toolbar-row {
     align-items: flex-start;

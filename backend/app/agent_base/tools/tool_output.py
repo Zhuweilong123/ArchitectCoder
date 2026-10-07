@@ -1,10 +1,10 @@
-"""Bounded model-facing tool output with trace-backed continuation."""
+"""Bounded model-facing tool output with session-backed continuation."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.trace.tracing import current_trace_sink
+from app.runtime.tool_outputs import current_tool_output_store
 
 from .base import Tool, ToolParameter
 from .result import ToolResult
@@ -51,12 +51,16 @@ class ReadToolOutputTool(Tool):
             description=(
                 "Continue a truncated result from a tool other than read_file "
                 "using its output_id and next_offset. Reads the original text "
-                "from the current trace without rerunning the tool. For current "
+                "from this session's output store without rerunning the tool. For current "
                 "workspace file content, use read_file with a line offset."
             ),
         )
         self.read_only = True
         self.can_parallel = True
+        self.output_store = None
+
+    def bind_output_store(self, store):
+        self.output_store = store
 
     def get_parameters(self) -> list[ToolParameter]:
         return [
@@ -81,16 +85,13 @@ class ReadToolOutputTool(Tool):
             return ToolResult.error("Error: offset and limit must be integers", "INVALID_ARGUMENT", True)
         if offset < 0 or limit < 1:
             return ToolResult.error("Error: offset must be nonnegative and limit must be positive", "INVALID_ARGUMENT", True)
-        sink = current_trace_sink()
-        if sink is None:
-            return ToolResult.error("Error: no active trace for this task", "TRACE_NOT_AVAILABLE")
-        reader = getattr(sink, "read_tool_output", None)
-        if not callable(reader):
-            return ToolResult.error("Error: current trace cannot read tool outputs", "TRACE_NOT_AVAILABLE")
-        output = reader(output_id, excluded_tool_names=frozenset({"read_file"}))
+        store = current_tool_output_store() or self.output_store
+        if store is None:
+            return ToolResult.error("Error: no active tool output store", "TOOL_OUTPUT_NOT_AVAILABLE")
+        output = store.read(output_id, excluded_tool_names=frozenset({"read_file"}))
         if output is None:
             return ToolResult.error("Error: output_id was not found or is a read_file result "
-                    "in the current trace; use read_file for file content", "TOOL_OUTPUT_NOT_FOUND", True)
+                    "in the current session; use read_file for file content", "TOOL_OUTPUT_NOT_FOUND", True)
         if offset > len(output):
             return ToolResult.error(f"Error: offset exceeds the {len(output)}-character result", "INVALID_ARGUMENT", True)
         end = min(len(output), offset + min(limit, MAX_PAGE_CONTENT_CHARS))

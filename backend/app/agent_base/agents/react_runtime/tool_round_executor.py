@@ -22,7 +22,8 @@ from ...evidence import EvidenceLedger, record_runtime_verification
 from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
 from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
-from app.trace.tracing import current_trace_sink, emit_trace
+from app.agent_base.core.observability import current_trace_sink, emit_trace
+from app.runtime.tool_outputs import current_tool_output_store
 from .failure_recovery import EDIT_REFRESH_CODES, RecoveryScopes
 
 
@@ -118,14 +119,13 @@ class ToolRoundExecutor:
             if isinstance(tool_args, str):
                 observation_full = observation_fed = execution[0]
 
-            sink = current_trace_sink()
             page_budget = tool_output_page_budget(tool_name)
             if (page_budget is not None and observation_fed == observation_full
-                    and tool_span and sink is not None
-                    and sink.trace_id
-                    and callable(getattr(sink, "read_tool_output", None))):
+                    and len(observation_full) > page_budget):
+                store = current_tool_output_store() or self.tool_registry.output_store
+                output_id = store.put(tool_name, observation_full)
                 observation_fed = first_tool_output_page(
-                    observation_full, tool_span, max_chars=page_budget,
+                    observation_full, output_id, max_chars=page_budget,
                 )
 
             if tool_result.verification is not None:
@@ -336,7 +336,7 @@ class ToolRoundExecutor:
             return await self._after_tool(tool_name, tool_args,
                 ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0, event_id=event_id)
 
-        from app.trace.tracing import trace_span
+        from app.agent_base.core.observability import trace_span
 
         with trace_span(f"{self.agent_name}/{tool_name}"):
             started_tool = time.monotonic()

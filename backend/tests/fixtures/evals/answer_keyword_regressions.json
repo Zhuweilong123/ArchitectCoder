@@ -1,0 +1,36 @@
+[
+  {
+    "batch_id": "batch_10a8d6805621461e",
+    "trace_file": "trace_20261007_172203_7b03806cad8449df_eval.jsonl",
+    "case_file": "radar_single_create_remove_target_001.json",
+    "old_texts": [
+      "removeTarget",
+      "bool",
+      "测试"
+    ],
+    "answer": "All phases complete. Here's the summary.\n\n## Completed\n\n**1. UML design updated (design-first, reviewed & accepted)**\n- File: `design/radar_design_0730.umlproj` → \"EchoSimulation Domain Model\" class diagram, class `TargetSceneManager`.\n- Added method contract: `+ removeTarget(distance: float): bool` (params `distance: float`, `return_type` `bool`, `visibility` `+`), preserving all existing IDs, attributes, positions, and sizes.\n- Extended the class note to describe the first-match deletion semantics.\n- Validated: project loads with a non-empty diagram set (`diagrams=6`). Submitted to human review → **accepted**.\n\n**2. Source implemented**\n- File: `src/radar_sim/echo.py`, class `TargetSceneManager`:\n```python\ndef removeTarget(self, distance: float) -> bool:\n    for index, target in enumerate(self.targets):\n        if target.distance == distance:\n            del self.targets[index]\n            return True\n    return False\n```\n- Removes the **first** target whose `distance` matches; returns `True` on removal, `False` when no match. No existing test files were modified.\n\n**3. Verification**\n- Full suite: `python -m pytest -q` → **39 passed** (includes `test_design_source_consistency.py`, which confirms the UML↔source method contract is aligned).\n- Behavioral check: after adding distances `[10, 20, 10]`, `removeTarget(10.0)` → `True` (list becomes `[20, 10]`, first match removed); `removeTarget(99.0)` → `False`. Temporary check script removed afterward.\n\n## Notes\n- `run_task test` was unavailable because the `.architectcoder` marker has no `tasks.json`; verification ran via `python -m pytest` in the `test` directory instead.\n- I could not execute the hidden regression tests directly (not present in the workspace); confidence rests on the exact `removeTarget(distance) -> bool` contract and the design/source consistency test passing."
+  },
+  {
+    "batch_id": "batch_10a8d6805621461e",
+    "trace_file": "trace_20261007_172326_e2392b5066de4851_eval.jsonl",
+    "case_file": "radar_single_delete_legacy_debug_001.json",
+    "old_texts": [
+      "LegacyDebugProbe",
+      "源码",
+      "UML",
+      "测试"
+    ],
+    "answer": "Done. The LegacyDebugProbe feature has been fully removed without touching any other radar functionality.\n\n## What was done\n\n**1. UML design (updated first, then human-reviewed)**\n- Removed the `LegacyDebugProbe` class (id `class_legacy_debug_probe_1`, method `emit`) from the *EchoSimulation Domain Model* class diagram in `design/radar_design_0730.umlproj`.\n- Confirmed it was referenced only by that class entry — no relations, lifelines, or messages pointed to it.\n- `validate` confirmed the project still loads with a non-empty diagram set (**diagrams=6**).\n- Submitted for review → **accepted**.\n\n**2. Source & tests**\n- Deleted `src/radar_sim/legacy_debug_probe.py`.\n- Deleted `test/test_legacy_debug_probe.py`.\n- Removed the `\"LegacyDebugProbe\": \"legacy_debug_probe.py\"` entry from the `CLASS_MODULES` map in `test/test_design_source_consistency.py` (this is what keeps the UML↔source contract check green).\n\n## Verification\n- Workspace-wide search: **no remaining `LegacyDebugProbe` / `legacy_debug_probe` references** (14 files scanned).\n- Full test suite: **39 passed** (`python -m pytest`, run from `test/`). Note: the project has no `tasks.json` manifest, so `run_task test` isn't available; pytest was invoked directly.\n\n## Impact assessment\nNo other radar component (ModeControl, TransmitWaveformGen, EchoSimulation, PulseCompression, `main.py`) referenced the probe, so nothing else changed. All four core components, the sequence flow, and the design↔source consistency checks remain intact and passing."
+  },
+  {
+    "batch_id": "batch_10a8d6805621461e",
+    "trace_file": "trace_20261007_172508_7521a56390404b4e_eval.jsonl",
+    "case_file": "radar_single_update_contract_001.json",
+    "old_texts": [
+      "PeakDetector",
+      "snrThreshold",
+      "源码一致"
+    ],
+    "answer": "All phases complete. Here is the summary.\n\n## 完成情况\n\n**问题定位**\n- 源码 `src/radar_sim/pulse_compression.py` 中 `PeakDetector.detect` 的签名为：\n  `detect(rangeProfile, sampleRate, rangeOffset=0.0, snrThreshold=6.0)`\n- UML `design/radar_design_0730.umlproj` 的 `PeakDetector.detect` 参数缺失了第 4 个参数 `snrThreshold`（只到 `rangeOffset`），导致契约漂移。\n\n**修复内容（仅 1 处，未触碰源码/测试）**\n- 文件：`design/radar_design_0730.umlproj`\n- 类：`class_peakdetector_1` (PeakDetector) → 方法 `detect`\n- `params` 由\n  `\"rangeProfile: float[], sampleRate: float, rangeOffset: float = 0.0\"`\n  改为\n  `\"rangeProfile: float[], sampleRate: float, rangeOffset: float = 0.0, snrThreshold: float = 6.0\"`\n- 保留了原有 ID、位置、尺寸及其它未修改字段，未批量清零坐标。\n\n**验证结果**\n- 基线：`python -m pytest test/test_design_source_consistency.py` → 失败，报 `AssertionError: PeakDetector.detect parameter contract drifted`（左多出 `snrThreshold`）。\n- UML 校验：`validate design/radar_design_0730.umlproj` → 通过，`diagrams=6`（非空图集）。\n- 设计评审：已提交并经人工评审接受。\n- 修复后：`python -m pytest test/test_design_source_consistency.py` → **2 passed**。\n\n**状态**：已完成（源一致性测试通过，源码与测试均未改动）。无剩余工作。"
+  }
+]

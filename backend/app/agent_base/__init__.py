@@ -48,6 +48,12 @@ from .tools import (
 )
 from .execution import ToolExecutor
 
+# Bind plugin-facing capabilities once at the application composition root.
+# The host API itself has no imports of core implementations.
+from .adapters.host_services import ApplicationHostServices as _ApplicationHostServices
+from .host_api.services import install_host_services as _install_host_services
+_install_host_services(_ApplicationHostServices())
+
 __all__ = [
     # core
     "BaseAgentsException", "ConfigError", "LLMError", "AgentError", "ToolError",
