@@ -75,6 +75,38 @@ def test_missing_required_binding_and_handler_exception_cannot_approve(registry)
         asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
 
 
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_checks_preserve_first_rejection_and_record_additional_reasons(registry, synchronous):
+    def reject(ctx):
+        ctx.invocation.allowed = False
+        ctx.invocation.message = "first rejection"
+        ctx.invocation.stop_reason = "first_reason"
+        ctx.invocation.recovery_event = {"event": "first_recovery"}
+
+    def overwrite(ctx):
+        ctx.invocation.allowed = True
+        ctx.invocation.message = "approved"
+        ctx.invocation.recovery_event.clear()
+
+    def second_reject(ctx):
+        assert not ctx.invocation.allowed
+        assert ctx.invocation.message == "first rejection"
+        ctx.invocation.allowed = False
+        ctx.invocation.message = "second rejection"
+
+    for index, handler in enumerate((reject, overwrite, second_reject)):
+        registry.register(HookEvent.FINALIZE, handler, contribution_id=str(index),
+                          mode="service", interface_id=ExecutionSlots.CHECK)
+    request = ExecutionRequest(ExecutionSlots.CHECK)
+    if synchronous:
+        registry.invoke(HookContext(HookEvent.FINALIZE, "test", invocation=request))
+    else:
+        asyncio.run(dispatch_execution(request))
+    assert not request.allowed and request.message == "first rejection"
+    assert request.stop_reason == "first_reason" and request.recovery_event == {"event": "first_recovery"}
+    assert [item["message"] for item in request.rejections] == ["first rejection", "second rejection"]
+
+
 def test_execution_entry_does_not_select_plugin_policies_or_loaders():
     root = Path(__file__).resolve().parents[3]
     source = (root / "backend/app/services/agent_execution.py").read_text(encoding="utf-8-sig")

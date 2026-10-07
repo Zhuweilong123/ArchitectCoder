@@ -1,6 +1,7 @@
 """Contract decisions and projections owned by the plugin, not the run loop."""
 from app.agent_base.host_api.services import get_host_services
 from app.agent_base.host_api.contexts import ContractGateContext, ContractFailureAnalysisContext
+from copy import deepcopy
 
 
 def _binding():
@@ -16,8 +17,8 @@ def _gate_context(request, session):
         enabled = bool(requested)
     request.checkpoint["contract_enabled"] = enabled
     return ContractGateContext(
-        workspace_manifest=request.data["workspace_manifest"],
-        changed_paths=tuple(request.data["changed_paths"]),
+        workspace_manifest=deepcopy(request.data["workspace_manifest"]),
+        changed_paths=tuple(deepcopy(request.data["changed_paths"])),
         emit=request.capabilities["emit"], request_review=request.capabilities.get("request_review"),
         run_id=request.run_id, settings=settings, contract_enabled=enabled)
 
