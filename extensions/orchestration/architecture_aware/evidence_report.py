@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from app.agent_base.core.orchestration import ExplorationEvidence
+from app.agent_base.ports.orchestration import (ExplorationEvidence)
 
 
 _RANGE = re.compile(r"^lines (\d+)(?:-(\d+)|\+)$")

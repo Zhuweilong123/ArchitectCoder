@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent_base.core.evals import NoOpEvalProvider, load_evals
+from app.agent_base.adapters.evals import (NoOpEvalProvider, load_evals)
 
 
 class _Provider:

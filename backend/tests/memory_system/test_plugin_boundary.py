@@ -11,7 +11,7 @@ from app.agent_base.core import hooks
 from app.agent_base.core.extension_context import ExtensionContext, extension_request, extension_scope, publish_task_result
 from app.agent_base.core.hooks import AgentRuntime, HookContext, HookEvent, HookRegistry, reset_runtime, set_runtime
 from app.agent_base.core.lifecycle import discover_plan, install_plan
-from app.agent_base.core.memory import MemoryArchiveResult, MemoryEventResult, MemoryRecallResult
+from app.agent_base.ports.memory import (MemoryArchiveResult, MemoryEventResult, MemoryRecallResult)
 from app.agent_base.core.plugins import PluginManager
 from extensions.memory.contributions import _background_tasks
 from extensions.memory.provider import SQLiteMemoryProvider

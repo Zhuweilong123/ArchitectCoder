@@ -56,7 +56,8 @@ def _implementation_hash(case_id: str) -> str:
     paths = [
         root / "backend/evals/cases" / CASE_FILES[case_id],
         root / "backend/evals/hidden_tests/project_trade/test_paid_cancel.py",
-        root / "backend/app/agent_base/core/orchestration.py",
+        root / "backend/app/agent_base/ports/orchestration.py",
+        root / "backend/app/agent_base/adapters/orchestration.py",
         root / "backend/app/agent_base/tools/my_tools/conversation_tools.py",
         root / "backend/app/trace/tracing.py",
         root / "backend/config/settings.py",

@@ -24,7 +24,8 @@ from app.agent_base.tools.my_tools.foundation_tools import (
     create_foundation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
-from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
+from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog)
+from app.agent_base.ports.skills import (SkillContext)
 from app.runtime import build_command_executor, workspace_root_for
 from app.runtime import TaskKind
 

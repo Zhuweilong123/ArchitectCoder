@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from app.agent_base.core.knowledge_graph import load_knowledge_graph
+from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from backend.config.project_storage import project_id_for
 
 

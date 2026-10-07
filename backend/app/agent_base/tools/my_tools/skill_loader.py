@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from app.agent_base.core.skills import (
-    SkillCatalog, SkillMeta, SkillReadError, capture_skill_catalog, load_skills,
-)
+from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog, load_skills)
+from app.agent_base.ports.skills import (SkillMeta, SkillReadError)
 from app.agent_base.tools.base import Tool, ToolParameter
 
 

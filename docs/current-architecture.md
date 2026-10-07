@@ -4,7 +4,7 @@
 >
 > 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-10-05
+> 文档同步：2026-10-07
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -50,8 +50,11 @@ WebSocket / Evaluation / future HTTP or CLI
 | 会话/传输 | `backend/app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
 | 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
 | 扩展能力 | `extensions/*` + `backend/app/agent_base/core/plugins.py` | 具体 memory、trace、evals、KG、orchestration 实现 |
+| 能力协议 | `backend/app/agent_base/ports/` | 请求、结果与 Protocol；不负责插件加载和具体策略 |
+| 宿主适配 | `backend/app/agent_base/adapters/` | 加载、验证、降级，以及模型调用和审核传输的适配 |
+| 设计契约策略 | `extensions/design_contract/` | 一致性检查、审核策略、失败分析提示词、事实编排和语言解析 |
 | Trace 端口 | `backend/app/trace/tracing.py` | 生命周期和 hook；存储/回放实现在 `extensions/trace` |
-| 评测端口 | `backend/app/agent_base/core/evals.py` | Case、Runner、批次、性能和 Trace Case Factory 的稳定入口 |
+| 评测端口 | `backend/app/agent_base/ports/evals.py` | Case、Runner、批次、性能和 Trace Case Factory 的稳定入口 |
 | 请求上下文压缩 | `backend/app/services/context_manager.py`、`session_compression.py` | 单请求预算裁剪与会话级语义压缩分离 |
 | 图表历史 | `frontend/src/stores/diagramHistory.ts` | 撤销、重做、批处理和快照；`diagramStore` 只负责状态组合 |
 | 图表布局 | `frontend/src/utils/componentLayout.ts` | 组件自动布局的纯计算；画布状态写入仍由 `diagramStore` 完成 |
@@ -97,9 +100,13 @@ extensions.design_contract:create
 extensions.skills:create
 ```
 
-应用层只依赖稳定端口：`MemoryPort`、`KnowledgeGraphProvider`、Trace
-端口、`EvalProvider` 和 orchestration 端口。扩展失效时应回退到对应的 no-op 或安全
-降级实现，不得破坏主 Agent 执行链。
+应用层通过 `ports/` 使用稳定协议，通过 `adapters/` 加载配置选中的实现。
+`core/` 仅承载阶段、调度、操作树、模型和消息等通用设施。契约插件的
+`evaluate`、`finalize`、`analyze` 接口也通过清单声明和统一调度执行。
+插件接收工作区与变更快照、审核回调和只读分析回调，不持有主 Agent、ChangeSet
+或审核管理器。禁用能力时使用 NoOp；启用的契约审核能力缺失时返回
+`inconclusive` 并阻止候选变更提交，避免把加载失败当作校验通过。
+迁移后的路径与自定义插件兼容说明见[能力边界](capability-boundaries.md)。
 
 ## 5. 上下文、记忆和 Trace
 
@@ -122,7 +129,7 @@ extensions.skills:create
 - 插件加载和扩展所有权：`plugin-architecture-design.md`。
 - 插件开发工具入口为 `backend/plugin_dev.py`，复用生产清单与接口校验，支持骨架生成、显式实例检查和独立阶段／服务试运行，详见[插件开发工具包](plugin-development.md)。
 - 生命周期贡献由 `core/lifecycle.py` 发现、校验和组织，后端启动生成执行计划及 Mermaid 图，并通过 `/api/plugins/plan`、`/api/plugins/graph` 提供只读查询，详见 [`plugin-lifecycle.md`](plugin-lifecycle.md)。
-- Skill 通过 `core/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
+- Skill 通过 `ports/skills.py` 定义只读协议，由 `extensions/skills` 提供文件实现；主 Agent 的 Prompt、工具和直接创建的子 Agent 共享任务内版本目录，详见 [`skills-plugin.md`](skills-plugin.md)。
 - 评测运行链路和指标：`evaluation-system.md`。
 - Trace 转评测用例：`trace-to-eval-case-factory-design.md`。
 - memory、knowledge graph、trace 的领域细节：对应子系统设计文档。

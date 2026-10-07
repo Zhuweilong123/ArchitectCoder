@@ -5,7 +5,7 @@
 > 范围：项目工作区、UML 设计集合、源码目录、测试目录，以及后续一致性规则引擎。
 
 第二阶段的事实采集由可替换插件 `extensions.design_contract:create` 提供，核心只依赖
-`backend/app/agent_base/core/contracts.py` 中的 `ContractProvider` 契约。
+`backend/app/agent_base/ports/contracts.py` 中的 `ContractProvider` 契约。
 
 ## 1. 设计目标
 
@@ -212,13 +212,13 @@ file scope     = 一个活动设计文件及其声明的组件/模块
 
 知识图谱只作为可追溯的关系证据和影响分析索引，不改变 `ContractSnapshot` 的权威性，也不在契约采集过程中重建或修改图谱。图谱不可用、过期或由旧版插件提供时，契约插件继续使用本地 UML/AST 解析并记录图谱不可用原因。
 
-解析层统一锚点为 `backend/app/agent_base/core/contracts.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
+解析层统一锚点为 `backend/app/agent_base/ports/contracts.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
 
-统一编排入口为 `app.agent_base.core.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。
+统一编排入口为 `extensions.design_contract.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。
 
 ## 12. Harness 契约闸门
 
-契约校验不依赖模型提示词，而由 `app.agent_base.core.contract_harness.ContractHarness` 独立执行。Agent 的文件变更批次完成后，执行层对候选工作区进行只读契约检查，并通过 WebSocket 推送 `contract_check` 事件：
+契约校验不依赖模型提示词，而由 `extensions.design_contract.contract_harness.ContractHarness` 独立执行。Agent 的文件变更批次完成后，执行层对候选工作区进行只读契约检查，并通过 WebSocket 推送 `contract_check` 事件：
 
 ```text
 apply_changes → ContractHarness.check(index_graph=False)

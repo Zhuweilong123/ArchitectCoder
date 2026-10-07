@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from app.agent_base.core.memory import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest
+from app.agent_base.ports.memory import (MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest)
 from extensions.memory.manager import MemoryManager
 from extensions.memory.models import MemoryEntry, MemoryType
 from extensions.memory.provider import SQLiteMemoryProvider

@@ -32,7 +32,7 @@ from extensions.evals.runner import (
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
-from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
+from app.agent_base.ports.evals import (EvalArchiveRequest, EvalBatchMergeRequest)
 from extensions.evals.batches import (
     EvalBatch, EvalBatchManager, _baseline_case_ids, summarize, write_performance_result,
 )
@@ -396,7 +396,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
         return listed, content, validated
 
     listed, content, validated = asyncio.run(exercise())
-    assert listed == "radar_design_0730.umlproj"
+    assert listed == str((design / "radar_design_0730.umlproj").resolve())
     assert '"diagrams"' in content
     assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
 

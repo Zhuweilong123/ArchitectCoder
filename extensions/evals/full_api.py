@@ -12,13 +12,8 @@ from app.runtime.encoding import decode_process_output
 
 from extensions.evals.api import router as trace_case_router
 
-from app.agent_base.core.evals import (
-    EvalArchiveRequest,
-    EvalBatchMergeRequest,
-    EvalBatchRequest,
-    EvalPerformanceArchiveRequest,
-    load_evals,
-)
+from app.agent_base.ports.evals import (EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest, EvalPerformanceArchiveRequest)
+from app.agent_base.adapters.evals import (load_evals)
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

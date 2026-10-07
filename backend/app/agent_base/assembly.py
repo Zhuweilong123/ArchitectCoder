@@ -15,16 +15,15 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
-from app.agent_base.core.memory import NoOpMemory, load_memory
+from app.agent_base.adapters.memory import (NoOpMemory, load_memory)
 from app.agent_base.core.extension_context import ExtensionContext, extension_scope
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
     create_conversation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
-from app.agent_base.core.skills import (
-    SkillCatalog, SkillContext, capture_skill_catalog, load_skills,
-)
+from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog, load_skills)
+from app.agent_base.ports.skills import (SkillContext)
 from app.agent_base.tools.registry import ToolRegistry
 from app.runtime import (
     WorkspaceManifest,
@@ -35,9 +34,10 @@ from app.runtime import (
 from app.core.capabilities import CapabilityPolicy
 from app.services.change_set import ChangeSet
 from app.services.context_manager import ContextBudget, ContextBudgetManager, estimate_tokens
-from app.agent_base.core.contract_gate import load_contract_gate
-from app.agent_base.core.contract_analysis import load_contract_failure_analyzer
-from app.agent_base.core.language_adapters import broker_command_runner
+from app.agent_base.adapters.contract_gate import (load_contract_gate)
+from app.agent_base.adapters.contracts import load_contracts
+from app.agent_base.adapters.contract_analysis import (load_contract_failure_analyzer)
+from app.runtime.language_runner import (broker_command_runner)
 from app.agent_base.core.plugin_runtime import pin_plugins
 
 
@@ -326,10 +326,9 @@ async def _create_dev_agent_impl(
         broker_command_runner(execution_broker)
         if execution_broker is not None else None
     )
-    agent.contract_gate = load_contract_gate(
-        settings=settings, language_runner=language_runner,
-    )
-    agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings)
+    contract_provider = load_contracts(settings=settings, language_runner=language_runner)
+    agent.contract_gate = load_contract_gate(settings=settings, provider=contract_provider)
+    agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings, provider=contract_provider)
     agent.extension_context = prompt_builder.extension_context
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:

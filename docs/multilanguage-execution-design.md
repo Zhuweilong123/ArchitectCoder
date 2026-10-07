@@ -151,7 +151,7 @@ their execution boundary.
 
 ## Milestone 4 implementation foundation
 
-`backend/app/agent_base/core/language_adapters.py` introduces an extensible
+`extensions/design_contract/language_adapters.py` introduces an extensible
 `LanguageAdapterRegistry` and normalized `ArtifactFacts` output. The built-in
 Python adapter uses the standard AST module; the C++ adapter consumes the
 matching `compile_commands.json` entry and invokes Clang's JSON AST dump with
@@ -161,7 +161,7 @@ and line numbers. Missing Clang, an invalid compilation database, or an absent
 controlled runner is reported as typed diagnostics rather than silently
 falling back to a Python parser or launching a host process.
 
-`broker_command_runner()` adapts the asynchronous execution Broker to Clang's
+`backend/app/runtime/language_runner.py` provides `broker_command_runner()`, which adapts the asynchronous execution Broker to Clang's
 synchronous parser callback. It wraps each AST request as a `TaskSpec`, so
 network, timeout, cancellation, workspace, and worker policies are applied by
 the same execution boundary as build/test tasks. The contract gate discovers

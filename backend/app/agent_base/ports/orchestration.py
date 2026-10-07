@@ -1,18 +1,13 @@
 """Stable orchestration port owned by the Agent core.
 
-The core deliberately knows nothing about graph storage or worker scheduling.
-A provider may be installed through configuration, while ``NoOpOrchestrator``
-keeps the single-Agent path fully functional when scheduling is disabled or
-unavailable.
+Graph storage and worker scheduling belong to providers.  Loading, validation
+and disabled/unavailable fallbacks live in the host adapters package.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -116,63 +111,3 @@ class OrchestrationPort(Protocol):
 class ExplorationPort(Protocol):
     async def explore(self, demand: ExplorationDemand) -> ExplorationReport:
         """Run graph-guided exploration only after the main Agent requests it."""
-
-
-class NoOpOrchestrator:
-    """Zero-cost fallback preserving the single-Agent behavior."""
-
-    async def prepare(self, _request: OrchestrationRequest) -> OrchestrationPreparation:
-        return OrchestrationPreparation()
-
-
-class _ResilientOrchestrator:
-    """Contain provider runtime failures at the core/plugin boundary."""
-
-    def __init__(self, provider: OrchestrationPort):
-        self.provider = provider
-
-    async def prepare(self, request: OrchestrationRequest) -> OrchestrationPreparation:
-        try:
-            result = await self.provider.prepare(request)
-            if not isinstance(result, OrchestrationPreparation):
-                raise TypeError("orchestrator prepare() returned an invalid result")
-            return result
-        except Exception as exc:
-            logger.warning("[Orchestration] provider failed during prepare; using no-op", exc_info=True)
-            return OrchestrationPreparation(
-                excluded_tools=("route_architecture", "explore_architecture"),
-                phase="unavailable",
-                metadata={
-                    "architecture_scheduling": "unavailable",
-                    "architecture_scheduling_reason": (
-                        f"provider preparation failed: {type(exc).__name__}: {exc}"
-                    ),
-                },
-            )
-
-
-def _load_factory(provider: str):
-    """Compatibility hook; actual loading remains owned by PluginManager."""
-    from .plugins import PluginManager
-
-    return PluginManager._load_factory(provider)
-
-
-def load_orchestrator(*, llm, settings, **kwargs) -> OrchestrationPort:
-    """Load orchestration through the central extension manager."""
-    from .plugins import get_plugin_manager
-
-    instance = get_plugin_manager().load_optional(
-        "orchestration",
-        settings=settings,
-        kwargs={"llm": llm, **kwargs},
-        factory_loader=_load_factory,
-    )
-    if instance is None:
-        return NoOpOrchestrator()
-    return _ResilientOrchestrator(instance)
-
-
-def exclude_tools(tool_names: list[str], excluded: tuple[str, ...] | list[str]) -> list[str]:
-    excluded_set = set(excluded)
-    return [name for name in tool_names if name not in excluded_set]

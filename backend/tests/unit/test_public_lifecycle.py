@@ -168,7 +168,7 @@ def test_child_operations_have_own_run_and_complete_boundaries(recording, tmp_pa
 
 def test_background_archive_links_closed_run_without_reopening_public_phase(recording):
     from extensions.memory.contributions import archive_task
-    from app.agent_base.core.memory import MemoryArchiveRequest
+    from app.agent_base.ports.memory import (MemoryArchiveRequest)
     registry, events = recording
     notifications = []
     registry.register(HookEvent.BACKGROUND_AFTER, lambda ctx: notifications.append(ctx.payload["status"]), mode="observer")

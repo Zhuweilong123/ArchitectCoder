@@ -19,7 +19,8 @@ AGENT_SKILLS_PROVIDER=extensions.skills:create
 
 | 模块 | 职责 |
 |---|---|
-| `backend/app/agent_base/core/skills.py` | `SkillProvider` 协议、数据结构、NoOp、目录捕获和版本检查 |
+| `backend/app/agent_base/ports/skills.py` | `SkillProvider` 协议和数据结构 |
+| `backend/app/agent_base/adapters/skills.py` | 加载、NoOp、目录捕获和版本检查 |
 | `extensions/skills/provider.py` | 内置文件技能发现、frontmatter 解析、资源快照、路径检查 |
 | `backend/app/agent_base/tools/my_tools/skill_loader.py` | L1 Prompt 目录、L2 正文和 L3 参考资源的工具适配 |
 | `backend/app/agent_base/assembly.py` | 创建目录并共享给主 Agent Prompt、工具和直接创建的子 Agent |
@@ -42,7 +43,7 @@ AGENT_SKILLS_PROVIDER=extensions.skills:create
 通过 `module:factory` 注册工厂，工厂接受 `settings` 等关键字参数，返回实现以下协议的对象：
 
 ```python
-from app.agent_base.core.skills import SkillContent, SkillContext, SkillMeta
+from app.agent_base.ports.skills import SkillContent, SkillContext, SkillMeta
 
 class MySkillProvider:
     def list_skills(self, context: SkillContext | None = None) -> tuple[SkillMeta, ...]:

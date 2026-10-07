@@ -2,12 +2,9 @@
 
 import asyncio
 
-from app.agent_base.core.orchestration import (
-    NoOpOrchestrator,
-    OrchestrationRequest,
-    load_orchestrator,
-)
-import app.agent_base.core.orchestration as core_orchestration
+from app.agent_base.adapters.orchestration import (NoOpOrchestrator, load_orchestrator)
+from app.agent_base.ports.orchestration import (OrchestrationRequest)
+import app.agent_base.adapters.orchestration as core_orchestration
 
 
 class _Settings:

@@ -6,12 +6,11 @@ from types import SimpleNamespace
 import app.services.agent_execution as agent_execution
 from app.services.agent_execution import _record_contract_check, _sync_checkpoint_outcome
 from app.agent_base.agents.react_agent import ReActProgress
-from app.agent_base.core.contract_harness import ContractCheckResult, ContractViolation
-from app.agent_base.core.contract_analysis import (
-    ContractFailureAnalysisContext,
-    ModelContractFailureAnalyzer,
-)
-from app.agent_base.core.orchestration import OrchestrationPreparation
+from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
+from app.agent_base.ports.contract_checks import (ContractCheckResult, ContractViolation)
+from app.agent_base.ports.contract_analysis import (ContractFailureAnalysisContext)
+from extensions.design_contract.analysis import (ModelContractFailureAnalyzer)
+from app.agent_base.ports.orchestration import (OrchestrationPreparation)
 from app.agent_base.tools.registry import ToolRegistry
 
 
@@ -134,7 +133,7 @@ def test_contract_failure_analysis_injects_report_for_fallback_adapter():
     analysis = asyncio.run(
         ModelContractFailureAnalyzer().analyze(
             ContractFailureAnalysisContext(
-                agent=agent,
+                invoke=ReadOnlyAnalysisAdapter(agent).invoke,
                 result=result,
                 run_id="run-1",
             )
@@ -156,7 +155,7 @@ def test_contract_failure_analysis_preserves_tool_schema_prefix_and_uses_normal_
     analysis = asyncio.run(
         ModelContractFailureAnalyzer().analyze(
             ContractFailureAnalysisContext(
-                agent=agent,
+                invoke=ReadOnlyAnalysisAdapter(agent).invoke,
                 result=result,
                 run_id="run-2",
                 allowed_tools=("apply_changes",),

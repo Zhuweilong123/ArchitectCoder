@@ -6,9 +6,7 @@ import hashlib
 import logging
 from pathlib import Path
 
-from app.agent_base.core.skills import (
-    SkillContent, SkillContext, SkillMeta, SkillReadError, SkillResource,
-)
+from app.agent_base.ports.skills import (SkillContent, SkillContext, SkillMeta, SkillReadError, SkillResource)
 
 logger = logging.getLogger(__name__)
 SKILL_ENTRY = "SKILL.md"

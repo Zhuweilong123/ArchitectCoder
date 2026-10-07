@@ -113,7 +113,7 @@ def test_foundation_tools_use_project_root_with_named_directory_aliases(tmp_path
 def test_workspace_only_tools_remain_usable_without_optional_directories(tmp_path):
     import asyncio
     from app.runtime import WorkspaceManifest
-    from app.agent_base.core.skills import NoOpSkillProvider, capture_skill_catalog
+    from app.agent_base.adapters.skills import (NoOpSkillProvider, capture_skill_catalog)
     from app.agent_base.tools.my_tools.conversation_tools import create_conversation_tools
 
     manifest = WorkspaceManifest.from_paths(workspace_root=str(tmp_path))

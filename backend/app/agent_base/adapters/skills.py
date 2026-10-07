@@ -1,58 +1,12 @@
-"""Provider-neutral, read-only skills port and per-Agent catalog."""
+"""Loading, fallback and validation adapters for optional capabilities."""
 
 from __future__ import annotations
-
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+
+from app.agent_base.ports.skills import SkillContext, SkillMeta, SkillContent, SkillReadError, SkillProvider
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class SkillContext:
-    workspace_root: str = ""
-
-
-@dataclass(frozen=True)
-class SkillMeta:
-    skill_id: str
-    name: str
-    description: str
-    version: str
-    scope: str = "builtin"
-    source: str = ""
-
-
-@dataclass(frozen=True)
-class SkillResource:
-    name: str
-    size_bytes: int
-
-
-@dataclass(frozen=True)
-class SkillContent:
-    skill_id: str
-    version: str
-    text: str
-    resources: tuple[SkillResource, ...] = ()
-
-
-class SkillReadError(Exception):
-    """A resource is missing, inaccessible, or incompatible with the catalog."""
-
-
-class SkillProvider(Protocol):
-    """One instance represents one consistent skill version set.
-
-    Reading resources never executes them. Storage and access checks belong to
-    the provider; consumers use opaque skill/resource identifiers.
-    """
-
-    def list_skills(self, context: SkillContext | None = None) -> tuple[SkillMeta, ...]: ...
-
-    def read_skill(self, skill_id: str, resource: str | None = None) -> SkillContent: ...
-
 
 class NoOpSkillProvider:
     def list_skills(self, context: SkillContext | None = None) -> tuple[SkillMeta, ...]:
@@ -109,7 +63,7 @@ def capture_skill_catalog(
 
 
 def load_skills(*, settings=None, **kwargs) -> SkillProvider:
-    from .plugins import get_plugin_manager
+    from app.agent_base.core.plugins import get_plugin_manager
 
     provider = get_plugin_manager().load_optional("skills", settings=settings, kwargs=kwargs)
     return provider if provider is not None else NoOpSkillProvider()

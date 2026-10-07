@@ -12,18 +12,8 @@ from typing import Any
 
 from backend.config.project_storage import project_id_for
 
-from app.agent_base.core.contracts import (
-    ArtifactFacts,
-    ContractEntity,
-    ContractMapping,
-    ContractSnapshot,
-)
-from app.agent_base.core.language_adapters import (
-    ClangAstAdapter,
-    LanguageAdapterRegistry,
-    PythonAstAdapter,
-    default_language_adapters,
-)
+from app.agent_base.ports.contracts import (ArtifactFacts, ContractEntity, ContractMapping, ContractSnapshot)
+from extensions.design_contract.language_adapters import (ClangAstAdapter, LanguageAdapterRegistry, PythonAstAdapter, default_language_adapters)
 
 from .kg_adapter import KnowledgeGraphContractAdapter
 
@@ -33,6 +23,7 @@ class DesignContractProvider:
 
     def __init__(self, *, settings=None, **kwargs):
         self.settings = settings
+        self._language_runner = kwargs.get("language_runner")
         self._kg = KnowledgeGraphContractAdapter(settings=settings)
         configured_adapters = kwargs.get("language_adapters")
         language_runner = kwargs.get("language_runner")
@@ -44,6 +35,22 @@ class DesignContractProvider:
             ))
         else:
             self._language_adapters = default_language_adapters()
+
+    async def evaluate(self, context):
+        from .gate import DefaultContractGate
+        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
+        return await DefaultContractGate(language_runner=self._language_runner,
+            collector=schedule_tool_provider(self, "design_contract")).evaluate(context)
+
+    async def finalize(self, context, prior_result=None):
+        from .gate import DefaultContractGate
+        from app.agent_base.core.plugin_dispatch import schedule_tool_provider
+        return await DefaultContractGate(language_runner=self._language_runner,
+            collector=schedule_tool_provider(self, "design_contract")).finalize(context, prior_result)
+
+    async def analyze(self, context):
+        from .analysis import ModelContractFailureAnalyzer
+        return await ModelContractFailureAnalyzer().analyze(context)
 
     def collect(
         self,

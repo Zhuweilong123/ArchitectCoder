@@ -6,7 +6,7 @@ import logging
 import re
 
 from app.agent_base.core.extension_context import current_extension_context
-from app.agent_base.core.memory import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest
+from app.agent_base.ports.memory import (MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest)
 
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task] = set()

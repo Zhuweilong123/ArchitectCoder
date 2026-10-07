@@ -40,7 +40,7 @@ from app.agent_base.core.plugin_runtime import pin_plugins
 from app.agent_base.core.extension_context import publish_task_result
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.contract_gate import resolve_contract_enabled
+from app.agent_base.adapters.contract_gate import (resolve_contract_enabled)
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
 )
