@@ -9,7 +9,6 @@
 | [`current-architecture.md`](current-architecture.md) | 当前 Agent 架构、生命周期、工具和插件边界 |
 | [`runtime-command-execution.md`](runtime-command-execution.md) | `run_task`、`run_program`、`shell` 和宿主命令安全契约 |
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |
-| [`current-architecture.md`](current-architecture.md) | 当前 Agent 架构、生命周期、工具和插件边界（含插件架构与扩展契约） |
 | [`skills-plugin.md`](skills-plugin.md) | Skill 插件协议、任务内版本快照和自定义 provider |
 | [`plugin-lifecycle.md`](plugin-lifecycle.md) | 13 个公共阶段、全插件接口调度、操作树、独立通知、组织图与执行回放 |
 | [`plugin-discovery.md`](plugin-discovery.md) | 插件自带声明、目录扫描、配置覆盖、依赖与新增插件示例 |
