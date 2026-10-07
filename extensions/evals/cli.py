@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 
-from app.agent_base.core.evals import load_evals
+from app.agent_base.adapters.evals import (load_evals)
 from backend.config import evaluation_results_dir
 
 from .batches import write_performance_result

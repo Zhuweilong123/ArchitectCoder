@@ -22,8 +22,13 @@
       "async": true
     },
     "reinforce": {
-      "stage": "prepare",
+      "stage": "finalize",
       "required": true,
+      "async": true
+    },
+    "observe": {
+      "stage": "tool_after",
+      "required": false,
       "async": true
     }
   },
@@ -32,5 +37,12 @@
     "recall_top_k": 3,
     "recall_max_tokens": 500
   },
-  "dependencies": []
+  "dependencies": [],
+  "contributions": [
+    {"id": "memory.context.prepare", "stage": "prepare", "handler": "extensions.memory.contributions:prepare", "mode": "transform"},
+    {"id": "memory.run.start", "stage": "run_start", "handler": "extensions.memory.contributions:run_start", "mode": "observer"},
+    {"id": "memory.evidence.observe", "stage": "tool_after", "handler": "extensions.memory.contributions:tool_after", "mode": "observer"},
+    {"id": "memory.context.refresh", "stage": "model_before", "handler": "extensions.memory.contributions:model_before", "mode": "transform"},
+    {"id": "memory.task.archive", "stage": "task_after", "handler": "extensions.memory.contributions:task_after", "mode": "observer"}
+  ]
 }

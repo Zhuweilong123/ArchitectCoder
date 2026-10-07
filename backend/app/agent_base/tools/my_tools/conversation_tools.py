@@ -28,7 +28,8 @@ from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
 from app.runtime import workspace_root_for
-from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
+from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog)
+from app.agent_base.host_api.contexts import SkillContext
 
 
 # ── 进度事件转发 ──
@@ -116,10 +117,11 @@ def create_conversation_tools(
     # A 层文件系统原语工具（读/写/编辑/查找/跑命令）
     from .foundation_tools import create_foundation_tools
     from backend.config import get_settings
-    # 设计目录：优先 project_file 所在目录，否则使用项目目录。
+    # An explicitly selected project implies its design directory; otherwise
+    # preserve the manifest's unconfigured design scope.
     design_dir = design_dir or (
         os.path.dirname(os.path.abspath(project_file))
-        if project_file else os.path.abspath(get_settings().project_dir)
+        if project_file else ""
     )
     if not workspace_root:
         workspace_root = workspace_root_for(source_dir, test_dir, design_dir)

@@ -23,126 +23,9 @@ from app.services.context_manager import HistoryCompaction
 from .react_parser import remove_textual_tool_markup
 from .react_types import ReActProgress
 from .tool_round_executor import ToolRoundExecutor
+from .failure_recovery import FailureRecoveryController
 
 logger = logging.getLogger(__name__)
-
-
-def _failure_paths(detail: dict[str, Any]) -> tuple[str, ...]:
-    """Return stable target paths for a failed tool call."""
-    arguments = detail.get("arguments")
-    if not isinstance(arguments, dict):
-        return ()
-    if detail.get("name") != "apply_changes":
-        path = arguments.get("path")
-        return (str(path),) if isinstance(path, str) and path.strip() else ()
-    changes = arguments.get("changes")
-    if not isinstance(changes, list):
-        return ()
-    paths = {
-        str(change.get("path") or change.get("to") or change.get("from"))
-        for change in changes
-        if isinstance(change, dict)
-        and str(change.get("path") or change.get("to") or change.get("from") or "").strip()
-    }
-    return tuple(sorted(paths))
-
-
-def _failure_signature(detail: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
-    return (
-        str(detail.get("name") or "tool"),
-        str(detail.get("error_code") or "TOOL_ERROR"),
-        _failure_paths(detail),
-    )
-
-
-def _recovery_instruction(details: list[dict[str, Any]]) -> str:
-    """Build a targeted recovery instruction from structured tool failures."""
-    codes = {str(detail.get("error_code") or "") for detail in details}
-    paths = sorted({path for detail in details for path in _failure_paths(detail)})
-    path_text = ", ".join(paths[:4]) or "the reported target"
-    if "PATCH_TEXT_NOT_FOUND" in codes:
-        return (
-            f"The patch did not match the current contents of {path_text}. "
-            "Do not repeat the same apply_changes call. First use read_file or search_text "
-            "on the exact target, then rebuild the smallest patch from the returned text."
-        )
-    if "PATCH_AMBIGUOUS" in codes:
-        return (
-            f"The patch anchor matches multiple locations in {path_text}. "
-            "Read a narrower range and use a unique anchor before editing."
-        )
-    if "EXPECTED_SHA_MISMATCH" in codes or "CONCURRENT_CHANGE" in codes:
-        return (
-            f"The target changed since it was read ({path_text}). "
-            "Refresh the current file contents and rebuild the change; do not reuse stale text or hashes."
-        )
-    if "PROCESS_EXIT_ERROR" in codes:
-        return (
-            "The verification command failed. Read the complete failure output and run one valid, "
-            "focused task target; do not concatenate multiple paths into one target."
-        )
-    if "POLICY_BLOCKED" in codes or "HOOK_VETO" in codes:
-        return (
-            "The requested tool invocation was blocked by policy. Follow the supplied tool schema "
-            "and use a structured tool instead of shell syntax or an inline interpreter command."
-        )
-    if "PROJECT_REVISION_CONFLICT" in codes:
-        return (
-            "The UML project revision is stale. Re-read the project after review and continue from "
-            "the current revision; never patch the managed revision field manually."
-        )
-    return (
-        "Treat the failure output as primary evidence. Inspect only the reported target, change the "
-        "strategy, and run focused verification before continuing."
-    )
-
-
-def _append_failure_recovery_guidance(
-    messages: list[dict[str, Any]],
-    details: list[dict[str, Any]],
-    failure_attempts: dict[tuple[str, str, tuple[str, ...]], int],
-    last_directive_signature: tuple[tuple[str, str, tuple[str, ...]], ...],
-) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
-    """Record failed tool calls and append targeted recovery constraints."""
-    failed_details = [
-        detail for detail in details if detail.get("status") != "success"
-    ]
-    failed_tools = tuple(sorted(
-        _failure_signature(detail) for detail in failed_details
-    ))
-    for failure in failed_tools:
-        failure_attempts[failure] = failure_attempts.get(failure, 0) + 1
-    if failed_tools and failed_tools != last_directive_signature:
-        messages.append({
-            "role": "system",
-            "content": (
-                "## Recovery checkpoint\n"
-                "The previous tool round reported a failure "
-                f"({', '.join(name + ':' + code for name, code, _ in failed_tools)}). "
-                + _recovery_instruction(failed_details)
-                + " After recovery, finish with the verified result and remaining uncertainty."
-            ),
-        })
-        last_directive_signature = failed_tools
-
-    repeated_failure_paths = sorted({
-        path
-        for failure, count in failure_attempts.items()
-        if count >= 2
-        for path in failure[2]
-    })
-    if repeated_failure_paths:
-        messages.append({
-            "role": "system",
-            "content": (
-                "## Repeated edit failure guard\n"
-                f"Repeated edit failures affect: {', '.join(repeated_failure_paths[:6])}. "
-                "Do not issue another apply_changes patch for these paths until a fresh "
-                "read_file or search_text result has been obtained. If the current text "
-                "cannot be matched, report the blocker instead of guessing."
-            ),
-        })
-    return last_directive_signature
 
 
 async def _invoke_fc_model(agent, **kwargs):
@@ -185,13 +68,14 @@ async def _invoke_fc_model_impl(
     intentional terminal condition, either stopped by a hook or timed out.
     """
     before_decision = await get_hooks().atrigger(
-        HookEvent.LLM_BEFORE,
+        HookEvent.MODEL_BEFORE,
         HookContext(
-            event=HookEvent.LLM_BEFORE,
+            event=HookEvent.MODEL_BEFORE,
             agent_name=agent.name,
             run_id=runtime.run_id,
             runtime=runtime,
             messages=messages,
+            payload={"current_user_index": request_context.get("current_user_index", -1)},
         ),
     )
     if (
@@ -225,7 +109,9 @@ async def _invoke_fc_model_impl(
 
 async def run_fc_loop(agent, *args, **kwargs):
     from ...core.plugin_runtime import plugin_scope
-    with plugin_scope():
+    from ...core.extension_context import extension_scope, current_extension_context
+    session = getattr(agent, "extension_context", None)
+    with plugin_scope(), extension_scope(current_extension_context() or (session.fork() if session else None)):
         stream = _run_fc_loop_scoped(agent, *args, **kwargs)
         try:
             async for progress in stream:
@@ -344,8 +230,7 @@ async def _run_fc_loop_impl(
     tool_call_count = budget.tool_call_count
     total_tokens = budget.total_tokens
     convergence_directive_added = False
-    last_failure_directive_signature: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
-    failure_attempts: dict[tuple[str, str, tuple[str, ...]], int] = {}
+    failure_recovery = FailureRecoveryController(agent.tool_registry)
     evidence_ledger = EvidenceLedger(max_records=agent.evidence_max_records)
     convergence = ConvergenceController(
         max_stalled_rounds=agent.convergence_max_stalled_rounds,
@@ -379,7 +264,7 @@ async def _run_fc_loop_impl(
             runtime=runtime, payload=payload,
         ))
     try:
-        await publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage)
+        await publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage, user_message=input_text)
         step = 0
         while True:
             if runtime.lifecycle_round_open:
@@ -443,6 +328,7 @@ async def _run_fc_loop_impl(
                         evidence_by_call=evidence_ledger.summary_for(prior_call_ids),
                     )
                 )
+                failure_recovery.sync(messages)
             if compacted_steps:
                 agent.last_context_report["react_compacted_steps"] = (
                     agent.last_context_report.get("react_compacted_steps", 0) + compacted_steps
@@ -506,6 +392,7 @@ async def _run_fc_loop_impl(
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
                 )
             request_context = {
+                "current_user_index": current_user_index,
                 "scope": "single_llm_request",
                 "estimated_context_tokens": agent.context_budget.estimate_request_tokens(
                     messages, tools=active_tool_specs,
@@ -770,12 +657,7 @@ async def _run_fc_loop_impl(
                     "content": tr["content"],
                 })
 
-            last_failure_directive_signature = _append_failure_recovery_guidance(
-                messages,
-                details,
-                failure_attempts,
-                last_failure_directive_signature,
-            )
+            failure_recovery.update(messages, details)
 
             await get_hooks().aemit(
                 HookEvent.TOOL_BATCH_AFTER,

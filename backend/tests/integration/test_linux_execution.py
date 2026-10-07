@@ -123,3 +123,19 @@ def test_bash_schema_advertises_linux_contract_and_rejects_windows_command(tmp_p
 def test_bash_allows_linux_environment_diagnostics():
     for command in ("printf agent_wsl_ready", "uname -s", "pwd"):
         assert ShellTool._validate_shell_command(command) is None
+
+
+def test_wsl_program_maps_complete_host_path_arguments(monkeypatch):
+    executor = WslBashExecutor()
+    monkeypatch.setattr(executor, "preflight", lambda: None)
+    captured = {}
+    def launch(argv, **kwargs):
+        captured["argv"] = argv
+        return object()
+    monkeypatch.setattr("app.runtime.command.subprocess.Popen", launch)
+    executor.start_program("python", [
+        "-m", "pytest", r"D:\repo with spaces\tests\test_main.py::test_one", "-q",
+    ], r"D:\repo with spaces")
+    assert captured["argv"][-6:] == [
+        "--exec", "python", "-m", "pytest", "/mnt/d/repo with spaces/tests/test_main.py::test_one", "-q",
+    ]

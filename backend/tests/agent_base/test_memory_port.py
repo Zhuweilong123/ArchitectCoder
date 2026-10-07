@@ -2,15 +2,9 @@
 
 import asyncio
 
-import app.agent_base.core.memory as core_memory
-from app.agent_base.core.memory import (
-    MemoryArchiveRequest,
-    MemoryArchiveResult,
-    MemoryRecallRequest,
-    MemoryRecallResult,
-    NoOpMemory,
-    load_memory,
-)
+import app.agent_base.adapters.memory as core_memory
+from extensions.memory.plugin_api import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
+from app.agent_base.adapters.memory import (NoOpMemory, load_memory)
 
 
 class _Settings:
@@ -47,9 +41,19 @@ def test_loader_contains_provider_failures(monkeypatch):
     recalled = asyncio.run(provider.recall(MemoryRecallRequest("p", "query")))
     archived = asyncio.run(provider.archive(MemoryArchiveRequest("p", "u", "a")))
     asyncio.run(provider.reinforce(("m-1",), project_id="p"))
+    observed = asyncio.run(provider.observe(MemoryEventRequest("p", "resource_changed")))
 
     assert recalled == MemoryRecallResult(metadata={"degraded": True})
     assert archived == MemoryArchiveResult(metadata={"degraded": True})
+    assert observed.metadata == {"skipped": "unsupported"}
+
+
+def test_optional_memory_observer_contains_failures():
+    class Broken:
+        async def observe(self, request):
+            raise RuntimeError("database unavailable")
+    provider = core_memory._ResilientMemory(Broken())
+    assert asyncio.run(provider.observe(MemoryEventRequest("p", "source_checked"))) == MemoryEventResult(metadata={"degraded": True})
 
 
 def test_loader_keeps_provider_contract_and_result_types(monkeypatch):

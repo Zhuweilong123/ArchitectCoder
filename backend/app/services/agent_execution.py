@@ -16,15 +16,10 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.core.exceptions import AgentInterrupted
-from app.agent_base.core.contract_gate import (
-    ContractGateContext,
-    NoOpContractGate,
-    resolve_contract_enabled,
-)
-from app.agent_base.core.contract_analysis import (
-    ContractFailureAnalysisContext,
-    NoOpContractFailureAnalyzer,
-)
+from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
+from app.agent_base.adapters.contract_gate import (build_contract_gate_context, NoOpContractGate, resolve_contract_enabled)
+from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
+from app.agent_base.adapters.contract_analysis import (NoOpContractFailureAnalyzer)
 from app.agent_base.core.hooks import (
     AgentRuntime,
     get_hooks,
@@ -32,13 +27,10 @@ from app.agent_base.core.hooks import (
     reset_runtime,
     set_runtime,
 )
-from app.agent_base.core.memory import MemoryArchiveRequest, MemoryPort
+from app.agent_base.core.extension_context import extension_request, publish_task_result
 from app.agent_base.core.plugin_runtime import pin_plugins
-from app.agent_base.core.orchestration import (
-    OrchestrationRequest,
-    exclude_tools,
-    load_orchestrator,
-)
+from app.agent_base.host_api.orchestration import OrchestrationRequest
+from app.agent_base.adapters.orchestration import (exclude_tools, load_orchestrator)
 from app.agent_base.execution_summary import build_task_execution_summary
 from app.agent_base.evidence import update_checkpoint_evidence
 from app.agent_base.outcome import RunOutcome
@@ -157,19 +149,6 @@ def _persist_run_checkpoint(
         )
     except RunStateError:
         logger.warning("[RunState] Could not persist checkpoint for run %s", run_id, exc_info=True)
-
-def _should_archive_task_memory(
-    checkpoint_status: str, tool_calls_detail: list[dict], checkpoint: dict | None = None,
-) -> bool:
-    return bool(
-        checkpoint_status == "completed"
-        and ((checkpoint or {}).get("mutation_evidence") or any(
-            detail.get("changes")
-            and detail.get("status") in {"success", "completed"}
-            for detail in tool_calls_detail
-            if isinstance(detail, dict)
-        ))
-    )
 
 def _terminal_checkpoint_status(
     outcome: RunOutcome | None, todos: list[dict],
@@ -297,56 +276,6 @@ def recent_conversation_history(
         for turn in selected
         for role, content in turn
     )
-
-async def _archive_task_to_memory(*args, **kwargs) -> None:
-    from app.agent_base.core.operations import operation_scope
-    runtime = get_runtime()
-    run_id = kwargs.get("run_id", "")
-    parent_id = runtime.run_operation_id if run_id and runtime.run_id == run_id else None
-    with operation_scope("background", run_id=run_id, stage="finalize", scope="background", parent_operation_id=parent_id or None) as operation:
-        operation.status = await _archive_task_to_memory_impl(*args, **kwargs)
-
-
-async def _archive_task_to_memory_impl(
-    memory: MemoryPort,
-    project_id: str,
-    user_message: str,
-    final_answer: str,
-    tool_calls_detail: list[dict],
-    run_id: str = "",
-    trace_id: str = "",
-    conversation_history: tuple[dict[str, str], ...] = (),
-) -> str:
-    from app.agent_base.core.hooks import HookContext, HookEvent, get_hooks
-    async def publish(stage, **data):
-        await get_hooks().aemit(stage, HookContext(stage, "memory", run_id=run_id,
-            payload={"source": "memory_archive", **data}))
-    status = "failed"
-    try:
-        await publish(HookEvent.BACKGROUND_BEFORE)
-        result = await memory.archive(MemoryArchiveRequest(
-            project_id=project_id,
-            user_message=user_message,
-            final_answer=final_answer,
-            tool_steps=tuple(tool_calls_detail or ()),
-            run_id=run_id,
-            trace_id=trace_id,
-            conversation_history=conversation_history,
-        ))
-        status = "degraded" if result.metadata.get("degraded") else "completed"
-        logger.info(
-            "[Memory] Archived task to memory (project=%s, stored=%d)",
-            project_id,
-            result.stored_count,
-        )
-    except asyncio.CancelledError:
-        status = "cancelled"
-        raise
-    except Exception:
-        logger.warning("[Memory] Archive to memory failed (non-fatal)", exc_info=True)
-    finally:
-        await publish(HookEvent.BACKGROUND_AFTER, status=status)
-    return status
 
 async def _create_task_execution_async(
     *,
@@ -640,22 +569,12 @@ async def _publish_terminal_execution(
     write_task_summary(summary_status)
 
     from backend.config.project_storage import project_id_for
-    project_id = project_id_for(project_file) if project_file else ""
-    if project_id and _should_archive_task_memory(
-        terminal_status, task_tool_calls, agent.last_run_checkpoint,
-    ):
-        memory = getattr(agent, "memory_provider", None)
-        if memory is not None:
-            asyncio.create_task(_archive_task_to_memory(
-                memory=memory,
-                project_id=project_id,
-                user_message=user_message,
-                final_answer=final_answer,
-                tool_calls_detail=task_tool_calls,
-                run_id=run_id,
-                trace_id=trace_log.trace_id if trace_log else "",
-                conversation_history=conversation_history,
-            ))
+    await publish_task_result(
+        agent, run_id=run_id, project_id=project_id_for(project_file) if project_file else "",
+        status=terminal_status, user_message=user_message, final_answer=final_answer,
+        tool_steps=task_tool_calls, checkpoint=agent.last_run_checkpoint,
+        conversation_history=conversation_history, trace_id=trace_log.trace_id if trace_log else "",
+    )
 
     if trace_log:
         report = getattr(agent, "last_context_report", {})
@@ -791,6 +710,7 @@ def _stream_progress_event(step: dict, todo_state: dict) -> dict:
     }
 
 @pin_plugins
+@extension_request
 async def handle_agent_execution(
     agent: ReActAgent,
     review_mgr,
@@ -1063,7 +983,7 @@ async def handle_agent_execution(
                     return restored
 
                 review_mgr.candidate_restore_callback = _restore_candidate_after_design
-        task_tool_calls: list[dict] = []  # 累计本任务所有工具调用（供记忆归档）
+        task_tool_calls: list[dict] = []
         agent.tool_registry.set_allowed_tools(None)
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
@@ -1140,7 +1060,7 @@ async def handle_agent_execution(
                     run_id=run_id,
                 )
 
-                gate_decision = await contract_gate.evaluate(ContractGateContext(
+                gate_decision = await contract_gate.evaluate(build_contract_gate_context(
                     agent=agent,
                     change_set=change_set,
                     review_manager=review_mgr,
@@ -1217,7 +1137,7 @@ async def handle_agent_execution(
                     if contract_result is not None:
                         failure_analysis = await contract_failure_analyzer.analyze(
                             ContractFailureAnalysisContext(
-                                agent=agent,
+                                invoke=ReadOnlyAnalysisAdapter(agent).invoke,
                                 result=contract_result,
                                 message=contract_message,
                                 run_id=run_id,
@@ -1301,7 +1221,7 @@ async def handle_agent_execution(
                     # canonical graph on rejection.
                     if contract_result is not None:
                         finalizer = getattr(contract_gate, "finalize", None)
-                        post_commit = await finalizer(ContractGateContext(
+                        post_commit = await finalizer(build_contract_gate_context(
                             agent=agent,
                             change_set=change_set,
                             review_manager=review_mgr,

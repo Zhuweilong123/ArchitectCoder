@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict
 
 from app.agent_base.core.hooks import get_runtime
-from app.agent_base.core.orchestration import ExplorationDemand, ExplorationPort
+from extensions.orchestration.plugin_api import ExplorationDemand, ExplorationPort
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.base import Tool, ToolParameter
 

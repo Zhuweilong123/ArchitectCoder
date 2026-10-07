@@ -1,3 +1,4 @@
+from extensions.memory.contributions import should_archive as _should_archive_task_memory
 import asyncio
 import json
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from app.agent_base.tools.my_tools.foundation_tools import (
 from app.agent_base.tools.registry import ToolRegistry
 from app.agent_base.tools.result import command_result
 from app.services.agent_execution import (
-    _finalize_terminal_checkpoint, _should_archive_task_memory,
+    _finalize_terminal_checkpoint,
 )
 
 

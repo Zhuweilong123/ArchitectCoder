@@ -24,7 +24,8 @@ from app.agent_base.tools.my_tools.foundation_tools import (
     create_foundation_tools,
 )
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
-from app.agent_base.core.skills import SkillCatalog, SkillContext, capture_skill_catalog
+from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog)
+from app.agent_base.host_api.contexts import SkillContext
 from app.runtime import build_command_executor, workspace_root_for
 from app.runtime import TaskKind
 
@@ -229,7 +230,7 @@ class SpawnSubagentTool(AsyncTool):
         self.max_tool_calls = max(1, int(
             max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
         ))
-        self.max_run_seconds = max(1.0, float(
+        self.max_run_seconds = max(0.0, float(
             max_run_seconds if max_run_seconds is not None else settings.agent_max_run_seconds
         ))
         self.token_finalization_reserve_tokens = (

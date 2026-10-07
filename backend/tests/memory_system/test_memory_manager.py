@@ -122,7 +122,7 @@ def test_insight_subject_supersession(tmp_path):
 
 
 def test_durable_preference_merge(tmp_path):
-    """耐久类相似合并：importance 提升，summary 更新。"""
+    """重复提取合并内容，不把重复出现视为有效性强化。"""
     async def _run():
         mgr = MemoryManager(db_path=str(tmp_path / "m.db"))
         fn = _extract([{"memory_type": "preference", "summary": "用户偏好组合模式",
@@ -132,7 +132,9 @@ def test_durable_preference_merge(tmp_path):
 
         rows = mgr.db.list_by_project("p", memory_type=MemoryType.PREFERENCE)
         assert len(rows) == 1
-        assert abs(rows[0].importance_score - 0.85) < 1e-6  # 0.8 + 0.05
+        assert abs(rows[0].importance_score - 0.8) < 1e-6
+        assert rows[0].access_count == 0
+        assert len(mgr.knowledge.versions("p", rows[0].id)) >= 3
         mgr.close()
 
     asyncio.run(_run())
@@ -301,7 +303,8 @@ def test_reinforce_boosts_importance(tmp_path):
     mgr.reinforce(entry.id, project_id="p")
     got = mgr.db.get("p", entry.id)
     assert abs(got.importance_score - 0.6) < 1e-6  # 0.5 + 0.1
-    assert got.access_count == 1
+    assert got.access_count == 0
+    assert got.metadata["knowledge"]["verification"] == "confirmed"
     mgr.close()
 
 

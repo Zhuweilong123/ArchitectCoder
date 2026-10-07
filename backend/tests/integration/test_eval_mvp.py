@@ -32,7 +32,7 @@ from extensions.evals.runner import (
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
-from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest
+from extensions.evals.plugin_api import EvalArchiveRequest, EvalBatchMergeRequest
 from extensions.evals.batches import (
     EvalBatch, EvalBatchManager, _baseline_case_ids, summarize, write_performance_result,
 )
@@ -54,6 +54,10 @@ async def _factory(workspace, case):
 
 
 def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
+    from config.settings import get_settings
+
+    settings = get_settings().model_copy(update={"agent_max_run_seconds": 0})
+    monkeypatch.setattr("extensions.evals.runner.get_settings", lambda: settings)
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "input.txt").write_text("input", encoding="utf-8")
@@ -71,6 +75,7 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     )
 
     assert result.status == "passed"
+    assert result.metadata["eval_contract"]["turn_deadline_seconds"] == case.max_seconds
     assert result.passed is True
     assert result.score == 1.0
     assert re.search(
@@ -104,10 +109,11 @@ def test_eval_runner_fixture_checker_trace_and_result(tmp_path, monkeypatch):
     )
 
 
-def test_eval_agent_budget_defaults_to_production_settings():
+@pytest.mark.parametrize("max_run_seconds", [0, 600])
+def test_eval_agent_budget_defaults_to_production_settings(max_run_seconds):
     settings = SimpleNamespace(
         agent_max_tool_calls=100,
-        agent_max_run_seconds=600,
+        agent_max_run_seconds=max_run_seconds,
         agent_context_soft_limit_tokens=200000,
     )
     case = EvalCase(
@@ -120,9 +126,26 @@ def test_eval_agent_budget_defaults_to_production_settings():
 
     assert _agent_budget(case, settings) == {
         "max_tool_calls": 100,
-        "max_run_seconds": 600,
+        "max_run_seconds": max_run_seconds,
         "max_total_tokens": 200000,
     }
+
+
+@pytest.mark.parametrize("max_run_seconds", [0, 10, 600])
+def test_eval_budget_control_retains_explicit_case_deadline(max_run_seconds):
+    settings = SimpleNamespace(
+        agent_max_tool_calls=100,
+        agent_max_run_seconds=max_run_seconds,
+        agent_context_soft_limit_tokens=200000,
+    )
+    case = EvalCase(
+        id="budget-control", prompt="test budget", max_seconds=30,
+        metadata={"capability": "budget_control"},
+    )
+
+    assert _agent_budget(case, settings)["max_run_seconds"] == (
+        min(30, max_run_seconds) if max_run_seconds > 0 else 30
+    )
 
 
 def test_eval_agent_factory_passes_only_user_message_and_production_budget(
@@ -373,7 +396,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
         return listed, content, validated
 
     listed, content, validated = asyncio.run(exercise())
-    assert listed == "radar_design_0730.umlproj"
+    assert listed == str((design / "radar_design_0730.umlproj").resolve())
     assert '"diagrams"' in content
     assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
 

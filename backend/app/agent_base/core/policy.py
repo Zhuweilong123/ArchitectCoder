@@ -18,7 +18,7 @@ class ExecutionBudget:
 
     Token usage is observed cumulatively for metrics, but the configured token
     limits apply to one LLM request.  Task lifetime remains bounded by the
-    time, tool-call, and convergence policies.
+    optional time limit, tool-call, and convergence policies.
     """
 
     max_tool_calls: int
@@ -33,7 +33,7 @@ class ExecutionBudget:
 
     def __post_init__(self) -> None:
         self.max_tool_calls = max(1, int(self.max_tool_calls))
-        self.max_run_seconds = max(1.0, float(self.max_run_seconds))
+        self.max_run_seconds = max(0.0, float(self.max_run_seconds))
         self.max_total_tokens = max(1, int(self.max_total_tokens))
         if self.emergency_max_total_tokens is None:
             self.emergency_max_total_tokens = self.max_total_tokens * 2
@@ -77,7 +77,10 @@ class ExecutionBudget:
         self.total_tokens += self.request_tokens
 
     def before_llm(self) -> str | None:
-        if time.monotonic() - self.started_at >= self.max_run_seconds:
+        if (
+            self.max_run_seconds > 0
+            and time.monotonic() - self.started_at >= self.max_run_seconds
+        ):
             return "time_limit"
         return None
 

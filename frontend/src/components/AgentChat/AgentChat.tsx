@@ -10,14 +10,14 @@
  * - 消息历史持久化（刷新不丢失）
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import {
   Input, Button, message, Tag, Space, Spin, Alert, Tooltip, Collapse, Dropdown, Switch,
 } from 'antd';
 import {
   SendOutlined, StopOutlined, RobotOutlined,
   CheckCircleOutlined, CloseCircleOutlined,
-  ToolOutlined, UserOutlined,
+  ToolOutlined, UserOutlined, FormOutlined,
   ExpandOutlined, CompressOutlined, CloseOutlined, LoadingOutlined,
   PlusOutlined, HistoryOutlined, SwapOutlined, DownOutlined, RightOutlined,
 } from '@ant-design/icons';
@@ -70,9 +70,10 @@ const AgentChat: React.FC = () => {
     }
   });
   const {
-    inputValue, setInputValue, resetInputHistory, recallInput,
+    inputValue, setInputValue, resetInputHistory, activateInputSession, recallInput,
+    recallMessage, restoreDraft,
     canRecallOlder, canRecallNewer, historyPosition, historyCount,
-  } = useChatInputHistory(messages);
+  } = useChatInputHistory(messages, getCurrentSessionId());
   const [busy, setBusy] = useState(false);
   const [sessions, setSessions] = useState<TraceMeta[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -112,7 +113,10 @@ const AgentChat: React.FC = () => {
   const handleDesignElementWrapper = useCallback((event: { type: string; data: string }) => {
     handleDesignElement(useDiagramStore.getState(), event, idMapRef.current);
   }, []);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
   const inputRef = useRef<any>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -176,12 +180,40 @@ const AgentChat: React.FC = () => {
     } catch { /* ignore */ }
   }, [messages]);
 
-  // ── 自动滚动（流式时用 auto 避免 smooth 抖动） ──
-  useEffect(() => {
-    const el = messagesEndRef.current;
+  const scrollToLatest = useCallback(() => {
+    followLatestRef.current = true;
+    setAwayFromLatest(false);
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
     if (!el) return;
-    el.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' });
+    const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop <= 48;
+    followLatestRef.current = atBottom;
+    setAwayFromLatest(!atBottom);
+  }, []);
+
+  // Follow only while the user is at the bottom, and scroll this pane alone.
+  useLayoutEffect(() => {
+    const el = messagesRef.current;
+    if (el && followLatestRef.current) el.scrollTop = el.scrollHeight;
   }, [messages, currentSteps, busy, agentChatVisible, agentChatExpanded]);
+
+  useEffect(() => {
+    const el = messagesRef.current;
+    const list = messageListRef.current;
+    if (!el || !list || !agentChatVisible) return;
+    const observer = new ResizeObserver(() => {
+      if (followLatestRef.current) el.scrollTop = el.scrollHeight;
+      else handleMessagesScroll();
+    });
+    // Covers tool detail expansion and changes in todo/input height.
+    observer.observe(el);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [agentChatVisible, handleMessagesScroll]);
 
   // ── 连接 WebSocket ──
   const connect = useCallback((open = true) => {
@@ -206,7 +238,7 @@ const AgentChat: React.FC = () => {
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
-    if (!text || busy) return;
+    if (!text || busy || sessionsLoading) return;
 
     connect();
     useDiagramStore.getState().beginBatch();
@@ -230,6 +262,7 @@ const AgentChat: React.FC = () => {
       },
     ]);
     resetInputHistory();
+    scrollToLatest();
     setBusy(true);
     liveStepsRef.current = [];
     setCurrentSteps([]);
@@ -239,11 +272,11 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled, resetInputHistory]);
+  }, [inputValue, busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled, resetInputHistory, scrollToLatest]);
 
   const handleMessageAction = useCallback((message: string) => {
     const text = message.trim();
-    if (!text || busy) return;
+    if (!text || busy || sessionsLoading) return;
     connect();
     useDiagramStore.getState().beginBatch();
     sendAgentMessage(text, {
@@ -273,7 +306,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [busy, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+  }, [busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
 
   const handleDesignContractToggle = useCallback((checked: boolean) => {
     setDesignContractEnabled(checked);
@@ -315,12 +348,12 @@ const AgentChat: React.FC = () => {
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let the input method use arrows and Enter to select/confirm candidates.
     if (e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !busy && !sessionsLoading) {
       e.preventDefault();
       handleSend();
       return;
     }
-    if (busy || sessionsLoading || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (sessionsLoading || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
     const { value, selectionStart, selectionEnd } = e.currentTarget;
     if (selectionStart !== selectionEnd) return;
@@ -346,6 +379,7 @@ const AgentChat: React.FC = () => {
 
   // ── 新对话（新 session）──
   const handleNewSession = useCallback(() => {
+    if (busy || sessionsLoading) return;
     const hasConversation = messages.length > 0
       || currentSteps.length > 0
       || currentTodos.length > 0
@@ -355,6 +389,8 @@ const AgentChat: React.FC = () => {
       return;
     }
     startNewSession();  // 生成新 id + 断开
+    activateInputSession(getCurrentSessionId());
+    scrollToLatest();
     setMessages([]);
     liveStepsRef.current = [];
     setCurrentSteps([]);
@@ -365,10 +401,9 @@ const AgentChat: React.FC = () => {
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
     useReviewStore.getState().clear();
-    resetInputHistory();
     setBusy(false);
     connect();
-  }, [connect, currentSteps.length, currentTodos.length, messages, review.status, resetInputHistory]);
+  }, [busy, sessionsLoading, connect, currentSteps.length, currentTodos.length, messages, review.status, activateInputSession, scrollToLatest]);
 
   // ── 历史会话（恢复继续聊，结论级）──
   const loadSessions = useCallback(async () => {
@@ -383,11 +418,13 @@ const AgentChat: React.FC = () => {
   }, []);
 
   const handleResumeSession = useCallback(async (targetId: string) => {
-    if (targetId === getCurrentSessionId()) return;
+    if (busy || sessionsLoading || targetId === getCurrentSessionId()) return;
     setSessionsLoading(true);
     try {
       const history = await getTraceHistory(targetId);
       switchSession(targetId);
+      activateInputSession(targetId);
+      scrollToLatest();
       // Task checkpoints are internal recovery context, not user-facing chat
       // messages. Keep them in the trace/backend history for future resume,
       // but do not render them as assistant replies when loading a session.
@@ -408,7 +445,6 @@ const AgentChat: React.FC = () => {
       setTodoExpanded(false);
       todoSeenInTaskRef.current = false;
       useReviewStore.getState().clear();
-      resetInputHistory();
       setBusy(false);
       connect();
     } catch {
@@ -416,7 +452,7 @@ const AgentChat: React.FC = () => {
     } finally {
       setSessionsLoading(false);
     }
-  }, [connect, resetInputHistory]);
+  }, [busy, sessionsLoading, connect, activateInputSession, scrollToLatest]);
 
   // ── 挂载即建立长连接：连接随应用存活，与面板开关解耦 ──
   // AgentChat 在 App 中常驻挂载（App.tsx），面板只是显示/隐藏；
@@ -696,7 +732,7 @@ const AgentChat: React.FC = () => {
                         icon: s.session_id === currentSessionId
                           ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
                           : undefined,
-                        disabled: s.session_id === currentSessionId,
+                        disabled: busy || sessionsLoading || s.session_id === currentSessionId,
                         label: (
                           <span style={{ fontSize: 12 }}>
                             {s.title ? `${truncateTitle(s.title)} · ` : ''}
@@ -724,7 +760,7 @@ const AgentChat: React.FC = () => {
                   size="small"
                   icon={<PlusOutlined />}
                   onClick={handleNewSession}
-                  disabled={busy}
+                  disabled={busy || sessionsLoading}
                 >
                   {copy('newChat')}
                 </Button>
@@ -751,7 +787,9 @@ const AgentChat: React.FC = () => {
           {renderTodoCard()}
 
           {/* Messages */}
-          <div className="agent-chat-messages">
+          <div className="agent-chat-messages-area">
+          <div className="agent-chat-messages" ref={messagesRef} onScroll={handleMessagesScroll}>
+          <div className="agent-chat-message-list" ref={messageListRef}>
             {messages.length === 0 && !busy && (
               <div className="agent-chat-empty">
                 <RobotOutlined style={{ fontSize: 32, color: '#bbb', marginBottom: 12 }} />
@@ -783,6 +821,18 @@ const AgentChat: React.FC = () => {
                   </div>
                   {msg.content.length > 0 && (
                     <MessageCopyButton content={msg.content} language={interfaceLanguage}>
+                      {msg.role === 'user' && msg.content.trim() && (
+                        <Tooltip title={copy('refillMessage')}>
+                          <Button type="text" size="small" className="agent-message-refill"
+                            icon={<FormOutlined />} aria-label={copy('refillMessage')}
+                            disabled={sessionsLoading}
+                            onClick={() => {
+                              recallMessage(msg.id);
+                              window.requestAnimationFrame(() => inputRef.current?.focus({ cursor: 'end' }));
+                            }}
+                          />
+                        </Tooltip>
+                      )}
                       {msg.role === 'agent' && !msg.id.startsWith('stream_') && (
                         <MessageReadButton content={msg.content} language={interfaceLanguage} messageId={msg.id} />
                       )}
@@ -793,6 +843,7 @@ const AgentChat: React.FC = () => {
                       type="primary"
                       size="small"
                       style={{ marginTop: 8 }}
+                      disabled={busy || sessionsLoading}
                       onClick={() => handleMessageAction(msg.action!.message)}
                     >
                       {msg.action.label}
@@ -906,7 +957,14 @@ const AgentChat: React.FC = () => {
               </div>
             )}
 
-            <div ref={messagesEndRef} />
+          </div>
+          </div>
+          {awayFromLatest && (
+            <Button className="agent-chat-back-to-latest" size="small"
+              icon={<DownOutlined />} onClick={scrollToLatest}>
+              {copy('backToLatest')}
+            </Button>
+          )}
           </div>
 
           {/* 待审核小条（「稍后」折叠态）：常驻输入框上方，随时可回到审核 */}
@@ -945,16 +1003,25 @@ const AgentChat: React.FC = () => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={copy('inputPlaceholder')}
+              placeholder={copy(busy ? 'inputPlaceholderBusy' : 'inputPlaceholder')}
               autoSize={{ minRows: 1, maxRows: 4 }}
-              disabled={busy}
               style={{ resize: 'none' }}
             />
             <div className="agent-chat-input-actions">
               {historyPosition !== null && (
-                <span className="agent-chat-input-history-position" aria-live="polite">
-                  {`${copy('inputHistory')} ${historyPosition}/${historyCount}`}
-                </span>
+                <div className="agent-chat-input-history-position">
+                  <span aria-live="polite">{`${copy('inputHistory')} ${historyPosition}/${historyCount}`}</span>
+                  <Button type="link" size="small" disabled={sessionsLoading}
+                    onClick={() => {
+                      restoreDraft();
+                      window.requestAnimationFrame(() => inputRef.current?.focus({ cursor: 'end' }));
+                    }}>
+                    {copy('restoreInputDraft')}
+                  </Button>
+                </div>
+              )}
+              {busy && historyPosition === null && (
+                <span className="agent-chat-input-hint">{copy('draftWhileRunning')}</span>
               )}
               {busy ? (
                 <Button
@@ -970,7 +1037,7 @@ const AgentChat: React.FC = () => {
                   type="primary"
                   icon={<SendOutlined />}
                   onClick={handleSend}
-                  disabled={!inputValue.trim()}
+                  disabled={!inputValue.trim() || sessionsLoading}
                   size="small"
                 >
                   {copy('send')}

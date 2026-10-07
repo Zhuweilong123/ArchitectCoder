@@ -22,9 +22,9 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.runtime.process_output import (
     DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
 )
@@ -158,24 +158,10 @@ def _expand_workspace_alias(
     value: str, workspace_root: str = "", source_dir: str = "",
     test_dir: str = "", design_dir: str = "",
 ) -> str:
-    """Expand stable workspace aliases before safe_path()."""
-    if not isinstance(value, str) or not value.strip() or Path(value).is_absolute():
-        return value
-    normalized = value.replace("/", os.sep).replace("\\", os.sep)
-    parts = normalized.split(os.sep)
-    aliases = {
-        "workspace": workspace_root,
-        "source": source_dir,
-        "src": source_dir,
-        "test": test_dir,
-        "tests": test_dir,
-        "design": design_dir,
-    }
-    base = aliases.get(parts[0].lower())
-    if not base:
-        return value
-    suffix = Path(*parts[1:]) if len(parts) > 1 else Path()
-    return str(Path(base) / suffix)
+    """Compatibility wrapper around the shared path contract."""
+    return str(WorkspacePathResolver(
+        workspace_root, source_dir, test_dir, design_dir,
+    ).resolve(value))
 
 
 def _sha256_text(text: str) -> str:
@@ -222,6 +208,7 @@ class ReadFileTool(AsyncTool):
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
+        self._paths = WorkspacePathResolver(workspace_root, source_dir, test_dir, design_dir)
         self._workspace_root = workspace_root
         self._source_dir = source_dir
         self._test_dir = test_dir
@@ -230,15 +217,17 @@ class ReadFileTool(AsyncTool):
         self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict) -> ToolResult:
         path = params.get("path", "")
-        path = _expand_workspace_alias(
-            path, self._workspace_root, self._source_dir,
-            self._test_dir, self._design_dir,
-        )
         try:
-            fp = safe_path(path, self._roots, require_exist=True)
-        except ValueError as e:
-            return f"Error: {e}"
+            fp = self._paths.resolve(path, require_exist=True)
+        except WorkspacePathError as e:
+            message = self._missing_file_message(path) if e.code == "PATH_NOT_FOUND" else f"Error: {e}"
+            return ToolResult.error(message, e.code, retryable=True)
+        if not fp.is_file():
+            return ToolResult.error(f"Error: not a file: {path}", "NOT_A_FILE", True)
         try:
             offset = max(int(params.get("offset") or 0), 0)
             requested_limit = params.get("limit")
@@ -246,17 +235,20 @@ class ReadFileTool(AsyncTool):
                      min(int(requested_limit), self._MAX_LINES))
             char_offset = int(params.get("char_offset") or 0)
         except (TypeError, ValueError, OverflowError):
-            return "Error: offset, limit, and char_offset must be integers"
+            return ToolResult.error("Error: offset, limit, and char_offset must be integers", "INVALID_ARGUMENT", True)
         if limit < 1 or char_offset < 0:
-            return "Error: limit must be positive and char_offset nonnegative"
+            return ToolResult.error("Error: limit must be positive and char_offset nonnegative", "INVALID_ARGUMENT", True)
         try:
-            return await asyncio.to_thread(
+            body = await asyncio.to_thread(
                 self._read_window, fp, offset, limit, char_offset,
             )
+            return ToolResult.success(body)
         except FileNotFoundError:
-            return self._missing_file_message(path)
-        except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.error(self._missing_file_message(path), "PATH_NOT_FOUND", True)
+        except (OSError, UnicodeError) as e:
+            return ToolResult.error(f"Error: {e}", "FILE_READ_ERROR", True)
+        except ValueError as e:
+            return ToolResult.error(f"Error: {e}", "INVALID_ARGUMENT", True)
 
     def _read_window(self, path: Path, offset: int, limit: int,
                      char_offset: int) -> str:
@@ -280,7 +272,7 @@ class ReadFileTool(AsyncTool):
                     break
                 start_char = char_offset if line_number == offset else 0
                 if start_char and not self._discard_chars(stream, start_char):
-                    return f"Error: char_offset exceeds line {line_number}"
+                    raise ValueError(f"char_offset exceeds line {line_number}")
                 raw_line = stream.readline(self._MAX_LINE_CHARS + 1)
                 if not raw_line:
                     break
@@ -385,22 +377,7 @@ class ReadFileTool(AsyncTool):
         return found
 
     def _display_candidate(self, candidate: Path) -> str:
-        """Prefer stable workspace aliases over machine-specific absolute paths."""
-        for label, value in (
-            ("source", self._source_dir),
-            ("test", self._test_dir),
-            ("design", self._design_dir),
-            ("workspace", self._workspace_root),
-        ):
-            if not value:
-                continue
-            root = Path(value).resolve()
-            try:
-                relative = candidate.relative_to(root)
-            except ValueError:
-                continue
-            return f"{label}/{relative.as_posix()}"
-        return str(candidate)
+        return self._paths.display(candidate)
 
     def to_openai_schema(self) -> dict:
         return {
@@ -432,27 +409,35 @@ class BaseListFilesTool(AsyncTool):
             description=(
                 "List workspace files with compact metrics. B=bytes, L=physical lines, "
                 "S=symbol hints, I=interface hints, D=dependency-statement hints; "
-                "S/I/D are approximate. A nested relative path is relative to its "
-                "configured root (e.g. path='trade_sys/services'); alternatively use "
-                "path='source', pattern='trade_sys/services/**'. Do not prefix a "
-                "nested path with the alias (avoid path='source/trade_sys/services'). "
+                "S/I/D are approximate. Results are absolute paths reusable in "
+                "file tools and literal program argv. "
                 "When asked for an overview, summarize counts and largest files; group "
                 "full inventories by directory when the user asks for all files."
             ),
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
+        self._paths = WorkspacePathResolver(workspace_root, source_dir, test_dir, design_dir)
         self.read_only = True
         self.can_parallel = True
 
     async def _execute(self, params: dict) -> str:
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict) -> ToolResult:
         pattern = params.get("pattern", "")
         if not self._roots:
-            return "(no workspace)"
-        return await asyncio.to_thread(
-            self._format_matches, self._roots, pattern,
-            details=params.get("details") is not False,
-            limit=self._result_limit(params.get("limit")),
-        )
+            return ToolResult.error("Error: No workspace root configured", "WORKSPACE_NOT_CONFIGURED")
+        if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in pattern.replace("\\", "/").split("/"):
+            return ToolResult.error("Error: pattern must be a relative glob without '..'", "INVALID_ARGUMENT", True)
+        try:
+            output = await asyncio.to_thread(
+                self._format_matches, self._roots, pattern,
+                details=params.get("details") is not False,
+                limit=self._result_limit(params.get("limit")),
+            )
+            return ToolResult.success(output)
+        except OSError as exc:
+            return ToolResult.error(f"Error: {exc}", "FILE_LIST_ERROR", True)
 
     @staticmethod
     def _result_limit(value: object) -> int:
@@ -468,13 +453,16 @@ class BaseListFilesTool(AsyncTool):
         total = 0
         for root in roots:
             rp = Path(root).resolve()
-            try:
-                matches = _glob.iglob(pattern, root_dir=rp, recursive=True)
-            except Exception:
-                continue
+            # glob silently suppresses directory access errors; preflight the
+            # selected root so a failed listing cannot become "no matches".
+            with os.scandir(rp):
+                pass
+            matches = _glob.iglob(pattern, root_dir=rp, recursive=True)
             for match in matches:
                 candidate = (rp / match).resolve()
-                name = str(match)
+                if any(part.casefold() == ".architectcoder" for part in candidate.parts):
+                    continue
+                name = self._paths.display(candidate) if candidate.is_relative_to(rp) else str(match)
                 if not candidate.is_relative_to(rp) or name in seen:
                     continue
                 seen.add(name)
@@ -538,12 +526,7 @@ class ShellTool(AsyncTool):
         )
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
         self._cwd = workspace_root or (self._roots[0] if self._roots else "")
-        self._cwd_aliases = {
-            "source": os.path.abspath(source_dir) if source_dir else "",
-            "test": os.path.abspath(test_dir) if test_dir else "",
-            "design": os.path.abspath(design_dir) if design_dir else "",
-            "workspace": self._cwd,
-        }
+        self._paths = WorkspacePathResolver(workspace_root, source_dir, test_dir, design_dir)
         self._review_manager = review_manager
         self._progress = progress
         self._review_timeout = review_timeout
@@ -561,16 +544,16 @@ class ShellTool(AsyncTool):
     async def _execute_result(self, params: dict):
         command = params.get("command", "")
         if not isinstance(command, str) or not command.strip():
-            return "Error: command must be a non-empty string"
+            return ToolResult.error("Error: command must be a non-empty string", "INVALID_ARGUMENT", True)
         cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
         if cwd_error:
-            return f"Error: {cwd_error}"
+            return self._cwd_error_result(cwd_error)
 
         lowered = command.lower()
         risk = self._risk_policy.evaluate("shell", {"command": command})
         if risk.action == "deny":
             logger.info("High-risk command denied: %s (matches %s)", command[:100], risk.pattern)
-            return f"Error: command denied (high-risk, matches deny list: {risk.pattern})"
+            return ToolResult(status="blocked", data=f"Error: command denied (high-risk, matches deny list: {risk.pattern})", error_code="POLICY_DENIED")
         approval_scope = self._risk_policy.approval_scope("shell", {"command": command})
         if risk.action == "ask":
             verdict = await self._request_approval(command, risk, approval_scope)
@@ -581,7 +564,7 @@ class ShellTool(AsyncTool):
         for pattern in _DENY_LIST_LOWER:
             if pattern in lowered:
                 logger.info("🚫 高危命令直接拒绝: %s (matches %s)", command[:100], pattern)
-                return f"Error: command denied (high-risk, matches deny list: {pattern})"
+                return ToolResult(status="blocked", data=f"Error: command denied (high-risk, matches deny list: {pattern})", error_code="POLICY_DENIED")
 
         # ── 敏感：请求人工审核，批准才执行 ──
         for pattern in _REVIEW_LIST_LOWER:
@@ -598,33 +581,29 @@ class ShellTool(AsyncTool):
             else self._validate_shell_command(command)
         )
         if syntax_error:
-            return f"Error: {syntax_error}"
+            return ToolResult.error(f"Error: {syntax_error}", "COMMAND_SYNTAX_INVALID", True)
 
         environment_error = self._command_executor.validate_command(command)
         if environment_error:
-            return f"Error: {environment_error}"
+            return ToolResult.error(f"Error: {environment_error}", "EXECUTION_ENVIRONMENT_ERROR", True)
 
         return await self._run_command(command, cwd)
 
-    def _resolve_cwd(self, raw_cwd) -> tuple[str | None, str | None]:
+    def _resolve_cwd(self, raw_cwd) -> tuple[str | None, WorkspacePathError | None]:
         """Resolve a labelled or workspace-relative cwd without shell cd."""
         if raw_cwd in (None, ""):
-            return self._cwd or None, None
+            raw_cwd = "."
         if not isinstance(raw_cwd, str):
-            return None, "cwd must be a string"
-        value = raw_cwd.strip()
-        alias = self._cwd_aliases.get(value.lower())
-        if alias:
-            if not os.path.isdir(alias):
-                return None, f"cwd directory does not exist: {value}"
-            return alias, None
+            return None, WorkspacePathError("cwd must be a string", "INVALID_ARGUMENT")
         try:
-            candidate = safe_path(value, self._roots, require_exist=True)
-        except ValueError as exc:
-            return None, str(exc)
-        if not candidate.is_dir():
-            return None, f"cwd is not a directory: {value}"
+            candidate = self._paths.directory(raw_cwd, default_root=self._cwd)
+        except WorkspacePathError as exc:
+            return None, exc
         return str(candidate), None
+
+    @staticmethod
+    def _cwd_error_result(error: WorkspacePathError) -> ToolResult:
+        return ToolResult.error(f"Error: {error}", error.code, True)
 
     @staticmethod
     def _validate_shell_command(command: str) -> str | None:
@@ -661,9 +640,9 @@ class ShellTool(AsyncTool):
         command: str,
         pattern: str | RiskDecision,
         approval_scope: dict[str, str] | None = None,
-    ) -> Optional[str]:
+    ) -> ToolResult | None:
         """敏感命令走 ReviewManager 人工审核。返回 None 表示批准可执行，
-        否则返回拒绝原因文本（fail closed：拒绝/超时/无审核通道都不执行）。"""
+        否则返回结构化拒绝结果（拒绝/超时/无审核通道都不执行）。"""
         decision = pattern if isinstance(pattern, RiskDecision) else RiskDecision(
             "ask", "high", "sensitive command", pattern,
         )
@@ -673,10 +652,10 @@ class ShellTool(AsyncTool):
         )
         if self._review_manager is None or self._progress is None:
             logger.warning("🚫 敏感命令无审核通道，拒绝执行: %s", command[:100])
-            return (
+            return ToolResult(status="blocked", data=(
                 f"Error: command requires human approval (matches sensitive list: "
                 f"{matched_pattern}), but no review channel is available. Command NOT executed."
-            )
+            ), error_code="APPROVAL_REQUIRED")
 
         title = "敏感命令请求审核"
         req = self._review_manager.submit(
@@ -715,7 +694,7 @@ class ShellTool(AsyncTool):
                 "timeout": self._review_timeout,
             })
             logger.warning("⏰ 敏感命令审核超时，拒绝执行: %s", command[:100])
-            return f"Error: approval timed out after {self._review_timeout}s. Command NOT executed."
+            return ToolResult(status="blocked", data=f"Error: approval timed out after {self._review_timeout}s. Command NOT executed.", error_code="APPROVAL_TIMEOUT")
 
         # 前端 reviewStore.accept/reject 发的是 {"decision", "feedback"} JSON；
         # 非 JSON（连接断开清理/旧协议纯文本）一律视为拒绝 —— fail closed。
@@ -730,11 +709,11 @@ class ShellTool(AsyncTool):
             if not self._risk_policy.approval_is_valid(
                 "shell", {"command": command}, scope,
             ):
-                return "Error: approval scope mismatch. Command NOT executed."
+                return ToolResult(status="blocked", data="Error: approval scope mismatch. Command NOT executed.", error_code="APPROVAL_SCOPE_MISMATCH")
             logger.info("✅ 敏感命令已批准: %s", command[:100])
             return None
         logger.info("🛑 敏感命令被拒绝: %s — %s", command[:100], feedback[:80])
-        return f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed."
+        return ToolResult(status="blocked", data=f"Error: command rejected by user: {feedback or 'no reason given'}. Command NOT executed.", error_code="APPROVAL_REJECTED")
 
     async def _run_command(self, command: str, cwd: str | None = None) -> str | ToolResult:
         cwd = cwd if cwd is not None else (self._cwd or None)
@@ -747,7 +726,7 @@ class ShellTool(AsyncTool):
         try:
             proc = await asyncio.to_thread(_start)
         except (OSError, ExecutionEnvironmentError) as e:
-            return f"Error: {type(e).__name__}: {e}"
+            return ToolResult.error(f"Error: {type(e).__name__}: {e}", "PROCESS_START_ERROR", True)
 
         try:
             captured = await collect_process_output(
@@ -756,12 +735,12 @@ class ShellTool(AsyncTool):
                 output_limit=self._output_cap,
             )
         except OSError as e:
-            return f"Error: {type(e).__name__}: {e}"
+            return ToolResult.error(f"Error: {type(e).__name__}: {e}", "PROCESS_IO_ERROR", True)
 
         if captured.reason == "canceled":
-            return "Error: command canceled"
+            return ToolResult.error("Error: command canceled", "PROCESS_CANCELED")
         if captured.reason == "timeout":
-            return f"Error: command timed out after {self._timeout:g}s"
+            return ToolResult.error(f"Error: command timed out after {self._timeout:g}s", "PROCESS_TIMEOUT", True)
         out = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
         if captured.reason == "output_limit":
             return ToolResult.error(
@@ -821,14 +800,19 @@ class SearchTextTool(GrepFileTool):
             "programming language or file extension. Uses a case-sensitive regex, "
             "falling back to a literal substring when the regex is invalid. The optional "
             "path accepts one file or a recursive directory scope such as source, test, "
-            "design, or workspace. Results include workspace-relative path, line, and "
+            "design, or workspace, including alias subpaths. Real workspace entries "
+            "take priority over aliases. Results include absolute path, line, and "
             "column. Binary files and common dependency/build/cache directories are skipped; "
             "workspace .searchignore can add exclusions."
         )
         self.read_only = True
         self.can_parallel = True
 
+    def run(self, parameters):
+        return GrepFileTool.run_result(self, parameters).text
+
+    async def run_result(self, parameters):
+        return await asyncio.to_thread(GrepFileTool.run_result, self, parameters)
+
     async def _execute(self, parameters):
-        # Keep the same async testing/dispatch shape as the other filesystem
-        # tools while retaining GrepFileTool's portable synchronous scanner.
-        return await asyncio.to_thread(self.run, parameters)
+        return (await self.run_result(parameters)).text

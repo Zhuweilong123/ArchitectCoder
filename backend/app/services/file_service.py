@@ -9,7 +9,7 @@ from app.models.uml import UmlDiagram, Project
 from backend.config import get_settings
 from backend.config.project_storage import project_id_for
 from backend.config.project_storage import project_storage
-from app.agent_base.core.knowledge_graph import load_knowledge_graph
+from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from app.services.project_repository import ProjectRepository, ProjectSaveResult
 
 settings = get_settings()

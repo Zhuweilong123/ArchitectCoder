@@ -1,15 +1,18 @@
 # 记忆机制与实现说明
 
 > 状态：当前实现说明
-> 更新日期：2026-09-11
-> 适用范围：当前仓库 HEAD。核心契约以 `backend/app/agent_base/core/memory.py` 为准，默认实现以 `extensions/memory/` 为准。
+> 更新日期：2026-10-07
+> 适用范围：当前仓库 HEAD。记忆公开契约以 `extensions/memory/plugin_api.py` 为准，宿主适配以 `backend/app/agent_base/adapters/memory.py` 为准。
+
+来源与有效性治理见 [记忆知识生命周期 v1](memory-knowledge-lifecycle.md)。
 
 ## 1. 当前边界
 
-记忆能力分为两层：
+记忆能力分为三层：
 
-- **核心层**：定义 `MemoryPort`、请求/结果模型、NoOp 降级和 resilience wrapper。核心不依赖 SQLite、FTS 或具体提取算法。
-- **扩展层**：`extensions/memory` 提供 SQLite 存储、FTS5/BM25 检索、LLM 提取、写入治理和生命周期管理。
+- **插件 API 层**：`extensions/memory/plugin_api.py` 定义 `MemoryPort` 和请求/结果模型。
+- **宿主适配层**：`adapters/memory.py` 负责加载、NoOp 降级和 resilience wrapper。
+- **扩展层**：`extensions/memory` 提供 SQLite 存储、FTS5/BM25 检索、LLM 提取、写入治理，以及通过显式阶段贡献实现的召回、观察、刷新和归档策略。
 
 `backend/app/agent_base/core/plugins.py` 通过 `extensions.memory:create` 加载默认 provider。关闭或加载失败时，Agent 继续使用 `NoOpMemory`，不阻断主流程。
 
@@ -23,17 +26,17 @@ create_dev_agent()
     │             └─ extensions.memory:create
     │                    └─ SQLiteMemoryProvider
     │
-    ├─ 每轮构建上下文
-    │      └─ DevPromptBuilder._recall_memory_block()
-    │             ├─ MemoryPort.recall(MemoryRecallRequest)
-    │             ├─ 将 context_block 加入本轮上下文
-    │             └─ 有 memory_ids 时调用 reinforce()
+    ├─ 绑定 ExtensionContext 中的 provider 能力
+    ├─ DevPromptBuilder 发布 prepare（通用 sections）
+    │      └─ memory.context.prepare → recall → memory section
     │
-    └─ 任务结束后台归档
-           └─ agent_execution._archive_task_to_memory()
-                  └─ MemoryPort.archive(MemoryArchiveRequest)
-                         └─ SQLiteMemoryProvider.archive()
-                                └─ MemoryManager.remember()
+    ├─ tool_after（结构化 result / effects）
+    │      └─ memory.evidence.observe → 来源版本捕获与失效判断
+    ├─ model_before（messages / current_user_index）
+    │      └─ memory.context.refresh → 更新插件自己的上下文
+    └─ task_after（最终检查或审核后的任务结果）
+           └─ memory.task.archive → 插件归档策略 → 后台 archive
+                  └─ SQLiteMemoryProvider.archive() → MemoryManager.remember()
 ```
 
 Recall 位于主 Agent 的 prompt 组装阶段，受 `top_k` 和 token 预算限制。Archive
@@ -41,7 +44,7 @@ Recall 位于主 Agent 的 prompt 组装阶段，受 `top_k` 和 token 预算限
 记录日志。provider 每次 recall/archive/reinforce 操作创建一个短生命周期的
 `MemoryManager`，操作结束关闭 SQLite 连接。
 
-## 3. 核心端口（`backend/app/agent_base/core/memory.py`）
+## 3. 插件公开 API（`extensions/memory/plugin_api.py`）
 
 ### 3.1 请求和结果模型
 
@@ -49,8 +52,9 @@ Recall 位于主 Agent 的 prompt 组装阶段，受 `top_k` 和 token 预算限
 |---|---|---|
 | `MemoryRecallRequest` | `project_id`, `query`, `top_k=3`, `max_tokens=500` | 对话前检索项目记忆 |
 | `MemoryRecallResult` | `context_block`, `memory_ids`, `token_count`, `metadata` | 返回可注入上下文和强化 ID |
-| `MemoryArchiveRequest` | `project_id`, `user_message`, `final_answer`, `tool_steps`, `run_id`, `trace_id` | 任务完成后归档 |
-| `MemoryArchiveResult` | `stored_count`, `metadata` | 返回新增记忆数量和 provider 信息 |
+| `MemoryArchiveRequest` | `project_id`, `user_message`, `final_answer`, `tool_steps`, `run_id`, `trace_id`, `terminal_status`, `resources` | 任务完成后归档，使用原始来源快照 |
+| `MemoryArchiveResult` | `stored_count`, `metadata` | 返回新增或更新数量和 provider 信息 |
+| `MemoryEventRequest / MemoryEventResult` | 事件类型、来源资源、受影响记忆和元数据 | 可选的证据观察接口 |
 
 ### 3.2 `MemoryPort`
 
@@ -58,6 +62,7 @@ Recall 位于主 Agent 的 prompt 组装阶段，受 `top_k` 和 token 预算限
 class MemoryPort(Protocol):
     async def recall(self, request: MemoryRecallRequest) -> MemoryRecallResult: ...
     async def archive(self, request: MemoryArchiveRequest) -> MemoryArchiveResult: ...
+    async def observe(self, request: MemoryEventRequest) -> MemoryEventResult: ...
     async def reinforce(
         self, memory_ids: tuple[str, ...], project_id: str = ""
     ) -> None: ...
@@ -77,10 +82,10 @@ reinforce/close 只记录日志。因此调用方不需要为可选记忆增加�
   [project-owned-state.md](project-owned-state.md)。
 - **召回参数**：`AGENT_MEMORY_RECALL_TOP_K`（默认 3）和
   `AGENT_MEMORY_RECALL_MAX_TOKENS`（默认 500）。请求中的正值优先，请求值为空/零时使用配置值。
-- **归档参数**：`AGENT_MEMORY_ARCHIVE_MAX_TOKENS`（默认 3000）限制后台提取调用。
+- **归档输出**：提取 0-3 条候选，模型调用使用默认输出预算。
 - **recall**：调用 `MemoryManager.recall()`，再用 `inject_memories("", results)`
   生成 `context_block`，返回命中的 ID、provider 标识和数量。
-- **archive**：最多格式化前 8 个工具步骤，每个 observation 截断到 300 字符，
+- **archive**：保留各工具步骤，每个序列化步骤（包含状态和参数）限制为 500 字符，
   将工具过程与最终答案组合后交给 LLM 提取；提取调用包在 `trace_span("MemoryArchive")`
   中，并将 run/trace 来源写入记忆 metadata。
 - **无 LLM 归档**：返回 `metadata={"provider": "sqlite", "skipped": "no_llm"}`，不写入数据。
@@ -93,13 +98,14 @@ provider 的 `close()` 当前是兼容性空操作，因为每个操作自身管
 
 ### 5.1 记忆类型
 
-`MemoryType` 当前包含五类：
+`MemoryType` 当前包含六类：
 
 - `preference`：用户偏好
 - `decision`：设计或实现决策
 - `rejection`：被拒绝的方案或约束
 - `convention`：项目规范和约定
 - `insight`：对项目状态的观察性总结
+- `operational_lesson`：带环境条件的可复用操作经验
 
 前四类属于 durable memory；`insight` 属于会随时间变化的状态观察。
 
@@ -157,15 +163,15 @@ MemoryDatabase.add/update
 
 `insight` 且存在 `subject` 时，subject 会 strip、压缩空白并转小写。相同
 `(project_id, memory_type, subject)` 已存在时复用原 ID 和创建时间，更新摘要、
-原文、标签、重要性和 metadata。这是 last-write-wins，不会继承旧 insight 的
-重要性或访问次数，避免错误观察持续自我强化。
+原文、标签、重要性和 metadata。当前投影保留相同 ID，旧内容与替代关系写入追加式版本表。
+作用域参与主题匹配；陈旧来源不能覆盖有效新状态，模型推断不能覆盖当前已确认事实。
 
 ### 6.2 Durable 去重合并
 
 其他类型通过 FTS5 找最多 3 个候选，再对摘要 token 计算 Jaccard 相似度。默认
 阈值为 `0.55`：
 
-- 达到阈值：更新已有摘要、原文、标签和反馈，重要性增加 `0.05`（上限 1.0），并记录一次访问。
+- 达到阈值：同类型、同主题、同作用域内更新内容并保留历史版本；重复提取不加分、不增加访问次数。
 - 未达到阈值：新增 `MemoryEntry`。
 
 ## 7. 检索与注入
@@ -176,7 +182,7 @@ MemoryDatabase.add/update
 1. 以 `max(top_k * 3, 10)` 扩大候选集；可按一个或多个 `MemoryType` 过滤。
 2. `MemoryDatabase.search_bm25()` 使用 SQLite FTS5 和 BM25，内部将 BM25 负分转为“越高越相关”。
 3. 仅对 `insight` 应用 `exp(-age_hours / recency_half_life_hours)` recency 衰减；durable 类型不因年龄降分。
-4. `MemoryRecallPolicy.select()` 依次执行最低分、同 subject 冲突解决、类型上限、摘要去重和 token 预算筛选。
+4. 先检查有效状态、来源版本、截止时间和作用域，再执行同主题冲突解决、类型上限、摘要去重和 token 预算筛选。
 5. 结果按相关性和类型优先级返回，provider 再调用 `inject_memories()` 生成 prompt 文本。
 
 召回策略的当前规则：
@@ -198,6 +204,7 @@ MemoryDatabase.add/update
 - `memories` 主表：记忆内容、治理 metadata、生命周期字段和来源字段。
 - `memories_fts` FTS5 虚拟表：独立维护，与主表 rowid 对齐；写入 `summary + tags` 的预分词文本。
 - `memory_maintenance`：每个 project 最近一次成功维护时间。
+- `memory_events`、`memory_versions`、`memory_resources`：追加式证据、历史快照、资源当前版本。
 
 连接使用 WAL、`synchronous=NORMAL`、foreign keys 和 `check_same_thread=False`。
 主表索引覆盖 project、类型、subject、重要性、访问时间和 pinned 状态。初始化
@@ -215,7 +222,8 @@ jieba 不可用时，中文使用 bigram + unigram 回退，英文按字母数�
 
 | 操作 | 当前行为 |
 |---|---|
-| reinforce | 重要性增加 `reinforce_delta`（默认 0.1，上限 1.0），并可增加访问次数 |
+| recall | 记录访问，不自动提升重要性或确认有效性 |
+| reinforce | 显式确认后提升重要性；待复核来源不能通过加分恢复，需 observe(memory_validated) |
 | decay | 非 pinned 记忆重要性乘因子，最低不低于 `importance_min`；insight 使用更快因子 |
 | prune | 仅在超过 `max_entries_per_project` 时执行，排除 pinned 和高访问记忆，按低重要性/久未访问优先批量删除 |
 | maintenance | 顺序执行 decay 和 prune，返回 `{"decayed": N, "pruned": M}` |
@@ -237,7 +245,6 @@ jieba 不可用时，中文使用 bigram + unigram 回退，英文按字母数�
 | `AGENT_MEMORY_DB_PATH` | 空 | 覆盖 SQLite 路径 |
 | `AGENT_MEMORY_RECALL_TOP_K` | `3` | Agent 端口默认召回条数 |
 | `AGENT_MEMORY_RECALL_MAX_TOKENS` | `500` | Agent 端口默认召回预算 |
-| `AGENT_MEMORY_ARCHIVE_MAX_TOKENS` | `3000` | 后台 LLM 提取预算 |
 
 `AGENT_MEMORY_ENABLED=false` 或 provider 值为 `none`、`noop`、`disabled` 时，
 核心返回 `NoOpMemory`。配置由 `get_settings()` 缓存，修改后需要重启 backend。
@@ -277,7 +284,7 @@ manager = MemoryManager(db_path="./project/my_project/.architectcoder/memories.d
 try:
     results = await manager.recall("project-id", "查询内容", top_k=5, max_tokens=800)
     prompt = manager.inject_memories("系统提示", results)
-    manager.reinforce(results, project_id="project-id")
+    # 只有外部明确确认后，才调用 reinforce；不要接在 recall 后自动调用。
 finally:
     manager.close()
 ```
@@ -289,12 +296,17 @@ finally:
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/agent_base/core/memory.py` | 核心端口、请求/结果模型、NoOp 和 resilience |
-| `backend/app/agent_base/assembly.py` | 组装 provider、每轮 recall 和强化 |
-| `backend/app/services/agent_execution.py` | 任务结束后的异步 archive 调度 |
+| `extensions/memory/plugin_api.py` | 记忆请求、结果和 Provider Protocol |
+| `backend/app/agent_base/adapters/memory.py` | 加载、NoOp 和 resilience |
+| `backend/app/agent_base/core/extension_context.py` | 通用能力绑定、请求隔离、任务结果通知和审核期间状态保留 |
+| `backend/app/agent_base/assembly.py` | 绑定 provider；通过 prepare 组装通用上下文 sections |
+| `backend/app/services/agent_execution.py` | 执行与最终检查后发布通用任务结果 |
+| `extensions/memory/plugin.json` | 记忆接口与阶段贡献声明 |
+| `extensions/memory/contributions.py` | 召回、观察、上下文刷新、归档门槛和后台归档调度 |
 | `extensions/memory/provider.py` | SQLite provider 到核心端口的适配 |
 | `extensions/memory/manager.py` | 提取、写入、召回、注入和领域编排 |
 | `extensions/memory/policy.py` | 写入门禁和召回筛选 |
+| `extensions/memory/knowledge.py` | 来源条件、有效性、证据与历史版本 |
 | `extensions/memory/database.py` | SQLite、FTS5、迁移、索引和 CRUD |
 | `extensions/memory/lifecycle.py` | reinforce、decay、prune、maintenance、pin |
 | `extensions/memory/models.py` | `MemoryEntry`、类型、结果和 `MemoryConfig` |
@@ -302,9 +314,9 @@ finally:
 | `extensions/memory/embedding.py` | embedding 协议和向量工具（当前未接入检索） |
 | `extensions/memory/migrate.py` | 旧 JSON 记忆迁移到 SQLite 的一次性脚本 |
 
-新增 provider 必须实现 `MemoryPort` 的三个方法，并通过插件管理器注册；新增
+新增 provider 保留 recall/archive/reinforce；observe 为可选兼容接口，并通过插件管理器注册；新增
 存储或检索策略应留在 `extensions/memory`，不能把 SQLite、FTS、LLM 提取细节
-泄漏到 Agent 核心。更新行为时同时核对本文件、插件架构文档和当前架构总览。
+泄漏到 Agent 核心。主循环、工具执行器和任务服务只提供通用事件，不应调用记忆接口或识别记忆格式。更新行为时同时核对本文件、插件架构文档和当前架构总览。
 
 ## 13. 当前限制
 

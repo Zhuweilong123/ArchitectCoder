@@ -23,6 +23,7 @@ from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
 from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
 from app.trace.tracing import current_trace_sink, emit_trace
+from .failure_recovery import EDIT_REFRESH_CODES, RecoveryScopes
 
 
 @dataclass
@@ -37,13 +38,7 @@ class ToolRoundResult:
 class ToolRoundExecutor:
     """Own tool-call parsing, execution, evidence, and tool lifecycle Hooks."""
 
-    _EDIT_RECOVERY_CODES = {
-        "PATCH_TEXT_NOT_FOUND",
-        "PATCH_AMBIGUOUS",
-        "EXPECTED_SHA_MISMATCH",
-        "CONCURRENT_CHANGE",
-        "PROJECT_REVISION_CONFLICT",
-    }
+    _EDIT_RECOVERY_CODES = EDIT_REFRESH_CODES
 
     def __init__(
         self,
@@ -69,6 +64,7 @@ class ToolRoundExecutor:
         # deliberately local to one task execution, not persisted in session
         # history, so a later user turn starts with a clean recovery boundary.
         self._edit_recovery_paths: set[str] = set()
+        self._recovery_scopes = RecoveryScopes(tool_registry)
 
     async def execute(self, tool_calls: list[dict], *, step: int) -> ToolRoundResult:
         parsed_calls = self._parse_calls(tool_calls)
@@ -90,7 +86,8 @@ class ToolRoundExecutor:
                 arguments=tool_args if isinstance(tool_args, dict) else {},
                 tool_call_id=str(tool_call.get("id") or ""),
             ) or ""
-            execution = await self._execute_one(tool_name, tool_args, blocked)
+            execution = await self._execute_one(tool_name, tool_args, blocked,
+                                                event_id=str(tool_call.get("id") or span_id))
             return execution, span_id
 
         executable = [item for item in parsed_calls if item[3] is None]
@@ -193,36 +190,18 @@ class ToolRoundExecutor:
     def _normalise_path(value: object) -> str:
         return os.path.normcase(os.path.normpath(str(value).replace("/", os.sep)))
 
-    @classmethod
-    def _paths_for_call(cls, tool_name: str, tool_args: object) -> set[str]:
-        if not isinstance(tool_args, dict):
-            return set()
-        if tool_name == "apply_changes":
-            changes = tool_args.get("changes")
-            if not isinstance(changes, list):
-                return set()
-            values = {
-                change.get(field)
-                for change in changes
-                if isinstance(change, dict)
-                for field in ("path", "from", "to")
-                if isinstance(change.get(field), str) and change.get(field).strip()
-            }
-        elif tool_name in {"read_file", "search_text"}:
-            values = {tool_args.get("path")}
-        else:
-            values = set()
-        return {cls._normalise_path(value) for value in values if value}
+    def _paths_for_call(self, tool_name: str, tool_args: object,
+                        tool_result: ToolResult | None = None) -> set[str]:
+        detail = {"name": tool_name, "arguments": tool_args}
+        if tool_result is not None:
+            detail.update(status=tool_result.status, observation=tool_result.text)
+        return set(self._recovery_scopes.paths(detail))
 
     @classmethod
     def _paths_overlap(cls, left: str, right: str) -> bool:
         left = cls._normalise_path(left)
         right = cls._normalise_path(right)
-        return (
-            left == right
-            or left.endswith(os.sep + right)
-            or right.endswith(os.sep + left)
-        )
+        return left == right
 
     def _update_edit_recovery_state(
         self,
@@ -230,7 +209,7 @@ class ToolRoundExecutor:
         tool_args: object,
         tool_result: ToolResult,
     ) -> None:
-        paths = self._paths_for_call(tool_name, tool_args)
+        paths = self._paths_for_call(tool_name, tool_args, tool_result)
         if tool_name == "apply_changes":
             if tool_result.error_code in self._EDIT_RECOVERY_CODES:
                 self._edit_recovery_paths.update(paths)
@@ -240,6 +219,10 @@ class ToolRoundExecutor:
                     if not any(self._paths_overlap(pending, path) for path in paths)
                 }
         elif tool_name in {"read_file", "search_text"} and tool_result.status == "success":
+            paths = self._recovery_scopes.fresh_content_paths({
+                "name": tool_name, "arguments": tool_args,
+                "status": tool_result.status, "observation": tool_result.text,
+            })
             self._edit_recovery_paths = {
                 pending for pending in self._edit_recovery_paths
                 if not any(self._paths_overlap(pending, path) for path in paths)
@@ -290,12 +273,12 @@ class ToolRoundExecutor:
         return parsed_calls
 
     async def _execute_one(
-        self, tool_name, tool_args, blocked,
+        self, tool_name, tool_args, blocked, *, event_id="",
     ):
         from ...core.operations import operation_scope
         with operation_scope("tool", run_id=get_runtime().run_id, stage=HookEvent.TOOL_BEFORE.value) as operation:
             try:
-                result = await self._execute_one_impl(tool_name, tool_args, blocked)
+                result = await self._execute_one_impl(tool_name, tool_args, blocked, event_id=event_id)
                 status = result[2].status
                 operation.status = {"success": "completed", "error": "failed"}.get(status, status)
                 return result
@@ -313,10 +296,11 @@ class ToolRoundExecutor:
         tool_name: str,
         tool_args: dict | str,
         blocked: str | None,
+        *, event_id: str = "",
     ):
         if blocked is not None:
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0, event_id=event_id)
 
         runtime = get_runtime()
         if (
@@ -329,7 +313,7 @@ class ToolRoundExecutor:
                 "Call todo_write first with the task checklist."
             )
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0, event_id=event_id)
 
         veto = await self.hooks.atrigger(
             HookEvent.TOOL_BEFORE,
@@ -350,7 +334,7 @@ class ToolRoundExecutor:
         if veto is not None:
             veto_message = str(veto)
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0)
+                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0, event_id=event_id)
 
         from app.trace.tracing import trace_span
 
@@ -366,9 +350,9 @@ class ToolRoundExecutor:
         except Exception:
             pass
 
-        return await self._after_tool(tool_name, tool_args, tool_result, duration_ms)
+        return await self._after_tool(tool_name, tool_args, tool_result, duration_ms, event_id=event_id)
 
-    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms):
+    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms, *, event_id=""):
         runtime = get_runtime()
         observation_full = tool_result.text
         fed = await self.hooks.atrigger(
@@ -383,6 +367,10 @@ class ToolRoundExecutor:
                 tool_output=observation_full,
                 tool_status=tool_result.status,
                 error_code=tool_result.error_code,
+                payload={"result": {"status": tool_result.status, "error_code": tool_result.error_code,
+                                    "retryable": tool_result.retryable, **tool_result.effects()},
+                         "duration_ms": duration_ms, "event_id": event_id,
+                         "trace_id": str(getattr(current_trace_sink(), "trace_id", "") or "")},
             ),
         )
         if isinstance(fed, HookDecision):

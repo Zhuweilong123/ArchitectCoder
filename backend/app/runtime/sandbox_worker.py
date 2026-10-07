@@ -265,10 +265,26 @@ class DockerCommandExecutor:
         command.append(self.image)
         return command
 
+    def _program_args(self, args: list[str]) -> list[str]:
+        """Map complete host workspace path arguments into the mounted volume."""
+        mapped = []
+        for value in args:
+            path, separator, selector = value.partition("::")
+            candidate = Path(path)
+            if candidate.is_absolute():
+                try:
+                    relative = candidate.resolve().relative_to(self.workspace_root)
+                except (OSError, ValueError):
+                    pass
+                else:
+                    path = "/workspace" + ("/" + relative.as_posix() if relative.parts else "")
+            mapped.append(path + separator + selector)
+        return mapped
+
     def start_program(self, program: str, args: list[str], cwd: str | None) -> subprocess.Popen:
         self.preflight()
         return subprocess.Popen(
-            [*self._base(cwd), program, *args],
+            [*self._base(cwd), program, *self._program_args(args)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
@@ -278,7 +294,7 @@ class DockerCommandExecutor:
     def start_program_with_limits(self, program: str, args: list[str], cwd: str | None, resources) -> subprocess.Popen:
         self.preflight()
         return subprocess.Popen(
-            [*self._base(cwd, resources=resources), program, *args],
+            [*self._base(cwd, resources=resources), program, *self._program_args(args)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,

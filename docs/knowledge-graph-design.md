@@ -2,7 +2,7 @@
 
 > 状态：当前实现说明；更新日期：2026-09-11
 > 当前具体实现位于
-> `extensions/knowledge_graph/`，应用侧通过 `backend/app/agent_base/core/knowledge_graph.py`
+> `extensions/knowledge_graph/`，应用侧通过 `extensions/knowledge_graph/plugin_api.py`
 > 访问；文中的 `backend/knowledge_graph/`、`knowledge_graph_tools.py` 和
 > `explore_project_tools.py` 是历史路径。
 > 默认 Agent 工具为 3 个，`compare_design_code` 仅在组合层显式启用时注册。
@@ -33,7 +33,7 @@ extensions/knowledge_graph/
 ### 2.1 Provider boundary
 
 Application services do not import `GraphBuilder` or `GraphRetriever` directly. The stable boundary is
-`app.agent_base.core.knowledge_graph.KnowledgeGraphProvider`, loaded from
+`extensions.knowledge_graph.plugin_api.KnowledgeGraphProvider`, loaded from
 `AGENT_KNOWLEDGE_GRAPH_PROVIDER` (`module:factory` syntax). The default implementation is
 `extensions.knowledge_graph:create`, which adapts the existing SQLite + FTS5
 implementation. Set `AGENT_KNOWLEDGE_GRAPH_ENABLED=false` or use `noop` to disable indexing and
@@ -299,5 +299,6 @@ retriever.close()
 | `extensions/knowledge_graph/builder.py` | `GraphBuilder`（设计层 + 代码层 + 跨图关联，项目作用域 id） |
 | `extensions/knowledge_graph/retriever.py` | `GraphRetriever`（query / expand / trace / diff） |
 | `extensions/knowledge_graph/tools.py` | KG v2 工具（`get_project_map` / `find_nodes` / `expand_neighbors` / `compare_design_code`）和工具工厂 |
-| `backend/app/agent_base/core/knowledge_graph.py` | 应用侧知识图谱 provider 端口和 fallback |
+| `extensions/knowledge_graph/plugin_api.py` | 知识图谱 provider 协议 |
+| `backend/app/agent_base/adapters/knowledge_graph.py` | 加载、fallback 和进程级 provider 入口 |
 | `backend/app/services/file_service.py` | `save_project` 触发 KG 增量重建 |

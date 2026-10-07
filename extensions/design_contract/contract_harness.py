@@ -1,66 +1,14 @@
-"""Model-independent design-contract checks for workspace changes.
-
-The harness deliberately sits above the collector and graph adapters.  It
-evaluates a candidate workspace snapshot and returns a structured decision;
-the Agent may consume that decision, but it is not part of the check itself.
-"""
+"""Deterministic design/source/test consistency rules owned by the plugin."""
 
 from __future__ import annotations
-
-import os
 import uuid
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
-
+from typing import Any
 from .contract_pipeline import assemble_contract
-from .contracts import load_contracts
+from app.agent_base.adapters.contracts import load_contracts
 from .language_adapters import LanguageAdapterRegistry, default_language_adapters
 
-
-CheckStatus = Literal["pass", "warn", "block", "inconclusive", "not_applicable"]
-
-
-@dataclass(frozen=True)
-class ContractViolation:
-    code: str
-    severity: Literal["warning", "error"]
-    message: str
-    path: str = ""
-    design_entity_id: str = ""
-    source_entity_id: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class ContractCheckResult:
-    check_id: str
-    status: CheckStatus
-    project_id: str
-    changed_paths: tuple[str, ...] = ()
-    violations: tuple[ContractViolation, ...] = ()
-    snapshot_status: str = ""
-    graph_status: str = "not_requested"
-    message: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def requires_confirmation(self) -> bool:
-        return self.status == "warn"
-
-    @property
-    def can_commit(self) -> bool:
-        return self.status in {"pass", "warn"}
-
-    def to_dict(self) -> dict[str, Any]:
-        value = asdict(self)
-        value["violations"] = [item.to_dict() for item in self.violations]
-        value["requires_confirmation"] = self.requires_confirmation
-        value["can_commit"] = self.can_commit
-        return value
-
+from app.agent_base.host_api.contract_checks import CheckStatus, ContractCheckResult, ContractViolation
 
 class ContractHarness:
     """Run deterministic contract checks independently of the model."""

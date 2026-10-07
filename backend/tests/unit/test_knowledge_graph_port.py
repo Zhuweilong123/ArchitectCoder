@@ -2,10 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.agent_base.core.knowledge_graph import (
-    NoOpKnowledgeGraphProvider,
-    load_knowledge_graph,
-)
+from app.agent_base.adapters.knowledge_graph import (NoOpKnowledgeGraphProvider, load_knowledge_graph)
 from app.models.uml import Project, UmlClass, UmlDiagram
 from app.agent_base.core.plugins import get_plugin_manager
 from extensions.knowledge_graph.provider import LocalKnowledgeGraphProvider

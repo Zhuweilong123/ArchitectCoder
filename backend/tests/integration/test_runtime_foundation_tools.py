@@ -110,6 +110,35 @@ def test_foundation_tools_use_project_root_with_named_directory_aliases(tmp_path
     assert cwd == str(source)
 
 
+def test_workspace_only_tools_remain_usable_without_optional_directories(tmp_path):
+    import asyncio
+    from app.runtime import WorkspaceManifest
+    from app.agent_base.adapters.skills import (NoOpSkillProvider, capture_skill_catalog)
+    from app.agent_base.tools.my_tools.conversation_tools import create_conversation_tools
+
+    manifest = WorkspaceManifest.from_paths(workspace_root=str(tmp_path))
+    assert manifest.design_root == manifest.source_root == manifest.test_root == ""
+    (tmp_path / "main.py").write_text("value = 1\n", encoding="utf-8")
+    tools, _ = create_conversation_tools(
+        object(), workspace_root=manifest.workspace_root, include_review=False,
+        command_executor=NativePowerShellExecutor(),
+        skill_catalog=capture_skill_catalog(NoOpSkillProvider()),
+    )
+    listed = asyncio.run(_tool(tools, "list_files")._execute({"pattern": "*.py"}))
+    assert "main.py" in listed
+    content = asyncio.run(_tool(tools, "read_file")._execute({"path": "main.py"}))
+    assert content == "value = 1"
+    assert _tool(tools, "read_file")._design_dir == ""
+    missing_source = asyncio.run(_tool(tools, "list_files")._execute({"path": "source"}))
+    assert missing_source.startswith("Error: workspace alias not configured:")
+    context = build_environment_context(
+        cwd=manifest.workspace_root, workspace_roots=manifest.workspace_roots,
+        workspace_layout=(("design", manifest.design_root), ("src", manifest.source_root),
+                          ("test", manifest.test_root)),
+    )
+    assert "Workspace layout:" not in context.to_prompt()
+
+
 def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
     source = tmp_path / "src"
     source.mkdir()
@@ -123,7 +152,7 @@ def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
     result = asyncio.run(read_file._execute({"path": "database.py"}))
 
     assert "Error: file not found: database.py" in result
-    assert "possible_paths: source/package/database.py" in result
+    assert f"possible_paths: {target.resolve()}" in result
     assert "recovery_action:" in result
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -183,7 +212,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     (test / "test_main.py").write_text("def test_main(): pass\n", encoding="utf-8")
     (design / "model.umlproj").write_text("{}\n", encoding="utf-8")
 
-    tool = create_foundation_tools(str(source), str(test), str(design))[0]
+    tool = create_foundation_tools(str(source), str(test), str(design), workspace_root=str(tmp_path))[0]
     import asyncio
 
     source_result = asyncio.run(tool._execute({"pattern": "**/*"}))
@@ -194,7 +223,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     test_result = asyncio.run(tool._execute({
         "path": str(test), "pattern": "**/*.py", "details": False,
     }))
-    assert test_result.strip() == "test_main.py"
+    assert test_result.strip() == str((test / "test_main.py").resolve())
 
     workspace_result = asyncio.run(tool._execute({
         "path": "workspace", "pattern": "**/*",

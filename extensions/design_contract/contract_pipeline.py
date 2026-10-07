@@ -1,29 +1,11 @@
-"""Single-pass orchestration for contract facts and graph projections."""
-
 from __future__ import annotations
-
-from dataclasses import dataclass
 from typing import Any
+from .plugin_api import ContractProvider, ContractSnapshot
+from extensions.knowledge_graph.plugin_api import KnowledgeGraphProvider
+from app.agent_base.adapters.knowledge_graph import load_knowledge_graph
 
-from .contracts import (
-    ArtifactFacts,
-    ContractProvider,
-    ContractSnapshot,
-    load_contracts,
-)
-from .knowledge_graph import KnowledgeGraphProvider, load_knowledge_graph
-
-
-@dataclass(frozen=True)
-class ContractAssembly:
-    """Results and lifecycle status from one facts-first contract pass."""
-
-    snapshot: ContractSnapshot
-    facts: ArtifactFacts | None = None
-    graph_status: str = "not_requested"
-    graph_result: Any = None
-    graph_error: str = ""
-
+from app.agent_base.adapters.contracts import load_contracts
+from .contract_result import ContractAssembly
 
 def assemble_contract(
     manifest: Any,
@@ -96,6 +78,3 @@ def assemble_contract(
         graph_status="indexed",
         graph_result=result,
     )
-
-
-__all__ = ["ContractAssembly", "assemble_contract"]

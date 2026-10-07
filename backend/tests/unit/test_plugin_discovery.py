@@ -34,7 +34,9 @@ def settings(**changes):
 def test_builtin_catalog_is_owned_by_seven_directories_and_keeps_all_interfaces():
     declarations = scan_manifests((BUILTIN_PLUGIN_ROOT,))
     assert {item["id"] for item in declarations} == {"skills", "memory", "trace", "evals", "orchestration", "knowledge_graph", "design_contract"}
-    assert sum(len(item["interfaces"]) for item in declarations) == 57
+    assert sum(len(item["interfaces"]) for item in declarations) == 61
+    memory = next(item for item in declarations if item["id"] == "memory")
+    assert memory["interfaces"]["observe"]["required"] is False
     assert all(Path(item["source"]).name == "plugin.json" for item in declarations)
     assert len(build_plan(PluginManager(), settings()).as_dict()["stages"]) == 13
 
@@ -244,7 +246,7 @@ def test_core_is_reserved_for_framework_contributions(tmp_path):
 
 def test_optional_domain_ports_degrade_when_plugin_directory_is_absent(monkeypatch):
     from app.agent_base.core import plugins
-    from app.agent_base.core.memory import load_memory, NoOpMemory
+    from app.agent_base.adapters.memory import (load_memory, NoOpMemory)
     from app.trace.tracing import load_trace, NoOpTraceProvider
     monkeypatch.setattr(plugins, "_default_manager", PluginManager(()))
     assert isinstance(load_memory(llm=object(), settings=SimpleNamespace()), NoOpMemory)

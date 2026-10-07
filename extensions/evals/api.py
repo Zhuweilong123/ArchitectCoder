@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.agent_base.core.evals import load_evals
+from app.agent_base.adapters.evals import (load_evals)
 
 from .trace_cases import (
     TraceCaseCaptureRequest,

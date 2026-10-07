@@ -264,7 +264,10 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     if case.metadata.get("capability") == "budget_control":
         return {
             "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
-            "max_run_seconds": min(case.max_seconds, settings.agent_max_run_seconds),
+            "max_run_seconds": (
+                min(case.max_seconds, settings.agent_max_run_seconds)
+                if settings.agent_max_run_seconds > 0 else case.max_seconds
+            ),
             "max_total_tokens": min(
                 case.max_total_tokens,
                 settings.agent_context_soft_limit_tokens,
@@ -350,7 +353,10 @@ class EvalRunner:
         settings = get_settings()
         turn_count = max(1, len(case.turn_specs()))
         budget = _agent_budget(case, settings)
-        turn_deadline_seconds = min(case.max_seconds, budget["max_run_seconds"])
+        turn_deadline_seconds = (
+            min(case.max_seconds, budget["max_run_seconds"])
+            if budget["max_run_seconds"] > 0 else case.max_seconds
+        )
         evaluation_deadline_seconds = turn_deadline_seconds * turn_count
         # All official evaluations use the production DevAgent assembly.
         # ``agent_factory`` remains only as a dependency-injection seam for

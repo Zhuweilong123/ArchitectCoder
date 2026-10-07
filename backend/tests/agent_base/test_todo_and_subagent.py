@@ -2,6 +2,8 @@
 import asyncio
 import json
 
+import pytest
+
 from app.agent_base.core.hooks import (
     AgentRuntime, HookContext, HookEvent, get_runtime,
     set_runtime, reset_runtime, _todo_reminder_hook,
@@ -85,7 +87,7 @@ def test_todo_reminder_hook_injects_after_three_rounds():
         messages = []
         for _ in range(3):
             _todo_reminder_hook(HookContext(
-                event=HookEvent.LLM_BEFORE, agent_name="t", messages=messages,
+                event=HookEvent.MODEL_BEFORE, agent_name="t", messages=messages,
             ))
         # 第 3 轮触发时注入 reminder 并清零计数
         assert any("<reminder>" in m.get("content", "") for m in messages)
@@ -102,7 +104,7 @@ def test_todo_reminder_hook_skips_when_no_open_todos():
         messages = []
         for _ in range(5):
             _todo_reminder_hook(HookContext(
-                event=HookEvent.LLM_BEFORE, agent_name="t", messages=messages,
+                event=HookEvent.MODEL_BEFORE, agent_name="t", messages=messages,
             ))
         assert not any("<reminder>" in m.get("content", "") for m in messages)
     finally:
@@ -128,6 +130,20 @@ class _MockLLM:
                 }],
             }
         return {"content": "summary text", "tool_calls": None}
+
+
+@pytest.mark.parametrize("max_run_seconds", [None, 0, 60])
+def test_spawn_subagent_preserves_optional_run_deadline(monkeypatch, max_run_seconds):
+    from backend.config import get_settings
+
+    settings = get_settings().model_copy(update={"agent_max_run_seconds": 0})
+    monkeypatch.setattr(
+        "backend.config.get_settings", lambda: settings,
+    )
+    tool = SpawnSubagentTool(llm=_MockLLM(), max_run_seconds=max_run_seconds)
+
+    assert tool.max_run_seconds == (max_run_seconds or 0)
+    assert tool.llm_timeout_seconds == settings.agent_llm_timeout_seconds
 
 
 def test_spawn_subagent_returns_summary_without_overriding_parent_model(tmp_path):

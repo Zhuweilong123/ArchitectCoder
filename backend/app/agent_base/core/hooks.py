@@ -61,31 +61,7 @@ class HookEvent(str, Enum):
     REVIEW_AFTER = "review_after"
     BACKGROUND_BEFORE = "background_before"
     BACKGROUND_AFTER = "background_after"
-    LLM_BEFORE = "model_before"
-    LLM_AFTER = "model_after"
-    RUN_FINALIZE = "finalize"
-    AGENT_INITIALIZE = "initialize"
-    CONTEXT_PREPARE = "prepare"
-    MEMORY_REINFORCE = "prepare"
-    ORCHESTRATION_PREPARE = "prepare"
-    TASK_ARCHIVE = "finalize"
-    TRACE_INITIALIZE = "initialize"
-    SKILL_READ = "tool_before"
-    ORCHESTRATION_EXECUTE = "tool_before"
-    TRACE_QUERY = "run_start"
-    TRACE_REPLAY = "run_start"
-    EVALUATION_QUERY = "run_start"
-    EVALUATION_RUN = "run_start"
-    EVALUATION_UPDATE = "run_start"
-    GRAPH_QUERY = "tool_before"
-    GRAPH_UPDATE = "tool_before"
-    CONTRACT_COLLECT = "finalize"
-    PLUGIN_SERVICE = "run_start"
-
-    @classmethod
-    def _missing_(cls, value):
-        name = STAGE_ALIASES.get(value)
-        return cls[name] if name else None
+    TASK_AFTER = "task_after"
 
 
 PUBLIC_STAGES = tuple(HookEvent[name] for name in (
@@ -93,7 +69,6 @@ PUBLIC_STAGES = tuple(HookEvent[name] for name in (
     "TOOL_BATCH_BEFORE", "TOOL_BEFORE", "TOOL_AFTER", "TOOL_BATCH_AFTER", "ROUND_AFTER", "FINALIZE", "RUN_END",
 ))
 NOTIFICATIONS = tuple(stage for stage in HookEvent if stage not in PUBLIC_STAGES)
-STAGE_ALIASES = {name.lower(): name for name in HookEvent.__members__ if HookEvent[name].value != name.lower()}
 
 
 class HookAction(str, Enum):
@@ -126,8 +101,8 @@ class HookContext:
     tool_status: Optional[str] = None       # TOOL_AFTER result status
     error_code: Optional[str] = None        # TOOL_AFTER normalized error code
     tool_output: Optional[str] = None      # 仅 TOOL_AFTER
-    messages: Optional[list] = None        # 仅 LLM_BEFORE / LLM_AFTER
-    llm_response: Optional[dict] = None    # 仅 LLM_AFTER
+    messages: Optional[list] = None        # 仅 MODEL_BEFORE / MODEL_AFTER
+    llm_response: Optional[dict] = None    # 仅 MODEL_AFTER
     run_id: str = ""
     phase: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
@@ -481,7 +456,7 @@ class HookRegistry:
                 return
             raise ValueError("transform must mutate stage data and return None, or replace TOOL_AFTER output")
         allowed = {
-            HookEvent.LLM_BEFORE: {HookAction.CONTINUE, HookAction.STOP},
+            HookEvent.MODEL_BEFORE: {HookAction.CONTINUE, HookAction.STOP},
             HookEvent.TOOL_BEFORE: {HookAction.CONTINUE, HookAction.STOP, HookAction.VETO},
             HookEvent.TOOL_BATCH_AFTER: {HookAction.CONTINUE, HookAction.RECOVER, HookAction.FINALIZE},
         }
@@ -533,6 +508,10 @@ def get_hooks() -> HookRegistry:
     snapshot = current_snapshot()
     if snapshot is not None:
         return snapshot.registry
+    from .extension_context import current_extension_context
+    context = current_extension_context()
+    if context is not None:
+        return context.hooks_for(_registry)
     return _registry
 
 
@@ -581,9 +560,9 @@ _TODO_REMINDER_INTERVAL = 3  # 连续 N 轮无 todo 更新且存在未完成项�
 
 
 def _todo_reminder_hook(ctx: HookContext) -> Optional[str]:
-    """LLM_BEFORE 触发：todo 有未完成项且连续 N 轮未更新时注入提醒。
+    """MODEL_BEFORE 触发：todo 有未完成项且连续 N 轮未更新时注入提醒。
 
-    通过副作用往 ctx.messages append 提醒消息（LLM_BEFORE 的 messages 是
+    通过副作用往 ctx.messages append 提醒消息（MODEL_BEFORE 的 messages 是
     react_agent 循环里 messages 的引用），返回 None 表示不 veto。
     """
     runtime = get_runtime()
@@ -619,13 +598,13 @@ class RunPolicyHook:
                 budget.start(int(ctx.payload.get("initial_token_usage", 0) or 0))
             return None
 
-        if ctx.event == HookEvent.LLM_AFTER and budget is not None:
+        if ctx.event == HookEvent.MODEL_AFTER and budget is not None:
             usage = (ctx.llm_response or {}).get("usage") or {}
             total_tokens = usage.get("total_tokens", 0)
             budget.record_tokens(int(total_tokens or 0))
             return None
 
-        if ctx.event == HookEvent.LLM_BEFORE and budget is not None:
+        if ctx.event == HookEvent.MODEL_BEFORE and budget is not None:
             reason = budget.before_llm()
             if reason:
                 message = (
@@ -678,12 +657,12 @@ _run_policy_hook = RunPolicyHook()
 
 def default_hook_bindings():
     bindings = [
-        (HookEvent.LLM_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.llm_before"),
+        (HookEvent.MODEL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.model_before"),
         (HookEvent.TOOL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.tool_before"),
-        (HookEvent.LLM_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),
+        (HookEvent.MODEL_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),
     ]
     bindings.extend((stage, _run_policy_hook, 90, "control", f"core.policy.{stage.value}")
-                    for stage in (HookEvent.RUN_START, HookEvent.LLM_BEFORE, HookEvent.LLM_AFTER,
+                    for stage in (HookEvent.RUN_START, HookEvent.MODEL_BEFORE, HookEvent.MODEL_AFTER,
                                   HookEvent.TOOL_BEFORE, HookEvent.TOOL_BATCH_AFTER))
     return tuple(bindings)
 

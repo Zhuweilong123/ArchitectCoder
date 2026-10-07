@@ -37,9 +37,10 @@ from backend.config.project_storage import project_id_for
 
 from app.agent_base.assembly import create_dev_agent
 from app.agent_base.core.plugin_runtime import pin_plugins
+from app.agent_base.core.extension_context import publish_task_result
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.core.contract_gate import resolve_contract_enabled
+from app.agent_base.adapters.contract_gate import (resolve_contract_enabled)
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
 )
@@ -136,8 +137,6 @@ def _set_trace_bridge(tracer: TraceSink | None):
 
 
 from app.services.agent_execution import (
-    _archive_task_to_memory,
-    _should_archive_task_memory,
     handle_agent_execution,
     recent_conversation_history,
 )
@@ -935,23 +934,19 @@ class ChatSessionCoordinator:
                                 dev_agent.append_task_summary(checkpoint["task_summary"])
                             if decision == "accept":
                                 status = checkpoint["status"]
-                                memory = getattr(dev_agent, "memory_provider", None)
                                 reviewed_project = checkpoint.get("project_file") or ""
-                                if memory is not None and reviewed_project and _should_archive_task_memory(
-                                    status, checkpoint.get("tool_calls", []), checkpoint,
-                                ):
-                                    with plugin_scope(snapshot_for_plan(checkpoint.get("plugin_plan_id", ""))):
-                                        asyncio.create_task(_archive_task_to_memory(
-                                            memory=memory,
-                                            project_id=project_id_for(reviewed_project),
-                                            user_message=checkpoint.get("request_summary", ""),
-                                            final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
-                                            tool_calls_detail=checkpoint.get("tool_calls", []),
-                                            run_id=reviewed_run_id, trace_id=trace_log.trace_id,
-                                            conversation_history=recent_conversation_history(
-                                                dev_agent, turns=4, exclude_latest_turn=True,
-                                            ),
-                                        ))
+                                with plugin_scope(snapshot_for_plan(checkpoint.get("plugin_plan_id", ""))):
+                                    await publish_task_result(
+                                        dev_agent, run_id=reviewed_run_id,
+                                        project_id=project_id_for(reviewed_project) if reviewed_project else "",
+                                        status=status, checkpoint=checkpoint,
+                                        user_message=checkpoint.get("request_summary", ""),
+                                        final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
+                                        tool_steps=checkpoint.get("tool_calls", []), trace_id=trace_log.trace_id,
+                                        conversation_history=recent_conversation_history(
+                                            dev_agent, turns=4, exclude_latest_turn=True,
+                                        ),
+                                    )
                                 answer = (
                                     "设计变更已通过审核，任务已完成。"
                                     if status == "completed"

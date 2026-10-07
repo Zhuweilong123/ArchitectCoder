@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.config import evaluation_root
-from app.agent_base.core.evals import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
+from .plugin_api import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
 
 from .models import EvalResult
 from .registry import load_cases

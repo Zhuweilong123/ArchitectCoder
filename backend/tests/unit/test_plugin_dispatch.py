@@ -152,7 +152,7 @@ def test_manifest_interface_phase_controls_the_actual_dispatch(monkeypatch, tmp_
     monkeypatch.setitem(sys.modules, module, SimpleNamespace(create=lambda **kwargs: SimpleNamespace(query=lambda: "answer")))
     path = tmp_path / "plugins.json"
     path.write_text('{"schema_version":1,"plugins":[{"name":"team","provider":"test_manifest_service:create",'
-                    '"interfaces":["query"],"interface_stages":{"query":"graph_query"}}]}', encoding="utf-8")
+                    '"interfaces":["query"],"interface_stages":{"query":"tool_before"}}]}', encoding="utf-8")
     manager = PluginManager(())
     manager.discover_specs(path)
     registry = HookRegistry()
@@ -181,8 +181,8 @@ def test_async_handler_is_awaited_in_real_agent_model_phase(monkeypatch):
     async def finalize(ctx):
         await asyncio.sleep(0)
         seen.append("finalize")
-    registry.register(HookEvent.LLM_BEFORE, before, mode="transform")
-    registry.register(HookEvent.RUN_FINALIZE, finalize, mode="observer")
+    registry.register(HookEvent.MODEL_BEFORE, before, mode="transform")
+    registry.register(HookEvent.FINALIZE, finalize, mode="observer")
     class Model:
         async def ainvoke_with_tools(self, **kwargs):
             assert seen == ["before"]

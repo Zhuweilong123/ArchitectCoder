@@ -12,17 +12,11 @@ from dataclasses import asdict
 from typing import Any
 
 from app.agent_base.core.exceptions import AgentInterrupted
-from app.agent_base.core.knowledge_graph import load_knowledge_graph
+from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 from app.trace.tracing import emit_trace
 from backend.config.project_storage import project_id_for
-from app.agent_base.core.orchestration import (
-    ExplorationDemand,
-    ExplorationEvidence,
-    ExplorationFinding,
-    ExplorationReport,
-    OrchestrationPreparation,
-    OrchestrationRequest,
-)
+from app.agent_base.host_api.orchestration import OrchestrationPreparation, OrchestrationRequest
+from extensions.orchestration.plugin_api import (ExplorationDemand, ExplorationEvidence, ExplorationFinding, ExplorationReport)
 
 from .impact import GraphUnavailable, ImpactSlice, collect_impact
 from .partition import (

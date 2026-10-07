@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent_base.core.contracts import ContractEntity, ContractMapping
-from app.agent_base.core.knowledge_graph import load_knowledge_graph
+from .plugin_api import ContractEntity, ContractMapping
+from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 
 
 class KnowledgeGraphContractAdapter:

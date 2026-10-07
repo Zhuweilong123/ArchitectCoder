@@ -5,9 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent_base.core.skills import (
-    SkillContent, SkillMeta, capture_skill_catalog, load_skills,
-)
+from extensions.skills.plugin_api import SkillContent, SkillMeta
+from app.agent_base.adapters.skills import (capture_skill_catalog, load_skills)
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 from extensions.skills.provider import FileSkillProvider
 
@@ -139,7 +138,7 @@ def test_subagent_toolkits_share_prompt_and_tool_catalog(tmp_path):
 
 def test_conversation_tools_omit_disabled_skills(tmp_path):
     from app.agent_base.tools.my_tools.conversation_tools import create_conversation_tools
-    from app.agent_base.core.skills import NoOpSkillProvider
+    from app.agent_base.adapters.skills import (NoOpSkillProvider)
     tools, _ = create_conversation_tools(
         object(), source_dir=str(tmp_path), include_review=False,
         skill_catalog=capture_skill_catalog(NoOpSkillProvider()),
@@ -151,8 +150,8 @@ def test_conversation_tools_omit_disabled_skills(tmp_path):
 def test_dev_agent_assembly_uses_one_catalog(monkeypatch, tmp_path, enabled):
     import asyncio
     from app.agent_base import assembly
-    from app.agent_base.core.memory import NoOpMemory
-    from app.agent_base.core.skills import NoOpSkillProvider
+    from app.agent_base.adapters.memory import (NoOpMemory)
+    from app.agent_base.adapters.skills import (NoOpSkillProvider)
     from backend.config import get_settings
     provider = MemoryProvider() if enabled else NoOpSkillProvider()
     calls = []

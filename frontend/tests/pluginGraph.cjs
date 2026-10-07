@@ -12,8 +12,8 @@ const { replayRuns, replaySteps, replayOperations, stepStatus, contributionSumma
 const contribution = (id, stage, order, priority = 10) => ({
   id, stage, plugin: 'trace', order, priority, handler: `trace:${id}`, mode: 'observer', before: [], after: [], scope: 'run', fail_closed: false,
 });
-const stages = ['run_start', 'round_before', 'llm_before', 'llm_after', 'tool_batch_before', 'tool_before',
-  'tool_after', 'tool_batch_after', 'round_after', 'run_finalize', 'run_end', 'error', 'cancel'];
+const stages = ['run_start', 'round_before', 'model_before', 'model_after', 'tool_batch_before', 'tool_before',
+  'tool_after', 'tool_batch_after', 'round_after', 'finalize', 'run_end', 'error', 'cancel'];
 const plan = {
   schema_version: 1, plan_id: 'fixture', dispatch: 'sequential',
   plugins: [
@@ -27,18 +27,18 @@ const plan = {
 test('replay separates interleaved tasks and preserves recorded order and repeated phases', () => {
   const events = [
     { event_type: 'user_message', message: 'legacy' },
-    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'llm_before', plan_id: 'fixture', ts_ms: 20 },
+    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'model_before', plan_id: 'fixture', ts_ms: 20 },
     { event_type: 'lifecycle_stage', run_id: 'child', stage: 'run_start', plan_id: 'fixture', ts_ms: 20 },
-    { event_type: 'plugin_contribution', run_id: 'parent', stage: 'llm_before', contribution_id: 'watch.llm_before', plan_id: 'fixture', status: 'skipped', blocked_by: 'policy' },
+    { event_type: 'plugin_contribution', run_id: 'parent', stage: 'model_before', contribution_id: 'watch.model_before', plan_id: 'fixture', status: 'skipped', blocked_by: 'policy' },
     { event_type: 'llm_request', run_id: 'parent', ts_ms: 19 },
-    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'llm_before', plan_id: 'fixture', ts_ms: 30 },
+    { event_type: 'lifecycle_stage', run_id: 'parent', stage: 'model_before', plan_id: 'fixture', ts_ms: 30 },
   ];
   const before = JSON.stringify(events);
   const runs = replayRuns(events);
   assert.deepEqual(runs.map((run) => run.id), ['parent', 'child']);
   const steps = replaySteps(runs[0], plan);
   assert.deepEqual(steps.map((step) => step.event.ts_ms), [20, undefined, 19, 30]);
-  assert.deepEqual(steps[1].nodeIds, ['stage:llm_before', 'contribution:watch.llm_before']);
+  assert.deepEqual(steps[1].nodeIds, ['stage:model_before', 'contribution:watch.model_before']);
   assert.equal(steps[1].event.blocked_by, 'policy');
   assert.deepEqual(steps[2].nodeIds, ['model-call']);
   assert.equal(JSON.stringify(events), before);
@@ -46,8 +46,8 @@ test('replay separates interleaved tasks and preserves recorded order and repeat
 
 test('historical, mixed and missing plans retain details without misleading graph matches', () => {
   for (const planIds of [['old'], [], ['fixture', 'old']]) {
-    const events = [{ event_type: 'lifecycle_stage', run_id: 'run', stage: 'llm_before' },
-      ...planIds.map((plan_id) => ({ event_type: 'plugin_contribution', run_id: 'run', plan_id, contribution_id: 'watch.llm_before' }))];
+    const events = [{ event_type: 'lifecycle_stage', run_id: 'run', stage: 'model_before' },
+      ...planIds.map((plan_id) => ({ event_type: 'plugin_contribution', run_id: 'run', plan_id, contribution_id: 'watch.model_before' }))];
     const steps = replaySteps(replayRuns(events)[0], plan);
     assert.ok(steps.length);
     assert.ok(steps.every((step) => !step.compatible && !step.nodeIds.length));
@@ -68,7 +68,7 @@ test('skip explanation locates the nearest preceding decision in repeated phases
   ];
   assert.deepEqual(stepExplanation(steps, 2), { blockerIndex: 1, action: 'veto', reason: 'hook_error', message: 'invalid config', errorType: undefined, errorMessage: undefined, failureEffect: undefined });
   assert.equal(stepExplanation([event({ status: 'skipped', blocked_by: 'missing' })], 0).blockerIndex, -1);
-  assert.equal(stepExplanation([{ ...steps[0], event: { ...steps[0].event, stage: 'llm_before' } }, steps[2]], 1).blockerIndex, -1);
+  assert.equal(stepExplanation([{ ...steps[0], event: { ...steps[0].event, stage: 'model_before' } }, steps[2]], 1).blockerIndex, -1);
 });
 
 test('contribution totals exclude model latency and copied skip decisions; statuses keep failure semantics', () => {
@@ -141,7 +141,7 @@ test('domain-only disabled plugins stay visible without invented lifecycle attac
 
 test('schedule honors compiled order rather than re-sorting by priority', () => {
   const fixture = structuredClone(plan);
-  fixture.stages[2].contributions = [contribution('second', 'llm_before', 2, 1000), contribution('first', 'llm_before', 1, 0)];
+  fixture.stages[2].contributions = [contribution('second', 'model_before', 2, 1000), contribution('first', 'model_before', 1, 0)];
   const graph = buildPluginGraph(fixture, 'schedule', 'trace');
   verifyGraph(graph);
   const first = graph.nodes.find((node) => node.label === 'first');
@@ -154,7 +154,7 @@ test('schedule honors compiled order rather than re-sorting by priority', () => 
 
 test('large contribution sets and domain interfaces do not overlap', () => {
   const fixture = structuredClone(plan);
-  fixture.stages[2].contributions = Array.from({ length: 19 }, (_, i) => contribution(`extra.${i}`, 'llm_before', i + 1));
+  fixture.stages[2].contributions = Array.from({ length: 19 }, (_, i) => contribution(`extra.${i}`, 'model_before', i + 1));
   fixture.plugins[0].interfaces = Array.from({ length: 15 }, (_, i) => `query.${i}`);
   for (const view of ['organization', 'schedule']) verifyGraph(buildPluginGraph(fixture, view));
 });
@@ -204,7 +204,7 @@ test('operation tree merges end records and locates nested operations across tas
 
 test('collapsed plugin summaries preserve bindings, counts and unavailable plugins', () => {
   const fixture = structuredClone(plan);
-  fixture.stages[2].contributions = Array.from({ length: 80 }, (_, i) => contribution(`extra.${i}`, 'llm_before', i + 1));
+  fixture.stages[2].contributions = Array.from({ length: 80 }, (_, i) => contribution(`extra.${i}`, 'model_before', i + 1));
   const before = JSON.stringify(fixture);
   for (const view of ['organization', 'schedule']) {
     const full = buildPluginGraph(fixture, view);
@@ -213,10 +213,10 @@ test('collapsed plugin summaries preserve bindings, counts and unavailable plugi
     assert.ok(folded.height < full.height);
     assert.ok(!folded.nodes.some(node => node.kind === 'contribution'));
     if (view === 'organization') {
-      assert.ok(folded.edges.some(edge => edge.source === 'plugin:trace' && edge.target === 'stage:llm_before'));
+      assert.ok(folded.edges.some(edge => edge.source === 'plugin:trace' && edge.target === 'stage:model_before'));
       assert.equal(folded.nodes.find(node => node.id === 'plugin:unavailable').plugin.status, 'unavailable');
     } else {
-      const group = folded.nodes.find(node => node.id === 'group:llm_before:trace');
+      const group = folded.nodes.find(node => node.id === 'group:model_before:trace');
       assert.equal(group.summary.contributions, 80);
       assert.ok(!folded.edges.some(edge => edge.kind === 'order'));
     }
@@ -233,13 +233,13 @@ test('catalog searches public, notification and unbound interfaces without losin
   assert.equal(new Set(catalog.map(node => node.id)).size, catalog.length);
   assert.equal(searchGraph(catalog, 'ARCHIVE trace')[0].id, 'contribution:archive.finished');
   assert.equal(searchGraph(catalog, 'query disabled')[0].id, 'interface:disabled:0');
-  assert.ok(searchGraph(catalog, 'llm_before trace').some(node => node.id === 'contribution:watch.llm_before'));
+  assert.ok(searchGraph(catalog, 'model_before trace').some(node => node.id === 'contribution:watch.model_before'));
   assert.deepEqual(searchGraph(catalog, ''), []);
 });
 
 test('issues separate declaration/load/execution and ignore stale runtime reports and ordinary cancellation', () => {
   const report = { plan_id: plan.plan_id, plugins: [{ name: 'trace', status: 'loaded', diagnostics: [{ code: 'router_failed', message: 'route error' }] }] };
-  const steps = [{ compatible: false, event: { event_type: 'plugin_contribution', status: 'error', plugin: 'trace', contribution_id: 'watch.llm_before', error_message: 'old failure' } },
+  const steps = [{ compatible: false, event: { event_type: 'plugin_contribution', status: 'error', plugin: 'trace', contribution_id: 'watch.model_before', error_message: 'old failure' } },
     { compatible: true, event: { event_type: 'plugin_contribution', status: 'interrupted', plugin: 'trace' } }];
   const issues = graphIssues(plan, report, steps);
   assert.deepEqual(issues.map(issue => issue.source), ['load', 'declaration', 'execution']);
@@ -250,20 +250,20 @@ test('issues separate declaration/load/execution and ignore stale runtime report
 test('search reveal clears conflicting filters and shows hidden public stages and interfaces', () => {
   const catalog = graphCatalog(plan);
   const folded = { view: 'organization', filter: 'disabled', expandedPlugins: [] };
-  const stage = revealGraphNode(plan, catalog, 'stage:llm_before', folded);
+  const stage = revealGraphNode(plan, catalog, 'stage:model_before', folded);
   assert.deepEqual(stage, { view: 'schedule', filter: '', expandedPlugins: [] });
-  const target = revealGraphNode(plan, catalog, 'contribution:watch.llm_before', folded);
+  const target = revealGraphNode(plan, catalog, 'contribution:watch.model_before', folded);
   assert.equal(target.filter, ''); assert.deepEqual(target.expandedPlugins, ['trace']);
-  assert.ok(buildPluginGraph(plan, target.view, target.filter, target).nodes.some(node => node.id === 'contribution:watch.llm_before'));
+  assert.ok(buildPluginGraph(plan, target.view, target.filter, target).nodes.some(node => node.id === 'contribution:watch.model_before'));
   assert.deepEqual(folded.expandedPlugins, []);
 });
 
 test('mixed folded/expanded stage groups do not invent sequential edges', () => {
   const fixture = structuredClone(plan);
-  fixture.stages[2].contributions = [contribution('trace.first', 'llm_before', 1),
-    { ...contribution('core.middle', 'llm_before', 2), plugin: 'core' }, contribution('trace.last', 'llm_before', 3)];
+  fixture.stages[2].contributions = [contribution('trace.first', 'model_before', 1),
+    { ...contribution('core.middle', 'model_before', 2), plugin: 'core' }, contribution('trace.last', 'model_before', 3)];
   const graph = buildPluginGraph(fixture, 'schedule', '', { expandedPlugins: ['trace'] });
   verifyGraph(graph);
-  assert.ok(graph.nodes.some(node => node.id === 'group:llm_before:core'));
+  assert.ok(graph.nodes.some(node => node.id === 'group:model_before:core'));
   assert.ok(!graph.edges.some(edge => edge.kind === 'order' && edge.source === 'contribution:trace.first'));
 });

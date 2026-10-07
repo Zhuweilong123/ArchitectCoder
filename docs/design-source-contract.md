@@ -5,7 +5,7 @@
 > 范围：项目工作区、UML 设计集合、源码目录、测试目录，以及后续一致性规则引擎。
 
 第二阶段的事实采集由可替换插件 `extensions.design_contract:create` 提供，核心只依赖
-`backend/app/agent_base/core/contracts.py` 中的 `ContractProvider` 契约。
+`extensions/design_contract/plugin_api.py` 中的 `ContractProvider` 契约。
 
 ## 1. 设计目标
 
@@ -32,6 +32,13 @@
 - 设计与源码冲突时，报告漂移并标注 `design_vs_source`，不能直接修改测试来消除冲突。
 - 源码与测试冲突时，先判断测试是否仍代表产品行为；评测测试文件默认不可由 Agent 修改。
 - 测试通过不代表设计正确，设计加载失败也不能被测试通过掩盖。
+
+工作区的 `design_root`、`source_root`、`test_root` 采用同一加载规则：显式配置优先；
+未配置时仅自动加载工作目录下实际存在的 `design/`、`src/`、`test/` 目录，缺失或同名
+条目是文件时保持为空。测试目录也支持 `tests/`；两种测试目录同时存在时保持未配置，
+由显式配置消除歧义。自动发现不能通过链接扩展到工作目录之外。
+选择活动设计文件时，未配置的设计目录可由该文件的父目录确定，已有显式设计目录保持不变。
+未配置的目录不写入环境布局，也不补成全局默认目录；Agent 仍可通过工作目录访问其中的文件。
 
 ## 3. 项目级契约实体
 
@@ -205,13 +212,13 @@ file scope     = 一个活动设计文件及其声明的组件/模块
 
 知识图谱只作为可追溯的关系证据和影响分析索引，不改变 `ContractSnapshot` 的权威性，也不在契约采集过程中重建或修改图谱。图谱不可用、过期或由旧版插件提供时，契约插件继续使用本地 UML/AST 解析并记录图谱不可用原因。
 
-解析层统一锚点为 `backend/app/agent_base/core/contracts.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
+解析层统一锚点为 `extensions/design_contract/plugin_api.py` 中的 `ArtifactFacts`。`DesignContractProvider.collect_facts()` 负责产生事实，`collect()` 再将事实投影为 `ContractSnapshot`；知识图谱可通过 `KnowledgeGraphProvider.index_facts()` 增量消费该事实模型，逐步移除重复解析。
 
-统一编排入口为 `app.agent_base.core.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。
+统一编排入口为 `extensions.design_contract.contract_pipeline.assemble_contract()`：一次收集事实，生成契约快照，并按需执行图谱投影；图谱优先调用 `KnowledgeGraphProvider.sync_facts()`，根据 artifact 指纹只同步新增、修改和删除的文件；旧版契约或图谱插件仍可通过兼容回退路径运行。
 
 ## 12. Harness 契约闸门
 
-契约校验不依赖模型提示词，而由 `app.agent_base.core.contract_harness.ContractHarness` 独立执行。Agent 的文件变更批次完成后，执行层对候选工作区进行只读契约检查，并通过 WebSocket 推送 `contract_check` 事件：
+契约校验不依赖模型提示词，而由 `extensions.design_contract.contract_harness.ContractHarness` 独立执行。Agent 的文件变更批次完成后，执行层对候选工作区进行只读契约检查，并通过 WebSocket 推送 `contract_check` 事件：
 
 ```text
 apply_changes → ContractHarness.check(index_graph=False)
