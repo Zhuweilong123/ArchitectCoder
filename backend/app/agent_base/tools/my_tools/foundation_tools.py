@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import shlex
 from dataclasses import replace
 from typing import Any
@@ -18,6 +17,7 @@ from pathlib import Path
 from app.agent_base.core.hooks import get_runtime
 from app.runtime.command import ExecutionEnvironmentError
 from app.runtime.process_output import collect_process_output
+from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import (
     CommandEvidence,
@@ -33,9 +33,7 @@ from app.agent_base.tools.my_tools.foundation_runtime import (
     SearchTextTool,
     SHELL_OUTPUT_CAP,
     _decode_output,
-    _expand_workspace_alias,
     _resolve_roots,
-    safe_path,
 )
 from app.runtime import (
     ApprovalClass,
@@ -83,80 +81,48 @@ class ListFilesTool(BaseListFilesTool):
         self.description = (
             "List files in the workspace matching a glob pattern. "
             "The default path is the source working directory; use source, test, "
-            "design, or workspace aliases to select another scope. Results use "
+            "design, or workspace aliases (with optional subpaths) to select another scope. "
+            "Real workspace entries take priority over aliases. Results are absolute "
+            "paths reusable in read_file, apply_changes, and program argv, with "
             "compact metrics: B=bytes, L=physical lines, S=symbol hints, "
             "I=interface hints, D=dependency-statement hints; S/I/D are estimates. "
-            "A nested relative path is root-relative, e.g. path='trade_sys/services'; "
-            "or use path='source', pattern='trade_sys/services/**'. Avoid combining "
-            "the source alias and subpath. Broad inventories are grouped by directory "
+            "A nested relative path is workspace-relative, e.g. path='trade_sys/services'. "
+            "Broad inventories are grouped by directory "
             "in the final answer; overview requests should summarize counts and largest files."
         )
 
     async def _execute(self, params: dict) -> str:
-        path = str(params.get("path") or ".").strip()
-        pattern = str(params.get("pattern") or "**/*").strip()
-        roots, scoped_pattern, error = self._resolve_scope(path, pattern)
-        if error:
-            return error
-        return await asyncio.to_thread(
-            self._format_matches, roots, scoped_pattern,
-            details=params.get("details") is not False,
-            limit=self._result_limit(params.get("limit")),
-        )
+        return (await self.run_result(params)).text
+
+    async def _execute_result(self, params: dict) -> ToolResult:
+        path = params.get("path", ".")
+        if path is None or path == "":
+            path = "."
+        pattern = params.get("pattern", "**/*")
+        if pattern is None or pattern == "":
+            pattern = "**/*"
+        if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in pattern.replace("\\", "/").split("/"):
+            return ToolResult.error("Error: pattern must be a relative glob without '..'", "INVALID_ARGUMENT", True)
+        try:
+            root = self._paths.directory(path, default_root=self._source_dir or self._workspace_root)
+            output = await asyncio.to_thread(
+                self._format_matches, [str(root)], pattern,
+                details=params.get("details") is not False,
+                limit=self._result_limit(params.get("limit")),
+            )
+            return ToolResult.success(output)
+        except WorkspacePathError as exc:
+            return ToolResult.error(f"Error: {exc}", exc.code, True)
+        except OSError as exc:
+            return ToolResult.error(f"Error: {exc}", "FILE_LIST_ERROR", True)
 
     def _resolve_scope(self, path: str, pattern: str) -> tuple[list[str], str, str | None]:
-        """Resolve a list scope without mixing an absolute path into a glob root."""
-        configured = [root for root in (self._source_dir, self._test_dir, self._design_dir) if root]
-        if not configured and not self._workspace_root:
-            return [], pattern, "(no workspace)"
-
-        aliases = {
-            "source": self._source_dir,
-            "src": self._source_dir,
-            "test": self._test_dir,
-            "tests": self._test_dir,
-            "design": self._design_dir,
-        }
-        normalized = path.replace("/", os.sep).rstrip("\\/") or "."
-        lowered = normalized.lower()
-        if normalized in {"", "."}:
-            root = self._source_dir or self._workspace_root
-            return [root] if root else [], pattern, None
-        if lowered in {"source", "src"}:
-            return ([self._source_dir], pattern, None) if self._source_dir else (
-                [], pattern, f"Error: workspace alias not configured: {path}"
-            )
-        if lowered == "workspace":
-            return [self._workspace_root] if self._workspace_root else configured, pattern, None
-        if lowered in aliases:
-            root = aliases[lowered]
-            return ([root] if root else [], pattern, None) if root else ([], pattern, f"Error: workspace alias not configured: {path}")
-
-        requested = Path(normalized)
-        if requested.is_absolute():
-            requested = requested.resolve()
-            for root in configured + ([self._workspace_root] if self._workspace_root else []):
-                root_path = Path(root).resolve()
-                try:
-                    relative = requested.relative_to(root_path)
-                except ValueError:
-                    continue
-                if not requested.exists() or not requested.is_dir():
-                    return [], pattern, f"Error: directory not found: {path}"
-                scoped = os.path.join(str(relative), pattern) if str(relative) != "." else pattern
-                return [root], scoped, None
-            return [], pattern, f"Error: path escapes workspace: {path}"
-
-        # Resolve a relative subdirectory against each configured root. This
-        # keeps paths such as ``radar_sim`` useful while preserving boundaries.
-        for root in ([self._workspace_root] if self._workspace_root else []) + configured:
-            root_path = Path(root).resolve()
-            candidate = (root_path / requested).resolve()
-            if candidate.is_dir() and candidate.is_relative_to(root_path):
-                relative = candidate.relative_to(root_path)
-                scoped = os.path.join(str(relative), pattern) if str(relative) != "." else pattern
-                return [root], scoped, None
-        return [], pattern, f"Error: directory not found: {path}"
+        """Compatibility entry point using the shared resolver."""
+        try:
+            root = self._paths.directory(path, default_root=self._source_dir or self._workspace_root)
+            return [str(root)], pattern, None
+        except WorkspacePathError as exc:
+            return [], pattern, f"Error: {exc}"
 
     def to_openai_schema(self) -> dict:
         schema = super().to_openai_schema()
@@ -177,6 +143,7 @@ class ApplyChangesTool(Tool):
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
                  workspace_root: str = ""):
         self._roots = _resolve_roots(workspace_root, source_dir, test_dir, design_dir)
+        self._paths = WorkspacePathResolver(workspace_root, source_dir, test_dir, design_dir)
         self._change_set = change_set
         super().__init__(name="apply_changes", description=(
             "Apply one or more semantic workspace changes atomically. Supported operations: "
@@ -285,6 +252,8 @@ class ApplyChangesTool(Tool):
     ) -> ToolResult:
         message = str(exc)
         details = self._error_details(change, index, operation)
+        if isinstance(exc, WorkspacePathError):
+            return self._error_result(message, exc.code, **details)
         if isinstance(exc, _ApplyChangesError):
             # Keep the path as supplied by the model so the recovery call can
             # reuse it.  Preserve a resolved path separately for diagnostics.
@@ -408,12 +377,8 @@ class ApplyChangesTool(Tool):
 
     def _path(self, value: Any, index: int, field: str) -> Path:
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{field} must be a non-empty string")
-        value = _expand_workspace_alias(
-            value, self._workspace_root, self._source_dir,
-            self._test_dir, self._design_dir,
-        )
-        return safe_path(value, self._roots, require_exist=False)
+            raise WorkspacePathError(f"{field} must be a non-empty string", "INVALID_ARGUMENT")
+        return self._paths.resolve(value)
 
     def _state(self, states: dict[str, dict[str, Any]], path: Path) -> dict[str, Any]:
         key = str(path.resolve())
@@ -679,13 +644,13 @@ class RunProgramTool(ShellTool):
         program = params.get("program", "")
         args = params.get("args", [])
         if not isinstance(program, str) or not program.strip():
-            return "Error: program must be a non-empty string"
+            return ToolResult.error("Error: program must be a non-empty string", "INVALID_ARGUMENT", True)
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-            return "Error: args must be a list of strings"
+            return ToolResult.error("Error: args must be a list of strings", "INVALID_ARGUMENT", True)
         program = program.strip()
         cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
         if cwd_error:
-            return f"Error: {cwd_error}"
+            return self._cwd_error_result(cwd_error)
         validator = getattr(self._command_executor, "validate_program", None)
         if callable(validator):
             validation_error = validator(program, args)
@@ -694,17 +659,18 @@ class RunProgramTool(ShellTool):
                 _quote_program(program, args, self._command_executor)
             )
         if validation_error:
-            return (
+            return ToolResult.error(
                 f"Error: {validation_error} "
                 "run_program accepts a direct executable and literal argv only; "
                 "use run_task for standard project tasks; use shell only for one simple "
-                "native command that does not require interpreter code."
+                "native command that does not require interpreter code.",
+                "COMMAND_SYNTAX_INVALID", True,
             )
 
         display_command = _quote_program(program, args, self._command_executor)
         risk = self._risk_policy.evaluate("shell", {"command": display_command})
         if risk.action == "deny":
-            return f"Error: program denied (high-risk, matches deny list: {risk.pattern})"
+            return ToolResult(status="blocked", data=f"Error: program denied (high-risk, matches deny list: {risk.pattern})", error_code="POLICY_DENIED")
         if risk.action == "ask":
             verdict = await self._request_approval(
                 display_command, risk,
@@ -723,7 +689,7 @@ class RunProgramTool(ShellTool):
         try:
             proc = await asyncio.to_thread(_start)
         except (OSError, ExecutionEnvironmentError) as exc:
-            return f"Error: {type(exc).__name__}: {exc}"
+            return ToolResult.error(f"Error: {type(exc).__name__}: {exc}", "PROCESS_START_ERROR", True)
 
         try:
             captured = await collect_process_output(
@@ -732,12 +698,12 @@ class RunProgramTool(ShellTool):
                 output_limit=self._output_cap,
             )
         except OSError as exc:
-            return f"Error: {type(exc).__name__}: {exc}"
+            return ToolResult.error(f"Error: {type(exc).__name__}: {exc}", "PROCESS_IO_ERROR", True)
 
         if captured.reason == "canceled":
-            return "Error: program canceled"
+            return ToolResult.error("Error: program canceled", "PROCESS_CANCELED")
         if captured.reason == "timeout":
-            return f"Error: program timed out after {self._timeout:g}s"
+            return ToolResult.error(f"Error: program timed out after {self._timeout:g}s", "PROCESS_TIMEOUT", True)
         output = (_decode_output(captured.stdout) + _decode_output(captured.stderr)).strip()
         if captured.reason == "output_limit":
             return ToolResult.error(
@@ -792,7 +758,8 @@ class RunTaskTool(RunProgramTool):
             "step-level execution evidence. Use profile to select a build variant and "
             "dry_run=true to preview the plan without executing it. "
             "validate checks UML project files directly for .umlproj/.uml/.json targets. "
-            "target is relative to cwd; cwd accepts source, test, design, or workspace. "
+            "A bare target is relative to cwd; absolute paths and workspace/source/test/design "
+            "qualified targets share the file-tool resolver. cwd also accepts alias subpaths. "
             "For the full test suite use cwd=\"test\" with no target or target=\".\"."
         )
         self._task_resolver = TaskResolver()
@@ -804,20 +771,24 @@ class RunTaskTool(RunProgramTool):
         return self._execution_broker
 
     async def _execute_result(self, params: dict):
-        task = str(params.get("task", "")).lower().strip()
-        if not task:
-            return "Error: task must be a non-empty string"
+        task = params.get("task", "")
+        if not isinstance(task, str) or not task.strip():
+            return ToolResult.error("Error: task must be a non-empty string", "INVALID_ARGUMENT", True)
+        task = task.lower().strip()
         profile = params.get("profile", "")
         if profile is None:
             profile = ""
         if not isinstance(profile, str):
-            return "Error: profile must be a string"
+            return ToolResult.error("Error: profile must be a string", "INVALID_ARGUMENT", True)
         profile = profile.strip().lower()
         dry_run = params.get("dry_run", False)
         if not isinstance(dry_run, bool):
-            return "Error: dry_run must be a boolean"
-        if task == "validate" and params.get("target"):
-            target = str(params["target"]).strip()
+            return ToolResult.error("Error: dry_run must be a boolean", "INVALID_ARGUMENT", True)
+        target = params.get("target")
+        if target is not None and not isinstance(target, str):
+            return ToolResult.error("Error: target must be a string", "INVALID_ARGUMENT", True)
+        if task == "validate" and target:
+            target = target.strip()
             if target.lower().endswith((".umlproj", ".uml", ".json")):
                 result = ToolResult.from_value(self._validate_project_file(target, params.get("cwd")))
                 result.verification = VerificationEvidence(
@@ -825,14 +796,27 @@ class RunTaskTool(RunProgramTool):
                     result.status == "success",
                 )
                 return result
-        target = params.get("target")
-        if target is not None and not isinstance(target, str):
-            return "Error: target must be a string"
         if isinstance(target, str):
             target = target.strip() or None
         resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
         if cwd_error:
-            return f"Error: {cwd_error}"
+            return self._cwd_error_result(cwd_error)
+        raw_cwd = params.get("cwd")
+        if task == "test" and target and isinstance(raw_cwd, str) and target.casefold() == raw_cwd.strip().casefold():
+            target = None
+        if target and self._is_qualified_target(target):
+            try:
+                file_target, separator, selector = target.partition("::")
+                target = str(self._paths.resolve(file_target, require_exist=True))
+                if separator:
+                    target += separator + selector
+            except WorkspacePathError as exc:
+                return ToolResult.error(f"Error: {exc}", exc.code, True)
+        elif target and ".." in target.replace("\\", "/").split("/"):
+            try:
+                self._paths.resolve(target, relative_to=resolved_cwd)
+            except WorkspacePathError as exc:
+                return ToolResult.error(f"Error: {exc}", exc.code, True)
         resolution = self._task_resolver.resolve(
             task, resolved_cwd or self._cwd, target=target,
             profile=profile,
@@ -848,9 +832,9 @@ class RunTaskTool(RunProgramTool):
                     },
                     error_code="PROFILE_NOT_FOUND",
                 )
-            return (
+            return ToolResult.error(
                 f"Error: unable to resolve task '{task}' for project "
-                f"{resolution.project_root}: {resolution.reason}"
+                f"{resolution.project_root}: {resolution.reason}", "TASK_NOT_RESOLVED", True,
             )
         if resolution.resolved:
             if dry_run:
@@ -861,9 +845,10 @@ class RunTaskTool(RunProgramTool):
             execution_cwd = resolution.project_root
         else:
             if task not in self.TASKS:
-                return (
+                return ToolResult.error(
                     f"Error: unable to resolve project task '{task}'. "
-                    "Declare it in .architectcoder/tasks.json or use a supported project manifest."
+                    "Declare it in .architectcoder/tasks.json or use a supported project manifest.",
+                    "TASK_NOT_RESOLVED", True,
                 )
             program, base_args = self.TASKS[task]
             args = list(base_args)
@@ -871,12 +856,7 @@ class RunTaskTool(RunProgramTool):
             # A model may carry the cwd alias into target as well. Treat
             # ``target=test, cwd=test`` as the intended full-suite command
             # instead of executing pytest against the non-existent test/test.
-            raw_cwd = params.get("cwd")
-            if target and not (
-                task == "test"
-                and isinstance(raw_cwd, str)
-                and target.strip().lower() == raw_cwd.strip().lower()
-            ):
+            if target:
                 args.append(target)
         if dry_run:
             try:
@@ -887,7 +867,7 @@ class RunTaskTool(RunProgramTool):
                     source="run_task-fallback",
                 )
             except ValueError as exc:
-                return f"Error: unable to create task plan: {exc}"
+                return ToolResult.error(f"Error: unable to create task plan: {exc}", "TASK_PLAN_INVALID", True)
             return self._plan_result(
                 TaskPlan(
                     requested_task=task, steps=(legacy_task,), profile=profile,
@@ -1079,46 +1059,33 @@ class RunTaskTool(RunProgramTool):
             return None, f"cwd directory does not exist: {value}"
         return str(candidate), None
 
-    def _validate_project_file(self, target: str, raw_cwd) -> str:
-        candidates: list[Path] = []
-        if raw_cwd:
-            cwd, cwd_error = self._resolve_cwd(raw_cwd)
-            if cwd_error:
-                return f"Error: {cwd_error}"
-            candidates.append(Path(cwd) / target)
-        # Accept both canonical forms:
-        #   target="model.umlproj", cwd="design"
-        #   target="design/model.umlproj"
-        # The second form is common when an Agent carries the workspace alias
-        # into a task target, and should not become workspace/design/design/...
-        candidates.append(Path(target))
-        path = None
-        last_error: Exception | None = None
-        seen: set[str] = set()
-        for candidate in candidates:
-            try:
-                key = str(candidate)
-                if key in seen:
-                    continue
-                seen.add(key)
-                path = safe_path(str(candidate), self._roots, require_exist=True)
-                if not path.is_file():
-                    raise FileNotFoundError(path)
-                break
-            except (OSError, ValueError) as exc:
-                last_error = exc
-        if path is None:
-            return f"Error: {last_error or 'project file not found'}"
+    def _is_qualified_target(self, target: str) -> bool:
+        head = target.replace("\\", "/").split("/", 1)[0].casefold()
+        return Path(target).is_absolute() or head in self._paths.aliases
+
+    def _validate_project_file(self, target: str, raw_cwd) -> ToolResult:
+        cwd, cwd_error = self._resolve_cwd(raw_cwd)
+        if cwd_error:
+            return self._cwd_error_result(cwd_error)
+        try:
+            path = self._paths.resolve(
+                target, require_exist=True,
+                relative_to=cwd if not self._is_qualified_target(target) else "",
+            )
+            if not path.is_file():
+                return ToolResult.error(f"Error: not a file: {target}", "NOT_A_FILE", True)
+        except WorkspacePathError as exc:
+            return ToolResult.error(f"Error: {exc}", exc.code, True)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            return f"Error: invalid project JSON: {exc}"
+            return ToolResult.error(f"Error: invalid project JSON: {exc}", "PROJECT_JSON_INVALID", True)
         diagrams = data.get("diagrams") if isinstance(data, dict) else None
         if not isinstance(diagrams, list) or not diagrams:
-            return "Error: UML project must contain a non-empty diagrams list"
+            return ToolResult.error("Error: UML project must contain a non-empty diagrams list", "PROJECT_STRUCTURE_INVALID", True)
         if not all(isinstance(diagram, dict) for diagram in diagrams):
-            return "Error: UML project diagrams must be objects"
-        return f"Validated UML project: {path} (diagrams={len(diagrams)})"
+            return ToolResult.error("Error: UML project diagrams must be objects", "PROJECT_STRUCTURE_INVALID", True)
+        return ToolResult.success(f"Validated UML project: {path} (diagrams={len(diagrams)})")
 
     def to_openai_schema(self) -> dict:
         return {

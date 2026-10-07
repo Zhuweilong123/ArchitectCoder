@@ -7,6 +7,7 @@ from typing import Any
 from app.trace.tracing import current_trace_sink
 
 from .base import Tool, ToolParameter
+from .result import ToolResult
 
 
 MAX_FED_CHARS = 3000
@@ -69,29 +70,32 @@ class ReadToolOutputTool(Tool):
         ]
 
     def run(self, parameters: dict[str, Any]) -> str:
+        return self.run_result(parameters).text
+
+    def run_result(self, parameters: dict[str, Any]) -> ToolResult:
         output_id = str(parameters.get("output_id") or "").strip()
         try:
             offset = int(parameters.get("offset"))
             limit = int(parameters.get("limit", MAX_PAGE_CONTENT_CHARS))
         except (TypeError, ValueError, OverflowError):
-            return "Error: offset and limit must be integers"
+            return ToolResult.error("Error: offset and limit must be integers", "INVALID_ARGUMENT", True)
         if offset < 0 or limit < 1:
-            return "Error: offset must be nonnegative and limit must be positive"
+            return ToolResult.error("Error: offset must be nonnegative and limit must be positive", "INVALID_ARGUMENT", True)
         sink = current_trace_sink()
         if sink is None:
-            return "Error: no active trace for this task"
+            return ToolResult.error("Error: no active trace for this task", "TRACE_NOT_AVAILABLE")
         reader = getattr(sink, "read_tool_output", None)
         if not callable(reader):
-            return "Error: current trace cannot read tool outputs"
+            return ToolResult.error("Error: current trace cannot read tool outputs", "TRACE_NOT_AVAILABLE")
         output = reader(output_id, excluded_tool_names=frozenset({"read_file"}))
         if output is None:
-            return ("Error: output_id was not found or is a read_file result "
-                    "in the current trace; use read_file for file content")
+            return ToolResult.error("Error: output_id was not found or is a read_file result "
+                    "in the current trace; use read_file for file content", "TOOL_OUTPUT_NOT_FOUND", True)
         if offset > len(output):
-            return f"Error: offset exceeds the {len(output)}-character result"
+            return ToolResult.error(f"Error: offset exceeds the {len(output)}-character result", "INVALID_ARGUMENT", True)
         end = min(len(output), offset + min(limit, MAX_PAGE_CONTENT_CHARS))
         next_offset = str(end) if end < len(output) else "none"
-        return (
+        return ToolResult.success(
             f"[tool output {output_id}; chars {offset}:{end} of {len(output)}]\n"
             + output[offset:end]
             + f"\n[next_offset={next_offset}]"

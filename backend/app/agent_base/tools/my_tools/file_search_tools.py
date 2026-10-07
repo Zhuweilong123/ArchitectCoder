@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from app.agent_base.tools.base import Tool, ToolParameter
+from app.agent_base.tools.result import ToolResult
+from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 
 
 _BINARY_SAMPLE_BYTES = 8192
@@ -33,7 +35,7 @@ _TEXT_BOMS = (
 
 
 class GrepFileTool(Tool):
-    """Search text files portably and return workspace-relative hit locations."""
+    """Search text files portably and return reusable absolute hit locations."""
 
     def __init__(
         self,
@@ -52,13 +54,13 @@ class GrepFileTool(Tool):
                 "Search text files in the configured workspace with a regular expression "
                 "or literal substring. The optional path accepts a file or directory, "
                 "including source, test, design, or workspace aliases. Results include "
-                "workspace-relative paths, 1-based line and column numbers, and matching "
+                "absolute paths reusable in file tools and program argv, 1-based line and column numbers, and matching "
                 "lines. Binary files and common dependency/build/cache directories are skipped."
             ),
         )
         self.source_dir = source_dir
         self.test_dir = test_dir
-        self.design_dir = design_dir
+        self.design_dir = design_dir or (str(Path(project_file).resolve().parent) if project_file else "")
         self.workspace_root = workspace_root
         self.project_file = project_file
         self.max_matches = max(1, int(max_matches))
@@ -69,7 +71,7 @@ class GrepFileTool(Tool):
         roots = (
             ("source", source_dir),
             ("test", test_dir),
-            ("design", design_dir),
+            ("design", self.design_dir),
             ("workspace", workspace_root),
         )
         self._labeled_roots: list[tuple[str, Path]] = []
@@ -88,14 +90,7 @@ class GrepFileTool(Tool):
                 if all(project_root != existing for _, existing in self._labeled_roots):
                     self._labeled_roots.append(("design", project_root))
 
-        self._aliases = {
-            "workspace": workspace_root,
-            "source": source_dir,
-            "src": source_dir,
-            "test": test_dir,
-            "tests": test_dir,
-            "design": design_dir,
-        }
+        self._paths = WorkspacePathResolver(workspace_root, source_dir, test_dir, self.design_dir)
         self._workspace_path = self._find_workspace_path()
         self._ignore_patterns = self._load_ignore_patterns()
 
@@ -166,43 +161,19 @@ class GrepFileTool(Tool):
         ]
 
     def _expand_alias(self, raw_path: str) -> str:
-        if os.path.isabs(raw_path):
-            return raw_path
-        normalized = raw_path.replace("\\", "/")
-        head, separator, tail = normalized.partition("/")
-        root = self._aliases.get(head.casefold(), "")
-        if root:
-            parts = tail.split("/") if separator else []
-            return str(Path(root).joinpath(*parts))
-        return raw_path
+        return str(self._paths.resolve(raw_path))
 
-    def _resolve_search_paths(self, raw_path: str | None) -> list[Path] | None:
+    def _resolve_search_paths(self, raw_path: str | None) -> list[Path]:
         """Resolve a file/directory scope and keep it within configured roots."""
-        if not self._labeled_roots:
-            return []
+        if not self._paths.roots:
+            raise WorkspacePathError("No workspace root configured", "WORKSPACE_NOT_CONFIGURED")
         if not raw_path:
+            if not self._labeled_roots:
+                raise WorkspacePathError("workspace directories not found", "PATH_NOT_FOUND")
             return self._default_scan_roots()
-
-        expanded = self._expand_alias(str(raw_path).strip())
-        candidate = Path(expanded).expanduser()
-        resolution_roots = sorted(
-            self._labeled_roots, key=lambda item: item[0] != "workspace",
-        )
-        candidates = (
-            [candidate] if candidate.is_absolute()
-            else [root / candidate for _, root in resolution_roots]
-        )
-        resolved: Path | None = None
-        for possible in candidates:
-            try:
-                current = possible.resolve(strict=True)
-            except (OSError, RuntimeError):
-                continue
-            if any(self._is_inside(current, root) for _, root in self._labeled_roots):
-                resolved = current
-                break
-        if resolved is None or not (resolved.is_file() or resolved.is_dir()):
-            return None
+        resolved = self._paths.resolve(raw_path, require_exist=True)
+        if not (resolved.is_file() or resolved.is_dir()):
+            raise WorkspacePathError(f"not a file or directory: {raw_path}", "INVALID_PATH_TYPE")
         return [resolved]
 
     @staticmethod
@@ -221,7 +192,7 @@ class GrepFileTool(Tool):
             if not any(root != other and self._is_inside(root, other) for other in roots)
         ]
 
-    def _iter_files(self, scopes: list[Path]) -> Iterator[Path]:
+    def _iter_files(self, scopes: list[Path], errors: list[str]) -> Iterator[Path]:
         seen: set[str] = set()
         stack = list(reversed(scopes))
         while stack:
@@ -239,7 +210,9 @@ class GrepFileTool(Tool):
                     entries = sorted(
                         iterator, key=lambda entry: entry.name.casefold(), reverse=True,
                     )
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as exc:
+                if len(errors) < 5:
+                    errors.append(f"{current}: {exc}")
                 continue
             directories: list[Path] = []
             for entry in entries:
@@ -259,7 +232,9 @@ class GrepFileTool(Tool):
                                 and not self._matches_searchignore(path)):
                             seen.add(key)
                             yield path
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError) as exc:
+                    if len(errors) < 5:
+                        errors.append(f"{entry.path}: {exc}")
                     continue
             stack.extend(reversed(directories))
 
@@ -267,17 +242,7 @@ class GrepFileTool(Tool):
         return any(self._is_inside(path, root) for _, root in self._labeled_roots)
 
     def _display_path(self, path: Path) -> str:
-        # Prefer specific roots so one file has a stable path such as
-        # source/src/api.ts instead of workspace/src/src/api.ts.
-        for label, root in self._labeled_roots:
-            if label == "workspace":
-                continue
-            if self._is_inside(path, root):
-                return f"{label}/{path.relative_to(root).as_posix()}"
-        for label, root in self._labeled_roots:
-            if self._is_inside(path, root):
-                return f"{label}/{path.relative_to(root).as_posix()}"
-        return path.as_posix()
+        return self._paths.display(path)
 
     @staticmethod
     def _text_encoding(sample: bytes) -> str | None:
@@ -325,11 +290,17 @@ class GrepFileTool(Tool):
                     yield line_number, match_start + 1, excerpt, window_start, len(line)
 
     def run(self, parameters: Dict[str, Any]) -> str:
-        pattern = str(parameters.get("pattern", "")).strip()
+        return self.run_result(parameters).text
+
+    def run_result(self, parameters: Dict[str, Any]) -> ToolResult:
+        pattern = parameters.get("pattern", "")
+        if not isinstance(pattern, str):
+            return ToolResult.error("Error: pattern must be a string", "INVALID_ARGUMENT", True)
+        pattern = pattern.strip()
         if not pattern:
-            return "请提供要搜索的关键词 pattern。"
+            return ToolResult.error("请提供要搜索的关键词 pattern。", "INVALID_ARGUMENT", True)
         if len(pattern) > _MAX_PATTERN_CHARS:
-            return f"pattern 过长（最多 {_MAX_PATTERN_CHARS} 字符）。"
+            return ToolResult.error(f"pattern 过长（最多 {_MAX_PATTERN_CHARS} 字符）。", "INVALID_ARGUMENT", True)
 
         try:
             matcher = re.compile(pattern)
@@ -339,16 +310,20 @@ class GrepFileTool(Tool):
             use_regex = False
 
         raw_path = parameters.get("path")
-        scopes = self._resolve_search_paths(str(raw_path).strip() if raw_path else None)
-        if scopes is None:
-            return f"路径无效或超出允许范围: {raw_path}"
-        if not scopes:
-            return "(no workspace)"
+        if raw_path is not None and not isinstance(raw_path, str):
+            return ToolResult.error("Error: path must be a string", "INVALID_ARGUMENT", True)
+        try:
+            scopes = self._resolve_search_paths(raw_path.strip() if raw_path else None)
+        except WorkspacePathError as exc:
+            return ToolResult.error(f"路径无效或超出允许范围: {raw_path}; {exc}", exc.code, True)
+        except (OSError, RuntimeError) as exc:
+            return ToolResult.error(f"Error: {exc}", "SEARCH_IO_ERROR", True)
 
         lines_out: list[str] = []
         total_hits = 0
         scanned_files = 0
-        for path in self._iter_files(scopes):
+        errors: list[str] = []
+        for path in self._iter_files(scopes, errors):
             try:
                 for line_number, column, content, excerpt_start, line_length in self._find_in_file(
                     path, matcher, pattern, use_regex,
@@ -366,12 +341,18 @@ class GrepFileTool(Tool):
                             )
                         lines_out.append(row)
                 scanned_files += 1
-            except (OSError, UnicodeError, ValueError):
-                continue
+            except (OSError, UnicodeError, ValueError) as exc:
+                if len(errors) < 5:
+                    errors.append(f"{path}: {exc}")
 
         mode = "正则" if use_regex else "字面"
+        if errors:
+            return ToolResult.error(
+                "\n".join(["Error: search incomplete; some files could not be read", *errors, *lines_out]),
+                "SEARCH_IO_ERROR", True,
+            )
         if total_hits == 0:
-            return f"在 {scanned_files} 个已扫描文件中未找到匹配（{mode}搜索）。"
+            return ToolResult.success(f"在 {scanned_files} 个已扫描文件中未找到匹配（{mode}搜索）。")
 
         shown = min(total_hits, self.max_matches)
         summary = (
@@ -380,4 +361,4 @@ class GrepFileTool(Tool):
         )
         if total_hits > shown:
             summary += f"\n[另有 {total_hits - shown} 行未显示，可缩小 pattern 或指定 path]"
-        return "\n".join([summary, *lines_out])
+        return ToolResult.success("\n".join([summary, *lines_out]))

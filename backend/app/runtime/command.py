@@ -546,8 +546,13 @@ class WslBashExecutor:
         self.preflight()
         if not cwd:
             raise ExecutionEnvironmentError("WSL program execution requires a workspace cwd")
+        mapped_args = []
+        for value in args:
+            path, separator, selector = value.partition("::")
+            mapped = windows_path_to_wsl(path) if _WINDOWS_PATH.match(path) else path
+            mapped_args.append(mapped + separator + selector)
         return subprocess.Popen(
-            [*self._prefix(cwd=cwd), "--exec", program, *args],
+            [*self._prefix(cwd=cwd), "--exec", program, *mapped_args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )

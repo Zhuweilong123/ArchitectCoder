@@ -52,7 +52,13 @@ class CapabilityPolicy:
                 return "program must be a non-empty string"
             if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
                 return "args must be a list of strings"
-            return self._check_command(" ".join([program, *args]))
+            # Preserve literal argv boundaries, particularly absolute paths
+            # containing spaces returned by inventory/search tools.
+            for value in [program, *args]:
+                error = self._check_path(value) if Path(value).is_absolute() else self._check_command(value)
+                if error:
+                    return error
+            return None
 
         if name == "run_task":
             target = parameters.get("target")
@@ -122,9 +128,14 @@ class CapabilityPolicy:
         return None
 
     def _is_protected(self, value: str) -> bool:
-        normalized = value.strip("/")
+        normalized = value.strip("/").casefold()
+        # Canonical absolute paths and workspace aliases must preserve the
+        # same protection as bare paths, including nested project secrets.
+        parts = normalized.split("/")
         return any(
-            fnmatch.fnmatchcase(normalized, pattern)
-            or normalized.startswith(pattern.rstrip("/*") + "/")
+            fnmatch.fnmatchcase(suffix, pattern.casefold())
+            or suffix.startswith(pattern.casefold().rstrip("/*") + "/")
+            for index in range(len(parts))
+            for suffix in ["/".join(parts[index:])]
             for pattern in self._protected_paths
         )

@@ -152,7 +152,7 @@ def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
     result = asyncio.run(read_file._execute({"path": "database.py"}))
 
     assert "Error: file not found: database.py" in result
-    assert "possible_paths: source/package/database.py" in result
+    assert f"possible_paths: {target.resolve()}" in result
     assert "recovery_action:" in result
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -212,7 +212,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     (test / "test_main.py").write_text("def test_main(): pass\n", encoding="utf-8")
     (design / "model.umlproj").write_text("{}\n", encoding="utf-8")
 
-    tool = create_foundation_tools(str(source), str(test), str(design))[0]
+    tool = create_foundation_tools(str(source), str(test), str(design), workspace_root=str(tmp_path))[0]
     import asyncio
 
     source_result = asyncio.run(tool._execute({"pattern": "**/*"}))
@@ -223,7 +223,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     test_result = asyncio.run(tool._execute({
         "path": str(test), "pattern": "**/*.py", "details": False,
     }))
-    assert test_result.strip() == "test_main.py"
+    assert test_result.strip() == str((test / "test_main.py").resolve())
 
     workspace_result = asyncio.run(tool._execute({
         "path": "workspace", "pattern": "**/*",

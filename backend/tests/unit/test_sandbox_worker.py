@@ -1,3 +1,5 @@
+import pytest
+
 from app.runtime.sandbox_worker import ContainerCommandExecutor, ContainerWorker, WslWorker
 from app.runtime.task_contracts import ExecutionPolicy, NetworkPolicy, ResourceLimits
 
@@ -102,6 +104,25 @@ def test_container_executor_builds_network_disabled_workspace_command(tmp_path, 
     assert "--volume" in calls["argv"]
     assert "/workspace/build" in calls["argv"]
     assert calls["argv"][-4:] == ["toolchain:test", "cmake", "--build", "."]
+
+
+@pytest.mark.parametrize("with_limits", [False, True])
+def test_container_program_maps_host_workspace_paths(tmp_path, monkeypatch, with_limits):
+    root = tmp_path / "workspace with spaces"
+    root.mkdir()
+    executor = ContainerCommandExecutor(str(root), image="toolchain:test")
+    monkeypatch.setattr(executor, "preflight", lambda: None)
+    calls = {}
+    def launch(argv, **kwargs):
+        calls["argv"] = argv
+        return object()
+    monkeypatch.setattr("app.runtime.sandbox_worker.subprocess.Popen", launch)
+    args = ["-m", "pytest", str(root / "tests" / "test main.py") + "::test_one", "-q"]
+    if with_limits:
+        executor.start_program_with_limits("python", args, str(root), ResourceLimits())
+    else:
+        executor.start_program("python", args, str(root))
+    assert calls["argv"][-5:] == ["python", "-m", "pytest", "/workspace/tests/test main.py::test_one", "-q"]
 
 
 def test_container_executor_applies_supported_resource_limits(tmp_path, monkeypatch):
