@@ -107,7 +107,7 @@ class ListFilesTool(BaseListFilesTool):
     def _resolve_scope(self, path: str, pattern: str) -> tuple[list[str], str, str | None]:
         """Resolve a list scope without mixing an absolute path into a glob root."""
         configured = [root for root in (self._source_dir, self._test_dir, self._design_dir) if root]
-        if not configured:
+        if not configured and not self._workspace_root:
             return [], pattern, "(no workspace)"
 
         aliases = {
@@ -119,8 +119,13 @@ class ListFilesTool(BaseListFilesTool):
         }
         normalized = path.replace("/", os.sep).rstrip("\\/") or "."
         lowered = normalized.lower()
-        if normalized in {"", "."} or lowered in {"source", "src"}:
-            return [self._source_dir] if self._source_dir else [], pattern, None
+        if normalized in {"", "."}:
+            root = self._source_dir or self._workspace_root
+            return [root] if root else [], pattern, None
+        if lowered in {"source", "src"}:
+            return ([self._source_dir], pattern, None) if self._source_dir else (
+                [], pattern, f"Error: workspace alias not configured: {path}"
+            )
         if lowered == "workspace":
             return [self._workspace_root] if self._workspace_root else configured, pattern, None
         if lowered in aliases:

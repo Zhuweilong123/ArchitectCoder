@@ -76,15 +76,10 @@ class WorkspaceManifest:
             design = str(Path(design).parent)
         if selected_project:
             project = selected_project
-            design = str(Path(project).parent)
+            design = design or str(Path(project).parent)
 
         source = _resolve(source_dir)
         test = _resolve(test_dir)
-        if root_hint:
-            design = design or _child_dir(root_hint, "design")
-            source = source or _child_dir(root_hint, "src")
-            test = test or _child_dir(root_hint, "test")
-
         roots = [value for value in (design, source, test) if value]
         if root_hint:
             outside = [value for value in roots if not _inside(value, root_hint)]
@@ -105,6 +100,11 @@ class WorkspaceManifest:
                         + ", ".join(outside)
                     )
 
+        if root_hint:
+            design = design or _child_dir(root_hint, "design")
+            source = source or _child_dir(root_hint, "src")
+            test = test or _child_dir(root_hint, "test", "tests")
+        roots = [value for value in (design, source, test) if value]
         inferred_root = root_hint or _common_root(roots)
 
         if design:
@@ -140,12 +140,16 @@ def _resolve(value: str) -> str:
     return str(Path(value).expanduser().resolve())
 
 
-def _child_dir(root: str, name: str) -> str:
-    candidate = Path(root) / name
-    # A project layout may be loaded before conventional child directories
-    # exist (for example a new project with no tests yet).  Keep their
-    # canonical locations so creation tools remain inside the same boundary.
-    return str(candidate.resolve()) if Path(root).is_dir() else ""
+def _child_dir(root: str, *names: str) -> str:
+    """Discover an existing, unambiguous conventional directory.
+
+    Missing directories stay unconfigured. Explicit paths are handled by the
+    caller and do not depend on discovery or conventional directory names.
+    """
+    candidates = [Path(root) / name for name in names if (Path(root) / name).is_dir()]
+    if len(candidates) != 1 or not _inside(str(candidates[0]), root):
+        return ""
+    return str(candidates[0].resolve())
 
 
 def _inside(value: str, root: str) -> bool:

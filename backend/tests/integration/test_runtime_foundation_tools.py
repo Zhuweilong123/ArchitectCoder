@@ -110,6 +110,35 @@ def test_foundation_tools_use_project_root_with_named_directory_aliases(tmp_path
     assert cwd == str(source)
 
 
+def test_workspace_only_tools_remain_usable_without_optional_directories(tmp_path):
+    import asyncio
+    from app.runtime import WorkspaceManifest
+    from app.agent_base.core.skills import NoOpSkillProvider, capture_skill_catalog
+    from app.agent_base.tools.my_tools.conversation_tools import create_conversation_tools
+
+    manifest = WorkspaceManifest.from_paths(workspace_root=str(tmp_path))
+    assert manifest.design_root == manifest.source_root == manifest.test_root == ""
+    (tmp_path / "main.py").write_text("value = 1\n", encoding="utf-8")
+    tools, _ = create_conversation_tools(
+        object(), workspace_root=manifest.workspace_root, include_review=False,
+        command_executor=NativePowerShellExecutor(),
+        skill_catalog=capture_skill_catalog(NoOpSkillProvider()),
+    )
+    listed = asyncio.run(_tool(tools, "list_files")._execute({"pattern": "*.py"}))
+    assert "main.py" in listed
+    content = asyncio.run(_tool(tools, "read_file")._execute({"path": "main.py"}))
+    assert content == "value = 1"
+    assert _tool(tools, "read_file")._design_dir == ""
+    missing_source = asyncio.run(_tool(tools, "list_files")._execute({"path": "source"}))
+    assert missing_source.startswith("Error: workspace alias not configured:")
+    context = build_environment_context(
+        cwd=manifest.workspace_root, workspace_roots=manifest.workspace_roots,
+        workspace_layout=(("design", manifest.design_root), ("src", manifest.source_root),
+                          ("test", manifest.test_root)),
+    )
+    assert "Workspace layout:" not in context.to_prompt()
+
+
 def test_read_file_reports_bounded_path_candidates_after_miss(tmp_path):
     source = tmp_path / "src"
     source.mkdir()

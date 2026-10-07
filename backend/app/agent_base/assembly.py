@@ -241,15 +241,13 @@ async def _create_dev_agent_impl(
 ):
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
-    # Project-root callers derive ``design/`` from the root.
-    design_hint = design_dir or (
-        settings.project_dir if not project_file and not workspace_root else ""
-    )
+    # The manifest discovers only existing workspace directories. Do not fill
+    # an unconfigured design scope with an unrelated global project directory.
     manifest = WorkspaceManifest.from_paths(
         project_file=project_file,
         source_dir=source_dir,
         test_dir=test_dir,
-        design_dir=design_hint,
+        design_dir=design_dir,
         workspace_root=workspace_root,
     )
     source_dir = manifest.source_root
