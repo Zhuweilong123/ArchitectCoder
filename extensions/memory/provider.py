@@ -80,7 +80,7 @@ class SQLiteMemoryProvider:
     @staticmethod
     def _trace(event, **fields):
         from app.trace.tracing import emit_trace
-        emit_trace(event, **fields)
+        emit_trace("event", event_type=event, payload=fields)
 
     def _file_resource(self, path):
         try:
@@ -247,7 +247,8 @@ class SQLiteMemoryProvider:
                         terminal_status=request.terminal_status, **manager.last_write_report)
             return MemoryArchiveResult(
                 stored_count=manager.last_write_report.get("inserted", 0) + manager.last_write_report.get("updated", 0),
-                metadata={"provider": "sqlite", **manager.last_write_report},
+                metadata={"provider": "sqlite", **manager.last_write_report,
+                          "degraded": manager.last_write_report.get("skipped") == "extraction_failed"},
             )
         finally:
             manager.close()

@@ -431,12 +431,14 @@ class EvalRunner:
                 source_dir = workspace / manifest.source_dir if manifest else workspace
                 test_dir = workspace / manifest.test_dir if manifest else workspace
                 first_prompt = case.prompts()[0]
-                async with TraceSession(
+                trace_session = TraceSession(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
                     trace_dir=str(self.trace_dir),
                     env_snapshot={"eval_case": case.id},
-                ) as tracer:
+                    background_timeout_seconds=30.0,
+                )
+                async with trace_session as tracer:
                     result.trace_id = tracer.trace_id
                     agent = await factory(workspace, case)
                     failure_phase = "agent"
@@ -978,6 +980,7 @@ class EvalRunner:
                         # outer handler still owns rollback and result shaping.
                         finalize_task("timed_out", timeout_checkpoint)
                         raise
+                    result.metadata["foreground_duration_ms"] = round((time.monotonic() - started) * 1000, 1)
                     if change_set is not None:
                         result.metadata["change_set"] = change_set.commit()
                     if review_mgr is not None:
@@ -1059,6 +1062,15 @@ class EvalRunner:
                 finalize_task("failed", failed_checkpoint)
             finally:
                 result.trace_path = str(Path(tracer.path)) if "tracer" in locals() else ""
+                if "trace_session" in locals() and trace_session.background_registry is not None:
+                    records = [r.to_dict() for r in trace_session.background_registry.records]
+                    result.metadata["background_tasks"] = records
+                    result.metadata["background_usage_complete"] = all(
+                        r.get("usage_complete", False) for r in records
+                    )
+                    result.metadata["background_total_tokens_known"] = sum(
+                        r.get("usage", {}).get("total_tokens", 0) for r in records
+                    )
 
             self._persist_workspace_snapshot(workspace, run_id, result)
         return self._record_completed_result(result, started)

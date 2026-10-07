@@ -6,10 +6,10 @@ import logging
 import re
 
 from app.agent_base.core.extension_context import current_extension_context
+from app.agent_base.core.background_tasks import submit_background
 from .plugin_api import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest
 
 logger = logging.getLogger(__name__)
-_background_tasks: set[asyncio.Task] = set()
 _MEMORY_BLOCK = re.compile(r"<project_memory>.*?</project_memory>", re.DOTALL)
 
 
@@ -130,9 +130,8 @@ def task_after(context):
     )
     state["archive_scheduled"] = True
     # The snapshot is frozen before background work; future runs cannot rebind evidence.
-    task = asyncio.create_task(archive_task(provider, request))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    submit_background(archive_task(provider, request), owner="memory_archive",
+                      run_id=request.run_id, source_trace_id=request.trace_id)
 
 
 async def archive_task(memory, request):
@@ -150,11 +149,13 @@ async def archive_task(memory, request):
             await publish(HookEvent.BACKGROUND_BEFORE)
             result = await memory.archive(request)
             status = "degraded" if result.metadata.get("degraded") else "completed"
+            return result
         except asyncio.CancelledError:
             status = "cancelled"
             raise
         except Exception:
             logger.warning("[Memory] background archive failed", exc_info=True)
+            raise
         finally:
             operation.status = status
             await publish(HookEvent.BACKGROUND_AFTER, status=status)

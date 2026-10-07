@@ -119,6 +119,18 @@ Runner 会分别执行两组 Checker，并把结果合并到最终结果中；�
 
 ### 1.5 EvalResult 与 EvalSummary
 
+后台任务通过通用 `BackgroundTaskRegistry` 注册，宿主不依赖记忆插件实现。
+评测 TraceSession 在退出前给予后台任务 30 秒收尾窗口，超时取消并等待取消清理完成，
+随后关闭 trace、复制工作区快照、清理临时目录及结算用量。取消清理可能超过该窗口，
+宿主必须优先保证后台不再持有工作区资源。前台耗时单独记录为
+`metadata.foreground_duration_ms`，总耗时包含评测与后台收尾。
+
+`metadata.background_tasks` 保存任务来源、运行状态和已知用量；
+`background_usage_complete` 标识记录是否完整，`background_total_tokens_known`
+只表示已获得的 usage。请求无响应或响应没有 usage 时不得把这些已知值理解成完整成本。
+在线后台任务使用独立 trace，`background_result` 关联 `source_trace_id` 和来源 run，
+即使前台 trace 已关闭也能记录响应及归档状态，不阻塞前台返回。
+
 `EvalResult.status` 当前包括 `running`、`passed`、`failed`、`timeout`、`budget_exceeded`、`budget_finalized` 和 `error`。`budget_finalized` 表示 Agent 在预算边界完成了可交付的最终答案；只有 Checker 通过时才计入 `passed`，否则同时计入 `failed`，不能把预算收敛误报为成功。
 
 `EvalSummary` 是批次和性能视图共用的聚合模型，除总数、通过率、平均分、耗时、Token 和工具调用外，还固定汇总：

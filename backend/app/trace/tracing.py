@@ -414,6 +414,7 @@ class TraceSession:
         env_snapshot: dict[str, Any] | None = None,
         provider: TraceProvider | None = None,
         sink: TraceSink | None = None,
+        background_timeout_seconds: float | None = None,
     ):
         self._request = TraceSessionRequest(
             session_id=session_id,
@@ -429,6 +430,13 @@ class TraceSession:
         self._tracer = sink
         self._bridge = None
         self._sink_token = None
+        self.background_timeout_seconds = background_timeout_seconds
+        self.background_registry = None
+        self._background_token = None
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
+        self.llm_requests = 0
+        self.llm_responses = 0
+        self.usage_responses = 0
 
     @property
     def tracer(self) -> TraceSink:
@@ -450,6 +458,9 @@ class TraceSession:
                 )
                 return None
             if kind == "llm_request":
+                from app.agent_base.core.background_tasks import observe_background_llm
+                observe_background_llm(kind)
+                self.llm_requests += 1
                 return tracer.llm_request(
                     provider=kwargs.get("provider", "unknown"),
                     model=kwargs.get("model", ""),
@@ -464,6 +475,14 @@ class TraceSession:
                     span_path=span_path,
                 )
             if kind == "llm_response":
+                from app.agent_base.core.background_tasks import observe_background_llm
+                observe_background_llm(kind, kwargs.get("usage"))
+                self.llm_responses += 1
+                usage = kwargs.get("usage") or {}
+                if usage.get("total_tokens") is not None:
+                    self.usage_responses += 1
+                for key in self.usage:
+                    self.usage[key] += int(usage.get(key) or 0)
                 tracer.llm_response(
                     span_id=kwargs.get("span_id", ""),
                     content=kwargs.get("content", ""),
@@ -499,6 +518,7 @@ class TraceSession:
         return bridge
 
     def __enter__(self):
+        from app.agent_base.core.background_tasks import BackgroundTaskRegistry, bind_background_registry
         if self._tracer is None:
             provider = self._provider or load_trace()
             self._tracer = provider.create(self._request)
@@ -513,7 +533,17 @@ class TraceSession:
         self._bridge = self._make_bridge()
         self._sink_token = set_current_trace_sink(self._tracer)
         push_trace_hook(self._bridge)
+        self.background_registry = BackgroundTaskRegistry(
+            self._background_trace if self.background_timeout_seconds is None else None,
+        )
+        self._background_token = bind_background_registry(self.background_registry)
         return self._tracer
+
+    async def _background_trace(self, record, run):
+        """Online work owns a recorder independent of the foreground lifetime."""
+        from pathlib import Path
+        trace_dir = self._request.trace_dir or (str(Path(self.tracer.path).parent) if self.tracer.path else "")
+        return await background_trace(record, run, trace_dir=trace_dir, provider=self._provider)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
@@ -528,6 +558,10 @@ class TraceSession:
                     message=f"{exc_type.__name__}: {exc_val}",
                 )
         finally:
+            if self._background_token is not None:
+                from app.agent_base.core.background_tasks import reset_background_registry
+                reset_background_registry(self._background_token)
+                self._background_token = None
             if self._tracer is not None:
                 self._tracer.close()
         return False
@@ -536,7 +570,34 @@ class TraceSession:
         return self.__enter__()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        return self.__exit__(exc_type, exc_val, exc_tb)
+        try:
+            if self.background_timeout_seconds is not None and self.background_registry is not None:
+                try:
+                    await self.background_registry.drain(self.background_timeout_seconds)
+                finally:
+                    self.tracer.event("background_settled", tasks=[r.to_dict() for r in self.background_registry.records])
+        finally:
+            self.__exit__(exc_type, exc_val, exc_tb)
+        return False
+
+
+async def background_trace(record, run, *, trace_dir="", provider=None):
+    """Standalone background recorder, including work without a foreground trace."""
+    child = TraceSession(
+        session_id=f"background_{record.task_id}", trace_dir=trace_dir, provider=provider,
+        env_snapshot={"source_run_id": record.run_id, "source_trace_id": record.source_trace_id,
+                      "owner": record.owner, "task_id": record.task_id},
+    )
+    with child as sink:
+        sink.set_run_id(record.run_id)
+        record.metadata.update(trace_id=sink.trace_id, trace_path=sink.path)
+        try:
+            return await run()
+        finally:
+            record.metadata.update(usage=dict(child.usage), usage_complete=(
+                child.llm_requests == child.llm_responses == child.usage_responses
+            ))
+            sink.event("background_result", **record.to_dict())
 
 
 __all__ = [

@@ -13,7 +13,7 @@ from app.agent_base.core.hooks import AgentRuntime, HookContext, HookEvent, Hook
 from app.agent_base.core.lifecycle import discover_plan, install_plan
 from extensions.memory.plugin_api import (MemoryArchiveResult, MemoryEventResult, MemoryRecallResult)
 from app.agent_base.core.plugins import PluginManager
-from extensions.memory.contributions import _background_tasks
+from app.agent_base.core.background_tasks import BackgroundTaskRegistry, bind_background_registry, reset_background_registry
 from extensions.memory.provider import SQLiteMemoryProvider
 
 
@@ -144,14 +144,17 @@ def test_authoritative_task_event_controls_archive_and_preserves_review_evidence
         await execute(agent, 'review-run')
         assert not archived
         assert 'review-run' in agent.extension_runs
+        registry = BackgroundTaskRegistry()
+        token = bind_background_registry(registry)
         payload = dict(project_id='project', user_message='edit', final_answer='done',
                        checkpoint={'mutation_evidence': [{}]}, tool_steps=[])
         await publish_task_result(agent, run_id='review-run', status='completed', **payload)
-        await asyncio.gather(*tuple(_background_tasks))
+        await registry.drain(1)
         assert 'review-run' not in agent.extension_runs
         assert archived[0].resources[0]['version'] == 'old-etag'
         await publish_task_result(agent, run_id='partial-run', status='partial', **payload)
         assert len(archived) == 1
+        reset_background_registry(token)
     asyncio.run(run())
 
 
