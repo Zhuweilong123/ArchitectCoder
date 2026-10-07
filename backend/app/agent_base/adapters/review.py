@@ -1,7 +1,7 @@
 """Adapt host review management to a transport-independent review capability."""
 import asyncio
 
-from app.agent_base.ports.review import ReviewPrompt
+from app.agent_base.host_api.contexts import ReviewPrompt
 
 
 class ReviewAdapter:

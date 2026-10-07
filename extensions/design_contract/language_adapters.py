@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 
-from app.agent_base.ports.contracts import ArtifactFacts, ContractEntity
+from .plugin_api import ArtifactFacts, ContractEntity
 
 
 class LanguageAdapter(Protocol):

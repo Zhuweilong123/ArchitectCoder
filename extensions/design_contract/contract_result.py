@@ -1,7 +1,7 @@
 """Result contract shared by contract collection and derived projections."""
 from dataclasses import dataclass
 from typing import Any
-from .contracts import ArtifactFacts, ContractSnapshot
+from .plugin_api import ArtifactFacts, ContractSnapshot
 
 @dataclass(frozen=True)
 class ContractAssembly:

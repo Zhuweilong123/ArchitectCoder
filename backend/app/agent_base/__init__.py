@@ -4,7 +4,7 @@
 
 架构:
 - core/     : 核心基础设施 (LLM、Message、AgentConfig、Agent基类、异常)
-- ports/    : 插件能力协议、请求和结果
+- host_api/ : 宿主生命周期、回调和编排协议
 - adapters/ : 能力加载、降级和宿主适配
 - agents/   : ReAct、PlanAndSolve Agent 范式
 - tools/    : 工具基类、注册表、异步工具与执行契约
@@ -25,13 +25,11 @@ from backend.config import AgentConfig
 from .core.message import Message, MessageRole
 from .core.llm import BaseAgentsLLM
 from .core.agent import Agent
-from app.agent_base.ports.knowledge_graph import (KnowledgeGraphProvider)
 from app.agent_base.adapters.knowledge_graph import (NoOpKnowledgeGraphProvider, load_knowledge_graph)
-from app.agent_base.ports.contract_pipeline import (ContractAssembly)
-from app.agent_base.ports.contract_checks import (ContractCheckResult, ContractViolation)
-from app.agent_base.ports.contract_analysis import (ContractFailureAnalysisContext, ContractFailureAnalyzerPort)
+from app.agent_base.host_api.contract_checks import (ContractCheckResult, ContractViolation)
+from app.agent_base.host_api.contexts import (ContractFailureAnalysisContext, ContractFailureAnalyzerPort)
 from app.agent_base.adapters.contract_analysis import (NoOpContractFailureAnalyzer, load_contract_failure_analyzer)
-from app.agent_base.ports.contract_gate import (ContractGateContext, ContractGateDecision, ContractGatePort)
+from app.agent_base.host_api.contexts import (ContractGateContext, ContractGateDecision, ContractGatePort)
 from app.agent_base.adapters.contract_gate import (NoOpContractGate, load_contract_gate, resolve_contract_enabled)
 from .core.plugins import (
     PluginManager,
@@ -57,10 +55,8 @@ __all__ = [
     "Message", "MessageRole",
     "BaseAgentsLLM",
     "Agent",
-    "KnowledgeGraphProvider",
     "NoOpKnowledgeGraphProvider",
     "load_knowledge_graph",
-    "ContractAssembly",
     "ContractCheckResult",
     "ContractViolation",
     "ContractFailureAnalysisContext",

@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Any
-from app.agent_base.ports.contracts import ContractProvider, ContractSnapshot
-from app.agent_base.ports.knowledge_graph import KnowledgeGraphProvider
+from .plugin_api import ContractProvider, ContractSnapshot
+from extensions.knowledge_graph.plugin_api import KnowledgeGraphProvider
 from app.agent_base.adapters.knowledge_graph import load_knowledge_graph
 
 from app.agent_base.adapters.contracts import load_contracts
-from app.agent_base.ports.contract_pipeline import ContractAssembly
+from .contract_result import ContractAssembly
 
 def assemble_contract(
     manifest: Any,

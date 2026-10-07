@@ -8,7 +8,7 @@ from .contract_pipeline import assemble_contract
 from app.agent_base.adapters.contracts import load_contracts
 from .language_adapters import LanguageAdapterRegistry, default_language_adapters
 
-from app.agent_base.ports.contract_checks import CheckStatus, ContractCheckResult, ContractViolation
+from app.agent_base.host_api.contract_checks import CheckStatus, ContractCheckResult, ContractViolation
 
 class ContractHarness:
     """Run deterministic contract checks independently of the model."""

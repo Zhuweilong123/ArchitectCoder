@@ -1,4 +1,4 @@
-"""Stable port for design/source/test contract collection plugins."""
+"""Public data contract for the design/source/test contract extension."""
 
 from __future__ import annotations
 

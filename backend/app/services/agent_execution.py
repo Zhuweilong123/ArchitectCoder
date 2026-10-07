@@ -18,7 +18,7 @@ from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.core.exceptions import AgentInterrupted
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.adapters.contract_gate import (build_contract_gate_context, NoOpContractGate, resolve_contract_enabled)
-from app.agent_base.ports.contract_analysis import (ContractFailureAnalysisContext)
+from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
 from app.agent_base.adapters.contract_analysis import (NoOpContractFailureAnalyzer)
 from app.agent_base.core.hooks import (
     AgentRuntime,
@@ -29,7 +29,7 @@ from app.agent_base.core.hooks import (
 )
 from app.agent_base.core.extension_context import extension_request, publish_task_result
 from app.agent_base.core.plugin_runtime import pin_plugins
-from app.agent_base.ports.orchestration import (OrchestrationRequest)
+from app.agent_base.host_api.orchestration import OrchestrationRequest
 from app.agent_base.adapters.orchestration import (exclude_tools, load_orchestrator)
 from app.agent_base.execution_summary import build_task_execution_summary
 from app.agent_base.evidence import update_checkpoint_evidence

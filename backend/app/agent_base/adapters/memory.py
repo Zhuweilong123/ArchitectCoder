@@ -4,7 +4,7 @@ from __future__ import annotations
 import inspect
 import logging
 
-from app.agent_base.ports.memory import (
+from extensions.memory.plugin_api import (
     MemoryRecallRequest, MemoryRecallResult, MemoryArchiveRequest, MemoryArchiveResult, MemoryEventRequest, MemoryEventResult, MemoryPort,
 )
 

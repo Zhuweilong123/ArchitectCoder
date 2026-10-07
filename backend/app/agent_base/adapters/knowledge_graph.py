@@ -3,9 +3,7 @@
 from __future__ import annotations
 from typing import Any
 
-from app.agent_base.ports.knowledge_graph import (
-    KnowledgeGraphProvider,
-)
+from extensions.knowledge_graph.plugin_api import KnowledgeGraphProvider
 
 class NoOpKnowledgeGraphProvider:
     """Explicit no-op provider for deployments without graph indexing."""

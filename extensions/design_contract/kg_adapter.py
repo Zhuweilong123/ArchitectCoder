@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent_base.ports.contracts import (ContractEntity, ContractMapping)
+from .plugin_api import ContractEntity, ContractMapping
 from app.agent_base.adapters.knowledge_graph import (load_knowledge_graph)
 
 

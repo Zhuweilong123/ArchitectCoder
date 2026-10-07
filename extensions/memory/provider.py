@@ -10,7 +10,7 @@ from typing import Any
 
 from backend.config.project_storage import project_storage
 
-from app.agent_base.ports.memory import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
+from .plugin_api import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
 
 from .manager import MemoryManager
 

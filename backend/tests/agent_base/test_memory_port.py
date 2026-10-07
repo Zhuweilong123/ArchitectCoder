@@ -3,7 +3,7 @@
 import asyncio
 
 import app.agent_base.adapters.memory as core_memory
-from app.agent_base.ports.memory import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
+from extensions.memory.plugin_api import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallRequest, MemoryRecallResult, MemoryEventRequest, MemoryEventResult)
 from app.agent_base.adapters.memory import (NoOpMemory, load_memory)
 
 

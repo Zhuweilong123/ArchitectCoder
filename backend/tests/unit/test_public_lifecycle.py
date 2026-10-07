@@ -27,14 +27,14 @@ def recording(monkeypatch):
     assert current_operation() is None
 
 
-def test_exact_public_plan_and_alias_single_dispatch(recording):
+def test_exact_public_plan_and_single_dispatch(recording):
     registry, _ = recording
     plan = discover_plan(PluginManager(()), SimpleNamespace()).as_dict()
     assert [row["stage"] for row in plan["stages"]] == [stage.value for stage in PUBLIC_STAGES]
     assert len(plan["stages"]) == 13
     assert {row["stage"] for row in plan["notifications"]} == {"error", "cancel", "review_after", "background_before", "background_after", "task_after"}
     seen = []
-    registry.register(HookEvent("llm_before"), lambda ctx: seen.append(ctx.event), mode="observer")
+    registry.register(HookEvent.MODEL_BEFORE, lambda ctx: seen.append(ctx.event), mode="observer")
     registry.trigger(HookEvent.MODEL_BEFORE, HookContext(HookEvent.MODEL_BEFORE, "test"))
     assert seen == [HookEvent.MODEL_BEFORE]
 
@@ -168,7 +168,7 @@ def test_child_operations_have_own_run_and_complete_boundaries(recording, tmp_pa
 
 def test_background_archive_links_closed_run_without_reopening_public_phase(recording):
     from extensions.memory.contributions import archive_task
-    from app.agent_base.ports.memory import (MemoryArchiveRequest)
+    from extensions.memory.plugin_api import MemoryArchiveRequest
     registry, events = recording
     notifications = []
     registry.register(HookEvent.BACKGROUND_AFTER, lambda ctx: notifications.append(ctx.payload["status"]), mode="observer")

@@ -12,7 +12,7 @@ from app.runtime.encoding import decode_process_output
 
 from extensions.evals.api import router as trace_case_router
 
-from app.agent_base.ports.evals import (EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest, EvalPerformanceArchiveRequest)
+from .plugin_api import (EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest, EvalPerformanceArchiveRequest)
 from app.agent_base.adapters.evals import (load_evals)
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])

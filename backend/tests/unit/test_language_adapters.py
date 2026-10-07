@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_base.ports.contracts import (ArtifactFacts, ContractEntity, ContractSnapshot)
+from extensions.design_contract.plugin_api import ArtifactFacts, ContractEntity, ContractSnapshot
 from extensions.design_contract.contract_harness import (ContractHarness)
 from extensions.design_contract.language_adapters import (ClangAstAdapter, LanguageAdapterRegistry, PythonAstAdapter, default_language_adapters)
 from app.runtime.language_runner import (broker_command_runner)

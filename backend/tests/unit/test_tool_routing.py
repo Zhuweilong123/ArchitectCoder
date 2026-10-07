@@ -9,7 +9,7 @@ from app.services.agent_execution import (
     _terminal_checkpoint_status,
     _todo_progress_state,
 )
-from app.agent_base.ports.memory import (MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallResult)
+from extensions.memory.plugin_api import MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallResult
 from app.agent_base.outcome import RunOutcome
 
 

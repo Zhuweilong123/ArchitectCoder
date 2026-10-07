@@ -29,7 +29,7 @@ from app.agent_base.tools.base import Tool
 from app.agent_base.tools.review import ReviewManager
 from app.runtime import workspace_root_for
 from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog)
-from app.agent_base.ports.skills import (SkillContext)
+from app.agent_base.host_api.contexts import SkillContext
 
 
 # ── 进度事件转发 ──

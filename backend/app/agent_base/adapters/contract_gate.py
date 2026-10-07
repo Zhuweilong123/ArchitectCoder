@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
-from app.agent_base.ports.contract_checks import ContractCheckResult
-from app.agent_base.ports.contract_gate import ContractGateContext, ContractGateDecision, ContractGatePort
+from app.agent_base.host_api.contract_checks import ContractCheckResult
+from app.agent_base.host_api.contexts import ContractGateContext, ContractGateDecision, ContractGatePort
 from app.runtime.workspace import WorkspaceManifest
 
 from .contracts import load_contracts

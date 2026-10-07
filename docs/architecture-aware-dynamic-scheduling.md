@@ -57,10 +57,10 @@ Requirement
 
 | 现有入口 | 已有能力 | 本方案需要补充 |
 |---|---|---|
-| `backend/app/agent_base/ports/knowledge_graph.py` | `locate`、`expand`、`impact`、`contract_facts`、`index_facts`、`sync_facts` | 可版本化的有界子图查询、覆盖率与截断元数据、调度特征 |
+| `extensions/knowledge_graph/plugin_api.py` | `locate`、`expand`、`impact`、`contract_facts`、`index_facts`、`sync_facts` | 可版本化的有界子图查询、覆盖率与截断元数据、调度特征 |
 | `extensions/knowledge_graph/` | SQLite 图存储、UML/源码关系、ArtifactFacts 投影与增量同步 | 面向变更语义的影响分析、层级摘要、待解析和陈旧状态 |
 | `extensions/knowledge_graph/tools.py` 的 `impact()` | 反向邻接 BFS，区分直接与传递依赖 | 按关系与变更类型传播，返回证据、停止原因和未展开边界 |
-| `backend/app/agent_base/ports/orchestration.py`、`adapters/orchestration.py` | `prepare()` 稳定接口；宿主适配层负责 NoOp 与加载失败降级 | 版本化计划、结果反馈及重新规划协议 |
+| `backend/app/agent_base/host_api/orchestration.py`、`adapters/orchestration.py` | `prepare()` 稳定接口；宿主适配层负责 NoOp 与加载失败降级 | 版本化计划、结果反馈及重新规划协议 |
 | `extensions/orchestration/architecture_aware/` | 图谱影响分析、成本估计、分区、分派和按需只读探索 | 跨运行的全局资源协调 |
 | `backend/app/agent_base/tools/my_tools/subagent_tool.py` | 子 Agent 工具包、预算、Trace 和证据 | 结构化工作包输入/结果、子 Run 身份、生命周期适配 |
 | `backend/app/agent_base/tools/task_system.py` | JSON 任务存储、DAG、claim/complete、worktree | 分区归属、计划版本、剩余工作状态与原子调度 |

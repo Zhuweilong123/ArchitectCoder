@@ -1,8 +1,7 @@
-"""Stable evaluation port owned by the Agent core.
+"""Public data contract for the evaluation extension.
 
-Evaluation catalogs, runners, checkers and batch persistence are concrete
-provider concerns.  The application layer only uses this contract, allowing a
-different evaluation backend to be installed without changing the API.
+Evaluation catalogs, runners, checkers and batch persistence are extension
+concerns. The host adapter uses this contract to validate provider calls.
 """
 
 from __future__ import annotations

@@ -17,10 +17,8 @@ from app.agent_base.core import hooks, plugins
 from app.agent_base.core.hooks import HookRegistry
 from app.agent_base.core.lifecycle import build_plan, install_plan
 from app.agent_base.core.plugins import PluginManager
-from app.agent_base.ports.contract_analysis import ContractFailureAnalysisContext
-from app.agent_base.ports.contract_checks import ContractCheckResult
-from app.agent_base.ports.contract_gate import ContractGateContext, ContractGateDecision
-from app.agent_base.ports.review import ReviewPrompt
+from app.agent_base.host_api.contexts import ContractFailureAnalysisContext, ContractGateContext, ContractGateDecision, ReviewPrompt
+from app.agent_base.host_api.contract_checks import ContractCheckResult
 from app.trace.tracing import reset_current_trace_sink, set_current_trace_sink
 from extensions.design_contract.gate import DefaultContractGate
 
@@ -34,9 +32,9 @@ def context(**kwargs):
         changed_paths=("example/src/service.py",), emit=emit_ok, run_id="candidate", **kwargs)
 
 
-def test_ports_contain_no_loading_or_concrete_extension_dependencies():
+def test_host_api_contains_no_loading_or_concrete_extension_dependencies():
     base = Path(__file__).resolve().parents[2] / "app/agent_base"
-    for path in (base / "ports").glob("*.py"):
+    for path in (base / "host_api").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -47,10 +45,14 @@ def test_ports_contain_no_loading_or_concrete_extension_dependencies():
     for name in ("memory", "skills", "orchestration", "knowledge_graph", "evals", "contracts",
                  "contract_gate", "contract_analysis", "contract_harness", "contract_pipeline", "language_adapters"):
         assert not (base / "core" / f"{name}.py").exists()
-    for path in [base / "__init__.py", base / "assembly.py", *(base / "adapters").glob("*.py")]:
+    for path in [base / "__init__.py", *(base / "adapters").glob("*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        assert not any(isinstance(node, ast.ImportFrom) and (node.module or "").startswith("extensions")
-                       for node in ast.walk(tree)), path
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("extensions"):
+                assert (node.module or "").endswith("plugin_api"), path
+    tree = ast.parse((base / "assembly.py").read_text(encoding="utf-8"))
+    assert all(not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("extensions")
+               or (node.module or "").endswith("plugin_api") for node in ast.walk(tree))
     assert not {"agent", "change_set", "review_manager"} & {f.name for f in fields(ContractGateContext)}
     assert "agent" not in {f.name for f in fields(ContractFailureAnalysisContext)}
 

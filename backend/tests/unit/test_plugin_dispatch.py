@@ -152,7 +152,7 @@ def test_manifest_interface_phase_controls_the_actual_dispatch(monkeypatch, tmp_
     monkeypatch.setitem(sys.modules, module, SimpleNamespace(create=lambda **kwargs: SimpleNamespace(query=lambda: "answer")))
     path = tmp_path / "plugins.json"
     path.write_text('{"schema_version":1,"plugins":[{"name":"team","provider":"test_manifest_service:create",'
-                    '"interfaces":["query"],"interface_stages":{"query":"graph_query"}}]}', encoding="utf-8")
+                    '"interfaces":["query"],"interface_stages":{"query":"tool_before"}}]}', encoding="utf-8")
     manager = PluginManager(())
     manager.discover_specs(path)
     registry = HookRegistry()

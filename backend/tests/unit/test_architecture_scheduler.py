@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.run_state import RunStatus, RunStore
-from app.agent_base.ports.orchestration import (OrchestrationRequest)
+from app.agent_base.host_api.orchestration import OrchestrationRequest
 from extensions.orchestration.architecture_aware import scheduler as scheduling
 from extensions.orchestration.architecture_aware.evidence import collect_file_evidence
 from extensions.orchestration.architecture_aware.impact import ImpactSlice

@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Any
 
-from app.agent_base.ports.contracts import ContractSnapshot, ContractProvider
+from extensions.design_contract.plugin_api import ContractSnapshot, ContractProvider
 
 class NoOpContractProvider:
     """Explicit fallback when contract collection is disabled/unavailable."""

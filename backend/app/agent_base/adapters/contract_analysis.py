@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agent_base.ports.contract_analysis import ContractFailureAnalysisContext, ContractFailureAnalyzerPort
+from app.agent_base.host_api.contexts import ContractFailureAnalysisContext, ContractFailureAnalyzerPort
 from .contracts import load_contracts
 
 class NoOpContractFailureAnalyzer:

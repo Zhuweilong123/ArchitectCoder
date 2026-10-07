@@ -106,16 +106,15 @@ export function buildPluginGraph(plan: PluginExecutionPlan, view: GraphView, fil
       if (!groups.size && previous && node.contribution && previous.mode !== 'service' && node.contribution.mode !== 'service') edges.push({ source: contributionId(previous.id), target: child, kind: 'order' });
     });
     y += Math.max(110, Math.ceil(visible.length / 2) * 78 + 24);
-    if (stage.stage === 'model_before' || stage.stage === 'llm_before' || stage.stage === 'tool_before') {
+    if (stage.stage === 'model_before' || stage.stage === 'tool_before') {
       add({ id: stage.stage !== 'tool_before' ? 'model-call' : 'tool-call', kind: 'execution',
         label: stage.stage !== 'tool_before' ? 'model-call' : 'tool-call', x: 36, y, width: 250, height: 66 });
       y += 104;
     }
   }
-  const compatibleStage = (current: string, legacy: string) => plan.stages.some((stage) => stage.stage === current) ? current : legacy;
-  const modelBefore = compatibleStage('model_before', 'llm_before');
-  const modelAfter = compatibleStage('model_after', 'llm_after');
-  const finalize = compatibleStage('finalize', 'run_finalize');
+  const modelBefore = 'model_before';
+  const modelAfter = 'model_after';
+  const finalize = 'finalize';
   const spine = ['initialize', 'prepare', 'run_start', 'round_before', modelBefore, 'model-call', modelAfter,
     'tool_batch_before', 'tool_before', 'tool-call', 'tool_after', 'tool_batch_after', 'round_after'];
   const nodeId = (value: string) => value.endsWith('-call') ? value : stageId(value);

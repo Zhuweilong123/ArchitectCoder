@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent_base.ports.skills import (SkillContent, SkillMeta)
+from extensions.skills.plugin_api import SkillContent, SkillMeta
 from app.agent_base.adapters.skills import (capture_skill_catalog, load_skills)
 from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
 from extensions.skills.provider import FileSkillProvider

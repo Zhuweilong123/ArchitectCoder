@@ -1,8 +1,8 @@
-"""Stable memory port owned by the Agent core.
+"""Public memory capability contract owned by the memory extension.
 
 Concrete stores, retrieval algorithms, and extraction prompts live behind this
-boundary.  The core can therefore run without the optional memory package and
-without making an interactive LLM call for memory work.
+boundary. The host exchanges typed values with this capability while lifecycle
+policy and persistence remain private to the extension.
 """
 
 from __future__ import annotations

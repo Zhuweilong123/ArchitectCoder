@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agent_base.ports.evals import EvalProvider
+from extensions.evals.plugin_api import EvalProvider
 
 logger = logging.getLogger(__name__)
 

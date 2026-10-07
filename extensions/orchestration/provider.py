@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agent_base.ports.orchestration import (OrchestrationPreparation)
+from app.agent_base.host_api.orchestration import OrchestrationPreparation
 
 
 def list_contributions(*, settings=None):

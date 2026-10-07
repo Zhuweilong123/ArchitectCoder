@@ -3,7 +3,7 @@
 from __future__ import annotations
 import logging
 
-from app.agent_base.ports.orchestration import OrchestrationRequest, OrchestrationPreparation, OrchestrationPort
+from app.agent_base.host_api.orchestration import OrchestrationRequest, OrchestrationPreparation, OrchestrationPort
 
 logger = logging.getLogger(__name__)
 

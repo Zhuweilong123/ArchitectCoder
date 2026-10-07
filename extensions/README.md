@@ -27,7 +27,7 @@ package:
 - `design_contract/`: read-only UML, Python AST and test fact collectors, normalized mappings,
   and optional knowledge-graph relationship enrichment through the stable provider port
 
-Only stable application-facing ports, generic tool/runtime infrastructure and
+Only stable application-facing host APIs, generic tool/runtime infrastructure and
 the central `PluginManager` remain in `backend/`. The old paths under
 `backend/memory_system`, `backend/knowledge_graph`, `backend/app/evals`,
 `backend/app/trace` and `backend/app/agent_base/orchestration` are compatibility

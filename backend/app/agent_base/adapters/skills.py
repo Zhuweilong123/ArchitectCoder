@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.agent_base.ports.skills import SkillContext, SkillMeta, SkillContent, SkillReadError, SkillProvider
+from app.agent_base.host_api.contexts import SkillContext
+from extensions.skills.plugin_api import SkillMeta, SkillContent, SkillReadError, SkillProvider
 
 logger = logging.getLogger(__name__)
 

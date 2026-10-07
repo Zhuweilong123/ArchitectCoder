@@ -7,10 +7,10 @@ import app.services.agent_execution as agent_execution
 from app.services.agent_execution import _record_contract_check, _sync_checkpoint_outcome
 from app.agent_base.agents.react_agent import ReActProgress
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
-from app.agent_base.ports.contract_checks import (ContractCheckResult, ContractViolation)
-from app.agent_base.ports.contract_analysis import (ContractFailureAnalysisContext)
+from app.agent_base.host_api.contract_checks import ContractCheckResult, ContractViolation
+from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
 from extensions.design_contract.analysis import (ModelContractFailureAnalyzer)
-from app.agent_base.ports.orchestration import (OrchestrationPreparation)
+from app.agent_base.host_api.orchestration import OrchestrationPreparation
 from app.agent_base.tools.registry import ToolRegistry
 
 

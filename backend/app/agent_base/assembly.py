@@ -23,7 +23,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 )
 from app.agent_base.tools.my_tools.skill_loader import build_skills_section
 from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog, load_skills)
-from app.agent_base.ports.skills import (SkillContext)
+from app.agent_base.host_api.contexts import SkillContext
 from app.agent_base.tools.registry import ToolRegistry
 from app.runtime import (
     WorkspaceManifest,

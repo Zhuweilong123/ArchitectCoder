@@ -62,10 +62,6 @@ class HookEvent(str, Enum):
     BACKGROUND_BEFORE = "background_before"
     BACKGROUND_AFTER = "background_after"
     TASK_AFTER = "task_after"
-    @classmethod
-    def _missing_(cls, value):
-        from ..compat.hook_events import resolve_legacy_event
-        return resolve_legacy_event(cls, value)
 
 
 PUBLIC_STAGES = tuple(HookEvent[name] for name in (
@@ -661,7 +657,7 @@ _run_policy_hook = RunPolicyHook()
 
 def default_hook_bindings():
     bindings = [
-        (HookEvent.MODEL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.llm_before"),
+        (HookEvent.MODEL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.model_before"),
         (HookEvent.TOOL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.tool_before"),
         (HookEvent.MODEL_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),
     ]

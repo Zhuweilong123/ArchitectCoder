@@ -32,7 +32,7 @@ from extensions.evals.runner import (
     _validate_project_layout,
 )
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
-from app.agent_base.ports.evals import (EvalArchiveRequest, EvalBatchMergeRequest)
+from extensions.evals.plugin_api import EvalArchiveRequest, EvalBatchMergeRequest
 from extensions.evals.batches import (
     EvalBatch, EvalBatchManager, _baseline_case_ids, summarize, write_performance_result,
 )

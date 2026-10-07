@@ -27,7 +27,7 @@ import logging
 import os
 from typing import Any, Callable, Optional
 
-from app.agent_base.ports.knowledge_graph import (KnowledgeGraphProvider)
+from .plugin_api import KnowledgeGraphProvider
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.async_tool import AsyncTool
 

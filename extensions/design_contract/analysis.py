@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 import logging
-from app.agent_base.ports.contract_checks import ContractCheckResult
-from app.agent_base.ports.analysis import AnalysisRequest
+from app.agent_base.host_api.contract_checks import ContractCheckResult
+from app.agent_base.host_api.contexts import AnalysisRequest, ContractFailureAnalysisContext
 
-from app.agent_base.ports.contract_analysis import ContractFailureAnalysisContext
 
 logger = logging.getLogger(__name__)
 _MAX_VIOLATIONS = 20

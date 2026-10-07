@@ -3,7 +3,7 @@ import asyncio
 import logging
 
 from app.agent_base.core.message import Message
-from app.agent_base.ports.analysis import AnalysisRequest
+from app.agent_base.host_api.contexts import AnalysisRequest
 
 logger = logging.getLogger(__name__)
 

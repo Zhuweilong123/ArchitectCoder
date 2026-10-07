@@ -1,14 +1,12 @@
-"""Provider-neutral skill data and read-only provider protocol."""
+"""Public data contract for the read-only skills capability."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
 
-
-@dataclass(frozen=True)
-class SkillContext:
-    workspace_root: str = ""
+if TYPE_CHECKING:
+    from app.agent_base.host_api.contexts import SkillContext
 
 
 @dataclass(frozen=True)

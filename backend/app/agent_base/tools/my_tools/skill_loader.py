@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 
 from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog, load_skills)
-from app.agent_base.ports.skills import (SkillMeta, SkillReadError)
+from extensions.skills.plugin_api import SkillMeta, SkillReadError
 from app.agent_base.tools.base import Tool, ToolParameter
 
 

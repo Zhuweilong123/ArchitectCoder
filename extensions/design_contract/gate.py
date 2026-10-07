@@ -5,11 +5,10 @@ import asyncio
 import json
 import uuid
 from typing import Any, Callable
-from app.agent_base.ports.contract_checks import ContractCheckResult
+from app.agent_base.host_api.contract_checks import ContractCheckResult
 from .contract_harness import ContractHarness
-from app.agent_base.ports.review import ReviewPrompt
+from app.agent_base.host_api.contexts import ReviewPrompt, ContractGateContext, ContractGateDecision
 
-from app.agent_base.ports.contract_gate import ContractGateContext, ContractGateDecision
 
 class DefaultContractGate:
     """Default implementation backed by the facts-first contract harness."""
