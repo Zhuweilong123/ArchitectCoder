@@ -15,12 +15,8 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.core.llm import BaseAgentsLLM
 from app.agent_base.core.policy import ExecutionBudget
-from app.agent_base.core.memory import (
-    MemoryPort,
-    MemoryRecallRequest,
-    NoOpMemory,
-    load_memory,
-)
+from app.agent_base.core.memory import NoOpMemory, load_memory
+from app.agent_base.core.extension_context import ExtensionContext, extension_scope
 from app.agent_base.tools.my_tools.conversation_tools import (
     ProgressRelay,
     create_conversation_tools,
@@ -68,15 +64,13 @@ class DevPromptBuilder:
 
     def __init__(
         self,
-        memory: MemoryPort | None = None,
         *,
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
         environment_context=None,
-        memory_recall_top_k: int = 3,
-        memory_recall_max_tokens: int = 500,
         skill_catalog: SkillCatalog | None = None,
+        extension_context: ExtensionContext | None = None,
     ):
         self.prompt_version = "3.1-r4"
         if environment_context is None:
@@ -95,14 +89,11 @@ class DevPromptBuilder:
             environment_context=environment_context,
             skill_catalog=skill_catalog,
         )
-        self.memory = memory if memory is not None else NoOpMemory()
-        self.memory_recall_top_k = max(1, int(memory_recall_top_k))
-        self.memory_recall_max_tokens = max(1, int(memory_recall_max_tokens))
+        self.extension_context = extension_context or ExtensionContext()
         self.static_prompt_report = {
             "chars": len(self.system_prompt),
             "estimated_tokens": estimate_tokens(self.system_prompt),
         }
-        self._ctx_key: tuple | None = None
         self._ctx_value = ""
         self.last_context_report: dict = {
             "sections": {},
@@ -153,66 +144,36 @@ class DevPromptBuilder:
         return "\n".join(prompt_parts)
 
     async def build_context(self, *args, **kwargs):
-        from app.agent_base.core.hooks import HookEvent, HookContext, get_hooks, get_runtime
+        from app.agent_base.core.hooks import HookEvent, get_runtime
         from app.agent_base.core.operations import operation_scope, current_operation
         parent = current_operation()
-        with operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
-            await get_hooks().aemit(HookEvent.PREPARE, HookContext(HookEvent.PREPARE, "DevAgent", run_id=get_runtime().run_id or (parent.run_id if parent else "")))
+        with extension_scope(self.extension_context.fork()), operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
             return await self._build_context_impl(*args, **kwargs)
 
     async def _build_context_impl(
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
     ) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
-        key = (project_file, today, user_message)
-        if key == self._ctx_key:
-            return self._ctx_value
-
-        sections: list[tuple[str, str]] = []
-
-        def add_section(name: str, value: str) -> None:
-            if value:
-                sections.append((name, value))
-
+        from app.agent_base.core.hooks import HookEvent, HookContext, get_hooks, get_runtime
         from backend.config.project_storage import project_id_for
         project_id = project_id_for(project_file) if project_file else ""
-        memory_block = await self._recall_memory_block(project_id, user_message)
-        if memory_block:
-            add_section("memory", memory_block)
-        add_section("date", f"Current date: {today}")
-
-        self._ctx_key = key
-        self._ctx_value = "\n\n".join(value for _, value in sections)
+        sections: dict[str, str] = {}
+        await get_hooks().aemit(HookEvent.PREPARE, HookContext(
+            HookEvent.PREPARE, "DevAgent", run_id=get_runtime().run_id,
+            payload={"project_id": project_id, "project_file": project_file,
+                     "user_message": user_message, "sections": sections},
+        ))
+        sections["date"] = f"Current date: {today}"
+        self._ctx_value = "\n\n".join(value for value in sections.values() if value)
         self.last_context_report = {
             "sections": {
                 name: {"chars": len(value), "estimated_tokens": estimate_tokens(value)}
-                for name, value in sections
+                for name, value in sections.items() if value
             },
             "total_chars": len(self._ctx_value),
             "estimated_tokens": estimate_tokens(self._ctx_value),
         }
         return self._ctx_value
-
-    async def _recall_memory_block(self, project_id: str, user_message: str) -> str:
-        if not project_id:
-            return ""
-        try:
-            result = await self.memory.recall(MemoryRecallRequest(
-                project_id=project_id,
-                query=user_message,
-                top_k=self.memory_recall_top_k,
-                max_tokens=self.memory_recall_max_tokens,
-            ))
-            if result.context_block and result.memory_ids:
-                await self.memory.reinforce(result.memory_ids, project_id=project_id)
-            return result.context_block
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "[Memory] Recall failed (non-fatal)", exc_info=True,
-            )
-            return ""
-
 
 @pin_plugins
 async def create_dev_agent(*args, **kwargs):
@@ -287,10 +248,6 @@ async def _create_dev_agent_impl(
     for tool in tools:
         registry.register_tool(tool)
 
-    memory_provider = load_memory(
-        llm=llm, settings=settings,
-        project_file=project_file, workspace_root=workspace_root,
-    )
     environment_context = build_environment_context(
         executor=command_executor,
         cwd=workspace_root or source_dir or design_dir or None,
@@ -301,14 +258,26 @@ async def _create_dev_agent_impl(
             ("test", test_dir),
         ),
     )
+    memory_provider = load_memory(
+        llm=llm, settings=settings, project_file=project_file, workspace_root=workspace_root,
+        source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
+        environment_context=environment_context,
+    )
+    from backend.config.project_storage import project_id_for
+    extension_context = ExtensionContext(metadata={
+        "project_id": project_id_for(project_file) if project_file else "", "workspace": manifest.to_dict(),
+    })
+    if not isinstance(memory_provider, NoOpMemory):
+        extension_context.bind("memory", memory_provider, settings=settings, options={
+            "recall_top_k": settings.agent_memory_recall_top_k,
+            "recall_max_tokens": settings.agent_memory_recall_max_tokens,
+        })
     prompt_builder = DevPromptBuilder(
-        memory=memory_provider,
+        extension_context=extension_context,
         source_dir=source_dir,
         test_dir=test_dir,
         design_dir=design_dir,
         environment_context=environment_context,
-        memory_recall_top_k=settings.agent_memory_recall_top_k,
-        memory_recall_max_tokens=settings.agent_memory_recall_max_tokens,
         skill_catalog=skill_catalog,
     )
     agent = ReActAgent(
@@ -361,7 +330,7 @@ async def _create_dev_agent_impl(
         settings=settings, language_runner=language_runner,
     )
     agent.contract_failure_analyzer = load_contract_failure_analyzer(settings=settings)
-    agent.memory_provider = memory_provider
+    agent.extension_context = prompt_builder.extension_context
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:
         agent.restore_history(restore_history)

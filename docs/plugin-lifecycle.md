@@ -7,7 +7,7 @@
 | 阶段 | 语义 | 阶段处理器模式 |
 |---|---|---|
 | initialize | Agent 与能力装配，可早于任务建立 | observer |
-| prepare | 上下文、记忆及编排准备，可重复进入 | observer |
+| prepare | 上下文、记忆及编排准备，可重复进入；transform 可更新通用 sections | observer / transform |
 | run_start | 主循环执行区间开始 | observer |
 | round_before | 一轮推理开始 | observer |
 | model_before | 模型调用前，可修改消息或阻止请求 | observer / transform / control |
@@ -39,7 +39,7 @@
 
 例如技能读取 plugin 操作的父操作是技能 tool；子 Agent 的父操作是调用它的工具，子任务仍使用自己的 run_id。后台任务继承创建时的父操作关联，拥有独立区间和最终状态。
 
-`error`、`cancel`、`review_after`、`background_before`、`background_after` 是独立通知。计划将它们放在 notifications 中，Trace 写为 runtime_notification，不增加主流程阶段或拓扑节点。审核与后台完成可发生在 run_end 之后。
+`error`、`cancel`、`review_after`、`background_before`、`background_after`、`task_after` 是独立通知。计划将它们放在 notifications 中，Trace 写为 runtime_notification，不增加主流程阶段或拓扑节点。审核与后台完成可发生在 run_end 之后。`task_after` 携带最终检查或审核后的任务结果，供插件决定后续处理；不能用模型的 finalize 或执行区间的 run_end 替代它。
 
 Trace 使用 operation、lifecycle_stage、plugin_contribution、runtime_notification 记录不同维度。初始化早于 Trace sink 建立、或 API 查询没有活动 Trace 时，不补造历史记录。服务调度记录不包含原始接口参数及返回正文；模型和工具原有 Trace 内容策略保持不变。
 
@@ -52,7 +52,7 @@ plugin_contribution 还保存执行绑定的 plugin_version 与 plugin_revision�
 | 插件 | 接口默认公共阶段 |
 |---|---|
 | skills | list_skills → initialize；read_skill → tool_before |
-| memory | recall / reinforce → prepare；archive → finalize |
+| memory | recall → prepare；reinforce / archive → finalize；observe（可选）→ tool_after |
 | orchestration | create_tools → initialize；prepare → prepare；explore → tool_before |
 | trace | create → initialize；查询适配器及读取接口、replay → run_start |
 | evals | 查询、运行、写入及归档等声明接口 → run_start |
@@ -62,6 +62,8 @@ plugin_contribution 还保存执行绑定的 plugin_version 与 plugin_revision�
 默认阶段用于无活动操作的独立调用。有活动操作时，服务继承父操作当前阶段和范围；贡献记录同时保留 binding_stage（声明默认阶段）和 stage（实际阶段）。同一接口可以在不同公共阶段使用，无需新增领域阶段。
 
 一次请求只执行指定接口；不运行其他同阶段服务，也不重复广播阶段观察器。图谱和编排工具工厂返回的工具绑定调度 Provider，避免绕过计划。未声明公共方法被拒绝；资源关闭、内部算法、存储实现及 Trace sink 写入原语保持原边界，避免递归追踪。
+
+记忆插件另行声明 prepare、run_start、tool_after、model_before 和 task_after 的自动贡献。`ExtensionContext` 提供请求隔离的能力与插件私有状态；prepare 的 sections、tool_after 的结构化结果、model_before 的当前用户消息位置以及 task_after 的最终任务数据都是通用宿主契约。记忆刷新、证据版本和归档门槛位于插件内部，工具结果和主循环不携带记忆专用字段。无应用启动计划的独立运行使用同一声明与校验规则构建局部贡献注册表。
 
 ## 配置、发现与贡献
 

@@ -21,6 +21,7 @@ class MemoryRecallRequest:
     query: str
     top_k: int = 3
     max_tokens: int = 500
+    scope_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,35 @@ class MemoryArchiveRequest:
     run_id: str = ""
     trace_id: str = ""
     conversation_history: tuple[dict[str, str], ...] = ()
+    terminal_status: str = "completed"
+    resources: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
 class MemoryArchiveResult:
     stored_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemoryEventRequest:
+    """Host evidence, independent of the concrete resource/store implementation."""
+
+    project_id: str
+    event_type: str
+    tool_steps: tuple[dict[str, Any], ...] = ()
+    resources: tuple[dict[str, Any], ...] = ()
+    memory_ids: tuple[str, ...] = ()
+    reason: str = ""
+    run_id: str = ""
+    trace_id: str = ""
+    event_id: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryEventResult:
+    affected_count: int = 0
+    resources: tuple[dict[str, Any], ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -56,7 +81,10 @@ class MemoryPort(Protocol):
         """Persist a bounded task summary asynchronously."""
 
     async def reinforce(self, memory_ids: tuple[str, ...], project_id: str = "") -> None:
-        """Mark recalled memories as used, if the provider supports it."""
+        """Explicit confirmation; recall alone must never call this method."""
+
+    async def observe(self, request: MemoryEventRequest) -> MemoryEventResult:
+        """Record evidence and reassess affected knowledge (optional capability)."""
 
 
 class NoOpMemory:
@@ -70,6 +98,9 @@ class NoOpMemory:
 
     async def reinforce(self, memory_ids: tuple[str, ...], project_id: str = "") -> None:
         return None
+
+    async def observe(self, request: MemoryEventRequest) -> MemoryEventResult:
+        return MemoryEventResult()
 
     async def aclose(self) -> None:
         return None
@@ -106,6 +137,19 @@ class _ResilientMemory:
             await self.provider.reinforce(memory_ids, project_id=project_id)
         except Exception:
             logger.warning("[Memory] provider reinforce failed", exc_info=True)
+
+    async def observe(self, request: MemoryEventRequest) -> MemoryEventResult:
+        observe = getattr(self.provider, "observe", None)
+        if observe is None:
+            return MemoryEventResult(metadata={"skipped": "unsupported"})
+        try:
+            result = await observe(request)
+            if not isinstance(result, MemoryEventResult):
+                raise TypeError("memory observe returned an invalid result")
+            return result
+        except Exception:
+            logger.warning("[Memory] provider observe failed; continuing", exc_info=True)
+            return MemoryEventResult(metadata={"degraded": True})
 
     async def aclose(self) -> None:
         close = getattr(self.provider, "aclose", None)

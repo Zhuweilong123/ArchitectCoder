@@ -86,7 +86,8 @@ class ToolRoundExecutor:
                 arguments=tool_args if isinstance(tool_args, dict) else {},
                 tool_call_id=str(tool_call.get("id") or ""),
             ) or ""
-            execution = await self._execute_one(tool_name, tool_args, blocked)
+            execution = await self._execute_one(tool_name, tool_args, blocked,
+                                                event_id=str(tool_call.get("id") or span_id))
             return execution, span_id
 
         executable = [item for item in parsed_calls if item[3] is None]
@@ -272,12 +273,12 @@ class ToolRoundExecutor:
         return parsed_calls
 
     async def _execute_one(
-        self, tool_name, tool_args, blocked,
+        self, tool_name, tool_args, blocked, *, event_id="",
     ):
         from ...core.operations import operation_scope
         with operation_scope("tool", run_id=get_runtime().run_id, stage=HookEvent.TOOL_BEFORE.value) as operation:
             try:
-                result = await self._execute_one_impl(tool_name, tool_args, blocked)
+                result = await self._execute_one_impl(tool_name, tool_args, blocked, event_id=event_id)
                 status = result[2].status
                 operation.status = {"success": "completed", "error": "failed"}.get(status, status)
                 return result
@@ -295,10 +296,11 @@ class ToolRoundExecutor:
         tool_name: str,
         tool_args: dict | str,
         blocked: str | None,
+        *, event_id: str = "",
     ):
         if blocked is not None:
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0, event_id=event_id)
 
         runtime = get_runtime()
         if (
@@ -311,7 +313,7 @@ class ToolRoundExecutor:
                 "Call todo_write first with the task checklist."
             )
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0)
+                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0, event_id=event_id)
 
         veto = await self.hooks.atrigger(
             HookEvent.TOOL_BEFORE,
@@ -332,7 +334,7 @@ class ToolRoundExecutor:
         if veto is not None:
             veto_message = str(veto)
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0)
+                ToolResult(status="blocked", data=veto_message, error_code="HOOK_VETO"), 0.0, event_id=event_id)
 
         from app.trace.tracing import trace_span
 
@@ -348,9 +350,9 @@ class ToolRoundExecutor:
         except Exception:
             pass
 
-        return await self._after_tool(tool_name, tool_args, tool_result, duration_ms)
+        return await self._after_tool(tool_name, tool_args, tool_result, duration_ms, event_id=event_id)
 
-    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms):
+    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms, *, event_id=""):
         runtime = get_runtime()
         observation_full = tool_result.text
         fed = await self.hooks.atrigger(
@@ -365,6 +367,10 @@ class ToolRoundExecutor:
                 tool_output=observation_full,
                 tool_status=tool_result.status,
                 error_code=tool_result.error_code,
+                payload={"result": {"status": tool_result.status, "error_code": tool_result.error_code,
+                                    "retryable": tool_result.retryable, **tool_result.effects()},
+                         "duration_ms": duration_ms, "event_id": event_id,
+                         "trace_id": str(getattr(current_trace_sink(), "trace_id", "") or "")},
             ),
         )
         if isinstance(fed, HookDecision):

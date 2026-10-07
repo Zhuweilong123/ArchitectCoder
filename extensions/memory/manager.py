@@ -33,6 +33,7 @@ from .models import (
 )
 from .tokenizer import tokenize_for_fts, tokenize
 from .policy import MemoryRecallPolicy, MemoryWritePolicy, normalize_subject as _normalize_subject
+from .knowledge import KnowledgeLedger
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,9 @@ EXTRACT_PROMPT = """你是一个知识提取助手。分析以下 LLM 交互，�
 ### 工具执行过程
 {tool_execution_summary}
 
+### 可用来源资源（由系统生成，resource_id 与 version 不得编造）
+{resource_catalog}
+
 ### 最终模型回复
 {final_answer}
 
@@ -107,6 +111,10 @@ EXTRACT_PROMPT = """你是一个知识提取助手。分析以下 LLM 交互，�
 - aliases: 检索别名/同义词列表 (2-4 个, 中英对照、近义说法、常见简称/缩写), 用于拓宽检索召回。
   例: 类图 → ["class diagram", "class", "类图"]; 组合模式 → ["composition", "composite"]。
 - importance: 0.0~1.0 重要性 (重要设计决策=0.9, 一般偏好=0.5, 临时备注=0.2)
+- source_refs: 支持本条观察的资源 ID 数组，只能使用下方“可用来源资源”目录中的 resource_id；不要凭空构造。对于文件内容事实应选择实际读到或修改验证过的文件。
+- scope_kind: "project" | "workspace" | "environment"；环境/工具限制用 environment，路径用 workspace，用户决策通常用 project。
+- valid_until: 可选的 ISO 8601 有时区截止时间，仅在原始证据明确给出有效期限时使用。
+历史记录与当前证据矛盾时，不得把旧观察复述为当前事实。工具失败只能证明该次尝试失败，不能证明目标一定不存在。用户决策与事实验证分别表述，不要把局部验证推断成全任务完成。
 
 只返回有效 JSON 数组, 不要额外解释.
 
@@ -176,6 +184,7 @@ class MemoryManager:
     __slots__ = (
         "db", "config", "lifecycle", "_embedding_service",
         "write_policy", "recall_policy",
+        "knowledge", "last_write_report", "last_recall_report",
     )
 
     def __init__(
@@ -188,6 +197,9 @@ class MemoryManager:
     ):
         self.config = config or MemoryConfig(db_path=db_path)
         self.db = MemoryDatabase(db_path)
+        self.knowledge = KnowledgeLedger(self.db)
+        self.last_write_report = {}
+        self.last_recall_report = {}
         self.lifecycle = LifecycleManager(self.db, self.config)
         self._embedding_service = embedding_service
         self.write_policy = write_policy or MemoryWritePolicy(
@@ -221,6 +233,8 @@ class MemoryManager:
         source_trace_id: str = "",
         source_message_id: str = "",
         scope: str = "project",
+        resources: tuple[dict, ...] = (),
+        scope_context: dict[str, str] | None = None,
     ) -> List[MemoryEntry]:
         """
         LLM 调用后提取并存储记忆.
@@ -245,6 +259,8 @@ class MemoryManager:
             logger.info(f"[MemoryManager] extract_fn is None, skipping auto-extract for {project_id}")
             return []
 
+        self.last_write_report = {"inserted": 0, "updated": 0, "rejected": []}
+
         # 机会式维护: 距上次超过间隔则衰减 + 淘汰 (兜底遗忘)
         self._maybe_maintenance(project_id)
 
@@ -257,6 +273,7 @@ class MemoryManager:
             user_feedback=user_feedback or "未确认",
             conversation_history=conversation_history or "[]",
             tool_execution_summary=tool_execution_summary or "[]",
+            resource_catalog=json.dumps(list(resources), ensure_ascii=False),
             final_answer=json.dumps(
                 (final_answer or llm_output)[:2000], ensure_ascii=False,
             ),
@@ -269,10 +286,17 @@ class MemoryManager:
                 raw = await raw
         except Exception as exc:
             logger.error(f"[MemoryManager] extract_fn failed: {exc}")
+            self.last_write_report["skipped"] = "extraction_failed"
             return []
 
         # 3. 解析 JSON
-        items = self._parse_extract_result(raw)
+        items = self._parse_extract_result(raw)[:3]
+        event_id = self.knowledge.event(project_id, "archive_extracted", {
+            "run_id": source_run_id, "trace_id": source_trace_id,
+            "user_input": user_input[:1000], "final_answer": (final_answer or llm_output)[:2000],
+            "candidates": items,
+        })
+        self.last_write_report = {"event_id": event_id, "inserted": 0, "updated": 0, "rejected": []}
         if not items:
             logger.info("[MemoryManager] No insights extracted from LLM response")
             return []
@@ -295,7 +319,9 @@ class MemoryManager:
                     "scope": scope or "project",
                 }
                 if "metadata" in item and isinstance(item["metadata"], dict):
-                    metadata.update(item["metadata"])
+                    # Extractor annotations cannot overwrite host provenance,
+                    # scope, confirmation, or resource versions.
+                    metadata["extraction_metadata"] = dict(item["metadata"])
 
                 # 检索别名并入 tags：中英对照/近义说法参与 BM25 召回
                 raw_tags = item.get("tags", []) or []
@@ -312,6 +338,7 @@ class MemoryManager:
                     item, user_feedback=user_feedback,
                 )
                 if not decision.allowed:
+                    self.last_write_report["rejected"].append({"summary": str(item.get("summary", ""))[:100], "reason": decision.reason})
                     logger.info(
                         "[MemoryManager] Candidate rejected by write policy: %s",
                         decision.reason,
@@ -324,6 +351,41 @@ class MemoryManager:
                     "policy": "default",
                     "confirmed": user_feedback in {"accepted", "modified"},
                 }
+                catalog = {r["resource_id"]: r for r in resources if r.get("resource_id") and r.get("version")}
+                requested_refs = item.get("source_refs", [])
+                requested_refs = requested_refs if isinstance(requested_refs, list) else []
+                invalid_refs = [ref for ref in requested_refs if not isinstance(ref, str) or ref not in catalog]
+                if invalid_refs:
+                    self.last_write_report["rejected"].append({"summary": str(item.get("summary", ""))[:100], "reason": "unknown_source_ref"})
+                    continue
+                refs = [dict(catalog[ref]) for ref in dict.fromkeys(requested_refs)]
+                kind = str(item.get("scope_kind", "project"))
+                context_ids = {"project": project_id, **(scope_context or {})}
+                if item.get("memory_type") == "operational_lesson" and "environment" in context_ids:
+                    kind = "environment"
+                    refs += [dict(r) for r in catalog.values() if r.get("kind") == "environment" and r not in refs]
+                if kind not in {"project", "workspace", "environment"} or kind not in context_ids:
+                    self.last_write_report["rejected"].append({"summary": str(item.get("summary", ""))[:100], "reason": "unknown_scope"})
+                    continue
+                current = self.knowledge.resources(project_id)
+                mismatch = any(current.get(r["resource_id"]) != r["version"] for r in refs)
+                metadata["knowledge"] = {
+                    "status": "needs_review" if mismatch else "active", "version": 1,
+                    "scope": {"kind": kind, "id": context_ids[kind]},
+                    "sources": refs, "evidence_id": event_id,
+                    "source_kind": "user_confirmed" if user_feedback in {"accepted", "modified"} else "model_extracted",
+                    "verification": "confirmed" if user_feedback in {"accepted", "modified"} else "source_bound" if refs else "unverified",
+                    "reason": "source_version_mismatch" if mismatch else "",
+                }
+                if item.get("valid_until"):
+                    try:
+                        valid_until = datetime.fromisoformat(str(item["valid_until"]).replace("Z", "+00:00"))
+                        if valid_until.tzinfo is None:
+                            raise ValueError("valid_until requires timezone")
+                        metadata["knowledge"]["valid_until"] = valid_until.isoformat()
+                    except ValueError:
+                        self.last_write_report["rejected"].append({"summary": str(item.get("summary", ""))[:100], "reason": "invalid_valid_until"})
+                        continue
                 entry = MemoryEntry(
                     project_id=project_id,
                     memory_type=MemoryType(item.get("memory_type", "insight")),
@@ -338,17 +400,30 @@ class MemoryManager:
                     source=llm_call_type,
                 )
 
-                # ── insight 类: 主题键后写覆盖 (last-write-wins) ──
+                # ── insight: scoped subject projection + immutable versions ──
                 # 同 subject 的最新观察顶替旧观察, 不继承旧重要度/访问次数,
                 # 避免"旧错误结论"被累积强化。
                 if entry.memory_type == MemoryType.INSIGHT and entry.subject:
-                    existing = self.db.get_by_subject(
-                        project_id, MemoryType.INSIGHT, entry.subject,
-                    )
+                    existing = next((old for old in self.db.list_by_project(project_id, MemoryType.INSIGHT)
+                                     if old.subject == entry.subject and old.metadata.get("knowledge", {}).get("scope", {"kind": "project", "id": project_id}) == metadata["knowledge"]["scope"]), None)
+                    if existing:
+                        if entry.metadata["knowledge"]["status"] == "needs_review" and existing.metadata.get("knowledge", {}).get("status", "active") == "active":
+                            self.last_write_report["rejected"].append({"id": existing.id, "reason": "stale_candidate"})
+                            continue
+                        if existing.metadata.get("knowledge", {}).get("status", "active") == "active" and self.recall_policy._is_confirmed(existing) and not self.recall_policy._is_confirmed(entry):
+                            self.last_write_report["rejected"].append({"id": existing.id, "reason": "confirmed_memory_protected"})
+                            continue
+                        if not self.knowledge.scope_matches(existing, context_ids) or existing.metadata.get("knowledge", {}).get("scope", {"kind": "project", "id": project_id}) != metadata["knowledge"]["scope"]:
+                            existing = None
                     if existing:
                         entry.id = existing.id
                         entry.created_at = existing.created_at
+                        self.knowledge.snapshot(existing, event_id, status="superseded")
+                        entry.metadata["knowledge"].update(version=existing.metadata.get("knowledge", {}).get("version", 1) + 1,
+                                                           supersedes={"id": existing.id, "version": existing.metadata.get("knowledge", {}).get("version", 1)})
                         self.db.update(entry)
+                        self.knowledge.snapshot(entry, event_id)
+                        self.last_write_report["updated"] += 1
                         dup_count += 1
                         logger.debug(
                             f"[MemoryManager] Superseded insight subject='{entry.subject}' "
@@ -356,6 +431,8 @@ class MemoryManager:
                         )
                     else:
                         self.db.add(entry)
+                        self.knowledge.snapshot(entry, event_id)
+                        self.last_write_report["inserted"] += 1
                         new_entries.append(entry)
                     continue
 
@@ -365,22 +442,36 @@ class MemoryManager:
                 best_match: Optional[MemoryEntry] = None
 
                 for rr in candidates:
+                    if rr.entry.memory_type != entry.memory_type or rr.entry.subject != entry.subject:
+                        continue
+                    if rr.entry.metadata.get("knowledge", {}).get("scope", {"kind": "project", "id": project_id}) != metadata["knowledge"]["scope"]:
+                        continue
                     sim = _jaccard_similarity(entry.summary, rr.entry.summary)
                     if sim > best_sim:
                         best_sim = sim
                         best_match = rr.entry
 
                 if best_match and best_sim >= self.config.dedup_threshold:
-                    # 更新已有记忆: 提升重要性, 更新原文与摘要, 合并 tags
-                    best_match.importance_score = min(1.0, best_match.importance_score + 0.05)
+                    if self.recall_policy._is_confirmed(best_match) and not self.recall_policy._is_confirmed(entry):
+                        self.last_write_report["rejected"].append({"id": best_match.id, "reason": "confirmed_memory_protected"})
+                        continue
+                    if entry.metadata["knowledge"]["status"] == "needs_review" and best_match.metadata.get("knowledge", {}).get("status", "active") == "active":
+                        self.last_write_report["rejected"].append({"id": best_match.id, "reason": "stale_candidate"})
+                        continue
+                    self.knowledge.snapshot(best_match, event_id, status="superseded")
+                    # Merge content without reinforcing repeated extraction.
+                    best_match.importance_score = entry.importance_score
                     best_match.original_text = entry.original_text
                     best_match.summary = entry.summary
                     best_match.updated_at = _utc_now()
-                    best_match.access_count += 1
-                    best_match.last_accessed_at = _utc_now()
                     best_match.tags = list(set(best_match.tags + entry.tags))
                     best_match.user_feedback = user_feedback or best_match.user_feedback
+                    metadata["knowledge"].update(version=best_match.metadata.get("knowledge", {}).get("version", 1) + 1,
+                                                  supersedes={"id": best_match.id, "version": best_match.metadata.get("knowledge", {}).get("version", 1)})
+                    best_match.metadata = metadata
                     self.db.update(best_match)
+                    self.knowledge.snapshot(best_match, event_id)
+                    self.last_write_report["updated"] += 1
                     dup_count += 1
                     logger.debug(
                         f"[MemoryManager] Merged similar memory {best_match.id[:8]}... "
@@ -388,6 +479,8 @@ class MemoryManager:
                     )
                 else:
                     self.db.add(entry)
+                    self.knowledge.snapshot(entry, event_id)
+                    self.last_write_report["inserted"] += 1
                     new_entries.append(entry)
 
             except (ValueError, KeyError) as exc:
@@ -409,6 +502,7 @@ class MemoryManager:
         max_tokens: int = 800,
         mode: RetrieveMode = RetrieveMode.BM25,
         memory_types: Optional[List[MemoryType]] = None,
+        scope_context: dict[str, str] | None = None,
     ) -> List[RecallResult]:
         """
         LLM 调用前检索相关记忆.
@@ -453,9 +547,20 @@ class MemoryManager:
 
         # recency 重排: insight 类越久没更新, 检索得分越低
         self._apply_recency(results)
+        results, skipped = self.knowledge.select_current(project_id, results, scope_context=scope_context)
         filtered = self.recall_policy.select(
             results, top_k=top_k, max_tokens=max_tokens,
         )
+        for result in filtered:
+            row = self.db.conn.execute("SELECT rowid FROM memories WHERE project_id=? AND id=?", (project_id, result.entry.id)).fetchone()
+            if row:
+                self.db.update_access(row["rowid"])
+        self.last_recall_report = {
+            "selected": [{"id": r.entry.id, "subject": r.entry.subject, "score": r.score,
+                          "knowledge": r.entry.metadata.get("knowledge", {"verification": "legacy_unverified"})} for r in filtered],
+            "skipped": skipped,
+        }
+        self.knowledge.event(project_id, "recalled", self.last_recall_report)
 
         logger.info(
             f"[MemoryManager] Recalled {len(filtered)} memories for '{project_id}' "
@@ -517,10 +622,13 @@ class MemoryManager:
             }.get(rr.entry.memory_type, "其他")
 
             tags_str = f" [{', '.join(rr.entry.tags)}]" if rr.entry.tags else ""
-            scope = (rr.entry.metadata or {}).get("scope", "project")
+            knowledge = rr.entry.metadata.get("knowledge", {})
+            scope = knowledge.get("scope", {}).get("kind", "project")
+            verification = knowledge.get("verification", "legacy_unverified")
+            validity_label = "已确认" if verification == "confirmed" else "来源版本匹配，观察未独立确认" if verification == "source_bound" else "历史参考，未核验当前有效性"
             # 注入 summary (简洁) 而非 original_text (过长)
             lines.append(
-                f"{i}. [{type_label}][scope={scope}]{tags_str} {rr.entry.summary} "
+                f"{i}. [{type_label}][scope={scope}][{validity_label}]{tags_str} {rr.entry.summary} "
                 f"_(相关性: {rr.score:.2f})_"
             )
 
@@ -537,7 +645,7 @@ class MemoryManager:
         delta: Optional[float] = None,
     ) -> int:
         """
-        强化记忆 (被检索使用后调用).
+        显式确认记忆；检索不调用本方法。待复核的来源不能靠提高分数恢复。
 
         支持两种调用方式:
           - mgr.reinforce(recall_results, project_id="xxx")
@@ -554,9 +662,7 @@ class MemoryManager:
         # 统一处理
         if isinstance(results_or_ids, str):
             # 单个 memory_id
-            ok = self.lifecycle.reinforce(
-                results_or_ids, project_id, delta=delta,
-            )
+            ok = self._confirm_memory(results_or_ids, project_id, delta)
             return 1 if ok else 0
 
         if isinstance(results_or_ids, list):
@@ -571,9 +677,26 @@ class MemoryManager:
             if project_id is None:
                 logger.warning("[MemoryManager] reinforce: project_id is required for id list")
                 return 0
-            return self.lifecycle.reinforce_batch(ids, project_id, delta=delta)
+            return sum(self._confirm_memory(identifier, project_id, delta) for identifier in dict.fromkeys(ids))
 
         return 0
+
+    def _confirm_memory(self, identifier, project_id, delta):
+        entry = self.db.get(project_id, identifier)
+        if entry is None or entry.metadata.get("knowledge", {}).get("status", "active") != "active":
+            return False
+        refs = entry.metadata.get("knowledge", {}).get("sources", [])
+        current = self.knowledge.resources(project_id)
+        if any(current.get(ref["resource_id"]) != ref.get("version") for ref in refs):
+            return False
+        event_id = self.knowledge.event(project_id, "explicit_confirmation", {"memory_id": identifier})
+        self.knowledge.snapshot(entry, event_id)
+        entry.metadata.setdefault("knowledge", {}).update(status="active", verification="confirmed", confirmation_event_id=event_id)
+        entry.metadata.setdefault("governance", {})["confirmed"] = True
+        self.db.update(entry)
+        self.lifecycle.reinforce(identifier, project_id, delta=delta, record_access=False)
+        self.knowledge.snapshot(self.db.get(project_id, identifier), event_id)
+        return True
 
     # ── forget ────────────────────────────────────────────────────────
 

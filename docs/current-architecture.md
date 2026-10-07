@@ -110,6 +110,8 @@ extensions.skills:create
   原始历史，不把语义压缩逻辑塞进 ReAct 回合循环。
 - 长期记忆通过 `MemoryPort` 访问，具体 SQLite、BM25、生命周期和策略位于
   `extensions/memory`。
+- 记忆的召回、观察、刷新和归档由插件阶段贡献触发。主循环只发布通用事件，
+  `ExtensionContext` 隔离请求能力与插件状态；`task_after` 表示最终检查或审核后的任务结果。
 - Trace 的运行时 hook 位于 `backend/app/trace/tracing.py`，JSONL 写入、读取和回放位于
   `extensions/trace`。
 - 记忆、Trace 和上下文都是参考数据，当前用户指令优先级最高。

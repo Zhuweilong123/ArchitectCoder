@@ -61,6 +61,7 @@ class HookEvent(str, Enum):
     REVIEW_AFTER = "review_after"
     BACKGROUND_BEFORE = "background_before"
     BACKGROUND_AFTER = "background_after"
+    TASK_AFTER = "task_after"
     LLM_BEFORE = "model_before"
     LLM_AFTER = "model_after"
     RUN_FINALIZE = "finalize"
@@ -533,6 +534,10 @@ def get_hooks() -> HookRegistry:
     snapshot = current_snapshot()
     if snapshot is not None:
         return snapshot.registry
+    from .extension_context import current_extension_context
+    context = current_extension_context()
+    if context is not None:
+        return context.hooks_for(_registry)
     return _registry
 
 

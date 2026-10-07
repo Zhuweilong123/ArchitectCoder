@@ -75,6 +75,7 @@ async def _invoke_fc_model_impl(
             run_id=runtime.run_id,
             runtime=runtime,
             messages=messages,
+            payload={"current_user_index": request_context.get("current_user_index", -1)},
         ),
     )
     if (
@@ -108,7 +109,9 @@ async def _invoke_fc_model_impl(
 
 async def run_fc_loop(agent, *args, **kwargs):
     from ...core.plugin_runtime import plugin_scope
-    with plugin_scope():
+    from ...core.extension_context import extension_scope, current_extension_context
+    session = getattr(agent, "extension_context", None)
+    with plugin_scope(), extension_scope(current_extension_context() or (session.fork() if session else None)):
         stream = _run_fc_loop_scoped(agent, *args, **kwargs)
         try:
             async for progress in stream:
@@ -261,7 +264,7 @@ async def _run_fc_loop_impl(
             runtime=runtime, payload=payload,
         ))
     try:
-        await publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage)
+        await publish(HookEvent.RUN_START, initial_token_usage=initial_token_usage, user_message=input_text)
         step = 0
         while True:
             if runtime.lifecycle_round_open:
@@ -389,6 +392,7 @@ async def _run_fc_loop_impl(
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
                 )
             request_context = {
+                "current_user_index": current_user_index,
                 "scope": "single_llm_request",
                 "estimated_context_tokens": agent.context_budget.estimate_request_tokens(
                     messages, tools=active_tool_specs,

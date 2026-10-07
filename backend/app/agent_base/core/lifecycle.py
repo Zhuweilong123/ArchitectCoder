@@ -18,6 +18,7 @@ from .plugin_dispatch import SERVICE_STAGES, service_contributions
 # Only these existing boundaries consume mutations/control decisions.
 # Remaining lifecycle phases are observation-only until their contracts expand.
 PHASE_MODES = {stage: {"observer"} for stage in HookEvent}
+PHASE_MODES[HookEvent.PREPARE] |= {"transform"}
 PHASE_MODES[HookEvent.LLM_BEFORE] |= {"transform", "control"}
 PHASE_MODES[HookEvent.LLM_AFTER] |= {"transform"}
 PHASE_MODES[HookEvent.TOOL_BEFORE] |= {"control"}
@@ -179,6 +180,40 @@ class ExecutionPlan:
                 temporary.unlink(missing_ok=True)
 
 
+def declared_contributions(spec, manager, settings=None, module=None):
+    """Use the same declaration and validation contract in app and library runs."""
+    declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
+                   else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)
+    configured = tuple(Contribution(**{**item, "stage": HookEvent(item["stage"]),
+        "before": tuple(item.get("before", ())), "after": tuple(item.get("after", ()))}) for item in spec.contributions)
+    services = service_contributions(spec)
+    declared = (*configured, *(tuple(declaration(settings=settings)) if declaration else ()), *services)
+    validate_contributions(declared)
+    return declared
+
+
+def validate_contributions(declared):
+    for item in declared:
+        if not isinstance(item, Contribution) or not isinstance(item.stage, HookEvent):
+            raise ValueError("invalid contribution declaration or stage")
+        if not item.id or item.mode not in {"observer", "transform", "control", "service"} or item.scope not in {"run", "invocation"}:
+            raise ValueError("invalid contribution ID, mode or scope")
+        if item.mode not in PHASE_MODES[item.stage]:
+            raise ValueError(f"{item.mode} is unsupported at {item.stage.value}")
+        if not isinstance(item.id, str) or type(item.priority) is not int or type(item.fail_closed) is not bool:
+            raise ValueError("invalid contribution ID, priority or failure policy")
+        for dependencies in (item.before, item.after):
+            if not isinstance(dependencies, tuple) or any(not isinstance(key, str) or not key for key in dependencies):
+                raise ValueError("ordering dependencies must be tuples of contribution IDs")
+        if item.mode != "control" and item.fail_closed:
+            raise ValueError("fail_closed requires a control contribution")
+        item.resolve()
+        if item.mode == "service" and not item.interface_id:
+            raise ValueError("service contribution requires an interface ID")
+        if item.scope == "invocation" and item.mode != "service":
+            raise ValueError("invocation scope is reserved for service executors")
+
+
 def discover_plan(manager, settings) -> ExecutionPlan:
     """Read explicit declarations without constructing storage/LLM providers."""
     manager.configure(settings)
@@ -216,31 +251,8 @@ def discover_plan(manager, settings) -> ExecutionPlan:
             inspect.signature(factory).bind_partial(settings=settings)
             module = importlib.import_module(provider.partition(":")[0])
             phase = "contributions"
-            declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
-                           else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)
-            configured = tuple(Contribution(**{**item, "stage": HookEvent(item["stage"]),
-                "before": tuple(item.get("before", ())), "after": tuple(item.get("after", ()))}) for item in spec.contributions)
-            services = service_contributions(spec)
-            declared = (*configured, *(tuple(declaration(settings=settings)) if declaration else ()), *services)
-            for item in declared:
-                if not isinstance(item, Contribution) or not isinstance(item.stage, HookEvent):
-                    raise ValueError("invalid contribution declaration or stage")
-                if not item.id or item.mode not in {"observer", "transform", "control", "service"} or item.scope not in {"run", "invocation"}:
-                    raise ValueError("invalid contribution ID, mode or scope")
-                if item.mode not in PHASE_MODES[item.stage]:
-                    raise ValueError(f"{item.mode} is unsupported at {item.stage.value}")
-                if not isinstance(item.id, str) or type(item.priority) is not int or type(item.fail_closed) is not bool:
-                    raise ValueError("invalid contribution ID, priority or failure policy")
-                for dependencies in (item.before, item.after):
-                    if not isinstance(dependencies, tuple) or any(not isinstance(key, str) or not key for key in dependencies):
-                        raise ValueError("ordering dependencies must be tuples of contribution IDs")
-                if item.mode != "control" and item.fail_closed:
-                    raise ValueError("fail_closed requires a control contribution")
-                item.resolve()
-                if item.mode == "service" and not item.interface_id:
-                    raise ValueError("service contribution requires an interface ID")
-                if item.scope == "invocation" and item.mode != "service":
-                    raise ValueError("invocation scope is reserved for service executors")
+            declared = declared_contributions(spec, manager, settings, module)
+            services = tuple(item for item in declared if item.mode == "service")
             candidate = [*items, *((spec.name, item) for item in declared)]
             if len({item.id for _, item in candidate}) != len(candidate):
                 raise ValueError("duplicate contribution IDs")

@@ -158,6 +158,12 @@ class MemoryRecallPolicy:
             float(getattr(entry, "importance_score", 0.0) or 0.0),
         )
 
+    @staticmethod
+    def _subject_key(entry):
+        subject = normalize_subject(getattr(entry, "subject", ""))
+        scope = (getattr(entry, "metadata", {}) or {}).get("knowledge", {}).get("scope", {})
+        return (scope.get("kind", "project"), scope.get("id", entry.project_id), subject) if subject else None
+
     def select(self, results: list, *, top_k: int, max_tokens: int) -> list:
         selected = []
         type_counts: dict[MemoryType, int] = {}
@@ -171,7 +177,7 @@ class MemoryRecallPolicy:
         for result in results:
             if result.score <= self.min_score or not str(result.entry.summary or "").strip():
                 continue
-            subject = normalize_subject(getattr(result.entry, "subject", ""))
+            subject = self._subject_key(result.entry)
             if not subject:
                 continue
             previous = subject_winners.get(subject)
@@ -180,7 +186,7 @@ class MemoryRecallPolicy:
 
         eligible = []
         for result in results:
-            subject = normalize_subject(getattr(result.entry, "subject", ""))
+            subject = self._subject_key(result.entry)
             if subject and subject_winners.get(subject) is not result:
                 continue
             eligible.append(result)
@@ -198,7 +204,7 @@ class MemoryRecallPolicy:
             memory_type = result.entry.memory_type
             if type_counts.get(memory_type, 0) >= self.max_per_type:
                 continue
-            subject = normalize_subject(getattr(result.entry, "subject", ""))
+            subject = self._subject_key(result.entry)
             if subject and subject in seen_subjects:
                 continue
             summary = str(result.entry.summary or "").strip()

@@ -8,6 +8,8 @@ from app.agent_base.core.memory import (
     MemoryArchiveResult,
     MemoryRecallRequest,
     MemoryRecallResult,
+    MemoryEventRequest,
+    MemoryEventResult,
     NoOpMemory,
     load_memory,
 )
@@ -47,9 +49,19 @@ def test_loader_contains_provider_failures(monkeypatch):
     recalled = asyncio.run(provider.recall(MemoryRecallRequest("p", "query")))
     archived = asyncio.run(provider.archive(MemoryArchiveRequest("p", "u", "a")))
     asyncio.run(provider.reinforce(("m-1",), project_id="p"))
+    observed = asyncio.run(provider.observe(MemoryEventRequest("p", "resource_changed")))
 
     assert recalled == MemoryRecallResult(metadata={"degraded": True})
     assert archived == MemoryArchiveResult(metadata={"degraded": True})
+    assert observed.metadata == {"skipped": "unsupported"}
+
+
+def test_optional_memory_observer_contains_failures():
+    class Broken:
+        async def observe(self, request):
+            raise RuntimeError("database unavailable")
+    provider = core_memory._ResilientMemory(Broken())
+    assert asyncio.run(provider.observe(MemoryEventRequest("p", "source_checked"))) == MemoryEventResult(metadata={"degraded": True})
 
 
 def test_loader_keeps_provider_contract_and_result_types(monkeypatch):

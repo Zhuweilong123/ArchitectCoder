@@ -34,7 +34,9 @@ def settings(**changes):
 def test_builtin_catalog_is_owned_by_seven_directories_and_keeps_all_interfaces():
     declarations = scan_manifests((BUILTIN_PLUGIN_ROOT,))
     assert {item["id"] for item in declarations} == {"skills", "memory", "trace", "evals", "orchestration", "knowledge_graph", "design_contract"}
-    assert sum(len(item["interfaces"]) for item in declarations) == 57
+    assert sum(len(item["interfaces"]) for item in declarations) == 58
+    memory = next(item for item in declarations if item["id"] == "memory")
+    assert memory["interfaces"]["observe"]["required"] is False
     assert all(Path(item["source"]).name == "plugin.json" for item in declarations)
     assert len(build_plan(PluginManager(), settings()).as_dict()["stages"]) == 13
 

@@ -1,3 +1,4 @@
+from extensions.memory.contributions import should_archive as _should_archive_task_memory, archive_task
 from app.agent_base.core.hooks import AgentRuntime, reset_runtime, set_runtime
 from app.services.chat_session import (
     _checkpoint_answer, _latest_persisted_checkpoint,
@@ -5,10 +6,10 @@ from app.services.chat_session import (
 )
 from app.agent_base.assembly import DevPromptBuilder
 from app.services.agent_execution import (
-    _should_archive_task_memory, _terminal_checkpoint_status,
-    _todo_progress_state, _archive_task_to_memory,
+    _terminal_checkpoint_status,
+    _todo_progress_state,
 )
-from app.agent_base.core.memory import MemoryArchiveResult, MemoryRecallResult
+from app.agent_base.core.memory import MemoryArchiveRequest, MemoryArchiveResult, MemoryRecallResult
 from app.agent_base.outcome import RunOutcome
 
 
@@ -75,6 +76,13 @@ def test_memory_archive_requires_completed_mutation_evidence():
     }])
 
 
+def test_memory_archive_accepts_substantive_discussion_without_mutation():
+    answer = "Discuss the accepted architecture decision. " * 8
+    assert _should_archive_task_memory("completed", [], user_message="Use composition", final_answer=answer)
+    assert not _should_archive_task_memory("partial", [], user_message="Use composition", final_answer=answer)
+    assert not _should_archive_task_memory("completed", [], user_message="hello", final_answer="hello")
+
+
 def test_prompt_builder_reports_dynamic_sections_without_content():
     builder = DevPromptBuilder(
         source_dir="src", test_dir="tests", design_dir="design"
@@ -95,11 +103,11 @@ def test_prompt_builder_reports_dynamic_sections_without_content():
     assert "memory" not in builder.last_context_report["sections"]
 
 
-def test_prompt_builder_keeps_design_workspace_without_project_file_prompting():
+def test_prompt_builder_keeps_design_workspace_without_project_file_prompting(tmp_path):
     import asyncio
 
     builder = DevPromptBuilder()
-    context = asyncio.run(builder.build_context("project.umlproj", "src", "tests", "你好"))
+    context = asyncio.run(builder.build_context(str(tmp_path / "project.umlproj"), "src", "tests", "你好"))
     assert "Source directory: src" not in context
     assert "Test directory: tests" not in context
     assert "Design directory:" not in context
@@ -124,7 +132,10 @@ def test_prompt_builder_uses_injected_memory_port_without_manager_dependency(tmp
 
     import asyncio
     memory = FakeMemory()
-    builder = DevPromptBuilder(memory=memory)
+    from app.agent_base.core.extension_context import ExtensionContext
+    extensions = ExtensionContext()
+    extensions.bind("memory", memory)
+    builder = DevPromptBuilder(extension_context=extensions)
     project_file = str(tmp_path / "project.umlproj")
     context = asyncio.run(builder.build_context(project_file, "src", "tests", "continue"))
 
@@ -132,7 +143,9 @@ def test_prompt_builder_uses_injected_memory_port_without_manager_dependency(tmp
     from backend.config.project_storage import project_id_for
     project_id = project_id_for(project_file)
     assert memory.recalled[0].project_id == project_id
-    assert memory.reinforced == [(("memory-1",), project_id)]
+    assert memory.reinforced == []
+    asyncio.run(builder.build_context(project_file, "src", "tests", "continue"))
+    assert len(memory.recalled) == 2  # repeated requests must revalidate memory
 
 
 def test_memory_archive_helper_only_depends_on_memory_port():
@@ -146,13 +159,10 @@ def test_memory_archive_helper_only_depends_on_memory_port():
 
     import asyncio
     memory = FakeMemory()
-    asyncio.run(_archive_task_to_memory(
-        memory=memory,
-        project_id="project",
-        user_message="repair",
-        final_answer="done",
-        tool_calls_detail=[{"name": "apply_changes", "status": "success"}],
-    ))
+    asyncio.run(archive_task(memory, MemoryArchiveRequest(
+        project_id="project", user_message="repair", final_answer="done",
+        tool_steps=({"name": "apply_changes", "status": "success"},),
+    )))
 
     assert memory.request.project_id == "project"
     assert memory.request.tool_steps[0]["name"] == "apply_changes"
