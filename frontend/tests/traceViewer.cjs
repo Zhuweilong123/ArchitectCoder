@@ -91,4 +91,42 @@ test('conversation folds processes; search reveals truncated output; error navig
   assert.equal(document.querySelectorAll('.trace-timeline .trace-tool').length, 2);
 });
 
+test('tool commentary stays folded and routed child output stays inside its parent tool', async () => {
+  await act(async () => root.render(null));
+  events.splice(0, events.length,
+    { event_type: 'user_message', message: '泊车的时序图也补充一下' },
+    { event_type: 'llm_request', span_id: 'parent-llm', span_path: 'DevAgent' },
+    { event_type: 'llm_response', span_id: 'parent-llm', content: 'Let me understand the diagrams.', tool_calls: [{ id: 'route' }] },
+    { event_type: 'tool_call', span_id: 'route', tool_name: 'route_architecture', arguments: {} },
+    { event_type: 'llm_request', span_id: 'child-llm', span_path: 'DevAgent/route_architecture/child_agent' },
+    { event_type: 'llm_response', span_id: 'child-llm', content: '{"findings":[]}' },
+    { event_type: 'tool_call', span_id: 'child-read', span_path: 'DevAgent/route_architecture/child_agent', tool_name: 'read_file' },
+    { event_type: 'tool_result', span_id: 'child-read', observation: 'child evidence' },
+    { event_type: 'tool_result', span_id: 'route', observation: 'route complete' },
+    { event_type: 'llm_request', span_id: 'final-llm', span_path: 'DevAgent' },
+    { event_type: 'llm_response', span_id: 'final-llm', content: '已完成泊车时序图' },
+    { event_type: 'done', answer: '已完成泊车时序图' },
+  );
+  await act(async () => root.render(React.createElement(TraceViewer)));
+  await settle();
+  assert.equal(document.querySelectorAll('.trace-process-group').length, 1);
+  assert.equal(document.querySelectorAll('.trace-assistant').length, 0);
+  assert.doesNotMatch(document.querySelector('.trace-timeline').textContent, /Let me understand|findings/);
+  assert.equal(document.querySelectorAll('.trace-done').length, 1);
+  await act(async () => button('展开过程').click());
+  const parentLlm = document.querySelector('.trace-process-group .trace-llm');
+  await act(async () => [...parentLlm.querySelectorAll('.ant-collapse-header')]
+    .find(node => node.textContent.includes('Response')).click());
+  assert.match(parentLlm.textContent, /Let me understand/);
+  const route = [...document.querySelectorAll('.trace-tool')].find(node => node.querySelector('.trace-title')?.textContent === 'route_architecture');
+  assert.ok(route.querySelector('.trace-subagent'));
+  assert.match(route.textContent, /1 次模型请求.*1 次工具调用/s);
+  assert.doesNotMatch(route.textContent, /findings/);
+  await act(async () => route.querySelector('.trace-subagent .ant-collapse-header').click());
+  assert.equal(route.querySelectorAll('.trace-subagent .trace-llm').length, 1);
+  assert.equal(route.querySelector('.trace-subagent .trace-tool .trace-title').textContent, 'read_file');
+  await act(async () => [...route.querySelectorAll('.trace-subagent .trace-llm .ant-collapse-header')]
+    .find(node => node.textContent.includes('Response')).click());
+  assert.match(route.textContent, /findings/);
+});
 test.after(async () => { await act(async () => root.unmount()); dom.window.close(); });

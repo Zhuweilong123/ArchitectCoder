@@ -5,7 +5,7 @@ const ts = require('typescript');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, filename);
-const { searchTrace, groupTraceRows, traceErrorCount } = require('../src/components/TraceViewer/traceNavigation.ts');
+const { searchTrace, groupTraceRows, traceConversationText, traceErrorCount } = require('../src/components/TraceViewer/traceNavigation.ts');
 
 test('search finds occurrences beyond truncation and inside nested subagents', () => {
   const longOutput = 'x'.repeat(8000) + 'Needle / needle';
@@ -42,4 +42,18 @@ test('error navigation includes nested failures and blocked lifecycle events', (
   ] } }), 3);
   assert.equal(traceErrorCount({ kind: 'lifecycle', event: { allowed: false, status: 'block' } }), 1);
   assert.equal(traceErrorCount({ kind: 'tool', result: { observation: 'normal result' } }), 0);
+});
+
+test('tool commentary and child findings do not split conversation process groups', () => {
+  const llm = (content, tool_calls = [], span_path = 'DevAgent') => ({
+    kind: 'llm', request: { span_path }, response: { content, tool_calls },
+  });
+  const rows = [llm('I will inspect the diagrams.', [{ id: 'read' }]),
+    { kind: 'tool' }, llm('Let me understand the structure.', [{ id: 'search' }]),
+    llm('{"findings":[]}', [], 'DevAgent/route_architecture/child_agent'),
+    llm('Legacy child result', [], 'DevAgent/spawn_subagent'), llm('最终回复')];
+  assert.deepEqual(rows.map(traceConversationText), ['', '', '', '', '', '最终回复']);
+  assert.deepEqual(groupTraceRows(rows, row => !traceConversationText(row)).map(group => group.length), [5, 1]);
+  assert.equal(traceConversationText({ kind: 'llm', response: { content: '错误内容', error: 'timeout' } }), '');
+  assert.equal(traceConversationText({ kind: 'llm', response: { content: '历史回复' } }), '历史回复');
 });

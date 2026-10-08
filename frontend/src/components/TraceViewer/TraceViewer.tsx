@@ -22,7 +22,7 @@ import {
   type TraceMeta, type TraceDetail, type TraceReplayResult, type TraceReplayTurn, type TraceReplayStep,
 } from '../../services/api';
 import './TraceViewer.css';
-import { groupTraceRows, searchTrace, traceErrorCount, type TraceSearchHit } from './traceNavigation';
+import { groupTraceRows, searchTrace, traceConversationText, traceErrorCount, type TraceSearchHit } from './traceNavigation';
 
 const { Text } = Typography;
 
@@ -218,7 +218,7 @@ function eventSpanPath(item: Item): string {
 
 function isSubagentEvent(item: Item): boolean {
   const path = eventSpanPath(item);
-  return path.split('/').some((segment) => segment.toLowerCase().includes('subagent'));
+  return path.split('/').some((segment) => segment.toLowerCase().includes('subagent') || segment.toLowerCase() === 'child_agent');
 }
 
 function groupSubagentItems(items: Item[]): Item[] {
@@ -247,7 +247,7 @@ function groupSubagentItems(items: Item[]): Item[] {
       continue;
     }
     flushChildItems();
-    if (item.kind === 'tool' && item.call.tool_name === 'spawn_subagent') {
+    if (item.kind === 'tool' && ['spawn_subagent', 'route_architecture'].includes(item.call.tool_name)) {
       lastSpawnTool = item;
       const waiting = pending.shift();
       if (waiting) item.subagent = waiting;
@@ -387,7 +387,7 @@ function renderTool(item: ToolItem, language: TraceLanguage = 'zh'): React.React
   } : null;
   const panels: Array<{ key: string; label: string; children: React.ReactNode }> = [argsPanel];
   if (resultPanel) panels.push(resultPanel);
-  const hasSubagent = call.tool_name === 'spawn_subagent' && item.subagent;
+  const hasSubagent = Boolean(item.subagent);
   return (
     <div className="trace-card trace-tool">
       <div className="trace-card-head">
@@ -967,7 +967,7 @@ const TraceViewer: React.FC = () => {
     for (const turn of turns) {
       out.push({ kind: 'turn', turn });
       for (const item of turn.items) {
-        const text = item.kind === 'llm' ? String(item.response?.content || '') : '';
+        const text = traceConversationText(item);
         const repeatedFinal = text && turn.items.some((other) => other.kind === 'done' && other.event.answer === text);
         out.push({ kind: 'item', item, playIndex: play, conversationText: repeatedFinal ? '' : text });
         play++;
