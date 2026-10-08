@@ -362,6 +362,7 @@ export function sendReviewResponse(
     review_id: reviewId,
     response,
     decision,
+    feedback: decision ? response : undefined,
   });
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(payload);

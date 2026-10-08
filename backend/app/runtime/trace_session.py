@@ -158,16 +158,7 @@ class TraceSession:
 
     async def _background_trace(self, record, run):
         """Background writes share the stream, with an independent recorder lifetime."""
-        provider = self._provider or load_trace()
-        attach = getattr(provider, "attach", None)
-        if callable(attach):
-            sink = attach(self.tracer, run_id=record.run_id, task_id=record.task_id, owner=record.owner)
-            if sink is not None:
-                return await background_trace(record, run, sink=sink)
-        fork = getattr(provider, "fork", None)
-        if callable(fork):
-            provider = fork(self.tracer)
-        return await background_trace(record, run, provider=provider)
+        return await background_trace(record, run, provider=self._provider, parent_sink=self.tracer)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
@@ -209,8 +200,17 @@ class TraceSession:
         return False
 
 
-async def background_trace(record, run, *, trace_dir="", provider=None, sink=None):
+async def background_trace(record, run, *, trace_dir="", provider=None, sink=None, parent_sink=None):
     """Record background work in an attached stream, or standalone without a parent."""
+    if sink is None and parent_sink is not None:
+        provider = provider or load_trace()
+        attach = getattr(provider, "attach", None)
+        if callable(attach):
+            sink = attach(parent_sink, run_id=record.run_id, task_id=record.task_id, owner=record.owner)
+        if sink is None:
+            fork = getattr(provider, "fork", None)
+            if callable(fork):
+                provider = fork(parent_sink)
     child = TraceSession(
         session_id=f"background_{record.task_id}", trace_dir=trace_dir, provider=provider, sink=sink,
         env_snapshot={"source_run_id": record.run_id, "source_trace_id": record.source_trace_id,

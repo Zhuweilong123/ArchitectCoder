@@ -1,5 +1,8 @@
 import asyncio
 import json
+from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from fastapi import WebSocketDisconnect
@@ -35,8 +38,10 @@ class _WebSocket:
         self.sent.append(payload)
 
 
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+@pytest.mark.parametrize("wire_format", ["feedback", "legacy_comment", "json_response", "empty_feedback", "no_comment"])
 def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_design_accept(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, decision, wire_format,
 ):
     source = tmp_path / "echo.py"
     source.write_text("class EchoSimulator: pass\n", encoding="utf-8")
@@ -112,21 +117,95 @@ def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_desi
     monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", _LLM.from_settings)
     monkeypatch.setattr(chat_session.agent_runtime, "release_run", lambda *_args: None)
 
+    comment = "泊车时序图已审核，补充超时分支。\n保留现有调用顺序。"
+    expected_feedback = "" if wire_format in {"empty_feedback", "no_comment"} else comment
+    review_payload = {"type": "review_response", "review_id": review.id}
+    if wire_format == "json_response":
+        review_payload["response"] = json.dumps({"decision": decision, "feedback": comment}, ensure_ascii=False)
+    else:
+        review_payload["decision"] = decision
+        if wire_format != "no_comment":
+            review_payload["response"] = comment
+        if wire_format == "feedback":
+            review_payload["feedback"] = comment
+        elif wire_format == "empty_feedback":
+            review_payload["feedback"] = ""
+
     websocket = _WebSocket([
         json.dumps({"type": "chat", "message": "先评估旧候选是否符合新设计，不符合就重写"}, ensure_ascii=False),
-        json.dumps({"type": "review_response", "review_id": review.id, "decision": "accept"}),
+        json.dumps(review_payload, ensure_ascii=False),
     ])
-    asyncio.run(chat_session.ChatSessionCoordinator(websocket).run())
+    async def scenario():
+        future = review.future
+        await chat_session.ChatSessionCoordinator(websocket).run()
+        return await future
+
+    tool_response = asyncio.run(scenario())
 
     assert start_args["resume_record"] is record
     assert start_args["resume_checkpoint"] is checkpoint
     assert start_args["raw_user_message"] == "先评估旧候选是否符合新设计，不符合就重写"
     assert "Latest user message (complete; follow this instruction)" in start_args["message"]
     assert "先评估旧候选是否符合新设计，不符合就重写" in start_args["message"]
-    assert restored == [candidate_ref]
-    assert source.read_text(encoding="utf-8") == candidate_source
+    assert restored == ([candidate_ref] if decision == "accept" else [])
+    assert source.read_text(encoding="utf-8") == (candidate_source if decision == "accept" else "class EchoSimulator: pass\n")
     assert trace_log.review_events[0]["candidate_recovery"] is True
+    event = trace_log.review_events[0]
+    assert event["decision"] == decision
+    assert event["feedback"] == expected_feedback
+    expected_result = {"decision": decision, "feedback": expected_feedback}
+    assert json.loads(event["response"]) == expected_result
+    assert json.loads(tool_response) == expected_result
 
 
 async def _async_noop(*_args, **_kwargs):
     return None
+
+
+def test_online_coordinator_background_stays_in_session_after_disconnect(tmp_path, monkeypatch):
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider
+    from app.agent_base.core.background_tasks import submit_background
+    from app.agent_base.core.observability import emit_trace
+    from app.agent_base.host_api.tracing import TraceSessionRequest
+    from extensions.trace.chat_trace import JsonlTraceProvider
+
+    provider = _ResilientTraceProvider(JsonlTraceProvider(str(tmp_path)))
+    sink = provider.create(TraceSessionRequest(session_id="checkpoint-recovery-test"))
+    sink.start()
+    agent = SimpleNamespace(llm=None, last_run_checkpoint={}, tool_registry=SimpleNamespace(get_tool=lambda _name: None))
+    session = SimpleNamespace(agent=agent, review_mgr=None, progress=None, prompt_builder=None,
+                              trace_log=sink, run_owner=None, touch=lambda: None)
+    tasks = []
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _session_id: session)
+    monkeypatch.setattr(chat_session, "_latest_resumable_run", lambda _session_id: None)
+    monkeypatch.setattr(chat_session, "_resolve_workspace_paths", lambda *_a, **_kw: (("", "", "", str(tmp_path), ""), ""))
+    monkeypatch.setattr(chat_session, "_compress_session_context", _async_noop)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **_kw: SimpleNamespace())
+    monkeypatch.setattr(chat_session.agent_runtime, "release_run", lambda *_a: None)
+    monkeypatch.setattr("app.runtime.trace_session.load_trace", lambda: provider)
+
+    async def scenario():
+        gate = asyncio.Event()
+        async def start(**kwargs):
+            run_id = kwargs["message"]
+            sink.set_run_id(run_id)
+            async def archive():
+                await gate.wait()
+                span = emit_trace("llm_request", model="fake", messages=[])
+                emit_trace("llm_response", span_id=span, content="saved", usage={"total_tokens": 5})
+            tasks.append(submit_background(archive(), owner="memory_archive", run_id=run_id, source_trace_id=sink.trace_id))
+        monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+        websocket = _WebSocket([json.dumps({"type": "chat", "message": run}) for run in ["first", "second"]])
+        await chat_session.ChatSessionCoordinator(websocket).run()
+        gate.set()
+        await asyncio.gather(*tasks)
+        sink.close()
+
+    asyncio.run(scenario())
+    files = list(tmp_path.rglob("trace_*.jsonl"))
+    assert files == [Path(sink.path)]
+    events = [json.loads(line) for line in Path(sink.path).read_text(encoding="utf-8").splitlines()]
+    results = [event for event in events if event["event_type"] == "background_result"]
+    assert {event["run_id"] for event in results} == {"first", "second"}
+    assert all(event["session_id"] == "checkpoint-recovery-test" and event["trace_id"] == sink.trace_id for event in results)
+    assert all(event["status"] == "completed" for event in results)
