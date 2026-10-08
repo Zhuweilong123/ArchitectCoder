@@ -10,12 +10,19 @@
 
 </div>
 
-ArchitectCoder is an **AI collaborative development workbench** with UML as its design entry point. It connects architecture design, code changes, test verification, human review, and execution replay into one traceable development workflow.
+ArchitectCoder is an **architecture-driven development workbench for AI coding agents**.
 
-- **Design and code together**: develop UML from requirements to guide implementation, or fill design gaps from existing source code.
-- **Reviewable changes**: compare design changes and control candidate commits through human review and design contract checks.
-- **Traceable, verifiable execution**: record model and tool calls, inspect Trace replays, and check results with versioned evaluations.
-- **Stable workflow, plugin extensions**: public lifecycle stages organize execution, while slot contracts compose capabilities; new capabilities should stay within plugins where possible.
+How do you preserve module boundaries, interface contracts, and design intent as AI agents keep changing code?
+
+ArchitectCoder brings explicit design, human review, and design contract checks into the development workflow, making architectural intent part of code changes and verification:
+
+**Requirements → Design changes → Human review → Agent implementation → Tests & contract checks**
+
+This path applies to architecture changes with design contracts enabled. Simple implementation changes can proceed directly, and existing source code can also be used to fill design gaps.
+
+- **Design and code together**: develop UML from requirements or fill design gaps from existing source code.
+- **Review and check changes**: review design proposals and check candidate implementations when contracts are enabled.
+- **Trace and extend execution**: inspect execution through Trace and connect plugin capabilities through public lifecycle stages and slots.
 
 ## Product tour
 
