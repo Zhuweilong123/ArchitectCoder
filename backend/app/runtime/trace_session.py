@@ -150,19 +150,15 @@ class TraceSession:
         self._sink_token = set_current_trace_sink(self._tracer)
         push_trace_hook(self._bridge)
         self.background_registry = BackgroundTaskRegistry(
-            self._background_trace if self.background_timeout_seconds is None else None,
+            self._background_trace,
         )
         self._background_token = bind_background_registry(self.background_registry)
         self._output_store_token = bind_tool_output_store(ToolOutputStore())
         return self._tracer
 
     async def _background_trace(self, record, run):
-        """Online work owns a recorder independent of the foreground lifetime."""
-        provider = self._provider or load_trace()
-        fork = getattr(provider, "fork", None)
-        if callable(fork):
-            provider = fork(self.tracer)
-        return await background_trace(record, run, provider=provider)
+        """Background writes share the stream, with an independent recorder lifetime."""
+        return await background_trace(record, run, provider=self._provider, parent_sink=self.tracer)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
@@ -204,16 +200,26 @@ class TraceSession:
         return False
 
 
-async def background_trace(record, run, *, trace_dir="", provider=None):
-    """Standalone background recorder, including work without a foreground trace."""
+async def background_trace(record, run, *, trace_dir="", provider=None, sink=None, parent_sink=None):
+    """Record background work in an attached stream, or standalone without a parent."""
+    if sink is None and parent_sink is not None:
+        provider = provider or load_trace()
+        attach = getattr(provider, "attach", None)
+        if callable(attach):
+            sink = attach(parent_sink, run_id=record.run_id, task_id=record.task_id, owner=record.owner)
+        if sink is None:
+            fork = getattr(provider, "fork", None)
+            if callable(fork):
+                provider = fork(parent_sink)
     child = TraceSession(
-        session_id=f"background_{record.task_id}", trace_dir=trace_dir, provider=provider,
+        session_id=f"background_{record.task_id}", trace_dir=trace_dir, provider=provider, sink=sink,
         env_snapshot={"source_run_id": record.run_id, "source_trace_id": record.source_trace_id,
                       "owner": record.owner, "task_id": record.task_id},
     )
     with child as sink:
         sink.set_run_id(record.run_id)
         record.metadata.update(trace_id=sink.trace_id, trace_path=sink.path)
+        sink.event("background_started", task_id=record.task_id, owner=record.owner, status="running")
         try:
             return await run()
         finally:

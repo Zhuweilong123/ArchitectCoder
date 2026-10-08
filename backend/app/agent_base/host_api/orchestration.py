@@ -19,6 +19,8 @@ class OrchestrationRequest:
     previous_checkpoint: dict[str, Any] = field(default_factory=dict)
     available_tools: tuple[str, ...] = ()
     run_id: str = ""
+    workspace_root: str = ""
+    design_dir: str = ""
 
 
 @dataclass(frozen=True)

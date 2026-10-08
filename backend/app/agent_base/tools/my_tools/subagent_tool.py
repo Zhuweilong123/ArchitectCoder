@@ -17,6 +17,7 @@ from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExe
 from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
 from app.agent_base.tools.registry import ToolRegistry
+from app.core.capabilities import CapabilityPolicy
 from app.agent_base.tools.async_tool import AsyncTool
 from app.agent_base.tools.my_tools.foundation_tools import (
     RunTaskTool,
@@ -274,7 +275,9 @@ class SpawnSubagentTool(AsyncTool):
         self.sub_registries: dict[str, ToolRegistry] = {}
         self.system_prompts: dict[str, str] = {}
         for kind in self.toolkits:
-            registry = ToolRegistry()
+            registry = ToolRegistry(policy=CapabilityPolicy(
+                workspace_roots=[workspace_root, source_dir, test_dir, design_dir],
+            ))
             for t in _build_toolkit_tools(
                 kind, source_dir, test_dir, design_dir,
                 db_path, project_file, review_manager, progress,

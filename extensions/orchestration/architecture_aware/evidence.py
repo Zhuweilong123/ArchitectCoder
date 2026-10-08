@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Any
@@ -11,29 +12,35 @@ from .graph_files import resolve_node_file
 from .partition import ExplorationPackage
 
 
-def _within(path: Path, roots: tuple[Path, ...]) -> bool:
-    return any(path == root or root in path.parents for root in roots)
+@dataclass(frozen=True)
+class FileExcerpt:
+    """Verified executable coordinates kept separately from rendered evidence."""
+
+    path: str
+    start_line: int
+    end_line: int
+    text: str
 
 
 def _excerpt(
-    path: Path, terms: list[str], *, display_path: str = "", max_scan: int = 20000,
-) -> str:
+    path: Path, terms: list[str], *, max_scan: int = 20000,
+) -> FileExcerpt | None:
     lines: list[str] = []
     try:
         if path.stat().st_size > 2_000_000:
-            return ""
+            return None
         with path.open("rb") as probe:
             if b"\0" in probe.read(4096):
-                return ""
+                return None
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for number, raw in enumerate(handle, 1):
                 if number > max_scan:
                     break
                 lines.append(raw.rstrip("\r\n")[:180])
     except OSError:
-        return ""
+        return None
     if not lines:
-        return ""
+        return None
     matches: list[int] = []
     for term in dict.fromkeys(term for term in terms if term):
         # Prefer declarations over imports, comments, and call sites.  The
@@ -52,27 +59,25 @@ def _excerpt(
         if matches:
             break
     if not matches:
-        return ""
+        return None
+    canonical = path.resolve().as_posix()
     excerpts = []
+    ranges = []
     for match in matches:
         start = max(0, match - 2)
         stop = min(len(lines), match + 12)
+        ranges.append((start + 1, stop))
         excerpts.append("\n".join(
-            f"{display_path or path}:{index + 1}: {lines[index]}"
+            f"{canonical}:{index + 1}: {lines[index]}"
             for index in range(start, stop)))
-    return "\n...\n".join(excerpts)
+    return FileExcerpt(canonical, ranges[0][0], ranges[-1][1], "\n...\n".join(excerpts))
 
 
 def collect_file_evidence(
     request: Any, impact: ImpactSlice, package: ExplorationPackage,
-) -> tuple[str, ...]:
+) -> tuple[FileExcerpt, ...]:
     """Read at most two text source files and one UML excerpt for this package."""
     project = Path(request.project_file).resolve()
-    named_roots = tuple(
-        (alias, Path(value).resolve())
-        for alias, value in (("source", request.source_dir), ("test", request.test_dir))
-        if value
-    )
     names_by_path: dict[Path, list[tuple[str, str]]] = {}
     design_names: list[str] = []
     requested_methods = re.findall(
@@ -94,7 +99,7 @@ def collect_file_evidence(
             names_by_path.setdefault(path, []).append(
                 (name, str(node.get("node_type") or node.get("type") or "")))
 
-    evidence: list[str] = []
+    evidence: list[FileExcerpt] = []
     for path, names in list(names_by_path.items())[:2]:
         assigned = {name for name, _ in names}
         preferred = [method for owner, method in requested_methods
@@ -104,11 +109,7 @@ def collect_file_evidence(
         mentioned = [name for name in methods if re.search(
             rf"\b{re.escape(name)}\b", str(request.user_message)[:2000])]
         terms = (preferred + mentioned + methods + others)[:10]
-        display = next(
-            f"{alias}/{path.relative_to(root).as_posix()}"
-            for alias, root in named_roots if _within(path, (root,))
-        )
-        if terms and (excerpt := _excerpt(path, terms, display_path=display)):
+        if terms and (excerpt := _excerpt(path, terms)):
             evidence.append(excerpt)
     if design_names and project.suffix == ".umlproj" and project.is_file():
         # Exact quoted JSON names reduce collisions with prose and IDs.
@@ -118,7 +119,7 @@ def collect_file_evidence(
                  if owner in assigned_names or method in assigned_names]
         terms.extend(f'"name": "{name}"' for name in design_names[:8] if len(name) >= 3)
         if terms and (excerpt := _excerpt(
-            project, terms, display_path=f"design/{project.name}",
+            project, terms,
         )):
             evidence.append(excerpt)
     return tuple(evidence)

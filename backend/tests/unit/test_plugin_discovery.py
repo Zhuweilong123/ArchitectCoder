@@ -35,8 +35,9 @@ def settings(**changes):
 def test_builtin_catalog_is_owned_by_seven_directories_and_keeps_all_interfaces():
     declarations = scan_manifests((BUILTIN_PLUGIN_ROOT,))
     assert {item["id"] for item in declarations} == {"skills", "memory", "trace", "evals", "orchestration", "knowledge_graph", "design_contract"}
-    assert sum(len(item["interfaces"]) for item in declarations) == 62
+    assert sum(len(item["interfaces"]) for item in declarations) == 63
     trace = next(item for item in declarations if item["id"] == "trace")
+    assert trace["interfaces"]["attach"]["required"] is False
     assert trace["interfaces"]["fork"]["required"] is False
     assert trace["interfaces"]["fork"]["wrap_result"] is True
     memory = next(item for item in declarations if item["id"] == "memory")

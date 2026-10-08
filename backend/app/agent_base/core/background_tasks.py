@@ -134,7 +134,11 @@ def submit_background(work: Awaitable, *, owner: str, run_id: str = "", source_t
     registry = _registry.get()
     if registry is None:
         from app.runtime.trace_session import background_trace
-        registry = BackgroundTaskRegistry(background_trace)
+        from functools import partial
+        from app.agent_base.core.observability import current_trace_sink
+        # Online chat binds its sink directly, without a TraceSession registry.
+        # Capture it before the background task outlives the connection or run.
+        registry = BackgroundTaskRegistry(partial(background_trace, parent_sink=current_trace_sink()))
     return registry.submit(work, owner=owner, run_id=run_id, source_trace_id=source_trace_id)
 
 

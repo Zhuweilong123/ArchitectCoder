@@ -91,4 +91,74 @@ test('conversation folds processes; search reveals truncated output; error navig
   assert.equal(document.querySelectorAll('.trace-timeline .trace-tool').length, 2);
 });
 
+test('tool commentary stays folded and routed child output stays inside its parent tool', async () => {
+  await act(async () => root.render(null));
+  events.splice(0, events.length,
+    { event_type: 'user_message', message: '泊车的时序图也补充一下' },
+    { event_type: 'llm_request', span_id: 'parent-llm', span_path: 'DevAgent' },
+    { event_type: 'llm_response', span_id: 'parent-llm', content: 'Let me understand the diagrams.', tool_calls: [{ id: 'route' }] },
+    { event_type: 'tool_call', span_id: 'route', tool_name: 'route_architecture', arguments: {} },
+    { event_type: 'llm_request', span_id: 'child-llm', span_path: 'DevAgent/route_architecture/child_agent' },
+    { event_type: 'llm_response', span_id: 'child-llm', content: '{"findings":[]}' },
+    { event_type: 'tool_call', span_id: 'child-read', span_path: 'DevAgent/route_architecture/child_agent', tool_name: 'read_file' },
+    { event_type: 'tool_result', span_id: 'child-read', observation: 'child evidence' },
+    { event_type: 'tool_result', span_id: 'route', observation: 'route complete' },
+    { event_type: 'llm_request', span_id: 'final-llm', span_path: 'DevAgent' },
+    { event_type: 'llm_response', span_id: 'final-llm', content: '已完成泊车时序图' },
+    { event_type: 'done', answer: '已完成泊车时序图' },
+  );
+  await act(async () => root.render(React.createElement(TraceViewer)));
+  await settle();
+  assert.equal(document.querySelectorAll('.trace-process-group').length, 1);
+  assert.equal(document.querySelectorAll('.trace-assistant').length, 0);
+  assert.doesNotMatch(document.querySelector('.trace-timeline').textContent, /Let me understand|findings/);
+  assert.equal(document.querySelectorAll('.trace-done').length, 1);
+  await act(async () => button('展开过程').click());
+  const parentLlm = document.querySelector('.trace-process-group .trace-llm');
+  await act(async () => [...parentLlm.querySelectorAll('.ant-collapse-header')]
+    .find(node => node.textContent.includes('Response')).click());
+  assert.match(parentLlm.textContent, /Let me understand/);
+  const route = [...document.querySelectorAll('.trace-tool')].find(node => node.querySelector('.trace-title')?.textContent === 'route_architecture');
+  assert.ok(route.querySelector('.trace-subagent'));
+  assert.match(route.textContent, /1 次模型请求.*1 次工具调用/s);
+  assert.doesNotMatch(route.textContent, /findings/);
+  await act(async () => route.querySelector('.trace-subagent .ant-collapse-header').click());
+  assert.equal(route.querySelectorAll('.trace-subagent .trace-llm').length, 1);
+  assert.equal(route.querySelector('.trace-subagent .trace-tool .trace-title').textContent, 'read_file');
+  await act(async () => [...route.querySelectorAll('.trace-subagent .trace-llm .ant-collapse-header')]
+    .find(node => node.textContent.includes('Response')).click());
+  assert.match(route.textContent, /findings/);
+});
+test('late background output belongs to its source turn and stays folded', async () => {
+  await act(async () => root.render(null));
+  const metadata = { run_id: 'run-one', background_task_id: 'memory-one', background_owner: 'memory_archive' };
+  events.splice(0, events.length,
+    { event_type: 'user_message', run_id: 'run-one', message: '第一轮' },
+    { event_type: 'done', answer: '第一轮回复' },
+    { event_type: 'background_scheduled', run_id: 'run-one', payload: { task_id: 'memory-one', owner: 'memory_archive', source_run_id: 'run-one' } },
+    { event_type: 'user_message', run_id: 'run-two', message: '第二轮' },
+    { event_type: 'done', answer: '第二轮回复' },
+    { event_type: 'background_scheduled', run_id: 'run-two', payload: { task_id: 'legacy-task', owner: 'memory_archive' } },
+    { ...metadata, event_type: 'background_started', status: 'running' },
+    { ...metadata, event_type: 'llm_request', span_id: 'memory-llm', span_path: 'MemoryArchive' },
+    { ...metadata, event_type: 'llm_response', span_id: 'memory-llm', content: '归档内部结果' },
+    { ...metadata, event_type: 'background_result', status: 'completed' },
+  );
+  await act(async () => root.render(React.createElement(TraceViewer)));
+  await settle();
+  assert.equal(document.querySelectorAll('.trace-turn-message').length, 2);
+  assert.equal(document.querySelectorAll('.trace-assistant').length, 0);
+  assert.doesNotMatch(document.querySelector('.trace-timeline').textContent, /归档内部结果/);
+  await act(async () => button('展开过程').click());
+  assert.equal(document.querySelectorAll('.trace-background').length, 1);
+  const background = document.querySelector('.trace-background');
+  assert.match(background.textContent, /后台任务.*memory_archive.*已完成.*1 条记录/s);
+  const secondTurn = document.querySelectorAll('.trace-turn-message')[1];
+  assert.ok(background.compareDocumentPosition(secondTurn) & window.Node.DOCUMENT_POSITION_FOLLOWING);
+  await act(async () => background.querySelector('.ant-collapse-header').click());
+  const response = [...background.querySelectorAll('.trace-llm .ant-collapse-header')].find(node => node.textContent.includes('Response'));
+  await act(async () => response.click());
+  assert.match(background.textContent, /归档内部结果/);
+});
+
 test.after(async () => { await act(async () => root.unmount()); dom.window.close(); });

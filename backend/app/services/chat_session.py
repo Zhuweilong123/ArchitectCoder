@@ -812,10 +812,14 @@ class ChatSessionCoordinator:
                     review_id = msg.get("review_id", 0)
                     # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
                     decision = msg.get("decision", "")
+                    feedback = msg.get("feedback")
                     if decision:
+                        # Older clients sent comments as response alongside decision.
+                        if feedback is None:
+                            feedback = msg.get("response", "") or ""
                         response = json.dumps({
                             "decision": decision,
-                            "feedback": msg.get("feedback", ""),
+                            "feedback": feedback,
                         }, ensure_ascii=False)
                     else:
                         response = msg.get("response", "")
@@ -825,10 +829,13 @@ class ChatSessionCoordinator:
                             parsed_response = None
                         if isinstance(parsed_response, dict):
                             decision = parsed_response.get("decision", "")
+                            feedback = parsed_response.get("feedback", "") or ""
                         elif str(response).strip().lower() in {"accept", "approve", "approved", "批准", "同意", "接受"}:
                             decision = "accept"
                         else:
                             decision = "reject"
+                    if feedback is None:
+                        feedback = response
                     if review_mgr:
                         review_request = review_mgr.get_request(review_id)
                         candidate_recovery = (
@@ -896,7 +903,7 @@ class ChatSessionCoordinator:
                             response=response,
                             review_type=(review_request.review_type if review_request else ""),
                             decision=decision,
-                            feedback=msg.get("feedback", "") or "",
+                            feedback=feedback,
                             candidate_recovery=bool(candidate_recovery),
                         )
                         logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
@@ -956,7 +963,7 @@ class ChatSessionCoordinator:
                                 })
                                 continue
                             if dev_agent is not None and (run_task is None or run_task.done()):
-                                feedback_text = msg.get("feedback", "") or msg.get("response", "")
+                                feedback_text = feedback
                                 followup = (
                                     "用户拒绝了刚才的 UML 设计变更"
                                     + (f"，反馈：{feedback_text}" if feedback_text else "")

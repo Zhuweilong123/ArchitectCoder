@@ -33,7 +33,7 @@ def test_evaluation_settles_background_response_before_trace_closes(tmp_path):
     asyncio.run(run())
 
 
-def test_online_background_has_independent_trace_after_foreground_closes(tmp_path):
+def test_online_background_appends_to_session_after_foreground_closes(tmp_path):
     async def run():
         gate = asyncio.Event()
         session = TraceSession(session_id="online", sink=ChatTraceLogger("online", log_dir=str(tmp_path)))
@@ -51,13 +51,21 @@ def test_online_background_has_independent_trace_after_foreground_closes(tmp_pat
         record = session.background_registry.records[0]
         background = rows(record.metadata["trace_path"])
         assert Path(record.metadata["trace_path"]).parent == Path(sink.path).parent
-        assert not any(r["event_type"] == "llm_response" for r in foreground)
-        assert any(r["event_type"] == "llm_response" for r in background)
+        assert record.metadata["trace_path"] == sink.path
+        assert record.metadata["trace_id"] == sink.trace_id
+        assert list(tmp_path.glob("trace_*.jsonl")) == [Path(sink.path)]
+        assert any(r["event_type"] == "llm_response" for r in foreground)
+        assert all(r["session_id"] == "online" and r["trace_id"] == sink.trace_id for r in background)
+        assert sum(r["event_type"] == "session_start" for r in background) == 1
+        assert sum(r["event_type"] == "session_end" for r in background) == 1
+        response = next(r for r in background if r["event_type"] == "llm_response")
+        assert response["background_task_id"] == record.task_id
+        assert response["background_owner"] == "example"
         result = next(r for r in background if r["event_type"] == "background_result")
         assert result["source_trace_id"] == sink.trace_id
         assert result["run_id"] == "online-run"
         assert result["usage_complete"] and result["usage"]["total_tokens"] == 123
-        assert background[-1]["event_type"] == "session_end"
+        assert background[-1]["event_type"] == "background_result"
     asyncio.run(run())
 
 
@@ -148,4 +156,81 @@ def test_waiting_owner_cancellation_still_drains_background(tmp_path):
             pass
         assert session.background_registry.records[0].status == "cancelled"
         assert rows(session.tracer.path)[-1]["event_type"] == "session_end"
+    asyncio.run(run())
+
+
+def test_background_starts_after_close_and_keeps_original_run(tmp_path):
+    async def run():
+        session = TraceSession(session_id="late", sink=ChatTraceLogger("late", log_dir=str(tmp_path)))
+        with session as sink:
+            sink.set_run_id("original")
+            async def work():
+                span = emit_trace("llm_request", model="fake", messages=[])
+                emit_trace("llm_response", span_id=span, content="archived", usage={"total_tokens": 7})
+            task = submit_background(work(), owner="memory_archive", run_id="original", source_trace_id=sink.trace_id)
+            sink.set_run_id("next-run")
+        # The task has not even begun until after the foreground writer closes.
+        await task
+        data = rows(sink.path)
+        background = [r for r in data if r.get("background_task_id")]
+        assert all(r["run_id"] == "original" for r in background)
+        assert any(r["event_type"] == "llm_request" for r in background)
+        assert any(r["event_type"] == "llm_response" for r in background)
+        assert data[-1]["event_type"] == "background_result"
+        assert sink.run_id == "next-run"
+        assert len(list(tmp_path.glob("trace_*.jsonl"))) == 1
+    asyncio.run(run())
+
+
+def test_background_without_session_keeps_standalone_recorder(tmp_path, monkeypatch):
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider
+    from extensions.trace.chat_trace import JsonlTraceProvider
+    monkeypatch.setattr("app.runtime.trace_session.load_trace", lambda: _ResilientTraceProvider(JsonlTraceProvider(str(tmp_path))))
+    async def run():
+        async def work():
+            span = emit_trace("llm_request", model="fake", messages=[])
+            emit_trace("llm_response", span_id=span, content="saved")
+        await submit_background(work(), owner="standalone")
+    asyncio.run(run())
+    files = list(tmp_path.glob("trace_background_*.jsonl"))
+    assert len(files) == 1
+    assert rows(files[0])[-1]["event_type"] == "session_end"
+
+
+def test_directly_bound_chat_sink_keeps_background_in_original_session(tmp_path, monkeypatch):
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider
+    from app.agent_base.core.observability import set_current_trace_sink, reset_current_trace_sink
+    from extensions.trace.chat_trace import JsonlTraceProvider
+    provider = _ResilientTraceProvider(JsonlTraceProvider(str(tmp_path)))
+    monkeypatch.setattr("app.runtime.trace_session.load_trace", lambda: provider)
+
+    async def run():
+        # Match online chat: direct sink binding, no background registry.
+        from app.agent_base.host_api.tracing import TraceSessionRequest
+        sink = provider.create(TraceSessionRequest(session_id="online-direct"))
+        sink.start()
+        sink.set_run_id("first-run")
+        token = set_current_trace_sink(sink)
+        async def work():
+            span = emit_trace("llm_request", model="fake", messages=[])
+            emit_trace("llm_response", span_id=span, content="archived", usage={"total_tokens": 13})
+        try:
+            first = submit_background(work(), owner="memory_archive", run_id="first-run", source_trace_id=sink.trace_id)
+            sink.set_run_id("second-run")
+            second = submit_background(work(), owner="memory_archive", run_id="second-run", source_trace_id=sink.trace_id)
+        finally:
+            reset_current_trace_sink(token)
+            sink.close()
+        # Both tasks begin after the originating connection's sink is unbound.
+        await asyncio.gather(first, second)
+        data = rows(sink.path)
+        assert list(tmp_path.glob("trace_*.jsonl")) == [Path(sink.path)]
+        assert all(row["session_id"] == "online-direct" for row in data)
+        assert all(row["trace_id"] == sink.trace_id for row in data)
+        results = [row for row in data if row["event_type"] == "background_result"]
+        assert {row["run_id"] for row in results} == {"first-run", "second-run"}
+        assert len({row["background_task_id"] for row in results}) == 2
+        assert all(row["usage"]["total_tokens"] == 13 and row["usage_complete"] for row in results)
+        assert sum(row["event_type"] == "session_start" for row in data) == 1
+        assert sum(row["event_type"] == "session_end" for row in data) == 1
     asyncio.run(run())

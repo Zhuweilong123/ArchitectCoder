@@ -177,6 +177,8 @@ class ChatTraceLogger:
         self._closed = False
         self._n = 0
         self._started = False
+        self._attached = False
+        self._background_metadata = {}
 
     def set_run_id(self, run_id: str) -> None:
         """Associate subsequent events with one durable harness Run."""
@@ -206,6 +208,7 @@ class ChatTraceLogger:
     # ── 底层写入 ─────────────────────────────────────
 
     def _write(self, evt: dict) -> None:
+        evt.update(self._background_metadata)
         if self._closed:
             return
         try:
@@ -244,7 +247,7 @@ class ChatTraceLogger:
               design_dir: str = "",
               env_snapshot: dict | None = None) -> None:
         """会话开始事件 — 记录环境快照便于复现。"""
-        if self._started:
+        if self._started or self._attached:
             return
         self._started = True
         payload = {
@@ -261,6 +264,9 @@ class ChatTraceLogger:
 
     def close(self) -> None:
         if self._closed:
+            return
+        if self._attached:
+            self._closed = True
             return
         try:
             # 先写结束事件，再标记 closed。旧实现先置位，导致 event() 内部
@@ -491,6 +497,17 @@ class JsonlTraceProvider:
     def fork(self, sink):
         from pathlib import Path
         return JsonlTraceProvider(str(Path(sink.path).parent) if sink.path else self.trace_dir)
+
+    def attach(self, sink, *, run_id, task_id, owner):
+        """Independent writer for the same stream, even after the parent closes."""
+        child = ChatTraceLogger(sink.session_id)
+        child._path = sink.path
+        child._trace_id = sink.trace_id
+        child._lock = sink._lock
+        child._attached = True
+        child.set_run_id(run_id)
+        child._background_metadata = {"background_task_id": task_id, "background_owner": owner}
+        return child
 
     def create(self, request):
         return ChatTraceLogger(

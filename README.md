@@ -75,6 +75,54 @@ Choose the design contract mode for the task:
 - **Project history**: switch sessions, restore conversation history, and use project-scoped memory through configurable providers.
 - **Controlled changes**: workspace boundaries, scoped file changes, conflict detection, command policy, and sensitive-command approval.
 
+### Architecture-aware subagent scheduling
+
+When a task spans several components or its dependency path is unclear, the main Agent can request knowledge-graph-guided, read-only exploration. The scheduler extracts candidate architecture/source regions, partitions work using exploration costs and dependency relationships, delegates useful parallel work to subagents, and adjusts pending assignments using observed execution time and idle capacity. Subagents return source locations and findings checked with file tools; the main Agent handles edits, review, and verification.
+
+```text
+Main Agent requests exploration → Graph scope extraction → Cost estimation and dependency partitioning
+    → Bounded read-only exploration and dynamic scheduling → Source evidence → Main Agent edits, reviews, and verifies
+```
+
+Currently, up to two subagents run concurrently, with up to four work items across successive waves when the budget permits. Local tasks and tasks without a useful parallel split proceed directly. Dynamic scheduling moves work that has not started; it does not automatically expand the task scope from new findings.
+
+<details>
+<summary>Algorithm: exploration costs, dependency partitioning, and execution feedback</summary>
+
+**1. Bounded scope extraction.** Select up to four graph seeds from up to four queries, then collect one-hop dependencies and dependents within a maximum of 36 candidate nodes. The graph locates candidates; source reads verify behavior. Truncation, unmatched queries, and unverified findings remain visible in the results.
+
+**2. Node exploration cost.** Apply logarithmic scaling to five features and combine them with equal weights:
+
+![Node cost: maximum of 0.1 and the mean of five logarithmically scaled features](docs/media/architecture-scheduling/node-cost.svg)
+
+| Feature | Current measurement | Reference scale rᵢ |
+|---|---|---:|
+| Reading volume T | Token estimate from file bytes or source span | 3000 |
+| Symbol scope S | Symbol and interface count hints | 20 |
+| Dependencies D | Incident edges in the graph slice, plus dependency hints for file nodes | 12 |
+| Complexity proxy Q | `1 + ln(1 + file lines or source span)` | 20 |
+| Impact proxy I | Incoming edges in the current graph slice | 20 |
+
+When file signals are unavailable, graph information and default estimates are used. Reference scales make features comparable; they do not constrain scores to 0–1. Complexity and impact are proxy measures.
+
+**3. Shared-file cost.** Nodes in the same file form an exploration unit U. The largest node contributes its full cost; the others contribute 35%, reflecting shared reading context:
+
+![Shared-file cost: maximum node cost plus 0.35 times the remaining node costs](docs/media/architecture-scheduling/shared-file-cost.svg)
+
+**4. Partition optimization.** Partition load Lₖ is the sum of its exploration-unit costs. The objective balances maximum load and relationships crossing partition boundaries:
+
+![Partition objective: normalized maximum load plus 0.45 times normalized crossing relationship weight](docs/media/architecture-scheduling/partition-objective.svg)
+
+Relationships between different units are weighted by type: implementation 5; dependency, import, message, and reference 3; test 1; containment 0.5; other relationships 1. Each unit pair uses its maximum relationship weight. Units are assigned greedily in descending cost order to the less-loaded side, followed by up to 20 rounds of single-unit moves. Each move must improve the objective by more than 0.01. Parallel exploration is delegated only when the two-partition objective improves on a single partition by more than 0.05.
+
+**5. Execution feedback.** Estimated costs and observed durations of completed work provide processing-speed estimates for each execution slot. Pending work moves only to an idle slot and only when the predicted maximum remaining duration falls by more than 10%. Persisted scheduling state supports reuse of completed results and rejection of results from stale assignments.
+
+These costs are **relative exploration scores** for comparison and scheduling, not predictions of actual token usage or execution time. The current model uses fixed reference scales and equal weights, with a bounded heuristic partitioner. Efficiency gains still require controlled benchmark validation.
+
+Implementation: [Scope extraction](extensions/orchestration/architecture_aware/impact.py) · [Costs and partitioning](extensions/orchestration/architecture_aware/partition.py) · [Dynamic scheduling](extensions/orchestration/architecture_aware/scheduler.py)
+
+</details>
+
 ### Export and delivery
 
 | Format | Use |

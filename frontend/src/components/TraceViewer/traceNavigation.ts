@@ -1,6 +1,21 @@
 export interface SearchDocument { id: string; value: unknown; }
 export interface TraceSearchHit { id: string; field: string; text: string; offset: number; length: number; }
 
+/** Tool-call commentary and child-agent output belong to the execution process. */
+export function traceConversationText(item: {
+  kind: string;
+  request?: Record<string, any>;
+  response?: Record<string, any>;
+}): string {
+  if (item.kind !== 'llm' || item.response?.error || item.request?.background_task_id || item.response?.background_task_id) return '';
+  const response = item.response;
+  if (Array.isArray(response?.tool_calls) && response.tool_calls.length > 0) return '';
+  const path = String(item.request?.span_path || response?.span_path || '');
+  if (path.split('/').some((segment) => segment.toLowerCase().includes('subagent')
+    || segment.toLowerCase() === 'child_agent')) return '';
+  return String(response?.content || '');
+}
+
 /** Index original values, including nested subagent events and untruncated output. */
 export function searchTrace(documents: SearchDocument[], query: string): TraceSearchHit[] {
   const needle = query.trim().toLowerCase();
