@@ -93,31 +93,25 @@ Currently, up to two subagents run concurrently, with up to four work items acro
 
 **2. Node exploration cost.** Apply logarithmic scaling to five features and combine them with equal weights:
 
-$$
-C(v)=\max\left(0.1,\ \frac{1}{5}\sum_{i=1}^{5}\frac{\ln(1+x_i(v))}{\ln(1+r_i)}\right)
-$$
+![Node cost: maximum of 0.1 and the mean of five logarithmically scaled features](docs/media/architecture-scheduling/node-cost.svg)
 
-| Feature | Current measurement | Reference scale $r_i$ |
+| Feature | Current measurement | Reference scale rᵢ |
 |---|---|---:|
-| Reading volume $T$ | Token estimate from file bytes or source span | 3000 |
-| Symbol scope $S$ | Symbol and interface count hints | 20 |
-| Dependencies $D$ | Incident edges in the graph slice, plus dependency hints for file nodes | 12 |
-| Complexity proxy $Q$ | $1+\ln(1+\text{file lines or source span})$ | 20 |
-| Impact proxy $I$ | Incoming edges in the current graph slice | 20 |
+| Reading volume T | Token estimate from file bytes or source span | 3000 |
+| Symbol scope S | Symbol and interface count hints | 20 |
+| Dependencies D | Incident edges in the graph slice, plus dependency hints for file nodes | 12 |
+| Complexity proxy Q | `1 + ln(1 + file lines or source span)` | 20 |
+| Impact proxy I | Incoming edges in the current graph slice | 20 |
 
 When file signals are unavailable, graph information and default estimates are used. Reference scales make features comparable; they do not constrain scores to 0–1. Complexity and impact are proxy measures.
 
-**3. Shared-file cost.** Nodes in the same file form an exploration unit $U$. The largest node contributes its full cost; the others contribute 35%, reflecting shared reading context:
+**3. Shared-file cost.** Nodes in the same file form an exploration unit U. The largest node contributes its full cost; the others contribute 35%, reflecting shared reading context:
 
-$$
-C(U)=\max_{v\in U}C(v)+0.35\left(\sum_{v\in U}C(v)-\max_{v\in U}C(v)\right)
-$$
+![Shared-file cost: maximum node cost plus 0.35 times the remaining node costs](docs/media/architecture-scheduling/shared-file-cost.svg)
 
-**4. Partition optimization.** Partition load $L_k$ is the sum of its exploration-unit costs. The objective balances maximum load and relationships crossing partition boundaries:
+**4. Partition optimization.** Partition load Lₖ is the sum of its exploration-unit costs. The objective balances maximum load and relationships crossing partition boundaries:
 
-$$
-J(P)=\frac{\max_k L_k}{\max(\sum_k L_k,\ 0.1)}+0.45\frac{W_{\mathrm{cut}}(P)}{\max(W_{\mathrm{all}},\ 1)}
-$$
+![Partition objective: normalized maximum load plus 0.45 times normalized crossing relationship weight](docs/media/architecture-scheduling/partition-objective.svg)
 
 Relationships between different units are weighted by type: implementation 5; dependency, import, message, and reference 3; test 1; containment 0.5; other relationships 1. Each unit pair uses its maximum relationship weight. Units are assigned greedily in descending cost order to the less-loaded side, followed by up to 20 rounds of single-unit moves. Each move must improve the objective by more than 0.01. Parallel exploration is delegated only when the two-partition objective improves on a single partition by more than 0.05.
 
