@@ -37,6 +37,8 @@ def create(
     project_file: str = "",
     source_dir: str = "",
     test_dir: str = "",
+    workspace_root: str = "",
+    design_dir: str = "",
     explorer_factory=None,
     **kwargs,
 ):
@@ -58,6 +60,8 @@ def create(
             project_file=project_file,
             source_dir=source_dir,
             test_dir=test_dir,
+            workspace_root=workspace_root,
+            design_dir=design_dir,
             explorer_factory=explorer_factory,
         )
     except Exception as exc:
