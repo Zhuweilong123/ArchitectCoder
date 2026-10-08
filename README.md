@@ -12,9 +12,9 @@
 
 ArchitectCoder is an **architecture-driven development workbench for AI coding agents**.
 
-How do you preserve module boundaries, interface contracts, and design intent as AI agents keep changing code?
+How do you preserve module boundaries, interface contracts, and design intent as AI agents keep changing code? As a project evolves, how do you detect and address drift between its design and source code?
 
-ArchitectCoder brings explicit design, human review, and design contract checks into the development workflow, making architectural intent part of code changes and verification:
+ArchitectCoder brings explicit design, human review, and design contract checks into the development workflow: review design intent before changes, check design–implementation consistency before committing, and fill or update designs from existing source code. Drift identified within the checks' coverage can inform code repairs or reviewed design updates:
 
 **Requirements → Design changes → Human review → Agent implementation → Tests & contract checks**
 
