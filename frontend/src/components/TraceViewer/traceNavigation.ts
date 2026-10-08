@@ -7,7 +7,7 @@ export function traceConversationText(item: {
   request?: Record<string, any>;
   response?: Record<string, any>;
 }): string {
-  if (item.kind !== 'llm' || item.response?.error) return '';
+  if (item.kind !== 'llm' || item.response?.error || item.request?.background_task_id || item.response?.background_task_id) return '';
   const response = item.response;
   if (Array.isArray(response?.tool_calls) && response.tool_calls.length > 0) return '';
   const path = String(item.request?.span_path || response?.span_path || '');

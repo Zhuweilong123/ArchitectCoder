@@ -48,6 +48,8 @@ def _is_step_level(evt: dict) -> bool:
       - 回放自身的调用：span_path 为 "replay"（rerun 模式真调 LLM 被写进 trace）——
         也排除，避免污染游标对齐。
     """
+    if evt.get("background_task_id"):
+        return False
     sp = evt.get("span_path") or ""
     return bool(sp) and "/" not in sp and sp != "replay"
 
@@ -436,7 +438,7 @@ async def replay_agent_session(
     data = read_trace(session_id)
     if data is None:
         raise ValueError(f"trace 不存在: {session_id}")
-    events: list[dict] = data["events"]
+    events: list[dict] = [e for e in data["events"] if not e.get("background_task_id")]
 
     # ── 轮次划分：user_message 为界，done 归属当前轮 ──
     turns: list[dict] = []

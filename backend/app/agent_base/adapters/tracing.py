@@ -59,6 +59,9 @@ class NoOpTraceSink:
 
 
 class NoOpTraceProvider:
+    def attach(self, sink, **kwargs):
+        return NoOpTraceSink()
+
     def fork(self, sink):
         return self
 
@@ -143,6 +146,20 @@ class _ResilientTraceProvider:
         except Exception:
             logger.warning("[Trace] provider fork failed; using no-op", exc_info=True)
             return NoOpTraceProvider()
+
+    def attach(self, sink, **kwargs):
+        try:
+            attach = getattr(self.provider, "attach", None)
+            if not callable(attach):
+                return None
+            source = sink._sink if isinstance(sink, _ResilientTraceSink) else sink
+            child = attach(source, **kwargs)
+            if child is None:
+                raise TypeError("trace provider returned no attached sink")
+            return _ResilientTraceSink(child)
+        except Exception:
+            logger.warning("[Trace] provider attach failed; using no-op", exc_info=True)
+            return NoOpTraceSink()
 
     def create(self, request: TraceSessionRequest) -> TraceSink:
         try:

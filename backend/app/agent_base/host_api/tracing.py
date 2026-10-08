@@ -83,6 +83,12 @@ class TraceForkPort(Protocol):
     def fork(self, sink: TraceSink) -> TraceProvider: ...
 
 
+class TraceAttachmentPort(Protocol):
+    """Optional independent writer for background events in an existing stream."""
+
+    def attach(self, sink: TraceSink, *, run_id: str, task_id: str, owner: str) -> TraceSink: ...
+
+
 class TraceQueryPort(Protocol):
     """Optional read-side capability exposed by a trace provider."""
 

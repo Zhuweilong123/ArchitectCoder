@@ -11,6 +11,11 @@
     "provider": "agent_trace_provider"
   },
   "interfaces": {
+    "attach": {
+      "stage": "initialize",
+      "required": false,
+      "async": false
+    },
     "fork": {
       "stage": "initialize",
       "required": false,

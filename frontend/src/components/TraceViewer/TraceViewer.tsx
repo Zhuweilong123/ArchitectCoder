@@ -44,7 +44,15 @@ interface SubagentItem {
   spanPath: string;
   items: Item[];
 }
-type Item = LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | LifecycleItem | SubagentItem;
+interface BackgroundItem {
+  kind: 'background';
+  taskId: string;
+  owner: string;
+  event: TraceEvent;
+  items: Item[];
+}
+
+type Item = BackgroundItem | LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | LifecycleItem | SubagentItem;
 
 interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
 type TraceScope = 'chat' | 'evaluation';
@@ -145,52 +153,80 @@ function buildTurns(events: TraceEvent[]): Turn[] {
   turns.push(cur);
   const llmBySpan = new Map<string, LlmItem>();
   const toolBySpan = new Map<string, ToolItem>();
+  const turnByRun = new Map<string, Turn>();
+  const backgrounds = new Map<string, BackgroundItem>();
+  const recordedBackgrounds = new Set(events.map((event) => event.background_task_id).filter(Boolean));
+  const backgroundFor = (taskId: string, owner: string, runId: string) => {
+    let item = backgrounds.get(taskId);
+    if (!item) {
+      item = { kind: 'background', taskId, owner, event: { status: 'pending' }, items: [] };
+      backgrounds.set(taskId, item);
+      (turnByRun.get(runId) || cur).items.push(item);
+    }
+    return item;
+  };
 
   for (const ev of events) {
+    if (ev.event_type === 'background_scheduled') {
+      const data = ev.payload || ev;
+      // Legacy scheduling events refer to a separate file, not an attached task.
+      if (recordedBackgrounds.has(data.task_id)) {
+        backgroundFor(data.task_id, data.owner || '', data.source_run_id || ev.run_id || '');
+      }
+      continue;
+    }
+    const background = ev.background_task_id
+      ? backgroundFor(ev.background_task_id, ev.background_owner || '', ev.run_id || '') : undefined;
+    if (background && ['background_started', 'background_result'].includes(ev.event_type)) {
+      background.event = ev;
+      continue;
+    }
+    const items = background ? background.items : cur.items;
     switch (ev.event_type) {
       case 'user_message':
         cur = { id: turns.length, userMessage: ev.message || '', projectFile: ev.project_file || '', items: [] };
         turns.push(cur);
+        if (ev.run_id) turnByRun.set(ev.run_id, cur);
         break;
       case 'llm_request': {
         const item: LlmItem = { kind: 'llm', request: ev };
         llmBySpan.set(ev.span_id, item);
-        cur.items.push(item);
+        items.push(item);
         break;
       }
       case 'llm_response': {
         const item = llmBySpan.get(ev.span_id);
         if (item) item.response = ev;
-        else cur.items.push({ kind: 'llm', request: ev, response: ev });
+        else items.push({ kind: 'llm', request: ev, response: ev });
         break;
       }
       case 'tool_call': {
         const item: ToolItem = { kind: 'tool', call: ev };
         toolBySpan.set(ev.span_id, item);
-        cur.items.push(item);
+        items.push(item);
         break;
       }
       case 'tool_result': {
         const item = toolBySpan.get(ev.span_id);
         if (item) item.result = ev;
-        else cur.items.push({ kind: 'tool', call: ev, result: ev });
+        else items.push({ kind: 'tool', call: ev, result: ev });
         break;
       }
       case 'agent_step':
-        cur.items.push({ kind: 'step', event: ev });
+        items.push({ kind: 'step', event: ev });
         break;
       case 'done':
-        cur.items.push({ kind: 'done', event: ev });
+        items.push({ kind: 'done', event: ev });
         break;
       case 'error':
-        cur.items.push({ kind: 'error', event: ev });
+        items.push({ kind: 'error', event: ev });
         break;
       case 'task_summary':
-        cur.items.push({ kind: 'summary', event: ev });
+        items.push({ kind: 'summary', event: ev });
         break;
       case 'review_request':
       case 'review_response':
-        cur.items.push({ kind: 'review', event: ev });
+        items.push({ kind: 'review', event: ev });
         break;
       case 'contract_check':
       case 'candidate_artifact':
@@ -198,7 +234,7 @@ function buildTurns(events: TraceEvent[]): Turn[] {
       case 'candidate_restore':
       case 'changes_committed':
       case 'contract_graph_sync':
-        cur.items.push({ kind: 'lifecycle', event: ev });
+        items.push({ kind: 'lifecycle', event: ev });
         break;
       default:
         // session_start / session_end / review_* / kg_inject：暂不在时间轴单独渲染
@@ -624,6 +660,25 @@ function renderLifecycle(ev: TraceEvent, language: TraceLanguage = 'zh'): React.
   );
 }
 
+function renderBackground(item: BackgroundItem, language: TraceLanguage): React.ReactNode {
+  const status = String(item.event.status || 'pending');
+  const labels: Record<string, string> = {
+    pending: tx(language, '等待中', 'Pending'), running: tx(language, '执行中', 'Running'), completed: tx(language, '已完成', 'Completed'),
+    failed: tx(language, '失败', 'Failed'), cancelled: tx(language, '已取消', 'Cancelled'),
+    degraded: tx(language, '降级完成', 'Degraded'),
+  };
+  return <div className="trace-card trace-background">
+    <Collapse ghost items={[{ key: item.taskId, label: <span>
+      {tx(language, '后台任务', 'Background task')} <Tag>{item.owner}</Tag>
+      <Tag color={status === 'failed' ? 'red' : status === 'completed' ? 'green' : 'orange'}>{labels[status] || status}</Tag>
+      <Tag>{item.items.length} {tx(language, '条记录', 'records')}</Tag>
+    </span>, children: <>
+      {item.items.map((child, index) => <div key={index}>{renderItem(child, language)}</div>)}
+      <ExpandablePre text={pretty(item.event)} language={language} />
+    </> }]} />
+  </div>;
+}
+
 function renderItem(item: Item, language: TraceLanguage = 'zh'): React.ReactNode {
   switch (item.kind) {
     case 'llm': return renderLlm(item, language);
@@ -635,6 +690,7 @@ function renderItem(item: Item, language: TraceLanguage = 'zh'): React.ReactNode
     case 'review': return renderReview(item.event, language);
     case 'lifecycle': return renderLifecycle(item.event, language);
     case 'subagent': return renderSubagent(item, language);
+    case 'background': return renderBackground(item, language);
   }
 }
 

@@ -144,3 +144,20 @@ def test_provider_fork_failure_degrades_without_breaking_background_work():
     child = _ResilientTraceProvider(BrokenProvider()).fork(_Sink())
     assert isinstance(child, NoOpTraceProvider)
     assert not child.create(TraceSessionRequest(session_id="background")).path
+
+
+def test_attached_provider_failure_does_not_create_unrelated_trace():
+    from app.agent_base.adapters.tracing import _ResilientTraceProvider, NoOpTraceSink
+    class BrokenProvider(_Provider):
+        def attach(self, sink, **kwargs):
+            raise OSError("storage unavailable")
+    provider = _ResilientTraceProvider(BrokenProvider())
+    assert isinstance(provider.attach(_Sink(), run_id="r", task_id="t", owner="test"), NoOpTraceSink)
+    assert _ResilientTraceProvider(_Provider()).attach(_Sink()) is None
+
+
+def test_replay_ignores_background_model_even_with_agent_span():
+    from extensions.trace.replay import _step_level_events
+    foreground = {"event_type": "llm_response", "span_path": "DevAgent", "content": "reply"}
+    background = {**foreground, "content": "memory", "background_task_id": "task"}
+    assert _step_level_events([foreground, background], "llm_response") == [foreground]
