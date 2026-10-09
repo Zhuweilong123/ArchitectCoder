@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Divider, Empty, Input, List, Modal, Popconfirm, Progress,
-  Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Collapse, Divider, Empty, Input, List, Modal, Popconfirm, Progress,
+  Row, Select, Space, Statistic, Steps, Table, Tabs, Tag, Typography, message,
 } from 'antd';
 import {
   DeleteOutlined, EyeOutlined, FileAddOutlined, FileDoneOutlined, LineChartOutlined, PlayCircleOutlined, ReloadOutlined,
@@ -12,9 +12,9 @@ import {
   getEvalBaseline, listEvalTrends, mergeEvalBatches, startEvalBatch,
   getEvalRepository,
   archiveEvalPerformanceResult, getEvalPerformanceResult, listEvalPerformanceResults,
-  captureTraceCaseFixture, createTraceCaseDraft, deleteTraceCaseDraft, listTraceCaseDrafts, listTraceCaseProjects, previewTraceCaseFixture, publishTraceCaseDraft, reviewTraceCaseDraft, validateTraceCaseDraft, listTraces,
+  captureTraceCaseFixture, createTraceCaseDraft, deleteTraceCaseDraft, getTraceCaseDraft, listTraceCaseDrafts, listTraceCaseProjects, previewTraceCaseFixture, publishTraceCaseDraft, reviewTraceCaseDraft, validateTraceCaseDraft, listTraces,
   type EvalArchive, type EvalBaseline, type EvalBatch, type EvalCaseInfo, type EvalPerformanceRun,
-  type EvalRepositoryInfo, type EvalResult, type EvalTrend, type TraceCaseDraft, type TraceCaseFixturePreview, type TraceCaseProject, type TraceMeta,
+  type EvalRepositoryInfo, type EvalResult, type EvalTrend, type TraceCaseDraft, type TraceCaseFixturePreview, type TraceCaseProject, type TraceCaseTurn, type TraceMeta,
 } from '../../services/api';
 import {
   ACTIVE_BATCH_STORAGE_KEY, COMPARISON_VERSION_COLORS, EVAL_AGENT_LABEL,
@@ -27,6 +27,7 @@ import {
   loadEvaluationOverview, loadTraceCaseFactoryResources,
 } from '../../services/evaluationCenterApi';
 import './EvaluationCenter.css';
+import { draftTurns, hasHardCriteria, reviewPayload, savedReviewPayload, selectTurns } from './traceCaseReview';
 
 const { Text } = Typography;
 type EvaluationLanguage = 'en' | 'zh';
@@ -62,9 +63,10 @@ interface CheckerEditorProps {
   title: string;
   value: Array<Record<string, any>>;
   onChange: (value: Array<Record<string, any>>) => void;
+  disabled?: boolean;
 }
 
-const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange }) => {
+const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange, disabled = false }) => {
   const interfaceLanguage = useUiStore((state) => state.interfaceLanguage);
   const definitions = getCheckerDefinitions(interfaceLanguage);
   const updateChecker = (index: number, patch: Record<string, any>) => {
@@ -83,15 +85,16 @@ const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange })
     updateChecker(index, next);
   };
   return (
-    <Card size="small" title={`${title} (${value.length})`} extra={<Button size="small" onClick={() => onChange([...value, { type: 'file_exists' }])}>{tx(interfaceLanguage, '添加 Checker', 'Add checker')}</Button>}>
+    <Card size="small" title={`${title} (${value.length})`} extra={<Button disabled={disabled} size="small" onClick={() => onChange([...value, { type: 'file_exists' }])}>{tx(interfaceLanguage, '添加 Checker', 'Add checker')}</Button>}>
       <Space direction="vertical" style={{ width: '100%' }}>
         {value.length === 0 ? <Text type="secondary">{tx(interfaceLanguage, '暂无配置，点击右上角添加 Checker', 'No configuration yet. Click Add checker above.')}</Text> : value.map((checker, index) => {
           const definition = definitions.find((item) => item.type === String(checker.type || '')) || definitions[0];
           return (
-            <Card key={`${index}-${checker.type || 'checker'}`} size="small" type="inner" title={`Checker ${index + 1}`} extra={<Button danger size="small" onClick={() => onChange(value.filter((_, current) => current !== index))}>{tx(interfaceLanguage, '删除', 'Delete')}</Button>}>
+            <Card key={`${index}-${checker.type || 'checker'}`} size="small" type="inner" title={`Checker ${index + 1}`} extra={<Button disabled={disabled} danger size="small" onClick={() => onChange(value.filter((_, current) => current !== index))}>{tx(interfaceLanguage, '删除', 'Delete')}</Button>}>
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Select
                   showSearch
+                  disabled={disabled}
                   optionFilterProp="label"
                   value={checker.type || undefined}
                   style={{ width: '100%' }}
@@ -104,8 +107,8 @@ const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange })
                     const currentValue = checker[field.key];
                     const displayValue = field.kind === 'list' ? (Array.isArray(currentValue) ? currentValue.join(', ') : '') : field.kind === 'json' ? (currentValue === undefined ? '' : JSON.stringify(currentValue, null, 2)) : currentValue === undefined ? '' : String(currentValue);
                     const control = field.kind === 'json' ? (
-                      <Input.TextArea value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} autoSize={{ minRows: 1, maxRows: 4 }} placeholder={field.placeholder || tx(interfaceLanguage, 'JSON 值', 'JSON value')} />
-                    ) : <Input value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} type={field.kind === 'number' ? 'number' : 'text'} placeholder={field.placeholder || (field.kind === 'list' ? tx(interfaceLanguage, '多个值用逗号分隔', 'Separate multiple values with commas') : '')} />;
+                      <Input.TextArea disabled={disabled} value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} autoSize={{ minRows: 1, maxRows: 4 }} placeholder={field.placeholder || tx(interfaceLanguage, 'JSON 值', 'JSON value')} />
+                    ) : <Input disabled={disabled} value={displayValue} onChange={(event) => updateField(index, field, event.target.value)} type={field.kind === 'number' ? 'number' : 'text'} placeholder={field.placeholder || (field.kind === 'list' ? tx(interfaceLanguage, '多个值用逗号分隔', 'Separate multiple values with commas') : '')} />;
                     return <div key={field.key} style={{ minWidth: 220, flex: '1 1 220px' }}><Text type={field.required ? undefined : 'secondary'}>{field.label}{field.required ? ' *' : tx(interfaceLanguage, '（可选）', ' (optional)')}</Text>{control}</div>;
                   })}
                 </Space>
@@ -164,6 +167,28 @@ const EvaluationCenter: React.FC = () => {
   const [traceCaseHardCheckers, setTraceCaseHardCheckers] = useState<Array<Record<string, any>>>([]);
   const [traceCaseDraft, setTraceCaseDraft] = useState<TraceCaseDraft | null>(null);
   const [traceCaseFixturePreview, setTraceCaseFixturePreview] = useState<TraceCaseFixturePreview | null>(null);
+  const [traceCaseTurns, setTraceCaseTurns] = useState<TraceCaseTurn[]>([]);
+  const [traceCaseBaselineConfirmed, setTraceCaseBaselineConfirmed] = useState(false);
+  const traceCaseReview = reviewPayload(traceCaseReviewName, traceCaseReviewProjectId, traceCaseCheckers,
+    traceCaseHardCheckers, traceCaseTurns, traceCaseBaselineConfirmed);
+  const traceCaseDirty = Boolean(traceCaseDraft && JSON.stringify(traceCaseReview) !== JSON.stringify(savedReviewPayload(traceCaseDraft)));
+  const traceCaseHasHardCriteria = hasHardCriteria(traceCaseHardCheckers, traceCaseTurns);
+  const traceCaseNeedsBaseline = Boolean(traceCaseDraft?.capture && traceCaseReviewProjectId === traceCaseDraft.capture.project_id);
+  const traceCaseReadOnly = traceCaseDraft?.status === 'published';
+  const traceCaseSourceTurns: TraceCaseTurn[] = traceCaseDraft
+    ? (traceCaseDraft.trace_summary.turn_details?.map((turn: any, index: number) => ({
+      prompt: turn.prompt, checkers: [], hard_checkers: [], metadata: { source_turn_index: turn.source_turn_index || index + 1 },
+    })) || draftTurns(traceCaseDraft)) : [];
+  const leaveTraceCase = (action: () => void) => {
+    if (!traceCaseDirty) { action(); return; }
+    Modal.confirm({
+      title: tx(interfaceLanguage, '还有未保存的修改', 'You have unsaved changes'),
+      content: tx(interfaceLanguage, '离开会丢失本次编辑，已保存的草稿仍会保留。', 'Leaving discards these edits. Your saved draft remains available.'),
+      okText: tx(interfaceLanguage, '放弃修改并离开', 'Discard and leave'),
+      cancelText: tx(interfaceLanguage, '继续编辑', 'Keep editing'),
+      onOk: action,
+    });
+  };
   const pollRef = useRef<number | null>(null);
 
   const suites = useMemo(() => Array.from(new Set(cases.map((item) => (
@@ -431,6 +456,8 @@ const EvaluationCenter: React.FC = () => {
     setTraceCaseReviewProjectId(draft.case.project_id);
     setTraceCaseCheckers(draft.case.checkers || []);
     setTraceCaseHardCheckers(draft.case.hard_checkers || []);
+    setTraceCaseTurns(draftTurns(draft));
+    setTraceCaseBaselineConfirmed(Boolean(draft.capture?.baseline_confirmed));
   };
 
   const removeTraceCaseDraft = async (draft: TraceCaseDraft) => {
@@ -460,7 +487,7 @@ const EvaluationCenter: React.FC = () => {
           ? traceCaseSessionId
           : traces[0]?.session_id || '';
       setTraceCaseSessionId(preferredSessionId);
-      setTraceCaseProjectId((current) => current || projects[0]?.id || '');
+      setTraceCaseProjectId((current) => projects.some((project) => project.id === current) ? current : '');
     } catch (error: any) {
       message.error(`${tx(interfaceLanguage, 'Trace 用例能力加载失败', 'Failed to load Trace case resources')}: ${error?.response?.data?.detail || error.message || error}`);
     } finally {
@@ -517,6 +544,7 @@ const EvaluationCenter: React.FC = () => {
     if (!traceCaseDraft || !traceCaseFixturePreview) return;
     setTraceCaseActionLoading(true);
     try {
+      if (traceCaseDirty) await persistTraceCaseReview();
       const draft = await captureTraceCaseFixture(traceCaseDraft.draft_id);
       restoreTraceCaseDraft(draft);
       setTraceCaseDrafts((current) => current.map((item) => item.draft_id === draft.draft_id ? draft : item));
@@ -528,33 +556,38 @@ const EvaluationCenter: React.FC = () => {
     }
   };
   const addTraceCaseCandidate = (candidate: Record<string, any>, target: 'diagnostic' | 'hard') => {
-    const setter = target === 'hard' ? setTraceCaseHardCheckers : setTraceCaseCheckers;
-    setter((current) => {
-      const exists = current.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
-      if (exists) return current;
-      return [...current, { ...candidate }];
-    });
+    const sourceIndex = Number(candidate._evidence?.turn_index || 0);
+    const key = target === 'hard' ? 'hard_checkers' : 'checkers';
+    if (sourceIndex) {
+      setTraceCaseTurns((current) => current.map((turn) => Number(turn.metadata.source_turn_index) === sourceIndex
+        ? { ...turn, [key]: [...turn[key], { ...candidate }] } : turn));
+    } else {
+      const setter = target === 'hard' ? setTraceCaseHardCheckers : setTraceCaseCheckers;
+      setter((current) => [...current, { ...candidate }]);
+    }
     message.success(target === 'hard' ? tx(interfaceLanguage, '候选约束已加入 Hard Checkers', 'Candidate added to Hard Checkers') : tx(interfaceLanguage, '候选约束已加入 Diagnostic Checkers', 'Candidate added to Diagnostic Checkers'));
+  };
+  const persistTraceCaseReview = async (): Promise<TraceCaseDraft> => {
+    if (!traceCaseDraft) throw new Error('No draft selected');
+      validateCheckerConfigs(traceCaseCheckers, 'checkers');
+      validateCheckerConfigs(traceCaseHardCheckers, 'hard_checkers');
+      if (!traceCaseTurns.length || traceCaseTurns.some((turn) => !turn.prompt.trim())) {
+        throw new Error(tx(interfaceLanguage, '至少保留一轮非空请求', 'Keep at least one non-empty turn'));
+      }
+      traceCaseTurns.forEach((turn, index) => {
+        validateCheckerConfigs(turn.checkers, `turn ${index + 1} checkers`);
+        validateCheckerConfigs(turn.hard_checkers, `turn ${index + 1} hard_checkers`);
+      });
+      const draft = await reviewTraceCaseDraft(traceCaseDraft.draft_id, traceCaseReview);
+      restoreTraceCaseDraft(draft);
+      setTraceCaseDrafts((current) => current.map((item) => item.draft_id === draft.draft_id ? draft : item));
+      return draft;
   };
   const saveTraceCaseReview = async () => {
     if (!traceCaseDraft) return;
-    try {
-      validateCheckerConfigs(traceCaseCheckers, 'checkers');
-      validateCheckerConfigs(traceCaseHardCheckers, 'hard_checkers');
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, 'Checker 配置无效', 'Invalid checker configuration')}: ${error.message || error}`);
-      return;
-    }
     setTraceCaseActionLoading(true);
     try {
-      const draft = await reviewTraceCaseDraft(traceCaseDraft.draft_id, {
-        name: traceCaseReviewName.trim(),
-        project_id: traceCaseReviewProjectId,
-        checkers: traceCaseCheckers,
-        hard_checkers: traceCaseHardCheckers,
-      });
-      setTraceCaseDraft(draft);
-      setTraceCaseFixturePreview(null);
+      await persistTraceCaseReview();
       message.success(tx(interfaceLanguage, '草稿审核内容已保存，请重新执行隔离试运行', 'Draft review saved; run the isolated validation again'));
     } catch (error: any) {
       message.error(`${tx(interfaceLanguage, '保存审核内容失败', 'Failed to save review')}: ${error?.response?.data?.detail || error.message || error}`);
@@ -566,8 +599,10 @@ const EvaluationCenter: React.FC = () => {
     if (!traceCaseDraft) return;
     setTraceCaseActionLoading(true);
     try {
+      if (traceCaseDirty) await persistTraceCaseReview();
       const draft = await validateTraceCaseDraft(traceCaseDraft.draft_id);
       setTraceCaseDraft(draft);
+      setTraceCaseDrafts((current) => current.map((item) => item.draft_id === draft.draft_id ? draft : item));
       message[draft.status === 'validated' ? 'success' : 'error'](
         draft.status === 'validated' ? tx(interfaceLanguage, '隔离试运行通过，可以发布', 'Isolated validation passed; ready to publish') : tx(interfaceLanguage, '隔离试运行未通过，请检查结果', 'Isolated validation failed; check the results'),
       );
@@ -585,9 +620,16 @@ const EvaluationCenter: React.FC = () => {
       await publishTraceCaseDraft(traceCaseDraft.draft_id);
       await refresh();
       setTraceCaseDraft({ ...traceCaseDraft, status: 'published' });
+      setTraceCaseDrafts((current) => current.map((item) => item.draft_id === traceCaseDraft.draft_id ? { ...item, status: 'published' } : item));
       message.success(tx(interfaceLanguage, '评测用例已发布到本地目录', 'Evaluation case published to the local catalog'));
     } catch (error: any) {
       message.error(`${tx(interfaceLanguage, '发布评测用例失败', 'Failed to publish evaluation case')}: ${error?.response?.data?.detail || error.message || error}`);
+      // Publication may invalidate an old validation when its fixture changed.
+      try {
+        const latest = await getTraceCaseDraft(traceCaseDraft.draft_id);
+        restoreTraceCaseDraft(latest);
+        setTraceCaseDrafts((current) => current.map((item) => item.draft_id === latest.draft_id ? latest : item));
+      } catch { /* Keep the current draft if refreshing is temporarily unavailable. */ }
     } finally {
       setTraceCaseActionLoading(false);
     }
@@ -1140,26 +1182,68 @@ const EvaluationCenter: React.FC = () => {
         { key: 'archives', label: `${tx(interfaceLanguage, '已归档', 'Archives')} (${archives.length})`, children: renderArchives() },
       ]} />
       <Modal
-        title={tx(interfaceLanguage, 'Trace 一键转评测用例', 'Convert Trace to evaluation case')}
+        title={tx(interfaceLanguage, '从 Trace 创建回归用例', 'Create a regression case from Trace')}
+        className="trace-case-factory-modal"
         open={traceCaseVisible}
-        onCancel={() => setTraceCaseVisible(false)}
-        footer={null}
-        width={760}
+        onCancel={() => leaveTraceCase(() => setTraceCaseVisible(false))}
+        closable={!traceCaseActionLoading}
+        maskClosable={false}
+        keyboard={!traceCaseActionLoading}
+        footer={traceCaseDraft ? <Space wrap>
+          <Button disabled={traceCaseActionLoading} onClick={() => leaveTraceCase(() => { setTraceCaseDraft(null); setTraceCaseFixturePreview(null); })}>{tx(interfaceLanguage, '重新选择 Trace', 'Choose another Trace')}</Button>
+          <Button type="primary" onClick={validateTraceCase} loading={traceCaseActionLoading} disabled={!traceCaseReviewProjectId || !traceCaseHasHardCriteria || !traceCaseTurns.length || traceCaseTurns.some((turn) => !turn.prompt.trim()) || (traceCaseNeedsBaseline && !traceCaseBaselineConfirmed) || traceCaseReadOnly}>{traceCaseDirty ? tx(interfaceLanguage, '保存并试运行', 'Save and validate') : tx(interfaceLanguage, '隔离试运行', 'Validate in isolation')}</Button>
+          <Button type="primary" ghost onClick={publishTraceCase} disabled={traceCaseActionLoading || traceCaseDirty || traceCaseDraft.status !== 'validated'}>{tx(interfaceLanguage, '发布用例', 'Publish case')}</Button>
+        </Space> : null}
+        width={960}
       >
         {traceCaseLoading ? <div style={{ padding: 24, textAlign: 'center' }}>{tx(interfaceLanguage, '加载 Trace 与评测项目中…', 'Loading Trace sessions and evaluation projects…')}</div> : traceCaseDraft ? (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Steps size="small" current={traceCaseReadOnly ? 3 : traceCaseDraft.status === 'validated' ? 2 : traceCaseReviewProjectId ? 1 : 0} items={[
+              { title: tx(interfaceLanguage, '选择轮次与验收条件', 'Select turns and criteria') },
+              { title: tx(interfaceLanguage, '准备复现起点', 'Prepare starting state') },
+              { title: tx(interfaceLanguage, '隔离试运行', 'Validate in isolation') },
+              { title: tx(interfaceLanguage, '发布回归用例', 'Publish regression case') },
+            ]} />
             <Space wrap>
               <Tag color={traceCaseDraft.status === 'validated' ? 'green' : traceCaseDraft.status === 'published' ? 'blue' : 'orange'}>
-                {traceCaseDraft.status}
+                {({ draft_created: tx(interfaceLanguage, '待审核', 'Needs review'), review_ready: tx(interfaceLanguage, '待试运行', 'Ready to validate'), fixture_bound: tx(interfaceLanguage, '已捕获快照', 'Snapshot captured'), validated: tx(interfaceLanguage, '验证通过', 'Validated'), validation_failed: tx(interfaceLanguage, '验证未通过', 'Validation failed'), published: tx(interfaceLanguage, '已发布', 'Published') } as Record<string, string>)[traceCaseDraft.status] || traceCaseDraft.status}
               </Tag>
               <Text type="secondary">{tx(interfaceLanguage, '会话', 'Session')}: {traceCaseDraft.session_id}</Text>
               <Text type="secondary">{tx(interfaceLanguage, '事件', 'Events')}: {traceCaseDraft.trace_summary.events || 0}</Text>
               <Text type="secondary">{tx(interfaceLanguage, '工具调用', 'Tool calls')}: {traceCaseDraft.trace_summary.tool_calls || 0}</Text>
             </Space>
+            {traceCaseDirty ? <Alert type="warning" showIcon message={tx(interfaceLanguage, '有未保存修改；试运行时会先保存，发布需使用最新验证结果。', 'Unsaved changes. Validation saves them first; publishing requires a current validation.')} /> : null}
+            {!traceCaseHasHardCriteria && !traceCaseReadOnly ? <Alert type="info" showIcon message={tx(interfaceLanguage, '请添加至少一个必过条件，用来判断原问题是否真正解决。', 'Add at least one required criterion to determine whether the original issue is resolved.')} /> : null}
             {traceCaseDraft.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message={warning} />)}
-            <Card size="small" title={traceCaseDraft.case.name}>
-              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>{traceCaseDraft.case.prompt || traceCaseDraft.case.turns?.map((turn) => turn.prompt).join('\n\n')}</Typography.Paragraph>
-              <Text type="secondary">{tx(interfaceLanguage, '项目', 'Project')}: {traceCaseDraft.case.project_id || tx(interfaceLanguage, '未绑定', 'Unbound')}; {tx(interfaceLanguage, '候选约束', 'Candidate constraints')}: {traceCaseDraft.candidate_checkers.length}</Text>
+            <fieldset disabled={traceCaseReadOnly || traceCaseActionLoading} style={{ border: 0, padding: 0, margin: 0, width: '100%' }}>
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Card size="small" title={tx(interfaceLanguage, '复现对话', 'Reproduction conversation')}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Text type="secondary">{tx(interfaceLanguage, '选择目标轮次及必要的前置上下文；按原顺序共享工作区和对话历史。', 'Select the target turns and their prerequisite context. Turns share workspace and history in source order.')}</Text>
+                <Select mode="multiple" style={{ width: '100%' }} disabled={traceCaseReadOnly || traceCaseActionLoading}
+                  value={traceCaseTurns.map((turn) => Number(turn.metadata.source_turn_index))}
+                  options={traceCaseSourceTurns.map((turn) => ({ value: Number(turn.metadata.source_turn_index), label: `${turn.metadata.source_turn_index}. ${turn.prompt.slice(0, 80)}` }))}
+                  onChange={(indices: number[]) => setTraceCaseTurns(selectTurns(indices, traceCaseTurns, traceCaseSourceTurns))} />
+                <Collapse items={traceCaseTurns.map((turn, index) => ({
+                  key: String(turn.metadata.source_turn_index),
+                  label: `${tx(interfaceLanguage, '来源轮次', 'Source turn')} ${turn.metadata.source_turn_index} · ${turn.prompt.slice(0, 70)} · ${turn.hard_checkers.length} ${tx(interfaceLanguage, '个必过条件', 'required criteria')}`,
+                  children: <Space direction="vertical" style={{ width: '100%' }}>
+                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 8 }} value={turn.prompt} aria-label={tx(interfaceLanguage, '该轮请求', 'Turn prompt')}
+                      onChange={(event) => setTraceCaseTurns((current) => current.map((item, i) => i === index ? { ...item, prompt: event.target.value } : item))} />
+                    <Text type="secondary">{tx(interfaceLanguage, '以下条件在该轮结束时检查；全局条件在整个对话结束后检查。', 'These criteria run at the end of this turn. Global criteria run after the conversation.')}</Text>
+                    <CheckerEditor disabled={traceCaseReadOnly || traceCaseActionLoading} title={tx(interfaceLanguage, '该轮必过条件', 'Required turn criteria')} value={turn.hard_checkers}
+                      onChange={(hard_checkers) => setTraceCaseTurns((current) => current.map((item, i) => i === index ? { ...item, hard_checkers } : item))} />
+                    <CheckerEditor disabled={traceCaseReadOnly || traceCaseActionLoading} title={tx(interfaceLanguage, '该轮诊断指标', 'Turn diagnostics')} value={turn.checkers}
+                      onChange={(checkers) => setTraceCaseTurns((current) => current.map((item, i) => i === index ? { ...item, checkers } : item))} />
+                    <Collapse items={[{ key: 'evidence', label: tx(interfaceLanguage, '查看原始回复与失败证据', 'Source answer and failure evidence'), children: <>
+                      <Text type="secondary">{tx(interfaceLanguage, '原始回复仅用于审核，不会自动成为正确答案。', 'The source answer is evidence for review; it is not a gold answer.')}</Text>
+                      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.answer || tx(interfaceLanguage, '无完整回复记录', 'No complete answer recorded')}</Typography.Paragraph>
+                      <Text>{tx(interfaceLanguage, '工具错误', 'Tool errors')}: {traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.tool_errors || 0}</Text>
+                      {traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.failures?.map((failure: any, failureIndex: number) => <Alert key={failureIndex} type="error" message={failure.tool_name} description={failure.error} style={{ marginTop: 8 }} />)}
+                    </> }]} />
+                  </Space>,
+                }))} />
+              </Space>
             </Card>
             {traceCaseDraft.candidate_checkers.length ? (
               <Card size="small" title={`${tx(interfaceLanguage, 'Trace 证据候选约束', 'Trace evidence constraints')} (${traceCaseDraft.candidate_checkers.length})`}>
@@ -1167,18 +1251,20 @@ const EvaluationCenter: React.FC = () => {
                   size="small"
                   dataSource={traceCaseDraft.candidate_checkers}
                   renderItem={(candidate) => {
-                    const inDiagnostic = traceCaseCheckers.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
-                    const inHard = traceCaseHardCheckers.some((item) => item.type === candidate.type && JSON.stringify(item) === JSON.stringify(candidate));
+                    const sourceIndex = Number(candidate._evidence?.turn_index || 0);
+                    const targetTurn = traceCaseTurns.find((turn) => Number(turn.metadata.source_turn_index) === sourceIndex);
+                    const inDiagnostic = (sourceIndex ? targetTurn?.checkers || [] : traceCaseCheckers).some((item) => JSON.stringify(item) === JSON.stringify(candidate));
+                    const inHard = (sourceIndex ? targetTurn?.hard_checkers || [] : traceCaseHardCheckers).some((item) => JSON.stringify(item) === JSON.stringify(candidate));
                     const evidence = candidate._evidence || {};
                     return (
                       <List.Item
                         actions={[
-                          <Button key="diagnostic" size="small" onClick={() => addTraceCaseCandidate(candidate, 'diagnostic')} disabled={inDiagnostic}>{tx(interfaceLanguage, '加入 Diagnostic', 'Add to Diagnostic')}</Button>,
-                          <Button key="hard" size="small" type="primary" ghost onClick={() => addTraceCaseCandidate(candidate, 'hard')} disabled={inHard}>{tx(interfaceLanguage, '提升为 Hard', 'Promote to Hard')}</Button>,
+                          <Button key="diagnostic" size="small" onClick={() => addTraceCaseCandidate(candidate, 'diagnostic')} disabled={inDiagnostic || Boolean(sourceIndex && !targetTurn) || traceCaseReadOnly || traceCaseActionLoading}>{tx(interfaceLanguage, '加入该轮诊断', 'Add turn diagnostic')}</Button>,
+                          <Button key="hard" size="small" onClick={() => addTraceCaseCandidate(candidate, 'hard')} disabled={inHard || Boolean(sourceIndex && !targetTurn) || traceCaseReadOnly || traceCaseActionLoading}>{tx(interfaceLanguage, '确认为该轮必过条件', 'Require for this turn')}</Button>,
                         ]}
                       >
                         <List.Item.Meta
-                          title={<Space><Tag color="blue">{candidate.type}</Tag>{inHard ? <Tag color="green">Hard</Tag> : inDiagnostic ? <Tag>Diagnostic</Tag> : null}</Space>}
+                          title={<Space><Tag color="blue">{tx(interfaceLanguage, '来源轮次', 'Source turn')} {sourceIndex || '—'}</Tag><Tag>{candidate.type}</Tag>{inHard ? <Tag color="green">Hard</Tag> : inDiagnostic ? <Tag>Diagnostic</Tag> : null}</Space>}
                           description={<Space direction="vertical" size={0}><Text type="secondary">{candidate._reason || tx(interfaceLanguage, '由 Trace 证据生成，需人工确认', 'Generated from Trace evidence; manual confirmation required')}</Text><Text type="secondary">{tx(interfaceLanguage, '证据', 'Evidence')}: {tx(interfaceLanguage, '工具', 'Tools')} {Array.isArray(evidence.observed_tools) ? evidence.observed_tools.join(', ') : tx(interfaceLanguage, '未知', 'Unknown')}; {tx(interfaceLanguage, '调用', 'Calls')} {evidence.tool_calls || 0}; {tx(interfaceLanguage, '错误', 'Errors')} {evidence.tool_errors || 0}</Text></Space>}
                         />
                       </List.Item>
@@ -1192,17 +1278,19 @@ const EvaluationCenter: React.FC = () => {
                 <Input value={traceCaseReviewName} onChange={(event) => setTraceCaseReviewName(event.target.value)} addonBefore={tx(interfaceLanguage, '名称', 'Name')} />
                 <Select
                   allowClear
+                  disabled={traceCaseReadOnly || traceCaseActionLoading}
                   value={traceCaseReviewProjectId || undefined}
                   onChange={(value) => setTraceCaseReviewProjectId(value || '')}
                   style={{ width: '100%' }}
                   placeholder={tx(interfaceLanguage, '绑定评测项目后才能验证和发布', 'Bind an evaluation project before validating or publishing')}
-                  options={traceCaseProjects.map((project) => ({ value: project.id, label: `${project.id} · ${project.version}` }))}
+                  options={[...traceCaseProjects.map((project) => ({ value: project.id, label: `${project.id} · ${project.version}` })), ...(traceCaseDraft.capture && !traceCaseProjects.some((project) => project.id === traceCaseDraft.capture?.project_id) ? [{ value: traceCaseDraft.capture.project_id, label: `${traceCaseDraft.capture.project_id} · ${tx(interfaceLanguage, '捕获的快照', 'Captured snapshot')}` }] : [])]}
                 />
-                <CheckerEditor title="Diagnostic Checkers" value={traceCaseCheckers} onChange={setTraceCaseCheckers} />
-                <CheckerEditor title={tx(interfaceLanguage, 'Hard Checkers（明确通过条件）', 'Hard Checkers (explicit pass conditions)')} value={traceCaseHardCheckers} onChange={setTraceCaseHardCheckers} />
-                                {traceCaseDraft.capture ? (
+                <CheckerEditor disabled={traceCaseReadOnly || traceCaseActionLoading} title={tx(interfaceLanguage, '对话结束后的诊断指标', 'Final conversation diagnostics')} value={traceCaseCheckers} onChange={setTraceCaseCheckers} />
+                <CheckerEditor disabled={traceCaseReadOnly || traceCaseActionLoading} title={tx(interfaceLanguage, '对话结束后的必过条件', 'Required final criteria')} value={traceCaseHardCheckers} onChange={setTraceCaseHardCheckers} />
+                {traceCaseDraft.capture ? (
                   <Alert type="success" showIcon message={`${tx(interfaceLanguage, '已捕获 fixture', 'Fixture captured')}: ${traceCaseDraft.capture.project_id}; ${tx(interfaceLanguage, '哈希', 'hash')} ${traceCaseDraft.capture.sha256.slice(0, 12)}…`} />
-                ) : traceCaseFixturePreview ? (
+                ) : null}
+                {traceCaseFixturePreview ? (
                   <Card size="small" title={tx(interfaceLanguage, 'fixture 捕获预览', 'Fixture capture preview')}>
                     <Space direction="vertical" style={{ width: '100%' }}>
                       <Space wrap>
@@ -1231,12 +1319,20 @@ const EvaluationCenter: React.FC = () => {
                       </Space>
                     </Space>
                   </Card>
-                ) : (
+                ) : !traceCaseDraft.capture ? (
                   <Button onClick={previewTraceCase} loading={traceCaseActionLoading}>{tx(interfaceLanguage, '预览 fixture 文件', 'Preview fixture files')}</Button>
-                )}
-                <Button onClick={saveTraceCaseReview} loading={traceCaseActionLoading}>{tx(interfaceLanguage, '保存审核内容', 'Save review')}</Button>
+                ) : null}
+                {traceCaseDraft.capture ? <>
+                  <Alert type="warning" showIcon message={tx(interfaceLanguage, '此快照来自当前工作区，可能已包含原任务执行结果。', 'This snapshot comes from the current workspace and may already contain the original task results.')} />
+                  <Checkbox checked={traceCaseBaselineConfirmed} onChange={(event) => setTraceCaseBaselineConfirmed(event.target.checked)}>{tx(interfaceLanguage, '我已确认此快照是有效的复现起点，没有提前满足验收条件。', 'I confirm this snapshot is a valid starting state and does not already satisfy the acceptance criteria.')}</Checkbox>
+                  {!traceCaseReadOnly ? <Button onClick={previewTraceCase} disabled={traceCaseActionLoading}>{tx(interfaceLanguage, '重新准备快照', 'Prepare another snapshot')}</Button> : null}
+                </> : null}
+                <Button onClick={saveTraceCaseReview} loading={traceCaseActionLoading} disabled={!traceCaseDirty || traceCaseReadOnly}>{tx(interfaceLanguage, '保存审核内容', 'Save review')}</Button>
               </Space>
-            </Card>            {traceCaseDraft.validation ? (
+            </Card>
+            </Space>
+            </fieldset>
+            {traceCaseDraft.validation ? (
               <Alert
                 type={traceCaseDraft.validation.passed ? 'success' : 'error'}
                 showIcon
@@ -1244,19 +1340,21 @@ const EvaluationCenter: React.FC = () => {
                 description={traceCaseDraft.validation.error || undefined}
               />
             ) : null}
-            <Space>
-              <Button onClick={() => { setTraceCaseDraft(null); setTraceCaseFixturePreview(null); }}>{tx(interfaceLanguage, '重新选择 Trace', 'Choose another Trace')}</Button>
-              <Button type="primary" onClick={validateTraceCase} loading={traceCaseActionLoading} disabled={!traceCaseDraft.case.project_id || traceCaseDraft.status === 'published'}>{tx(interfaceLanguage, '隔离试运行', 'Isolated run')}</Button>
-              <Button type="primary" ghost onClick={publishTraceCase} loading={traceCaseActionLoading} disabled={traceCaseDraft.status !== 'validated'}>{tx(interfaceLanguage, '发布用例', 'Publish case')}</Button>
-            </Space>
+            {traceCaseDraft.validation?.checker_results?.length ? <Table size="small" pagination={false} rowKey={(_, index) => String(index)} dataSource={traceCaseDraft.validation.checker_results} columns={[
+              { title: tx(interfaceLanguage, '检查项', 'Criterion'), dataIndex: 'checker' },
+              { title: tx(interfaceLanguage, '结果', 'Result'), dataIndex: 'passed', width: 90, render: (passed: boolean) => statusTag(passed ? 'passed' : 'failed', passed, interfaceLanguage) },
+              { title: tx(interfaceLanguage, '说明', 'Details'), dataIndex: 'message' },
+            ]} /> : null}
+            {traceCaseActionLoading ? <Alert type="info" showIcon message={tx(interfaceLanguage, '正在执行，请稍候；隔离试运行可能需要几分钟。', 'Working… isolated validation may take several minutes.')} /> : null}
           </Space>
         ) : (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Alert type="info" showIcon message={tx(interfaceLanguage, 'Trace 只作为只读证据，先生成草稿，再绑定项目并隔离试运行，最后显式发布。', 'Trace is read-only evidence. Create a draft, bind a project, run it in isolation, then publish explicitly.')} />            {traceCaseDrafts.length ? (
-              <Card size="small" title={`${tx(interfaceLanguage, '未完成草稿', 'Drafts')} (${traceCaseDrafts.length})`}>
+            <Alert type="info" showIcon message={tx(interfaceLanguage, 'Trace 只作为只读证据，先生成草稿，再绑定项目并隔离试运行，最后显式发布。', 'Trace is read-only evidence. Create a draft, bind a project, run it in isolation, then publish explicitly.')} />
+            {traceCaseDrafts.some((draft) => draft.status !== 'published') ? (
+              <Card size="small" title={`${tx(interfaceLanguage, '未完成草稿', 'Drafts')} (${traceCaseDrafts.filter((draft) => draft.status !== 'published').length})`}>
                 <List
                   size="small"
-                  dataSource={traceCaseDrafts}
+                  dataSource={traceCaseDrafts.filter((draft) => draft.status !== 'published')}
                   renderItem={(draft) => (
                     <List.Item
                       actions={[

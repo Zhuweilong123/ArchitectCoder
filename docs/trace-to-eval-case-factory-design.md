@@ -288,3 +288,16 @@ The Trace-to-case capability is owned by the Evals extension:
 - `extensions/evals/full_api.py` keeps generic evaluation catalog and batch APIs and mounts the Trace-case router; it no longer relies on a host `backend/app/api/evals.py` module.
 
 This keeps the Trace-to-case feature optional and removable without adding Trace-specific business logic to the host application.
+
+## 2026-10-09：用例有效性与审核交互
+
+- 工具策略只生成带来源轮次的候选证据，默认不加入 Diagnostic 或 Hard Checkers；历史回复保存在运行期草稿中供审核，不作为正确答案写入正式 Case。
+- 审核支持选择原始轮次、编辑每轮请求以及逐轮 Hard/Diagnostic Checkers。前端保留原顺序，提示前置上下文依赖；全局规则在整段对话结束后检查。
+- 验证前必须明确配置至少一个 Hard Checker。捕获当前工作区时记录 `origin=current_workspace`，要求确认其适合作为复现起点；此确认不代表系统已还原历史状态。也可绑定已有评测项目的基线 fixture。
+- 捕获快照通过 runner 的 `fixture_override=(staging, manifest)` 接口试运行，保留项目 ID、入口、源码/测试目录及完整项目约束，不提前发布资产。
+- 验证指纹绑定 Case、manifest、fixture 内容、可选 base fixture 和起点确认状态。试运行期间编辑不会被旧结果覆盖；发布时核对指纹，变化后必须重新验证。旧版本无指纹的通过结果也必须重新验证。
+- fixture 预览和捕获共用同一计划，排除 `.env.*`、运行期目录和符号链接。重新捕获会重置起点确认与验证结果。
+- 前端显示阶段、未保存修改、逐项验证结果，并固定底部操作区。“保存并试运行”先提交编辑；有未保存修改时禁止发布。发布失败后刷新草稿，避免继续展示过期通过状态。
+- 验收命令：`python -m pytest backend/tests/unit/test_trace_case_factory.py backend/tests/integration/test_eval_mvp.py -q`；前端 `npm run test:trace-cases`、`npm run build`。
+
+历史开始前快照、Git revision 重建、自动提取语义断言及完整敏感信息扫描仍是后续能力；没有原始快照时不声称已经恢复原任务环境。

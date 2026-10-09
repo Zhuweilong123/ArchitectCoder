@@ -268,7 +268,9 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     }
 
 
-async def dev_agent_factory(workspace: Path, case: EvalCase) -> Any:
+async def dev_agent_factory(
+    workspace: Path, case: EvalCase, *, manifest_override: ProjectManifest | None = None,
+) -> Any:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
     The interactive WebSocket path and this factory share the same agent
@@ -279,7 +281,7 @@ async def dev_agent_factory(workspace: Path, case: EvalCase) -> Any:
     settings = get_settings()
     first_prompt = case.prompts()[0]
     llm = get_host_services().create_model(temperature=0.3)
-    manifest = load_projects().get(case.project_id) if case.project_id else None
+    manifest = manifest_override or (load_projects().get(case.project_id) if case.project_id else None)
     source_dir = workspace / manifest.source_dir if manifest else workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
@@ -332,6 +334,8 @@ class EvalRunner:
         case: EvalCase,
         agent_factory: AgentFactory | None = None,
         result_metadata: dict[str, Any] | None = None,
+        *,
+        fixture_override: tuple[Path, ProjectManifest] | None = None,
     ) -> EvalResult:
         run_id = f"eval_{uuid.uuid4().hex[:16]}"
         result = EvalResult.started(run_id, case.id)
@@ -383,7 +387,10 @@ class EvalRunner:
         }
 
         try:
-            fixture, manifest = resolve_fixture(case)
+            fixture, manifest = fixture_override or resolve_fixture(case)
+            if fixture_override and agent_factory is None:
+                async def factory(workspace: Path, case: EvalCase) -> Any:
+                    return await dev_agent_factory(workspace, case, manifest_override=manifest)
         except ValueError as exc:
             finished = self._finish(
                 result, "error", str(exc), started, "environment_failure"

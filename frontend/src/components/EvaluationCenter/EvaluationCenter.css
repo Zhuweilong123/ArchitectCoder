@@ -56,3 +56,12 @@
   .evaluation-trend-values { display: none; }
   .evaluation-comparison-chart-header { align-items: flex-start; flex-direction: column; }
 }
+
+.trace-case-factory-modal .ant-modal-body {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding-right: 8px;
+}
+.trace-case-factory-modal .ant-steps { margin-bottom: 8px; }
+.trace-case-factory-modal .ant-list-item-action { margin-inline-start: 12px; }
+.trace-case-factory-modal .ant-table-cell { overflow-wrap: anywhere; }
