@@ -223,7 +223,7 @@ def test_list_files_includes_root_files_and_resolves_scopes(tmp_path):
     test_result = asyncio.run(tool._execute({
         "path": str(test), "pattern": "**/*.py", "details": False,
     }))
-    assert test_result.strip() == str((test / "test_main.py").resolve())
+    assert test_result.splitlines()[1:] == [str((test / "test_main.py").resolve())]
 
     workspace_result = asyncio.run(tool._execute({
         "path": "workspace", "pattern": "**/*",

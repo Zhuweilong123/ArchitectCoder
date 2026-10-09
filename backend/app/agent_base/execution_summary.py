@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 
 def _excerpt(value: object, limit: int = 220) -> str:
     text = " ".join(str(value or "").split())
@@ -25,6 +27,7 @@ def build_task_execution_summary(
     counts: dict[str, int] = {}
     execution: list[str] = []
     last_file_operations: dict[str, str] = {}
+    failed_attempts: list[str] = []
 
     for index, item in enumerate(calls, 1):
         name = str(item.get("name") or "tool")
@@ -48,6 +51,12 @@ def build_task_execution_summary(
         observation = _excerpt(item.get("observation"), 240)
         effects = evidence.get("effects") if isinstance(evidence, dict) else None
         effects = effects if isinstance(effects, dict) else {}
+        structured = item.get("execution_evidence") or effects.get("execution_evidence") or {}
+        structured = structured if isinstance(structured, dict) else {}
+        query = structured.get("file_query")
+        query_fact = ""
+        if isinstance(query, dict):
+            query_fact = "file_query=" + json.dumps(query, ensure_ascii=False, sort_keys=True)
         changes = item.get("changes") or effects.get("changes") or []
         file_effects: list[str] = []
         succeeded = item_status in {"success", "completed"}
@@ -70,10 +79,30 @@ def build_task_execution_summary(
             )
         detail = "; ".join(value for value in (
             str(item.get("error_code") or ""), target_text, command,
-            fact_text, *file_effects, observation,
+            fact_text, query_fact, *file_effects, observation,
         ) if value)
         verdict = "succeeded" if succeeded else f"failed [{item_status}]"
         execution.append(f"- [{index}] {name} {verdict}" + (f": {detail}" if detail else ""))
+        if not succeeded:
+            retries = []
+            attempt = structured.get("call_attempt") or {}
+            for later_index, later in enumerate(calls[index:], index + 1):
+                if (later.get("name") != item.get("name")
+                        or later.get("arguments", {}) != item.get("arguments", {})):
+                    continue
+                later_effects = (later.get("evidence") or {}).get("effects") or {}
+                later_structured = later.get("execution_evidence") or later_effects.get("execution_evidence") or {}
+                later_attempt = later_structured.get("call_attempt") or {}
+                if (attempt.get("step") is not None and later_attempt.get("step") is not None
+                        and later_attempt["step"] <= attempt["step"]):
+                    continue
+                retries.append(later_index)
+            retry_fact = (
+                "exact retries=" + ", ".join(
+                    f"[{retry}] {calls[retry - 1].get('status', 'unknown')}" for retry in retries
+                ) if retries else "no recorded retry with the same tool and arguments"
+            )
+            failed_attempts.append(f"- Call [{index}] {name}: {retry_fact}")
 
     lines = [
         "## Task execution checkpoint",
@@ -98,6 +127,9 @@ def build_task_execution_summary(
     if last_file_operations:
         lines.append("- Last successful file-tool operations (not a filesystem snapshot):")
         lines.extend(f"- {path}: {operation}" for path, operation in last_file_operations.items())
+    if failed_attempts:
+        lines.append("- Failed-call retry records (alternative queries are separate operations):")
+        lines.extend(failed_attempts)
     pending = [str(item) for item in (checkpoint.get("pending_items") or []) if item]
     if pending:
         lines.append("- Pending items: " + "; ".join(pending))

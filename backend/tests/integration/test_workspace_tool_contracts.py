@@ -70,7 +70,7 @@ def test_real_tests_directory_wins_over_alias_in_every_file_tool(workspace, sepa
     assert read.status == "success"
     assert read.text == "actual_marker = 1"
     listed = execute(registry, "list_files", {"path": "tests", "pattern": "*.py", "details": False})
-    assert listed.text == str((root / "tests" / "test_real.py").resolve())
+    assert listed.text.splitlines()[1:] == [str((root / "tests" / "test_real.py").resolve())]
     searched = execute(registry, "search_text", {"path": path, "pattern": "actual_marker"})
     assert searched.status == "success"
     assert str((root / "tests" / "test_real.py").resolve()) in searched.text
@@ -91,7 +91,7 @@ def test_inventory_paths_are_identical_and_reusable_in_all_tools(workspace, scop
     target = root / "engine" / "pkg" / "main.py"
     listed = execute(registry, "list_files", {"path": scope, "pattern": "*.py", "details": False})
     assert listed.status == "success"
-    path = listed.text
+    path = listed.text.splitlines()[1]
     assert path == str(target.resolve())
     assert execute(registry, "read_file", {"path": path}).text == "value = 1"
     search = execute(registry, "search_text", {"path": scope, "pattern": "value"})

@@ -397,7 +397,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
         return listed, content, validated
 
     listed, content, validated = asyncio.run(exercise())
-    assert listed == str((design / "radar_design_0730.umlproj").resolve())
+    assert listed.splitlines()[1:] == [str((design / "radar_design_0730.umlproj").resolve())]
     assert '"diagrams"' in content
     assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
 

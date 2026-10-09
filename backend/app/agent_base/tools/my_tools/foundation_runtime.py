@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
@@ -424,20 +425,73 @@ class BaseListFilesTool(AsyncTool):
         return (await self.run_result(params)).text
 
     async def _execute_result(self, params: dict) -> ToolResult:
-        pattern = params.get("pattern", "")
         if not self._roots:
             return ToolResult.error("Error: No workspace root configured", "WORKSPACE_NOT_CONFIGURED")
-        if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in pattern.replace("\\", "/").split("/"):
-            return ToolResult.error("Error: pattern must be a relative glob without '..'", "INVALID_ARGUMENT", True)
         try:
-            output = await asyncio.to_thread(
-                self._format_matches, self._roots, pattern,
+            patterns = self._query_patterns(params)
+            return await asyncio.to_thread(
+                self._list_result, self._roots, patterns,
                 details=params.get("details") is not False,
                 limit=self._result_limit(params.get("limit")),
+                extensions=self._query_extensions(params),
+                summary=params.get("summary") is True,
             )
-            return ToolResult.success(output)
+        except ValueError as exc:
+            return ToolResult.error(f"Error: {exc}", "INVALID_ARGUMENT", True)
         except OSError as exc:
             return ToolResult.error(f"Error: {exc}", "FILE_LIST_ERROR", True)
+
+    @staticmethod
+    def _query_patterns(params: dict) -> list[str]:
+        if "extensions" in params and ("patterns" in params or params.get("pattern") not in (None, "")):
+            raise ValueError("use extensions, pattern, or patterns separately")
+        if "patterns" in params:
+            if params.get("pattern") not in (None, ""):
+                raise ValueError("use either pattern or patterns, not both")
+            patterns = params["patterns"]
+            if not isinstance(patterns, list) or not patterns:
+                raise ValueError("patterns must be a non-empty array of Python glob strings")
+        else:
+            pattern = params.get("pattern")
+            patterns = ["**/*" if pattern in (None, "") else pattern]
+        for pattern in patterns:
+            if (
+                not isinstance(pattern, str) or not pattern
+                or Path(pattern).is_absolute()
+                or ".." in pattern.replace("\\", "/").split("/")
+            ):
+                raise ValueError("patterns must be non-empty relative Python globs without '..'")
+        # Normalize common union notation to the same multi-pattern contract.
+        # Keep literal patterns too: braces are valid filename characters.
+        expanded = list(patterns)
+        pending = list(patterns)
+        while pending:
+            pattern = pending.pop()
+            union = re.search(r"\{([^{}]*,[^{}]*)\}", pattern)
+            if union is None:
+                continue
+            for alternative in union.group(1).split(","):
+                query = pattern[:union.start()] + alternative + pattern[union.end():]
+                if query not in expanded:
+                    expanded.append(query)
+                    pending.append(query)
+                    if len(expanded) > 100:
+                        raise ValueError("query expands to more than 100 patterns; narrow the query")
+        return list(dict.fromkeys(expanded))
+
+    @staticmethod
+    def _query_extensions(params: dict) -> list[str] | None:
+        extensions = params.get("extensions")
+        if "extensions" not in params:
+            return None
+        if not isinstance(extensions, list) or not extensions:
+            raise ValueError("extensions must be a non-empty array of suffixes")
+        normalized = []
+        for extension in extensions:
+            if not isinstance(extension, str) or not re.fullmatch(r"\.?[\w-]+", extension):
+                raise ValueError("extensions must be literal suffixes, e.g. '.log' or 'tmp'")
+            normalized.append("." + extension.lstrip(".").casefold())
+        return list(dict.fromkeys(normalized))
 
     @staticmethod
     def _result_limit(value: object) -> int:
@@ -446,18 +500,39 @@ class BaseListFilesTool(AsyncTool):
         except (TypeError, ValueError):
             return 200
 
-    def _format_matches(self, roots: list[str], pattern: str, *,
+    def _format_matches(self, roots: list[str], pattern: str | list[str], *,
                         details: bool = True, limit: int = 200) -> str:
+        return self._list_result(roots, pattern, details=details, limit=limit).text
+
+    def _list_result(self, roots: list[str], pattern: str | list[str], *,
+                     details: bool = True, limit: int = 200,
+                     extensions: list[str] | None = None, summary: bool = False) -> ToolResult:
         selected: list[tuple[str, Path]] = []
         seen: set[str] = set()
         total = 0
+        files = directories = 0
+        suffix_counts: dict[str, int] = {}
+        oldest = newest = None
+        errors: list[dict] = []
+        patterns = [pattern] if isinstance(pattern, str) else pattern
         for root in roots:
             rp = Path(root).resolve()
             # glob silently suppresses directory access errors; preflight the
             # selected root so a failed listing cannot become "no matches".
             with os.scandir(rp):
                 pass
-            matches = _glob.iglob(pattern, root_dir=rp, recursive=True)
+            # Python glob suppresses traversal errors. Account for them when
+            # querying recursively so an inaccessible subtree is not counted
+            # as successfully checked. Internal tool state remains excluded.
+            if any("**" in query for query in patterns):
+                for _, dirs, _ in os.walk(rp, followlinks=False, onerror=lambda exc: errors.append({
+                    "path": str(exc.filename), "error": str(exc),
+                })):
+                    dirs[:] = [name for name in dirs if name.casefold() != ".architectcoder"]
+            matches = (
+                match for query in patterns
+                for match in _glob.iglob(query, root_dir=rp, recursive=True, include_hidden=True)
+            )
             for match in matches:
                 candidate = (rp / match).resolve()
                 if any(part.casefold() == ".architectcoder" for part in candidate.parts):
@@ -465,29 +540,72 @@ class BaseListFilesTool(AsyncTool):
                 name = self._paths.display(candidate) if candidate.is_relative_to(rp) else str(match)
                 if not candidate.is_relative_to(rp) or name in seen:
                     continue
+                if extensions is not None and candidate.suffix.casefold() not in extensions:
+                    continue
                 seen.add(name)
+                try:
+                    stat = candidate.stat()
+                    if candidate.is_dir():
+                        if extensions is not None:
+                            continue
+                        directories += 1
+                    else:
+                        files += 1
+                        suffix = candidate.suffix.casefold() or "(none)"
+                        suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
+                        oldest = stat.st_mtime if oldest is None else min(oldest, stat.st_mtime)
+                        newest = stat.st_mtime if newest is None else max(newest, stat.st_mtime)
+                except OSError as exc:
+                    errors.append({"path": str(candidate), "error": str(exc)})
+                    continue
                 total += 1
-                if len(selected) < limit:
+                if not summary and len(selected) < limit:
                     selected.append((name, candidate))
-        if not total:
-            return "(no matches)"
+        metadata = {
+            # Counts come first so bounded cross-turn excerpts retain the
+            # result even when scope paths and pattern arrays are long.
+            "matched": total, "shown": len(selected),
+            "entry_limit_truncated": not summary and total > len(selected),
+            "files": files, "directories": directories,
+            "extension_counts": suffix_counts,
+            "modified_utc": {
+                "min": datetime.fromtimestamp(oldest, timezone.utc).isoformat() if oldest is not None else None,
+                "max": datetime.fromtimestamp(newest, timezone.utc).isoformat() if newest is not None else None,
+                "source": "filesystem stat.st_mtime; matched files only",
+            },
+            "scan_complete": not errors, "error_count": len(errors),
+            "summary_only": summary, "extensions": extensions,
+            "patterns": patterns, "roots": roots,
+            "scope": "matched entries only", "provenance": "not measured",
+        }
+        query_header = "[file query " + _json.dumps(metadata, ensure_ascii=False) + "]"
         header = (
             "B=bytes L=physical lines S=symbol hints I=interface hints "
             "D=dependency-statement hints; S/I/D are approximate."
             if details else ""
         )
-        rows = [header] if header else []
+        rows = [query_header]
+        if header:
+            rows.append(header)
         for name, path in selected:
             metrics = file_metrics(path) if details else ""
             row = f"{name}\t{metrics}" if metrics else name
             rows.append(row)
-        shown = len(rows) - int(bool(header))
-        if total > shown:
+        shown = len(selected)
+        if not total:
+            rows.append("(no matches)" if not errors else "(no readable matches; scan incomplete)")
+        if not summary and total > shown:
             rows.append(
                 f"[truncated: showing {shown} of {total} entries (entry limit); "
                 "narrow path/pattern]"
             )
-        return "\n".join(rows)
+        if errors:
+            rows.append("[scan errors] " + _json.dumps(errors, ensure_ascii=False))
+        return ToolResult(
+            status="error" if errors else "success", data="\n".join(rows),
+            error_code="FILE_LIST_INCOMPLETE" if errors else "",
+            retryable=bool(errors), execution_evidence={"file_query": metadata, "scan_errors": errors},
+        )
 
     def to_openai_schema(self) -> dict:
         return {
@@ -498,11 +616,15 @@ class BaseListFilesTool(AsyncTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'."},
+                        "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'; default '**/*'."},
+                        "patterns": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                                     "description": "Alternative to pattern: union of Python globs, with duplicates removed."},
+                        "extensions": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                                       "description": "Alternative to glob: recursive file suffix filter, e.g. ['.tmp', '.log']."},
+                        "summary": {"type": "boolean", "description": "Return aggregate counts and filesystem modification-time range without listing entries."},
                         "details": {"type": "boolean", "description": "Include file metrics (default true)."},
                         "limit": {"type": "integer", "description": "Maximum entries (default 200, maximum 1000)."},
                     },
-                    "required": ["pattern"],
                 },
             },
         }
