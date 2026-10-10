@@ -44,6 +44,8 @@ class TraceCaseReviewRequest(BaseModel):
     project_id: str = Field(default="", max_length=100)
     checkers: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     hard_checkers: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    turns: list["EvalTurn"] | None = Field(default=None, min_length=1, max_length=100)
+    fixture_state_confirmed: bool | None = None
 
 
 class TraceCasePublishRequest(BaseModel):
@@ -59,7 +61,9 @@ from app.agent_base.host_api.services import get_host_services
 
 from .models import EVAL_TRACE_TOOL_NAMES, EvalCase, EvalTurn, ProjectManifest
 from .paths import cases_dir, fixtures_dir, projects_dir
-from .projects import load_projects
+from .projects import load_projects, resolve_fixture
+
+TraceCaseReviewRequest.model_rebuild()
 
 
 TRACE_CASE_DRAFT_SCHEMA_VERSION = "1.0"
@@ -91,7 +95,7 @@ def _draft_root() -> Path:
 _CAPTURE_IGNORED_NAMES = frozenset({
     ".git", ".env", ".venv", "venv", "node_modules", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "build",
-    "temp", "tmp", "coverage", ".coverage",
+    "temp", "tmp", "coverage", ".coverage", ".architectcoder", ".codex",
 })
 
 
@@ -121,7 +125,7 @@ def _validated_workspace_path(value: str, *, kind: str) -> Path:
 
 
 def _copy_capture_tree(source: Path, target: Path) -> None:
-    if source.name in _CAPTURE_IGNORED_NAMES or source.is_symlink():
+    if source.name in _CAPTURE_IGNORED_NAMES or source.name.startswith(".env.") or source.is_symlink():
         return
     if source.is_dir():
         target.mkdir(parents=True, exist_ok=True)
@@ -137,14 +141,17 @@ def _capture_digest(root: Path) -> tuple[str, int]:
     count = 0
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.read_bytes())
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
         count += 1
     return digest.hexdigest(), count
 
 
 def _iter_capture_files(source: Path):
-    if source.is_symlink() or source.name in _CAPTURE_IGNORED_NAMES:
+    if source.is_symlink() or source.name in _CAPTURE_IGNORED_NAMES or source.name.startswith(".env."):
         return
     if source.is_file():
         yield source
@@ -156,7 +163,9 @@ def _iter_capture_files(source: Path):
 
 
 def _capture_plan(draft: TraceCaseDraft, request: TraceCaseCaptureRequest) -> dict[str, Any]:
-    source_dir = _validated_workspace_path(draft.workspace.get("source_dir", ""), kind="directory")
+    source_dir = _validated_workspace_path(
+        draft.workspace.get("source_dir") or draft.workspace.get("workspace_root", ""), kind="directory",
+    )
     test_dir_value = draft.workspace.get("test_dir", "")
     test_dir = _validated_workspace_path(test_dir_value, kind="directory") if test_dir_value else None
     project_file_value = draft.workspace.get("project_file", "")
@@ -177,13 +186,14 @@ def _capture_plan(draft: TraceCaseDraft, request: TraceCaseCaptureRequest) -> di
         entry_file=_relative_or_dot(project_file, capture_workspace) if project_file else "",
         source_dir=_relative_or_dot(source_dir, capture_workspace),
         test_dir=_relative_or_dot(test_dir, capture_workspace) if test_dir else ".",
-        protected_paths=([_relative_or_dot(project_file, capture_workspace)] if project_file else []),
-        allowed_write_paths=[
+        protected_paths=[],
+        allowed_write_paths=sorted(
             item for item in {
                 _relative_or_dot(source_dir, capture_workspace),
                 _relative_or_dot(test_dir, capture_workspace) if test_dir else "",
+                _relative_or_dot(project_file, capture_workspace) if project_file else "",
             } if item
-        ],
+        ),
     )
     selected_paths = [source_dir, *([test_dir] if test_dir else []), *([project_file] if project_file else [])]
     files: list[dict[str, Any]] = []
@@ -274,6 +284,10 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "prompt": str(event.get("message") or "").strip(),
                 "tool_names": [],
                 "answer": "",
+                "tool_errors": 0,
+                "failures": [],
+                "completed": False,
+                "run_id": str(event.get("run_id") or ""),
             }
         elif current is not None and event_type == "tool_call":
             tool_name = str(event.get("tool_name") or "").strip()
@@ -283,8 +297,15 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif current is not None and event_type == "tool_result":
             if event.get("error"):
                 tool_errors += 1
+                current["tool_errors"] += 1
+                current["failures"].append({
+                    "tool_name": str(event.get("tool_name") or ""),
+                    "error": str(event.get("error") or ""),
+                    "run_id": str(event.get("run_id") or ""),
+                })
         elif current is not None and event_type == "done":
             current["answer"] = str(event.get("answer") or "")
+            current["completed"] = True
 
     if current is not None:
         turns.append(current)
@@ -298,6 +319,7 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
         "project_file": _first_value(events, "project_file"),
         "source_dir": _first_value(events, "source_dir"),
         "test_dir": _first_value(events, "test_dir"),
+        "workspace_root": _first_value(events, "workspace_root"),
     }
     return {
         "turns": turns,
@@ -346,10 +368,21 @@ def _case_from_extracted(
     elif request.project_id not in load_projects():
         raise ValueError(f"evaluation project not found: {request.project_id}")
 
-    candidate_checkers = _candidate_checkers(extracted, request.include_trace_policy)
+    candidate_checkers = []
+    for index, item in enumerate(raw_turns, 1):
+        observed = sorted(set(item.get("tool_names", [])) & EVAL_TRACE_TOOL_NAMES)
+        per_turn = {**extracted, "supported_tool_names": observed,
+                    "tool_errors": item.get("tool_errors", 0),
+                    "event_counts": {"tool_call": len(item.get("tool_names", []))}}
+        # Support older extracted data that did not include per-turn evidence.
+        if len(raw_turns) == 1 and "tool_names" not in item:
+            per_turn = extracted
+        for candidate in _candidate_checkers(per_turn, request.include_trace_policy):
+            candidate["_evidence"]["turn_index"] = index
+            candidate_checkers.append(candidate)
     turns = [
-        EvalTurn(prompt=str(item["prompt"]), checkers=list(candidate_checkers))
-        for item in raw_turns
+        EvalTurn(prompt=str(item["prompt"]), metadata={"source_turn_index": index})
+        for index, item in enumerate(raw_turns, 1)
         if str(item.get("prompt") or "").strip()
     ]
     if not turns:
@@ -370,7 +403,7 @@ def _case_from_extracted(
             name=request.name.strip() or turns[0].prompt[:120],
             prompt=turns[0].prompt,
             project_id=request.project_id,
-            checkers=candidate_checkers,
+            checkers=[],
             metadata=metadata,
         )
     else:
@@ -453,6 +486,8 @@ class TraceCaseFactory:
                 "tool_calls": extracted["event_counts"].get("tool_call", 0),
                 "tool_errors": extracted["tool_errors"],
                 "tool_names": extracted["tool_names"],
+                "turn_details": [dict(item, source_turn_index=index)
+                                 for index, item in enumerate(extracted["turns"], 1)],
             },
             workspace=extracted["workspace"],
             candidate_checkers=candidate_checkers,
@@ -483,10 +518,15 @@ class TraceCaseFactory:
             "checkers": request.checkers,
             "hard_checkers": request.hard_checkers,
             "metadata": metadata,
+            **({"turns": request.turns, "prompt": ""} if request.turns is not None else {}),
         })
         # Re-validate the complete EvalCase contract, including checker types,
         # required fields and tool protocol constraints, before saving review.
         draft.case = EvalCase.model_validate(updated_case.model_dump(mode="json"))
+        if any(not turn.prompt.strip() for turn in draft.case.turn_specs()):
+            raise ValueError("evaluation prompts must not be blank")
+        if draft.capture and request.fixture_state_confirmed is not None:
+            draft.capture["baseline_confirmed"] = request.fixture_state_confirmed
         draft.status = "review_ready" if request.project_id else "draft_created"
         draft.validation = None
         return _save_draft(draft)
@@ -497,43 +537,18 @@ class TraceCaseFactory:
         if draft.status == "published":
             raise ValueError("published Trace case drafts cannot capture a new fixture")
 
-        source_dir = _validated_workspace_path(draft.workspace.get("source_dir", ""), kind="directory")
-        test_dir_value = draft.workspace.get("test_dir", "")
-        test_dir = _validated_workspace_path(test_dir_value, kind="directory") if test_dir_value else None
-        project_file_value = draft.workspace.get("project_file", "")
-        project_file = _validated_workspace_path(project_file_value, kind="file") if project_file_value else None
-        roots = [source_dir, *( [test_dir] if test_dir else [] ), *([project_file.parent] if project_file else [])]
-        try:
-            capture_workspace = Path(os.path.commonpath([str(path) for path in roots])).resolve()
-        except ValueError as exc:
-            raise ValueError("Trace workspace directories must share one filesystem root") from exc
-        if not any(capture_workspace == root or capture_workspace.is_relative_to(root) for root in _allowed_workspace_roots()):
-            raise ValueError(f"Trace workspace root is outside configured roots: {capture_workspace}")
-
-        project_id = _safe_case_id(request.project_id, draft.draft_id)
-        if project_id in load_projects():
+        plan = _capture_plan(draft, request)
+        capture_workspace = plan["capture_workspace"]
+        project_id = plan["project_id"]
+        if plan["project_exists"]:
             raise ValueError(f"evaluation project already exists: {project_id}")
         capture_id = f"tcc_{uuid.uuid4().hex[:16]}"
         staging = (_capture_root() / capture_id).resolve()
         capture_root = _capture_root().resolve()
         if not staging.is_relative_to(capture_root):
             raise ValueError("fixture capture path escapes staging root")
-        manifest = ProjectManifest(
-            id=project_id,
-            version=request.version.strip() or "1.0.0",
-            fixture=project_id,
-            entry_file=_relative_or_dot(project_file, capture_workspace) if project_file else "",
-            source_dir=_relative_or_dot(source_dir, capture_workspace),
-            test_dir=_relative_or_dot(test_dir, capture_workspace) if test_dir else ".",
-            protected_paths=([_relative_or_dot(project_file, capture_workspace)] if project_file else []),
-            allowed_write_paths=[
-                item for item in {
-                    _relative_or_dot(source_dir, capture_workspace),
-                    _relative_or_dot(test_dir, capture_workspace) if test_dir else "",
-                } if item
-            ],
-        )
-        selected_paths = [source_dir, *([test_dir] if test_dir else []), *([project_file] if project_file else [])]
+        manifest = plan["manifest"]
+        selected_paths = plan["selected_paths"]
         try:
             staging.mkdir(parents=True, exist_ok=False)
             for selected in selected_paths:
@@ -559,6 +574,7 @@ class TraceCaseFactory:
         draft.case = EvalCase.model_validate(draft.case.model_dump(mode="json"))
         draft.status = "fixture_bound"
         draft.validation = None
+        previous_capture = draft.capture
         draft.capture = {
             "capture_id": capture_id,
             "staging_path": str(staging),
@@ -569,8 +585,15 @@ class TraceCaseFactory:
             "sha256": digest,
             "file_count": file_count,
             "captured_at": datetime.now(timezone.utc).isoformat(),
+            "origin": "current_workspace",
+            "baseline_confirmed": False,
         }
-        return _save_draft(draft)
+        result = _save_draft(draft)
+        if previous_capture:
+            previous_staging = Path(str(previous_capture.get("staging_path") or "")).resolve()
+            if previous_staging.is_relative_to(capture_root) and previous_staging != staging:
+                shutil.rmtree(previous_staging, ignore_errors=True)
+        return result
 
     def preview(self, draft_id: str, request: TraceCaseCaptureRequest) -> dict[str, Any]:
         draft = _load_draft(draft_id)
@@ -591,10 +614,41 @@ class TraceCaseFactory:
             "total_bytes": plan["total_bytes"],
             "truncated": len(plan["files"]) > preview_limit,
             "project_exists": plan["project_exists"],
-            "warnings": [
+            "warnings": ["捕获的是当前工作区，不是原任务开始前快照；请确认它适合作为复现起点。"] + ([
                 "当前预览仅展示前 2000 个文件，确认捕获时仍会按规则完整复制。"
-            ] if len(plan["files"]) > preview_limit else [],
+            ] if len(plan["files"]) > preview_limit else []),
         }
+
+    @staticmethod
+    def _fixture_inputs(draft: TraceCaseDraft) -> tuple[Path, ProjectManifest]:
+        capture = draft.capture or {}
+        if capture and capture.get("project_id") == draft.case.project_id:
+            staging = Path(str(capture.get("staging_path") or "")).resolve()
+            if not staging.is_dir() or not staging.is_relative_to(_capture_root().resolve()):
+                raise ValueError("captured fixture staging area is missing or invalid")
+            manifest = ProjectManifest.model_validate(capture.get("manifest") or {})
+            if manifest.id != draft.case.project_id:
+                raise ValueError("captured fixture manifest does not match the evaluation case")
+            return staging, manifest
+        fixture, manifest = resolve_fixture(draft.case)
+        if fixture is None or manifest is None:
+            raise ValueError("bind a project manifest before validation")
+        return fixture, manifest
+
+    def _validation_fingerprint(self, draft: TraceCaseDraft) -> str:
+        fixture, manifest = self._fixture_inputs(draft)
+        inputs = {
+            "case": draft.case.model_dump(mode="json"),
+            "manifest": manifest.model_dump(mode="json"),
+            "fixture_sha256": _capture_digest(fixture)[0],
+            "baseline_confirmed": (draft.capture or {}).get("baseline_confirmed"),
+        }
+        if manifest.base_fixture:
+            base = (fixtures_dir() / manifest.base_fixture).resolve()
+            if not base.is_relative_to(fixtures_dir().resolve()) or not base.is_dir():
+                raise ValueError("base fixture is missing or invalid")
+            inputs["base_fixture_sha256"] = _capture_digest(base)[0]
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
     async def validate(self, draft_id: str) -> dict[str, Any]:
         draft = _load_draft(draft_id)
@@ -602,25 +656,31 @@ class TraceCaseFactory:
             raise KeyError(draft_id)
         if not draft.case.project_id:
             raise ValueError("bind project_id before validating a Trace case draft")
-        validation_case = draft.case
+        if draft.status == "published":
+            raise ValueError("published Trace case drafts cannot be validated again")
+        if not draft.case.hard_checkers and not any(turn.hard_checkers for turn in draft.case.turns):
+            raise ValueError("confirm at least one hard checker before validation")
         capture = draft.capture or {}
-        if capture:
-            staging = Path(str(capture.get("staging_path") or "")).resolve()
-            if not staging.is_dir() or not staging.is_relative_to(_capture_root().resolve()):
-                raise ValueError("captured fixture staging area is missing or invalid")
-            # Validate against the staged snapshot without publishing it first.
-            validation_case = draft.case.model_copy(update={
-                "project_id": "",
-                "fixture": str(staging),
-            })
+        using_capture = capture.get("project_id") == draft.case.project_id
+        if using_capture and not capture.get("baseline_confirmed"):
+            raise ValueError("confirm the captured workspace is a valid starting state before validation")
+        fingerprint = self._validation_fingerprint(draft)
+        fixture, manifest = self._fixture_inputs(draft)
+        if using_capture and _capture_digest(fixture)[0] != capture.get("sha256"):
+            raise ValueError("captured fixture changed; capture a new snapshot before validation")
         result = await self.runner.run_case(
-            validation_case,
+            draft.case,
+            **({"fixture_override": (fixture, manifest)} if using_capture else {}),
             result_metadata={
                 "trace_case_draft_id": draft.draft_id,
                 "trace_case_source_session_id": draft.session_id,
                 "trace_case_fixture_capture_id": capture.get("capture_id", ""),
             },
         )
+        current = _load_draft(draft_id)
+        if current is None or self._validation_fingerprint(current) != fingerprint:
+            raise ValueError("case or fixture changed during validation; validate again")
+        result.metadata["trace_case_validation_fingerprint"] = fingerprint
         draft.status = "validated" if result.passed else "validation_failed"
         draft.validation = result.model_dump(mode="json")
         _save_draft(draft)
@@ -634,6 +694,16 @@ class TraceCaseFactory:
             raise ValueError("Trace case draft must pass isolated validation before publishing")
         if not draft.case.project_id:
             raise ValueError("bind project_id before publishing a Trace case draft")
+        fingerprint = draft.validation.get("metadata", {}).get("trace_case_validation_fingerprint")
+        try:
+            current_fingerprint = self._validation_fingerprint(draft)
+        except (ValueError, OSError):
+            current_fingerprint = None
+        if not fingerprint or fingerprint != current_fingerprint:
+            draft.status = "review_ready"
+            draft.validation = None
+            _save_draft(draft)
+            raise ValueError("case or fixture changed since validation; validate again before publishing")
 
         case_id = _safe_case_id(request.case_id or draft.case.id, draft.session_id)
         path = cases_dir() / f"{case_id}.json"
@@ -652,7 +722,7 @@ class TraceCaseFactory:
         temporary_paths: list[Path] = []
         try:
             capture = draft.capture or {}
-            if capture:
+            if capture and capture.get("project_id") == case.project_id:
                 staging = Path(str(capture.get("staging_path") or "")).resolve()
                 capture_root = _capture_root().resolve()
                 if not staging.is_dir() or not staging.is_relative_to(capture_root):
@@ -674,6 +744,8 @@ class TraceCaseFactory:
                 manifest_temporary = projects_dir() / f".{manifest.id}.{uuid.uuid4().hex}.tmp"
                 temporary_paths.extend([fixture_temporary, manifest_temporary])
                 shutil.copytree(staging, fixture_temporary)
+                if _capture_digest(fixture_temporary)[0] != capture.get("sha256"):
+                    raise ValueError("fixture changed while publishing; capture and validate again")
                 fixture_temporary.replace(fixture_target)
                 published_paths.append(fixture_target)
                 manifest_temporary.write_text(

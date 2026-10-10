@@ -236,6 +236,13 @@ export interface TraceCaseProject {
   test_dir: string;
 }
 
+export interface TraceCaseTurn {
+  prompt: string;
+  checkers: Array<Record<string, any>>;
+  hard_checkers: Array<Record<string, any>>;
+  metadata: Record<string, any>;
+}
+
 export interface TraceCaseDraft {
   draft_id: string;
   schema_version: string;
@@ -251,7 +258,7 @@ export interface TraceCaseDraft {
     id: string;
     name: string;
     prompt: string;
-    turns?: Array<{ prompt: string; checkers: Array<Record<string, any>> }>;
+    turns?: TraceCaseTurn[];
     project_id: string;
     checkers: Array<Record<string, any>>;
     hard_checkers: Array<Record<string, any>>;
@@ -265,6 +272,8 @@ export interface TraceCaseDraft {
     sha256: string;
     file_count: number;
     manifest: Record<string, any>;
+    origin?: string;
+    baseline_confirmed?: boolean;
   } | null;
 }
 
@@ -276,6 +285,11 @@ export async function listTraceCaseProjects(): Promise<TraceCaseProject[]> {
 export async function listTraceCaseDrafts(): Promise<TraceCaseDraft[]> {
   const { data } = await api.get('/evals/trace-cases/drafts');
   return data.drafts;
+}
+
+export async function getTraceCaseDraft(draftId: string): Promise<TraceCaseDraft> {
+  const { data } = await api.get(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`);
+  return data;
 }
 
 export async function deleteTraceCaseDraft(draftId: string): Promise<{ draft_id: string; deleted: boolean }> {
@@ -328,12 +342,14 @@ export async function reviewTraceCaseDraft(draftId: string, req: {
   project_id?: string;
   checkers?: Array<Record<string, any>>;
   hard_checkers?: Array<Record<string, any>>;
+  turns?: TraceCaseTurn[];
+  fixture_state_confirmed?: boolean;
 }): Promise<TraceCaseDraft> {
   const { data } = await api.put(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, req, { timeout: 15000 });
   return data;
 }
 export async function validateTraceCaseDraft(draftId: string): Promise<TraceCaseDraft> {
-  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/validate`, null, { timeout: 120000 });
+  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/validate`, null, { timeout: 3600000 });
   return data;
 }
 

@@ -66,6 +66,7 @@ class ToolRoundExecutor:
         # history, so a later user turn starts with a clean recovery boundary.
         self._edit_recovery_paths: set[str] = set()
         self._recovery_scopes = RecoveryScopes(tool_registry)
+        self._previous_attempts: dict[tuple[str, str], dict] = {}
 
     async def execute(self, tool_calls: list[dict], *, step: int) -> ToolRoundResult:
         parsed_calls = self._parse_calls(tool_calls)
@@ -118,6 +119,25 @@ class ToolRoundExecutor:
                 observation_full, observation_fed, tool_result, duration_ms = execution
             if isinstance(tool_args, str):
                 observation_full = observation_fed = execution[0]
+
+            signature = (tool_name, json.dumps(tool_args, sort_keys=True, ensure_ascii=False))
+            previous = self._previous_attempts.get(signature)
+            retry_of = None
+            if (previous and previous["step"] < step
+                    and previous["status"] not in {"success", "completed"}):
+                retry_of = previous["call_id"]
+            attempt = {
+                "call_id": str(tc.get("id") or ""), "step": step,
+                "status": tool_result.status, "exact_retry_of": retry_of,
+            }
+            self._previous_attempts[signature] = attempt
+            tool_result.execution_evidence = {
+                **(tool_result.execution_evidence or {}), "call_attempt": attempt,
+            }
+            if retry_of:
+                marker = "\n[execution attempt " + json.dumps(attempt, ensure_ascii=False) + "]"
+                observation_full += marker
+                observation_fed += marker
 
             page_budget = tool_output_page_budget(tool_name)
             if (page_budget is not None and observation_fed == observation_full

@@ -98,21 +98,20 @@ class ListFilesTool(BaseListFilesTool):
         path = params.get("path", ".")
         if path is None or path == "":
             path = "."
-        pattern = params.get("pattern", "**/*")
-        if pattern is None or pattern == "":
-            pattern = "**/*"
-        if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in pattern.replace("\\", "/").split("/"):
-            return ToolResult.error("Error: pattern must be a relative glob without '..'", "INVALID_ARGUMENT", True)
         try:
+            patterns = self._query_patterns(params)
             root = self._paths.directory(path, default_root=self._source_dir or self._workspace_root)
-            output = await asyncio.to_thread(
-                self._format_matches, [str(root)], pattern,
+            return await asyncio.to_thread(
+                self._list_result, [str(root)], patterns,
                 details=params.get("details") is not False,
                 limit=self._result_limit(params.get("limit")),
+                extensions=self._query_extensions(params),
+                summary=params.get("summary") is True,
             )
-            return ToolResult.success(output)
         except WorkspacePathError as exc:
             return ToolResult.error(f"Error: {exc}", exc.code, True)
+        except ValueError as exc:
+            return ToolResult.error(f"Error: {exc}", "INVALID_ARGUMENT", True)
         except OSError as exc:
             return ToolResult.error(f"Error: {exc}", "FILE_LIST_ERROR", True)
 

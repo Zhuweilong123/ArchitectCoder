@@ -32,6 +32,213 @@ def test_extract_trace_preserves_turns_and_supported_tools():
     assert set(extracted["supported_tool_names"]).issubset(EVAL_TRACE_TOOL_NAMES)
 
 
+def test_observed_tools_are_scoped_candidates_not_automatic_pass_conditions():
+    extracted = _extract_trace([
+        {"event_type": "user_message", "message": "fix code"},
+        {"event_type": "tool_call", "tool_name": "apply_changes"},
+        {"event_type": "done", "answer": "incorrect historical answer"},
+        {"event_type": "user_message", "message": "run tests"},
+        {"event_type": "tool_call", "tool_name": "run_task"},
+        {"event_type": "user_message", "message": "thanks"},
+    ])
+    case, candidates, _ = _case_from_extracted(TraceCaseDraftRequest(session_id="scoped"), extracted, "hash")
+    assert not case.checkers and not case.hard_checkers
+    assert all(not turn.checkers and not turn.hard_checkers for turn in case.turns)
+    assert [(item["_evidence"]["turn_index"], item["required_tools"]) for item in candidates] == [
+        (1, ["apply_changes"]), (2, ["run_task"]),
+    ]
+    assert "incorrect historical answer" not in case.model_dump_json()
+
+
+@pytest.fixture
+def captured_case(tmp_path, monkeypatch):
+    from extensions.evals import projects
+    workspace = tmp_path / "workspace"
+    for name in ["src", "test", "design"]:
+        (workspace / name).mkdir(parents=True)
+    (workspace / "src/main.py").write_text("broken", encoding="utf-8")
+    (workspace / "test/test_main.py").write_text("def test_ok(): pass", encoding="utf-8")
+    (workspace / "design/project.umlproj").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(trace_cases, "_draft_root", lambda: tmp_path / "drafts")
+    monkeypatch.setattr(trace_cases, "_capture_root", lambda: tmp_path / "captures")
+    monkeypatch.setattr(trace_cases, "_allowed_workspace_roots", lambda: [tmp_path])
+    for module in [trace_cases, projects]:
+        monkeypatch.setattr(module, "fixtures_dir", lambda: tmp_path / "fixtures")
+        monkeypatch.setattr(module, "projects_dir", lambda: tmp_path / "projects")
+    monkeypatch.setattr(trace_cases, "cases_dir", lambda: tmp_path / "cases")
+    draft = trace_cases.TraceCaseDraft(
+        draft_id="tcd_regression", created_at="2026-01-01", session_id="session", trace_sha256="hash",
+        case=EvalCase(id="regression", prompt="fix code", hard_checkers=[
+            {"type": "file_contains", "path": "src/main.py", "text": "fixed"},
+        ]),
+        workspace={"source_dir": str(workspace / "src"), "test_dir": str(workspace / "test"),
+                   "project_file": str(workspace / "design/project.umlproj")},
+    )
+    trace_cases._save_draft(draft)
+    factory = trace_cases.TraceCaseFactory(None)
+    captured = factory.capture(draft.draft_id, TraceCaseCaptureRequest())
+    factory.review(draft.draft_id, TraceCaseReviewRequest(
+        project_id=captured["case"]["project_id"], hard_checkers=draft.case.hard_checkers,
+        fixture_state_confirmed=True,
+    ))
+    return factory, draft.draft_id
+
+
+def test_review_can_select_turns_and_remove_legacy_per_turn_policies(captured_case):
+    from extensions.evals.models import EvalTurn
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    draft.case.turns = [EvalTurn(prompt="fix", checkers=[{"type": "trace_policy", "required_tools": ["apply_changes"]}]),
+                        EvalTurn(prompt="thanks")]
+    trace_cases._save_draft(draft)
+    updated = factory.review(draft_id, TraceCaseReviewRequest(
+        project_id=draft.case.project_id,
+        turns=[EvalTurn(prompt="check correction", hard_checkers=[{"type": "answer_contains_all", "texts": ["fixed"]}],
+                        metadata={"source_turn_index": 1})],
+    ))
+    assert updated["case"]["prompt"] == ""
+    assert len(updated["case"]["turns"]) == 1
+    assert updated["case"]["turns"][0]["checkers"] == []
+    with pytest.raises(ValueError, match="blank"):
+        factory.review(draft_id, TraceCaseReviewRequest(turns=[EvalTurn(prompt=" ")]))
+
+
+def test_validate_requires_explicit_criteria_and_confirmed_starting_state(captured_case):
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    draft.case.hard_checkers = []
+    trace_cases._save_draft(draft)
+    with pytest.raises(ValueError, match="hard checker"):
+        asyncio.run(factory.validate(draft_id))
+    draft.case.hard_checkers = [{"type": "file_exists", "path": "src/main.py"}]
+    draft.capture["baseline_confirmed"] = False
+    trace_cases._save_draft(draft)
+    with pytest.raises(ValueError, match="starting state"):
+        asyncio.run(factory.validate(draft_id))
+
+
+@pytest.mark.parametrize("changed", ["fixture", "case", "manifest", "missing_fixture"])
+def test_publish_rejects_changes_after_validation(captured_case, changed):
+    factory, draft_id = captured_case
+    class PassingRunner:
+        async def run_case(self, case, **kwargs):
+            return EvalResult(run_id="run", case_id=case.id, status="passed", passed=True)
+    factory.runner = PassingRunner()
+    asyncio.run(factory.validate(draft_id))
+    draft = trace_cases._load_draft(draft_id)
+    if changed == "fixture":
+        (Path(draft.capture["staging_path"]) / "src/main.py").write_text("changed", encoding="utf-8")
+    elif changed == "case":
+        draft.case.prompt = "a different task"
+    elif changed == "missing_fixture":
+        draft.capture["staging_path"] = str(Path(draft.capture["staging_path"]).parent / "missing")
+    else:
+        draft.capture["manifest"]["source_dir"] = "."
+    trace_cases._save_draft(draft)
+    with pytest.raises(ValueError, match="changed since validation"):
+        factory.publish(draft_id, TraceCasePublishRequest())
+    assert not trace_cases.cases_dir().exists()
+    assert factory.get(draft_id)["validation"] is None
+
+
+def test_validation_does_not_overwrite_review_saved_while_running(captured_case):
+    factory, draft_id = captured_case
+    class EditingRunner:
+        async def run_case(self, case, **kwargs):
+            factory.review(draft_id, TraceCaseReviewRequest(
+                name="New review", project_id=case.project_id, hard_checkers=case.hard_checkers,
+            ))
+            return EvalResult(run_id="run", case_id=case.id, status="passed", passed=True)
+    factory.runner = EditingRunner()
+    with pytest.raises(ValueError, match="during validation"):
+        asyncio.run(factory.validate(draft_id))
+    assert factory.get(draft_id)["case"]["name"] == "New review"
+    assert factory.get(draft_id)["validation"] is None
+
+
+def test_base_fixture_changes_invalidate_validation(captured_case, tmp_path):
+    factory, draft_id = captured_case
+    base = tmp_path / "fixtures/base"
+    base.mkdir(parents=True)
+    (base / "config.json").write_text("{}", encoding="utf-8")
+    draft = trace_cases._load_draft(draft_id)
+    draft.capture["manifest"]["base_fixture"] = "base"
+    trace_cases._save_draft(draft)
+    before = factory._validation_fingerprint(draft)
+    (base / "config.json").write_text('{"changed": true}', encoding="utf-8")
+    assert factory._validation_fingerprint(draft) != before
+
+
+def test_recapture_resets_confirmation_and_uses_same_plan_as_preview(captured_case):
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    old_staging = Path(draft.capture["staging_path"])
+    source = Path(draft.workspace["source_dir"])
+    (source / ".env.local").write_text("secret", encoding="utf-8")
+    (source / ".architectcoder").mkdir()
+    (source / ".architectcoder/state.json").write_text("state", encoding="utf-8")
+    preview = factory.preview(draft_id, TraceCaseCaptureRequest())
+    captured = factory.capture(draft_id, TraceCaseCaptureRequest())
+    staging = Path(captured["capture"]["staging_path"])
+    actual = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
+    assert actual == [item["path"] for item in preview["files"]]
+    assert not old_staging.exists()
+    assert captured["capture"]["baseline_confirmed"] is False
+    assert captured["validation"] is None
+
+
+def test_changed_staging_must_be_recaptured_before_validation(captured_case):
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    (Path(draft.capture["staging_path"]) / "src/main.py").write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="capture a new snapshot"):
+        asyncio.run(factory.validate(draft_id))
+
+
+def test_real_runner_uses_same_manifest_before_and_after_publish(captured_case, tmp_path, monkeypatch):
+    from extensions.evals import runner, projects
+    from app.agent_base.agents.react_agent import ReActProgress
+    factory, draft_id = captured_case
+    seen = []
+    class Agent:
+        llm = SimpleNamespace(model="fake-model")
+        def __init__(self, workspace, manifest):
+            self.workspace, self.manifest = workspace, manifest
+        async def arun_stream(self, prompt):
+            (self.workspace / self.manifest.source_dir / "main.py").write_text("fixed", encoding="utf-8")
+            yield ReActProgress(step=1, is_final=True, final_answer="fixed")
+    async def agent_factory(workspace, case, *, manifest_override=None):
+        manifest = manifest_override or projects.load_projects()[case.project_id]
+        seen.append(manifest.model_dump())
+        assert (workspace / manifest.entry_file).is_file()
+        assert (workspace / manifest.test_dir).is_dir()
+        return Agent(workspace, manifest)
+    monkeypatch.setattr(runner, "dev_agent_factory", agent_factory)
+    monkeypatch.setattr(runner, "get_settings", lambda: original_settings)
+    from config.settings import get_settings
+    original_settings = get_settings().model_copy(update={"agent_max_run_seconds": 0})
+    factory.runner = runner.EvalRunner(tmp_path / "results.jsonl")
+    validated = asyncio.run(factory.validate(draft_id))
+    assert validated["validation"]["passed"] is True
+    assert validated["validation"]["metadata"]["project_manifest"]["entry_file"] == "design/project.umlproj"
+    published = factory.publish(draft_id, TraceCasePublishRequest())
+    result = asyncio.run(factory.runner.run_case(EvalCase.model_validate(published["case"])))
+    assert result.passed is True
+    assert seen[0] == seen[1]
+
+
+def test_real_runner_rejects_invalid_captured_layout_before_agent(captured_case, tmp_path):
+    from extensions.evals.runner import EvalRunner
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    draft.capture["manifest"]["entry_file"] = "design/missing.umlproj"
+    trace_cases._save_draft(draft)
+    factory.runner = EvalRunner(tmp_path / "results.jsonl")
+    validated = asyncio.run(factory.validate(draft_id))
+    assert validated["status"] == "validation_failed"
+    assert "entry_file not found" in validated["validation"]["error"]
+
+
 def test_case_from_trace_is_draft_safe_without_project_binding():
     request = TraceCaseDraftRequest(
         session_id="session-1",
@@ -166,8 +373,9 @@ def test_trace_case_factory_end_to_end_publish_catalog(tmp_path, monkeypatch):
     )))
 
     class FakeRunner:
-        async def run_case(self, case, result_metadata=None):
-            assert case.fixture
+        async def run_case(self, case, result_metadata=None, *, fixture_override=None):
+            assert case.project_id
+            assert fixture_override[1].entry_file == "design/project.umlproj"
             return EvalResult(
                 run_id="eval_trace_factory",
                 case_id=case.id,
@@ -189,6 +397,10 @@ def test_trace_case_factory_end_to_end_publish_catalog(tmp_path, monkeypatch):
         ),
     )
     captured = factory.capture(reviewed["draft_id"], TraceCaseCaptureRequest())
+    factory.review(captured["draft_id"], TraceCaseReviewRequest(
+        project_id=captured["case"]["project_id"],
+        hard_checkers=reviewed["case"]["hard_checkers"], fixture_state_confirmed=True,
+    ))
     validated = asyncio.run(factory.validate(captured["draft_id"]))
     published = factory.publish(validated["draft_id"], TraceCasePublishRequest())
 
