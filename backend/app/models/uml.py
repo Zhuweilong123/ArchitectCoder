@@ -106,6 +106,16 @@ class SeqLifeline(BaseModel):
     activations: list[float] = Field(default_factory=list)  # y-offsets of activation bars
 
 
+class SeqOperand(BaseModel):
+    """One guarded region of a combined fragment; membership is explicit."""
+    model_config = {"extra": "ignore"}
+    id: str
+    guard: str = ""
+    message_ids: list[str] = Field(default_factory=list)
+    y_start: float
+    y_end: float
+
+
 class SeqFragment(BaseModel):
     """UML 2.5.1 Combined Fragment: loop, alt, opt, break, par, etc."""
     model_config = {"extra": "ignore"}
@@ -116,6 +126,11 @@ class SeqFragment(BaseModel):
     width: float = 280    # fragment width
     y_start: float = 0   # top Y position
     y_end: float = 100    # bottom Y position
+    # Empty operands identify a legacy visual frame, not inferred branches.
+    operands: list[SeqOperand] = Field(default_factory=list)
+    lifeline_ids: list[str] = Field(default_factory=list)
+    parent_fragment_id: str = ""
+    parent_operand_id: str = ""
 
 
 class SeqMessage(BaseModel):

@@ -399,7 +399,12 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
     listed, content, validated = asyncio.run(exercise())
     assert listed.splitlines()[1:] == [str((design / "radar_design_0730.umlproj").resolve())]
     assert '"diagrams"' in content
-    assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
+    # This historical trace fixture uses class-relation "association" as both
+    # a message type and a fragment operator. Keep it as a negative fixture;
+    # syntactically valid JSON must no longer receive a false success verdict.
+    assert validated.startswith("Error: UML sequence validation failed")
+    assert "SEQ_MESSAGE_TYPE" in validated
+    assert "SEQ_FRAGMENT_TYPE" in validated
 
 
 def test_project_layout_preflight_rejects_legacy_root_entry_file(tmp_path):

@@ -23,6 +23,7 @@ import { syncCanvasGrid } from './core/canvasCommon';
 import type { SeqLifeline, SeqMessage, MessageType } from '../../types/sequence';
 import type { FragmentType } from '../../types/sequence';
 import { sequenceMessageY, sequenceLifelineHeaderHeight } from '../../utils/sequenceLayout';
+import { sequenceOperandView } from '../../utils/sequenceFragmentView';
 import './SeqEditor.css';
 import { escapeHtml } from '../../utils/safeHtml';
 
@@ -890,7 +891,7 @@ const SeqEditor: React.FC = () => {
             : f.type === 'loop'
               ? 'rgba(24,144,255,0.05)'
               : 'rgba(100,116,139,0.04)';
-        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash, fill]);
+        const signature = JSON.stringify([label, f.x || 80, yStart, w, h, stroke, dash, fill, f.operands]);
         try {
           const existing = graph.getCellById(f.id);
           if (existing && existing.isNode()
@@ -908,6 +909,18 @@ const SeqEditor: React.FC = () => {
           // Always update label + style
           const fn = graph.getCellById(f.id) as Node;
           if (fn) {
+            const operandView = sequenceOperandView(f, yStart, w,
+              canvasTheme === 'dark' ? '#cbd5e1' : canvasTheme === 'eye-care' ? '#3f5145' : '#333');
+            fn.setMarkup([
+              { tagName: 'rect', selector: 'body' },
+              { tagName: 'foreignObject', selector: 'label', children: [{
+                tagName: 'div', ns: 'http://www.w3.org/1999/xhtml', selector: 'labelText',
+                style: { fontSize: '11px', fontWeight: 600, fontFamily: 'Consolas, monospace',
+                  background: '#fff9e6', padding: '1px 6px', whiteSpace: 'nowrap' },
+              }] },
+              ...operandView.markup,
+            ]);
+            fn.setAttrs(operandView.attrs);
             fn.setAttrByPath('labelText/html', `<span>${escapeHtml(label)}</span>`);
             fn.setAttrByPath('body/stroke', stroke);
             fn.setAttrByPath('body/strokeDasharray', dash);

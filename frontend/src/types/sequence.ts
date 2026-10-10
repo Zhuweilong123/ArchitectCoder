@@ -38,6 +38,14 @@ export const FRAGMENT_LABELS: Record<FragmentType, string> = {
   par: 'par', critical: 'critical', neg: 'neg',
 };
 
+export interface SeqOperand {
+  id: string;
+  guard: string;
+  message_ids: string[];
+  y_start: number;
+  y_end: number;
+}
+
 export interface SeqFragment {
   id: string;
   type: FragmentType;
@@ -46,6 +54,10 @@ export interface SeqFragment {
   width: number;
   y_start: number;
   y_end: number;
+  operands?: SeqOperand[];
+  lifeline_ids?: string[];
+  parent_fragment_id?: string;
+  parent_operand_id?: string;
 }
 
 export function createDefaultFragment(y: number): SeqFragment {

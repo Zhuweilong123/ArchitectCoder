@@ -149,6 +149,9 @@ def _build_content_text(node_type: NodeType, name: str,
 
     elif node_type == NodeType.FRAGMENT:
         parts.append(properties.get("fragment_type", ""))
+        for operand in properties.get("operands", []):
+            parts.append(operand.get("guard", ""))
+            parts.extend(operand.get("message_ids", []))
     raw_text = " ".join(set(p for p in parts if p))
 
     # ── jieba 预分词 ──
@@ -1180,6 +1183,10 @@ class GraphBuilder:
                     "width": getattr(frag, "width", 0),
                     "y_start": getattr(frag, "y_start", 0),
                     "y_end": getattr(frag, "y_end", 0),
+                    "lifeline_ids": list(getattr(frag, "lifeline_ids", [])),
+                    "parent_fragment_id": getattr(frag, "parent_fragment_id", ""),
+                    "parent_operand_id": getattr(frag, "parent_operand_id", ""),
+                    "operands": [operand.model_dump() for operand in getattr(frag, "operands", [])],
                 },
             )
             frag_node.content_text = _build_content_text(

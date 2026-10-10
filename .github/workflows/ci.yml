@@ -44,6 +44,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:security
+      - run: npm run test:sequence
       - run: npm run test:layout
       - run: npm run test:html
       - run: npm run test:plugins

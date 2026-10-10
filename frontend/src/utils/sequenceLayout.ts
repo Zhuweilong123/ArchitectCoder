@@ -1,6 +1,7 @@
 /** Shared sequence-diagram layout rules used by state and rendering. */
 
 import type { SeqFragment, SeqLifeline, SeqMessage } from '../types/sequence';
+import { fitStructuredFragments, fragmentMessageIds, operandMessageIds } from './sequenceFragments';
 
 export const SEQUENCE_MESSAGE_START_Y = 190;
 export const SEQUENCE_MESSAGE_GAP = 48;
@@ -142,26 +143,65 @@ export function arrangeSequenceLayout(
   });
 
   const oldMessageY = new Map(orderedMessages.map((message) => [message.id, sequenceMessageY(message)]));
+  const operandOwner = new Map<string, string>();
+  fragments.forEach((f) => (f.operands || []).forEach((o) => o.message_ids.forEach((id) => operandOwner.set(id, o.id))));
   const contentStartY = sequenceContentStartY(lifelines);
-  let nextY = Math.max(SEQUENCE_MESSAGE_START_Y, contentStartY + 28);
-  const arrangedMessages = orderedMessages.map((message, index) => {
-    const arranged = { ...message, y: nextY, order: index + 1 };
-    const following = orderedMessages[index + 1];
+  const fragmentById = new Map(fragments.map((fragment) => [fragment.id, fragment]));
+  const nestingDepth = (fragment: SeqFragment) => {
+    const seen = new Set([fragment.id]);
+    let depth = 0;
+    let parent = fragmentById.get(fragment.parent_fragment_id || '');
+    while (parent && !seen.has(parent.id)) {
+      seen.add(parent.id); depth += 1;
+      parent = fragmentById.get(parent.parent_fragment_id || '');
+    }
+    return depth;
+  };
+  const structured = fragments.filter((fragment) => fragment.operands?.length);
+  const maxDepth = structured.length ? Math.max(...structured.map(nestingDepth)) : 0;
+  // Reserve operand/fragment titles, including nested frames, above the first message.
+  const titleSpace = structured.length ? 24 + maxDepth * 48 : 0;
+  let nextY = Math.max(SEQUENCE_MESSAGE_START_Y, contentStartY + 28 + titleSpace);
+  const emptyOperands = structured.flatMap((fragment) => (fragment.operands || [])
+    .filter((operand) => operandMessageIds(operand, fragment, fragments).size === 0
+      && !fragments.some((child) => child.parent_fragment_id === fragment.id && child.parent_operand_id === operand.id)));
+  // Empty alternatives still occupy a region. Keep common continuation out.
+  const timeline = [
+    ...orderedMessages.map((message) => ({ message, emptyId: '', oldY: sequenceMessageY(message) })),
+    ...emptyOperands.map((operand) => ({ message: null, emptyId: operand.id, oldY: (operand.y_start + operand.y_end) / 2 })),
+  ].sort((a, b) => a.oldY - b.oldY);
+  const emptyY = new Map<string, number>();
+  const arrangedMessages: SeqMessage[] = [];
+  timeline.forEach((entry, index) => {
+    const message = entry.message;
+    if (message) arrangedMessages.push({ ...message, y: nextY, order: arrangedMessages.length + 1 });
+    else emptyY.set(entry.emptyId, nextY);
+    const following = timeline[index + 1];
     if (following) {
-      const selfInvolved = message.type === 'self' || following.type === 'self'
-        || message.from_lifeline === message.to_lifeline || following.from_lifeline === following.to_lifeline;
+      const nextMessage = following.message;
+      const selfInvolved = message?.type === 'self' || nextMessage?.type === 'self'
+        || (message && message.from_lifeline === message.to_lifeline)
+        || (nextMessage && nextMessage.from_lifeline === nextMessage.to_lifeline);
       nextY += Math.max(
         SEQUENCE_MESSAGE_GAP,
-        estimatedLabelHeight(message.label),
+        estimatedLabelHeight(message?.label || ''),
         selfInvolved ? 62 : 0,
+        (!message || !nextMessage || operandOwner.get(message.id) !== operandOwner.get(nextMessage.id)) ? 80 + maxDepth * 48 : 0,
       );
     }
-    return arranged;
   });
   const newMessageY = new Map(arrangedMessages.map((message) => [message.id, message.y]));
 
-  const arrangedFragments = fragments.map((fragment) => {
+  const arrangedFragments = fragments.map((originalFragment) => {
+    const fragment = { ...originalFragment,
+      ...(originalFragment.operands ? { operands: originalFragment.operands.map((operand) => {
+        const center = emptyY.get(operand.id);
+        return center === undefined ? operand : { ...operand, y_start: center - 28, y_end: center + 36 };
+      }) } : {}),
+    };
+    const explicitIds = fragmentMessageIds(fragment, fragments);
     const contained = orderedMessages.filter((message) => {
+      if (fragment.operands?.length) return explicitIds.has(message.id);
       const y = oldMessageY.get(message.id) || 0;
       return y >= fragment.y_start && y <= fragment.y_end;
     });
@@ -170,13 +210,21 @@ export function arrangeSequenceLayout(
       return { ...fragment, y_start: fragment.y_start + shift, y_end: fragment.y_end + shift };
     }
     const involved = new Set(contained.flatMap((message) => [message.from_lifeline, message.to_lifeline]));
+    (fragment.lifeline_ids || []).forEach((id) => involved.add(id));
+    // A break spans the enclosing interaction, including idle participants.
+    if (fragment.type === 'break') {
+      const parent = fragments.find((f) => f.id === fragment.parent_fragment_id);
+      const coverage = parent?.lifeline_ids?.length ? parent.lifeline_ids : lifelines.map((l) => l.id);
+      coverage.forEach((id) => involved.add(id));
+    }
     const positions = [...involved]
       .map((id) => positionById.get(id))
       .filter((x): x is number => typeof x === 'number');
     const minMessageY = Math.min(...contained.map((message) => newMessageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
     const maxMessageY = Math.max(...contained.map((message) => newMessageY.get(message.id) || SEQUENCE_MESSAGE_START_Y));
-    const x = positions.length > 0 ? Math.max(60, Math.min(...positions) - 24) : fragment.x;
-    const right = positions.length > 0 ? Math.max(...positions) + SEQUENCE_LIFELINE_WIDTH + 24 : fragment.x + fragment.width;
+    const padding = 24 + (fragment.operands?.length ? (maxDepth - nestingDepth(fragment)) * 24 : 0);
+    const x = positions.length > 0 ? Math.max(40, Math.min(...positions) - padding) : fragment.x;
+    const right = positions.length > 0 ? Math.max(...positions) + SEQUENCE_LIFELINE_WIDTH + padding : fragment.x + fragment.width;
     return {
       ...fragment,
       x,
@@ -189,6 +237,6 @@ export function arrangeSequenceLayout(
   return {
     lifelines: lifelines.map((lifeline) => ({ ...lifeline, x: positionById.get(lifeline.id) ?? lifeline.x })),
     messages: arrangedMessages,
-    fragments: arrangedFragments,
+    fragments: fitStructuredFragments(arrangedFragments, arrangedMessages),
   };
 }

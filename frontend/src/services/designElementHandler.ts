@@ -191,6 +191,7 @@ export function handleDesignElement(
         store.updateMessage(m.id, {
           label: o.label || 'message()', type: o.type || 'sync',
           order: o.order ?? 1, note: o.note || '',
+          ...(typeof o.y === 'number' ? { y: o.y } : {}),
         });
       }
     },
@@ -206,6 +207,12 @@ export function handleDesignElement(
           type: o.type || 'loop', label: o.label || '',
           x: o.x ?? 80, width: o.width ?? 280,
           y_start: o.y_start ?? 200, y_end: o.y_end ?? 320,
+          lifeline_ids: (o.lifeline_ids || []).map(mapId),
+          parent_fragment_id: mapId(o.parent_fragment_id || ''),
+          parent_operand_id: o.parent_operand_id || '',
+          operands: (o.operands || []).map((operand: any) => ({
+            ...operand, message_ids: (operand.message_ids || []).map(mapId),
+          })),
         } as any);
       }
     },
@@ -244,6 +251,24 @@ export function handleDesignElement(
   const h = handlers[event.type];
   if (h) {
     h(obj);
+    // A referenced parent/message can arrive later in a streamed diagram.
+    // Resolve its original ID once available without deriving new membership.
+    if (['lifeline', 'message', 'fragment'].includes(event.type)) {
+      const diagram = findDiagram('sequence', obj.diagram_name);
+      (diagram?.fragments || []).forEach((fragment) => {
+        const updates = {
+          lifeline_ids: (fragment.lifeline_ids || []).map(mapId),
+          parent_fragment_id: mapId(fragment.parent_fragment_id || ''),
+          operands: (fragment.operands || []).map((operand) => ({
+            ...operand, message_ids: operand.message_ids.map(mapId),
+          })),
+        };
+        if (JSON.stringify([fragment.lifeline_ids || [], fragment.parent_fragment_id || '', fragment.operands || []])
+          !== JSON.stringify([updates.lifeline_ids, updates.parent_fragment_id, updates.operands])) {
+          store.updateFragment(fragment.id, updates);
+        }
+      });
+    }
   }
 }
 

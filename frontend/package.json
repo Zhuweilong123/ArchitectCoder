@@ -11,6 +11,7 @@
     "test:plugins": "node --test tests/pluginGraph.cjs tests/pluginArchitectureHtml.cjs",
     "test:trace-cases": "node --test tests/traceCaseReview.cjs",
     "test:security": "node --test tests/agentChatSecurity.cjs",
+    "test:sequence": "node --test tests/sequenceSemantics.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

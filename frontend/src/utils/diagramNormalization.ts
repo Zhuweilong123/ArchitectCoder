@@ -161,6 +161,20 @@ function normalizeFragment(value: unknown, index: number, used: Set<string>): Se
     width: number(item.width, 300, 60),
     y_start: yStart,
     y_end: Math.max(yStart + 60, number(item.y_end, yStart + 120)),
+    // Do not infer branches or membership from the legacy rectangle/label.
+    operands: array(item.operands).map((value) => {
+      const operand = record(value);
+      return {
+        id: text(operand.id),
+        guard: text(operand.guard),
+        message_ids: array(operand.message_ids).map((id) => text(id)),
+        y_start: number(operand.y_start, yStart),
+        y_end: number(operand.y_end, number(item.y_end, yStart + 120)),
+      };
+    }),
+    lifeline_ids: array(item.lifeline_ids).map((id) => text(id)),
+    parent_fragment_id: text(item.parent_fragment_id),
+    parent_operand_id: text(item.parent_operand_id),
   };
 }
 

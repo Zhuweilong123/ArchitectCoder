@@ -416,6 +416,14 @@ class SubmitUmlReviewTool(Tool):
                 "original_diagrams": original,
             }
 
+        from app.services.sequence_validation import validate_sequence_diagrams, format_sequence_diagnostics
+        diagnostics = validate_sequence_diagrams(metadata["changed_diagrams"])
+        if any(item.severity == "error" for item in diagnostics):
+            return "Error: UML sequence validation failed before review\n" + format_sequence_diagnostics(diagnostics)
+        if diagnostics:
+            metadata["sequence_diagnostics"] = [item.to_dict() for item in diagnostics]
+            content += "\n\n" + format_sequence_diagnostics(diagnostics)
+
         if self.manager.candidate_recovery:
             metadata["candidate_recovery"] = dict(self.manager.candidate_recovery)
 

@@ -101,7 +101,10 @@ export function getDiagramChanges(original: UmlDiagram, optimized: UmlDiagram, i
       changes.push({ id, kind: 'message', status: 'modified', label: oldMessages.get(id)!.label, members: [] });
     }
   });
-  compare(original.fragments || [], optimized.fragments || [], 'fragment', (f) => [f.type, f.label], (f) => `${f.type} ${f.label}`);
+  compare(original.fragments || [], optimized.fragments || [], 'fragment',
+    (f) => [f.type, f.label, sorted(f.lifeline_ids || []), value(f.parent_fragment_id), value(f.parent_operand_id),
+      (f.operands || []).map((o) => [o.id, o.guard, sorted(o.message_ids)])],
+    (f) => `${f.type} ${f.label}`);
   const names = new Map([...original.classes || [], ...optimized.classes || [], ...original.components || [], ...optimized.components || []].map((c) => [c.id, c.name]));
   const relationLabel = (r: { source: string; target: string; type: string }) => `${names.get(r.source) || r.source} → ${names.get(r.target) || r.target} (${r.type})`;
   compare(original.relations || [], optimized.relations || [], 'relation',

@@ -7,6 +7,7 @@
 | 文档 | 说明 |
 |---|---|
 | [`production-deployment.md`](production-deployment.md) | P0 鉴权、工作区边界、生产配置与验证步骤 |
+| [`sequence-fragments.md`](sequence-fragments.md) | 时序图显式分支结构、验证诊断及项目 Agent 修复任务 |
 | [`current-architecture.md`](current-architecture.md) | 当前 Agent 架构、生命周期、工具和插件边界 |
 | [`runtime-command-execution.md`](runtime-command-execution.md) | `run_task`、`run_program`、`shell` 和宿主命令安全契约 |
 | [`evaluation-system.md`](evaluation-system.md) | 评测规则、实现细节和历史结果 |

@@ -1084,7 +1084,15 @@ class RunTaskTool(RunProgramTool):
             return ToolResult.error("Error: UML project must contain a non-empty diagrams list", "PROJECT_STRUCTURE_INVALID", True)
         if not all(isinstance(diagram, dict) for diagram in diagrams):
             return ToolResult.error("Error: UML project diagrams must be objects", "PROJECT_STRUCTURE_INVALID", True)
-        return ToolResult.success(f"Validated UML project: {path} (diagrams={len(diagrams)})")
+        from app.services.sequence_validation import validate_sequence_diagrams, format_sequence_diagnostics
+        diagnostics = validate_sequence_diagrams(diagrams)
+        details = format_sequence_diagnostics(diagnostics)
+        if any(item.severity == "error" for item in diagnostics):
+            return ToolResult.error("Error: UML sequence validation failed\n" + details, "PROJECT_SEQUENCE_INVALID", True)
+        summary = f"Validated UML project: {path} (diagrams={len(diagrams)})"
+        if details:
+            summary += "\nStructural validation only; semantic warnings remain:\n" + details
+        return ToolResult.success(summary)
 
     def to_openai_schema(self) -> dict:
         return {
