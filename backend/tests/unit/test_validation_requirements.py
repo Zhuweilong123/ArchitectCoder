@@ -60,6 +60,42 @@ def test_todo_requirements_accumulate_and_invalid_updates_are_atomic():
         reset_runtime(token)
 
 
+def test_todo_rejects_unknown_targets_before_mutating_plan_and_requirements(tmp_path):
+    from app.services.validation_targets import project_validation_targets
+    project = tmp_path / "design.umlproj"
+    project.write_text(json.dumps({"diagrams": [DIAGRAM]}), encoding="utf-8")
+    runtime = AgentRuntime(todos=[{"content": "original", "status": "pending"}])
+    token = set_runtime(runtime)
+    try:
+        tool = TodoWriteTool(lambda: project_validation_targets({"project_file": str(project)}))
+        for requirement in [{"rule_id": "sequence.structure", "diagram_name": "wrong"},
+                            {"rule_id": "unknown", "diagram_name": "Flow"}]:
+            assert tool.run({"todos": [{"content": "new", "status": "pending"}],
+                             "validation_requirements": [requirement]}).startswith("Error:")
+            assert runtime.todos[0]["content"] == "original"
+            assert "validation_requirements" not in runtime.policy_metadata
+    finally:
+        reset_runtime(token)
+
+
+def test_todo_corrects_inherited_missing_target_without_removing_valid_unsatisfied_requirement():
+    valid = {"rule_id": "sequence.structure", "diagram_name": "Still incomplete"}
+    wrong = {"rule_id": "sequence.structure", "diagram_name": "Wrong name"}
+    corrected = {"rule_id": "sequence.structure", "diagram_name": "Actual name"}
+    runtime = AgentRuntime(policy_metadata={"validation_requirements": [wrong, valid]})
+    token = set_runtime(runtime)
+    try:
+        tool = TodoWriteTool(lambda: {"sequence.structure": {"Actual name", "Still incomplete"}})
+        todos = [{"content": "repair", "status": "in_progress"}]
+        assert "removed inherited nonexistent" in tool.run({"todos": todos, "validation_requirements": [corrected]})
+        assert runtime.policy_metadata["validation_requirements"] == [valid, corrected]
+        assert runtime.policy_metadata["validation_requirement_corrections"] == [wrong]
+        assert tool.run({"todos": todos, "validation_requirements": []}).startswith("Updated")
+        assert runtime.policy_metadata["validation_requirements"] == [valid, corrected]
+    finally:
+        reset_runtime(token)
+
+
 def test_validate_and_review_reject_unsatisfied_required_check(tmp_path):
     token = set_runtime(AgentRuntime(policy_metadata={"validation_requirements": REQUIRED}))
     try:

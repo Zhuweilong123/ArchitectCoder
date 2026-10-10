@@ -67,7 +67,7 @@ class ReActAgent(Agent):
         tool_registry: ToolRegistry,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
-        max_tool_calls: int = 100,
+        max_tool_calls: int = 0,
         max_run_seconds: float = 0.0,
         max_total_tokens: int = 200000,
         emergency_max_total_tokens: int | None = None,
@@ -77,15 +77,16 @@ class ReActAgent(Agent):
         convergence_repeat_action_threshold: int = 3,
         evidence_max_records: int = 128,
         final_summary_max_tokens: int = 3000,
-        llm_timeout_seconds: float = 120.0,
+        llm_timeout_seconds: float = 300.0,
         context_budget: ContextBudgetManager | None = None,
         execution_budget: ExecutionBudget | None = None,
+        llm_timeout_retries: int = 3,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
         self.current_history: List[str] = []
         self.execution_budget = execution_budget
-        self.max_tool_calls = max(1, max_tool_calls)
+        self.max_tool_calls = max(0, max_tool_calls)
         self.max_run_seconds = max(0.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.emergency_max_total_tokens = (
@@ -110,6 +111,7 @@ class ReActAgent(Agent):
         self.evidence_max_records = max(self.max_tool_calls, evidence_max_records)
         self.final_summary_max_tokens = max(1, final_summary_max_tokens)
         self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
+        self.llm_timeout_retries = max(0, int(llm_timeout_retries))
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
         self.last_context_report: dict = {}

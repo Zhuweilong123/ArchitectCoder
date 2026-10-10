@@ -304,7 +304,11 @@ lifeA ──self──► lifeA   "validate()"
 
 `path` 是实际 workspace 根目录下的相对源码路径，不能用未配置的 source 别名、绝对路径或越界路径；`symbol` 是完整函数名，如 Python 的 `DPQPPathPlanner._plan` 或 C++ 的 `Planner::plan`；`line` 是对应 AST 调用/if/return 的起始行，不是函数定义行。`kind` 只能是 call/condition/return。一个行号含多个调用时无法精确确定调用顺序，应拆开源码证据范围或明确说明尚未核验，不为消除诊断改业务源码。
 
-**提交前执行**
+**按源码修订设计**
+
+先阅读相关入口与关键调用，核对参与者、消息、分支和返回，并引用源码位置说明修改依据。阅读源码不自动要求填写机器证据或声明 `sequence.source`；运行结构校验并如实说明人工审查范围，不能声称自动证明了整体行为等价。
+
+**显式要求自动源码一致性检查时执行**
 
 1. 在 `todo_write(validation_requirements=[{"rule_id":"sequence.source","diagram_name":"准确图名"}], todos=[...])` 声明源码一致性验收，再阅读入口函数及关键子调用。对所审查函数声明 scope，指定执行生命线及真实入口消息；调用者必须有生命线。先列出源码中的每个 return、控制条件及成功路径，再修改图。结构检查不能替代已声明的源码检查。
 2. 关键调用绑定 call 证据。核对最终 messages 的实际 order：例如 build_knots 的 order 必须小于 solve，不能只在 note/最终回复里声称“先构建”。多个互斥分支不应强制比较顺序，并发区域不能当成线性流程。

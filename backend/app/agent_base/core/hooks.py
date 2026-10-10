@@ -548,6 +548,8 @@ class RunPolicyHook:
                 message = (
                     "The run time limit was reached; finalize with the verified evidence already gathered."
                     if reason == "time_limit" else
+                    "The configured tool-call limit was reached; finalize with the verified evidence already gathered."
+                    if reason == "tool_call_limit" else
                     "The per-request emergency token ceiling was reached; finalize with the verified evidence already gathered."
                 )
                 decision = HookDecision(

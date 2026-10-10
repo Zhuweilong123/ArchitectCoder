@@ -86,25 +86,37 @@ async def _invoke_fc_model_impl(
 
     from app.agent_base.core.observability import trace_span
 
+    retries = max(0, int(getattr(agent, "llm_timeout_retries", 3)))
     with trace_span(agent.name):
-        try:
-            response = await asyncio.wait_for(
-                agent.llm.ainvoke_with_tools(
-                    messages=messages,
-                    tools=tool_specs,
-                    tool_choice="none" if finalization_mode else "auto",
-                    temperature=temperature,
-                    trace_context=request_context,
-                ),
-                timeout=timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            await get_hooks().aemit(HookEvent.ERROR, HookContext(
-                event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
-                runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm"},
-            ))
-            return None, "timeout", "llm_timeout"
-    return response, "", ""
+        for attempt in range(retries + 1):
+            if runtime.stop_check():
+                raise AgentInterrupted("User requested stop")
+            try:
+                response = await asyncio.wait_for(
+                    agent.llm.ainvoke_with_tools(
+                        messages=messages,
+                        tools=tool_specs,
+                        tool_choice="none" if finalization_mode else "auto",
+                        temperature=temperature,
+                        trace_context={**request_context, "timeout_seconds": timeout_seconds,
+                                       "timeout_attempt": attempt + 1, "timeout_max_attempts": retries + 1},
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                will_retry = attempt < retries
+                await get_hooks().aemit(HookEvent.ERROR, HookContext(
+                    event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
+                    runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm",
+                                              "attempt": attempt + 1, "max_attempts": retries + 1,
+                                              "timeout_seconds": timeout_seconds, "will_retry": will_retry},
+                ))
+                if not will_retry:
+                    return None, "timeout", "llm_timeout"
+                logger.warning("[LLM] Request timed out after %.1fs; retry %d/%d",
+                               timeout_seconds, attempt + 1, retries)
+                continue
+            return response, "", ""
 
 
 async def run_fc_loop(agent, *args, **kwargs):

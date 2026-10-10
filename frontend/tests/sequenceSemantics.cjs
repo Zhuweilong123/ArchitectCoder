@@ -138,6 +138,36 @@ test('break layout covers idle enclosing participants', () => {
   result.lifelines.forEach(l => assert.ok(frame.x <= l.x + 70 && l.x + 70 <= frame.x + frame.width));
 });
 
+test('automatic layout separates sibling loop and break frames after fitting', () => {
+  const d = diagram();
+  d.fragments = [
+    { ...d.fragments[0], id: 'loop', type: 'loop', operands: [d.fragments[0].operands[0]] },
+    { ...d.fragments[0], id: 'break', type: 'break', operands: [d.fragments[0].operands[1]] },
+  ];
+  const before = JSON.stringify(d);
+  const result = arrangeSequenceLayout(d.lifelines, d.messages, d.fragments);
+  assert.ok(result.fragments[0].y_end + 16 <= result.fragments[1].y_start);
+  assert.deepEqual(result.fragments.map(f => f.operands.map(o => o.message_ids)), [[['ok']], [['fail']]]);
+  assert.equal(JSON.stringify(d), before);
+  const again = arrangeSequenceLayout(result.lifelines, result.messages, result.fragments);
+  assert.deepEqual(again, result);
+});
+
+test('closing a nested loop reserves its enclosing frame before a sibling break', () => {
+  const d = diagram();
+  const parent = { ...d.fragments[0], id: 'parent', type: 'opt',
+    operands: [{ ...d.fragments[0].operands[0], message_ids: [] }] };
+  const child = { ...d.fragments[0], id: 'loop', type: 'loop',
+    parent_fragment_id: 'parent', parent_operand_id: 'success',
+    operands: [d.fragments[0].operands[0]] };
+  const sibling = { ...d.fragments[0], id: 'break', type: 'break', operands: [d.fragments[0].operands[1]] };
+  d.fragments = [parent, child, sibling];
+  const result = arrangeSequenceLayout(d.lifelines, d.messages, d.fragments);
+  assert.ok(result.fragments[0].y_end + 16 <= result.fragments[2].y_start);
+  assert.ok(result.fragments[0].operands[0].y_start < result.fragments[1].y_start);
+  assert.ok(result.fragments[1].y_end < result.fragments[0].operands[0].y_end);
+});
+
 test('nested fragments fit their parent operand without copying child membership', () => {
   const d = diagram();
   d.fragments[0].operands[0].message_ids = [];

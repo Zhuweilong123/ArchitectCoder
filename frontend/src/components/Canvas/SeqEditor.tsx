@@ -151,7 +151,7 @@ const SeqEditor: React.FC = () => {
     diagram, selectedLifelineId, selectedMessageId,
     addLifeline, removeLifeline, moveLifeline,
     selectLifeline, selectMessage,
-    undo, redo, arrangeSequence, fitSequenceFragments,
+    undo, redo, arrangeSequence,
   } = useDiagramStore(useShallow((s) => ({
     diagram: selectActiveDiagram(s),
     selectedLifelineId: s.selectedLifelineId,
@@ -164,7 +164,6 @@ const SeqEditor: React.FC = () => {
     undo: s.undo,
     redo: s.redo,
     arrangeSequence: s.arrangeSequence,
-    fitSequenceFragments: s.fitSequenceFragments,
   })));
   const viewport = useDiagramStore((s) => s.viewport);
   const gridSettings = useDiagramStore((s) => s.project.grid_settings);
@@ -1032,11 +1031,6 @@ const SeqEditor: React.FC = () => {
           {(diagram.lifelines || []).length > 0 && (
             <Tooltip title={labels.centerTitle}>
               <Button size="small" onClick={() => useDiagramStore.getState().triggerRecenter()}>{labels.center}</Button>
-            </Tooltip>
-          )}
-          {(diagram.fragments || []).length > 0 && (
-            <Tooltip title={labels.fitFragmentsTitle}>
-              <Button size="small" onClick={fitSequenceFragments}>{labels.fitFragments}</Button>
             </Tooltip>
           )}
           <span style={{ fontSize: 11, color: '#999', margin: '0 2px' }}>{labels.fragments}:</span>

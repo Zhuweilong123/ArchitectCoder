@@ -45,7 +45,7 @@ async def check(context):
         record("contract_check", phase="pre_commit", **value)
     if not decision.allowed:
         request.allowed = False
-        request.message = decision.message or "设计契约校验阻止提交，变更已回滚。"
+        request.message = decision.message or "设计契约校验未通过，请查看门禁报告。"
         request.stop_reason = "contract_check_failed"
         request.recovery_event = {"event": "contract_recovery_available", "action": "修复设计契约并继续"}
 

@@ -523,10 +523,38 @@ def test_default_agent_continues_after_ten_minutes():
     events = asyncio.run(_collect(agent))
 
     assert agent.max_run_seconds == 0
-    assert agent.llm_timeout_seconds == 120
+    assert agent.llm_timeout_seconds == 300
     assert llm.count == 2
     assert events[-1].is_final is True
     assert events[-1].final_answer == "完成"
+
+
+def test_default_agent_can_finish_after_more_than_100_tool_calls():
+    llm = MockLLM(rounds=101)
+    agent = ReActAgent("Test", llm, _registry())
+    token = set_runtime(AgentRuntime())
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(token)
+    assert agent.max_tool_calls == 0
+    assert agent.execution_budget.tool_call_count == 101
+    assert events[-1].final_answer == "完成"
+    assert agent.last_context_report["token_budget_stop_reason"] == "model_answer"
+
+
+def test_explicit_tool_call_limit_records_actual_stop_reason():
+    llm = MockLLM(rounds=5)
+    agent = ReActAgent("Test", llm, _registry(), max_tool_calls=2)
+    token = set_runtime(AgentRuntime())
+    try:
+        events = asyncio.run(_collect(agent))
+    finally:
+        reset_runtime(token)
+    assert agent.execution_budget.tool_call_count == 2
+    assert llm.count == 2
+    assert events[-1].is_final
+    assert agent.last_context_report["token_budget_stop_reason"] == "tool_call_limit"
 
 
 def test_execution_budget_policy_is_owned_by_hook():

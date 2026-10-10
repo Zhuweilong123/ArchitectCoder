@@ -91,28 +91,6 @@ function _expandFragmentForMessage(
   });
 }
 
-/** Fit fragments to the messages currently inside them while preserving empty fragments. */
-function _fitSequenceFragments(
-  fragments: SeqFragment[],
-  messages: SeqMessage[],
-): SeqFragment[] {
-  return fitStructuredFragments(fragments.map((fragment) => {
-    if (fragment.operands?.length) return fragment;
-    const contained = messages
-      .map((message) => ({ message, y: sequenceMessageY(message) }))
-      .filter(({ y }) => y >= fragment.y_start && y <= fragment.y_end);
-    if (contained.length === 0) return fragment;
-
-    const minY = Math.min(...contained.map(({ y }) => y));
-    const maxY = Math.max(...contained.map(({ y }) => y));
-    return {
-      ...fragment,
-      y_start: Math.max(80, minY - 28),
-      y_end: Math.max(minY + 72, maxY + 36),
-    };
-  }), messages);
-}
-
 /** Keep newly inserted messages readable without overriding an intentional click position. */
 function _allocateSequenceMessageY(
   messages: SeqMessage[],
@@ -239,7 +217,6 @@ export interface DiagramState {
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
   arrangeSequence: () => void;
-  fitSequenceFragments: () => void;
 
   // ── Fragment operations (UML 2.5.1) ───────────
   addFragment: (y?: number) => void;
@@ -917,21 +894,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     get().pushSnapshot('arrange_sequence');
     set({ project, isModified: true });
     get().triggerRecenter();
-  },
-
-  fitSequenceFragments: () => {
-    const state = get();
-    const diagram = _activeDiagram(state.project);
-    if (!(diagram.fragments || []).length || !(diagram.messages || []).length) return;
-    get().pushSnapshot('fit_sequence_fragments');
-    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
-      ...activeDiagram,
-      fragments: _fitSequenceFragments(
-        activeDiagram.fragments || [],
-        activeDiagram.messages || [],
-      ),
-    }));
-    set({ project, isModified: true });
   },
 
   // ── Fragment operations (UML 2.5.1) ─────────────────────

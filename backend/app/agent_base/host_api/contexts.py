@@ -42,7 +42,7 @@ class ContractFailureAnalysisContext:
     invoke: Callable[[AnalysisRequest], Awaitable[str]]
     message: str = ""
     run_id: str = ""
-    rollback_completed: bool = True
+    rollback_completed: bool | None = True
     allowed_tools: tuple[str, ...] | None = None
 
 

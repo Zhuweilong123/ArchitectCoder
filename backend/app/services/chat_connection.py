@@ -32,6 +32,8 @@ class ChatConnection:
         self._sequence = 0
         self._event_bytes = 0
         self._progress: dict | None = None
+        self._progress_steps: dict[int, dict] = {}
+        self._run_id = ""
         self._terminal: dict | None = None
         self._reviews: dict[int, dict] = {}
 
@@ -46,8 +48,11 @@ class ChatConnection:
             kind = event.get("event")
             if kind == "run_started":
                 self._progress = self._terminal = None
+                self._progress_steps.clear()
+                self._run_id = str(event.get("run_id") or "")
             elif kind == "progress":
                 self._progress = event
+                self._progress_steps[event["step"]] = event
             elif kind in {"uml_review", "request_review"}:
                 self._reviews[event["review_id"]] = event
             elif kind in {"review_timeout", "review_expired"}:
@@ -80,6 +85,16 @@ class ChatConnection:
             )
             if not known_cursor:
                 cursor = 0
+            # Restore progress independently of event acknowledgement. A newly
+            # mounted UI may have the cursor but no in-memory step history.
+            await socket.send_json({
+                "event": "progress_snapshot", "run_id": self._run_id,
+                "steps": list(self._progress_steps.values()),
+                "terminal_result_id": (
+                    f"agent_result_{self.epoch}_{self._terminal['event_seq']}"
+                    if self._terminal and self._terminal.get("event") == "done" else ""
+                ),
+            })
             for event in events:
                 if event["event_seq"] > cursor:
                     await socket.send_json(event)

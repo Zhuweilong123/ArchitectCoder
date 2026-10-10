@@ -251,7 +251,8 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     """
     if case.metadata.get("capability") == "budget_control":
         return {
-            "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
+            "max_tool_calls": (min(case.max_tool_calls, settings.agent_max_tool_calls)
+                               if settings.agent_max_tool_calls > 0 else case.max_tool_calls),
             "max_run_seconds": (
                 min(case.max_seconds, settings.agent_max_run_seconds)
                 if settings.agent_max_run_seconds > 0 else case.max_seconds

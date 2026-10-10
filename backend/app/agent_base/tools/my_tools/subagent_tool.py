@@ -230,7 +230,7 @@ class SpawnSubagentTool(AsyncTool):
             command_executor = build_command_executor(settings)
         if not workspace_root:
             workspace_root = workspace_root_for(source_dir, test_dir, design_dir)
-        self.max_tool_calls = max(1, int(
+        self.max_tool_calls = max(0, int(
             max_tool_calls if max_tool_calls is not None else settings.agent_max_tool_calls
         ))
         self.max_run_seconds = max(0.0, float(

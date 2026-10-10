@@ -170,6 +170,14 @@ export function arrangeSequenceLayout(
     ...orderedMessages.map((message) => ({ message, emptyId: '', oldY: sequenceMessageY(message) })),
     ...emptyOperands.map((operand) => ({ message: null, emptyId: operand.id, oldY: (operand.y_start + operand.y_end) / 2 })),
   ].sort((a, b) => a.oldY - b.oldY);
+  const membership = new Map(fragments.map((fragment) => [fragment.id, fragmentMessageIds(fragment, fragments)]));
+  const framesFor = (entry: typeof timeline[number]) => fragments.filter((fragment) => (
+    entry.message
+      ? fragment.operands?.length
+        ? membership.get(fragment.id)?.has(entry.message.id)
+        : entry.oldY >= fragment.y_start && entry.oldY <= fragment.y_end
+      : (fragment.operands || []).some((operand) => operand.id === entry.emptyId)
+  ));
   const emptyY = new Map<string, number>();
   const arrangedMessages: SeqMessage[] = [];
   timeline.forEach((entry, index) => {
@@ -178,6 +186,18 @@ export function arrangeSequenceLayout(
     else emptyY.set(entry.emptyId, nextY);
     const following = timeline[index + 1];
     if (following) {
+      const currentFrames = framesFor(entry);
+      const followingFrames = framesFor(following);
+      const closing = currentFrames.filter((frame) => !followingFrames.includes(frame));
+      const opening = followingFrames.filter((frame) => !currentFrames.includes(frame));
+      const currentDepth = Math.max(0, ...currentFrames.map(nestingDepth));
+      const followingDepth = Math.max(0, ...followingFrames.map(nestingDepth));
+      // Fitting expands frames beyond message rows: 44px below, 52px above,
+      // plus enclosing-frame padding. Reserve both sides at sibling boundaries.
+      const frameGap = closing.length || opening.length
+        ? Math.max(0, ...closing.map((frame) => 44 + 20 * (currentDepth - nestingDepth(frame))))
+          + Math.max(0, ...opening.map((frame) => 52 + 48 * (followingDepth - nestingDepth(frame)))) + 16
+        : 0;
       const nextMessage = following.message;
       const selfInvolved = message?.type === 'self' || nextMessage?.type === 'self'
         || (message && message.from_lifeline === message.to_lifeline)
@@ -186,7 +206,9 @@ export function arrangeSequenceLayout(
         SEQUENCE_MESSAGE_GAP,
         estimatedLabelHeight(message?.label || ''),
         selfInvolved ? 62 : 0,
-        (!message || !nextMessage || operandOwner.get(message.id) !== operandOwner.get(nextMessage.id)) ? 80 + maxDepth * 48 : 0,
+        frameGap,
+        (!message || !nextMessage || operandOwner.get(message.id) !== operandOwner.get(nextMessage.id))
+          ? 80 + Math.max(currentDepth, followingDepth) * 48 : 0,
       );
     }
   });

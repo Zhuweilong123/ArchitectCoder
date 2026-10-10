@@ -22,7 +22,7 @@ function harness() {
   const handle = exports.createAgentChatEventHandler({
     setMessages: update => { state.messages = typeof update === 'function' ? update(state.messages) : update; },
     setBusy: value => { state.busy = value; },
-    setCurrentSteps: noop, setCurrentTodos: noop, setTodoPlanningMode: noop,
+    setCurrentSteps: value => { state.steps = value; }, setCurrentTodos: noop, setTodoPlanningMode: noop,
     setStrategyAdvised: noop, setTodoExpanded: noop,
     liveStepsRef: { current: [] }, liveTodosRef: { current: [] },
     todoSeenInTaskRef: { current: false }, settleTodos: () => [], handleDesignElement: noop,
@@ -57,4 +57,27 @@ test('rejected duplicate chat does not clear an active task', () => {
   handle({ event: 'error', message: 'Already running', running: true });
   assert.equal(state.busy, true);
   assert.equal(state.messages.length, 1);
+});
+
+test('reconnect restores the full task history and merges the next progress by step', () => {
+  const { state, handle } = harness();
+  const steps = Array.from({ length: 29 }, (_, index) => ({
+    event: 'progress', step: index + 1, tool_calls_detail: [], actions: ['read_file'],
+  }));
+  handle({ event: 'progress_snapshot', run_id: 'run', steps });
+  handle(steps[28]);
+  assert.equal(state.steps.length, 29);
+  handle({ ...steps[28], step: 30 });
+  assert.equal(state.steps.length, 30);
+  handle({ event: 'done', result: 'finished', checkpoint: { status: 'partial' } });
+  assert.equal(state.messages[0].steps.length, 30);
+});
+
+test('snapshot repairs the steps of an already displayed terminal result', () => {
+  const { state, handle } = harness();
+  handle({ event: 'done', event_epoch: 'epoch', event_seq: 10, result: 'finished' });
+  handle({ event: 'progress_snapshot', run_id: 'run', terminal_result_id: 'agent_result_epoch_10',
+    steps: [{ event: 'progress', step: 1 }, { event: 'progress', step: 2 }] });
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].steps.length, 2);
 });

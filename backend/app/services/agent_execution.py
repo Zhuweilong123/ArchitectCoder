@@ -940,7 +940,7 @@ async def handle_agent_execution(
                     review_failure=get_runtime().policy_metadata.get("review_validation_failure"))
                 _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 if not execution_check.allowed:
-                    rollback_completed = False
+                    rollback_completed = None  # No changes require no rollback.
                     candidate_artifact = None
                     if change_set is not None and change_set.has_changes:
                         try:

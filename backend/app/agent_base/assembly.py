@@ -252,6 +252,9 @@ async def _create_dev_agent_impl(
     workspace_roots = list(manifest.workspace_roots)
     registry = ToolRegistry(policy=CapabilityPolicy(workspace_roots=workspace_roots))
     for tool in tools:
+        if tool.name == "todo_write":
+            from app.services.validation_targets import project_validation_targets
+            tool.requirement_catalog = lambda: project_validation_targets(manifest.to_dict())
         registry.register_tool(tool)
 
     environment_context = build_environment_context(
@@ -310,6 +313,7 @@ async def _create_dev_agent_impl(
         evidence_max_records=settings.agent_evidence_max_records,
         final_summary_max_tokens=settings.agent_final_summary_max_tokens,
         llm_timeout_seconds=settings.agent_llm_timeout_seconds,
+        llm_timeout_retries=settings.agent_llm_timeout_retries,
         context_budget=ContextBudgetManager(budget=ContextBudget(
             max_context_tokens=settings.agent_context_hard_limit_tokens,
             max_history_turns=settings.agent_context_max_history_turns,

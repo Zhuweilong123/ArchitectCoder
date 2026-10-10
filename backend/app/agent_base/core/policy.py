@@ -32,7 +32,7 @@ class ExecutionBudget:
     total_tokens: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
-        self.max_tool_calls = max(1, int(self.max_tool_calls))
+        self.max_tool_calls = max(0, int(self.max_tool_calls))
         self.max_run_seconds = max(0.0, float(self.max_run_seconds))
         self.max_total_tokens = max(1, int(self.max_total_tokens))
         if self.emergency_max_total_tokens is None:
@@ -82,10 +82,12 @@ class ExecutionBudget:
             and time.monotonic() - self.started_at >= self.max_run_seconds
         ):
             return "time_limit"
+        if self.max_tool_calls > 0 and self.tool_call_count >= self.max_tool_calls:
+            return "tool_call_limit"
         return None
 
     def before_tool(self) -> str | None:
-        if self.tool_call_count >= self.max_tool_calls:
+        if self.max_tool_calls > 0 and self.tool_call_count >= self.max_tool_calls:
             return "tool_call_limit"
         self.tool_call_count += 1
         return None

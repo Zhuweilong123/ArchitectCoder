@@ -137,6 +137,7 @@ export interface AgentDesignElementEvent {
 }
 
 export type AgentEvent =
+  | { event: 'progress_snapshot'; run_id: string; steps: AgentProgressEvent[]; terminal_result_id?: string }
   | { event: 'session_sync'; running: boolean; stopping: boolean; replay_truncated?: boolean; pending_review_ids?: number[] }
   | { event: 'run_started'; run_id: string; status: string }
   | AgentProgressEvent

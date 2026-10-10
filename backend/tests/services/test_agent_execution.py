@@ -10,7 +10,7 @@ from app.agent_base.agents.react_agent import ReActProgress
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.host_api.contract_checks import ContractCheckResult, ContractViolation
 from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
-from extensions.design_contract.analysis import (ModelContractFailureAnalyzer)
+from extensions.design_contract.analysis import (ModelContractFailureAnalyzer, build_contract_failure_report)
 from app.agent_base.host_api.orchestration import OrchestrationPreparation
 from app.agent_base.tools.registry import ToolRegistry
 
@@ -147,6 +147,42 @@ def test_contract_failure_analysis_injects_report_for_fallback_adapter():
     assert agent.history[-1].role == "summary"
     assert "status: block" in agent.history[-1].content
     assert "missing_implementation" in agent.history[-1].content
+
+
+def test_failure_report_preserves_errors_after_legacy_warnings():
+    warnings = tuple(ContractViolation(code="SEQ_LEGACY_OPERANDS", severity="warning", message="legacy")
+                     for _ in range(21))
+    errors = tuple(ContractViolation(code="VALIDATION_REQUIREMENT_UNMET", severity="error", message=f"target-{i}")
+                   for i in range(5))
+    result = ContractCheckResult(check_id="mixed", status="block", project_id="demo",
+                                 violations=warnings + errors)
+    report = build_contract_failure_report(result, rollback_completed=None)
+    assert "rollback: not_required" in report
+    assert "violation_counts: errors=5; other=21" in report
+    for i in range(5):
+        assert f"target-{i}" in report
+    assert report.index("severity=error") < report.index("severity=warning")
+    assert "omitted severity=warning; code=SEQ_LEGACY_OPERANDS; count=6" in report
+
+
+def test_failure_report_counts_omitted_errors():
+    result = ContractCheckResult(check_id="many", status="block", project_id="demo",
+        violations=tuple(ContractViolation(code="MISSING", severity="error", message=str(i)) for i in range(25)))
+    report = build_contract_failure_report(result, rollback_completed=False)
+    assert "rollback: not_completed" in report
+    assert "omitted severity=error; code=MISSING; count=5" in report
+
+
+def test_failure_analysis_does_not_assume_rollback_without_changes():
+    requests = []
+    async def invoke(request):
+        requests.append(request)
+        return "未执行修改，验收要求未完成。"
+    result = ContractCheckResult(check_id="unchanged", status="block", project_id="demo")
+    asyncio.run(ModelContractFailureAnalyzer().analyze(ContractFailureAnalysisContext(
+        result=result, invoke=invoke, rollback_completed=None)))
+    assert "rollback: not_required" in requests[0].evidence
+    assert "has already been rolled back" not in requests[0].prompt
 
 
 def test_contract_failure_analysis_preserves_tool_schema_prefix_and_uses_normal_profile():

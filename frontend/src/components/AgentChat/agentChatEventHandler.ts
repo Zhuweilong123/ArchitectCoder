@@ -50,6 +50,22 @@ export function createAgentChatEventHandler({
 }: AgentChatEventHandlerOptions): (event: AgentEvent) => void {
   return (event: AgentEvent) => {
     switch (event.event) {
+      case 'progress_snapshot': {
+        liveStepsRef.current = [...event.steps].sort((first, second) => first.step - second.step);
+        setCurrentSteps([...liveStepsRef.current]);
+        if (event.terminal_result_id) {
+          setMessages(previous => previous.map(message => message.id === event.terminal_result_id
+            ? { ...message, steps: [...liveStepsRef.current] } : message));
+        }
+        const latest = liveStepsRef.current[liveStepsRef.current.length - 1];
+        if (latest && Array.isArray(latest.todos)) {
+          liveTodosRef.current = latest.todos;
+          setCurrentTodos(latest.todos);
+          setTodoPlanningMode(Boolean(latest.planning_mode));
+          setStrategyAdvised(Boolean(latest.strategy_advised));
+        }
+        break;
+      }
       case 'run_started':
         setBusy(true);
         break;

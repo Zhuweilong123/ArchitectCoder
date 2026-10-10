@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         description="Deprecated and ignored; all agents use LLM_MODEL_ID.",
     )
 
-    agent_max_tool_calls: int = 100
+    agent_max_tool_calls: int = 0  # 0 disables the overall tool-call limit.
     agent_max_run_seconds: int = 0  # 0 disables the overall run deadline.
     # One explicit request-context hard limit. Soft convergence and compaction
     # thresholds are ratios of this value so deployments can scale it once.
@@ -78,7 +78,8 @@ class Settings(BaseSettings):
     # compaction never falls back to raw, high-volume tool observations.
     agent_evidence_max_records: int = 128
     agent_final_summary_max_tokens: int = 3000
-    agent_llm_timeout_seconds: int = 120
+    agent_llm_timeout_seconds: int = 300
+    agent_llm_timeout_retries: int = 3  # Retries after the initial timed-out request.
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
 

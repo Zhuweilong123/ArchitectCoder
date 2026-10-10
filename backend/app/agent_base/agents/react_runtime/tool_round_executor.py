@@ -249,8 +249,6 @@ class ToolRoundExecutor:
             }
 
     def _parse_calls(self, tool_calls: list[dict]) -> list[tuple[dict, str, dict | str, str | None]]:
-        runtime = get_runtime()
-        budget = runtime.execution_budget
         parsed_calls = []
         for tool_call in tool_calls:
             fn = tool_call["function"]
@@ -270,11 +268,6 @@ class ToolRoundExecutor:
                 blocked = (
                     f"Tool '{tool_name}' is not enabled for this turn. "
                     f"Use one of: {', '.join(sorted(self.allowed_tools)) or '(none)'}"
-                )
-            elif budget is not None and budget.tool_call_count >= budget.max_tool_calls:
-                blocked = (
-                    f"Tool-call budget exceeded ({budget.max_tool_calls}). "
-                    "Stop calling tools and summarize the result."
                 )
             elif tool_name == "apply_changes":
                 edit_paths = self._paths_for_call(tool_name, tool_args)

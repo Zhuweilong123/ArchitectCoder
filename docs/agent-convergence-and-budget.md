@@ -22,7 +22,7 @@ Trace、Evidence Ledger 和 `last_context_report` 记录这些策略的决定；
 
 `ExecutionBudget` 的 token 限制是**单次 LLM 请求**口径，任务累计 token 仅用于观测：
 
-- `max_tool_calls`：一次 run 的工具调用上限。
+- `max_tool_calls`：一次 run 的可选工具调用上限；0 表示不限制次数。普通任务默认使用 0，显式设置正数时由公共预算策略统一计数，并记录 `tool_call_limit`。
 - `max_run_seconds`：一次 run 的时间上限，`0` 表示不限时。
 - `max_total_tokens`：当前请求软目标，来自 `agent_context_soft_limit_tokens`。
 - `emergency_max_total_tokens`：当前请求紧急上限，来自 `agent_context_hard_limit_tokens`。
@@ -125,7 +125,9 @@ continue / recover（追加策略提示）/ finalize（工具列表置空）
 
 | 配置 | 默认值 | 作用 |
 |---|---:|---|
-| `agent_max_tool_calls` | 100 | 单次 run 工具调用上限 |
+| `agent_max_tool_calls` | 0 | 单次 run 工具调用上限；0 不限制次数，正数显式限制并记录 tool_call_limit |
+| `agent_llm_timeout_seconds` | 300 | 单次模型请求等待上限，每次重试独立计时 |
+| `agent_llm_timeout_retries` | 3 | 单次模型请求超时后的重试次数；首次请求加重试最多 4 次 |
 | `agent_max_run_seconds` | 0 | 单次 run 不限时；正数显式启用时间上限（秒） |
 | `agent_context_hard_limit_tokens` | 256000 | 请求紧急 token 上限 |
 | `agent_context_soft_threshold_ratio` | 0.78125 | 请求软目标比例 |

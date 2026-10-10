@@ -44,8 +44,6 @@ export interface CanvasLabels {
     arrangeTitle: string;
     center: string;
     centerTitle: string;
-    fitFragments: string;
-    fitFragmentsTitle: string;
     fragments: string;
     addFragment: (name: string) => string;
     messageLegend: string;
@@ -126,9 +124,8 @@ export function getCanvasLabels(language: InterfaceLanguage): CanvasLabels {
       sequenceDiagram: {
         addLifeline: 'Lifeline', addLifelineTitle: 'Add a lifeline',
         chooseMessageType: 'Choose a message type, then click the sender and receiver lifelines',
-        arrange: 'Arrange', arrangeTitle: 'Evenly arrange lifelines and message timing',
+        arrange: 'Layout', arrangeTitle: 'Arrange lifelines, messages, and fragment bounds together',
         center: 'Center', centerTitle: 'Center the sequence diagram in the canvas',
-        fitFragments: 'Fit fragments', fitFragmentsTitle: 'Fit loop, alt, and other fragment ranges to their messages',
         fragments: 'Fragments', addFragment: (name) => `Add ${name} fragment`,
         messageLegend: 'Message type legend', sync: 'Sync', async: 'Async', return: 'Return', self: 'Self',
         showToolbar: 'Show canvas toolbar', hideToolbar: 'Hide canvas toolbar',
@@ -161,9 +158,8 @@ export function getCanvasLabels(language: InterfaceLanguage): CanvasLabels {
     sequenceDiagram: {
       addLifeline: '生命线', addLifelineTitle: '添加生命线',
       chooseMessageType: '先选择消息类型，再依次点击发送方和接收方生命线',
-      arrange: '整理', arrangeTitle: '均匀排列生命线并整理消息时间轴',
+      arrange: '整理', arrangeTitle: '统一整理生命线、消息时间轴和片段边界',
       center: '居中', centerTitle: '将时序图自动居中到可视画布',
-      fitFragments: '适配片段', fitFragmentsTitle: '根据片段内消息自动调整 loop、alt 等片段范围',
       fragments: '片段', addFragment: (name) => `添加 ${name} 片段`,
       messageLegend: '消息类型图例', sync: '同步', async: '异步', return: '返回', self: '自反',
       showToolbar: '显示画布工具栏', hideToolbar: '隐藏画布工具栏',

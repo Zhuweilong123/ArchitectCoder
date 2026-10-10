@@ -21,7 +21,7 @@ class UnavailableGate:
 
 class UnavailableAnalyzer:
     async def analyze(self, context):
-        return context.message or "设计契约校验阻止提交，变更已回滚。"
+        return context.message or "设计契约校验未通过，请查看门禁报告。"
 
 
 def bind(context):
