@@ -18,8 +18,59 @@ const { fitStructuredFragments } = require('../src/utils/sequenceFragments.ts');
 const { sequenceOperandView } = require('../src/utils/sequenceFragmentView.ts');
 const { getDiagramChanges } = require('../src/utils/designChanges.ts');
 const { useDiagramStore } = require('../src/stores/diagramStore.ts');
-const { handleDesignElement } = require('../src/services/designElementHandler.ts');
+const { handleDesignElement, processDesignUpdated } = require('../src/services/designElementHandler.ts');
 const { getMessageVisual } = require('../src/components/Canvas/seqRenderUtils.ts');
+
+test('review lays out changed diagrams before publishing and preserves originals and unrelated diagrams', () => {
+  const original = diagram();
+  const candidate = structuredClone(original);
+  candidate.messages[2].label = 'updated request';
+  const unrelated = normalizeDiagram({ name: 'Unchanged', classes: [{ id: 'alone', position: { x: 900, y: 800 } }] });
+  const originalJson = JSON.stringify(original);
+  const candidateJson = JSON.stringify(candidate);
+  useDiagramStore.setState({ project: {
+    ...useDiagramStore.getState().project, diagrams: [original, unrelated], active_diagram_index: 0,
+    grid_settings: { grid_visible: true, grid_size: 20, grid_color: '#e0e0e0', grid_thickness: 1, snap_to_grid: true },
+  } });
+  let published;
+  const ui = {
+    setGlobalOptimizationResult: (before, after, diffs) => {
+      published = { before, after, diffs };
+      assert.deepEqual(useDiagramStore.getState().project.diagrams[0], after['sequence:Flow']);
+    },
+    setRightPanelTab: () => {}, setRightPanelVisible: () => {},
+  };
+  const specs = [candidate, unrelated].map(data => ({ type: data.diagram_type, name: data.name, component_id: '', data }));
+  // An omitted/empty change selector uses the full snapshot without arranging unchanged diagrams.
+  processDesignUpdated(specs, [], ui, useDiagramStore.getState(), {
+    'sequence:Flow': original, 'class:Unchanged': unrelated,
+  }, []);
+  assert.deepEqual(Object.keys(published.after), ['sequence:Flow']);
+  assert.deepEqual(published.after['sequence:Flow'].messages, arrangeSequenceLayout(candidate.lifelines, candidate.messages, candidate.fragments).messages);
+  assert.deepEqual(JSON.parse(published.diffs['sequence:Flow']).after, published.after['sequence:Flow']);
+  assert.equal(JSON.stringify(original), originalJson);
+  assert.equal(JSON.stringify(candidate), candidateJson);
+  assert.deepEqual(published.before['sequence:Flow'], original);
+  assert.deepEqual(useDiagramStore.getState().project.diagrams[1], unrelated);
+  assert.deepEqual(published.after['sequence:Flow'].fragments[0].operands.map(o => [o.id, o.guard, o.message_ids]),
+    original.fragments[0].operands.map(o => [o.id, o.guard, o.message_ids]));
+});
+
+test('review prepares class and component candidates for the same canvas and preview layout', () => {
+  const { layoutReviewDiagram } = require('../src/utils/reviewLayout.ts');
+  for (const type of ['class', 'component']) {
+    const input = normalizeDiagram({
+      name: type, diagram_type: type,
+      classes: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+      components: [{ id: 'a', name: 'A', x: 0, y: 0 }, { id: 'b', name: 'B', x: 0, y: 0 }],
+    });
+    const before = JSON.stringify(input);
+    const output = layoutReviewDiagram(input);
+    assert.equal(JSON.stringify(input), before);
+    if (type === 'class') assert.notDeepEqual(output.classes[0].position, output.classes[1].position);
+    else assert.notDeepEqual([output.components[0].x, output.components[0].y], [output.components[1].x, output.components[1].y]);
+  }
+});
 
 function diagram() {
   return normalizeDiagram({

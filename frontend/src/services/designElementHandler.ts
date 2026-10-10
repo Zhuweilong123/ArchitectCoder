@@ -6,6 +6,8 @@
  */
 
 import { useDiagramStore } from '../stores/diagramStore';
+import { normalizeDiagram } from '../utils/diagramNormalization';
+import { layoutReviewDiagram } from '../utils/reviewLayout';
 
 export function parseDesignElement(data: string): any | null {
   try {
@@ -287,6 +289,7 @@ export function processDesignUpdated(
   const originals: Record<string, any> = {};
   const optimizeds: Record<string, any> = {};
   const diffs: Record<string, string> = {};
+  const arrangedByKey = new Map<string, any>();
 
   const canonicalize = (value: any): any => {
     if (Array.isArray(value)) return value.map(canonicalize);
@@ -323,7 +326,7 @@ export function processDesignUpdated(
   for (const spec of candidates) {
     const dtype = spec.type || 'class';
     const dkey = `${dtype}:${spec.name || ''}`;
-    const opt = spec.data ? { ...spec.data } : {};
+    const rawOpt = spec.data ? { ...spec.data } : {};
     // diff 优先使用流式前的原始快照（流式阶段已清空旧图），
     // 快照不存在时回退到 store 当前值（非流式路径或空项目）
     const existing = originalsSnapshot?.[dkey]
@@ -335,7 +338,15 @@ export function processDesignUpdated(
       : null;
 
     // Legacy callers may still pass the full snapshot; filter unchanged items.
-    if (orig && sameDiagram(orig, opt)) continue;
+    if (orig && sameDiagram(orig, rawOpt)) continue;
+
+    // Select changes before layout so untouched diagrams do not become review
+    // tabs merely because their geometry differs from the automatic layout.
+    const opt = layoutReviewDiagram(normalizeDiagram({
+      ...rawOpt, diagram_type: dtype, name: spec.name || rawOpt.name || '',
+      component_id: spec.component_id || rawOpt.component_id || '',
+    }));
+    arrangedByKey.set(dkey, opt);
 
     // 空工程时原始版也指向优化版，diff 文案标注为新建设计
     originals[dkey] = orig || opt;
@@ -353,13 +364,13 @@ export function processDesignUpdated(
     type: d.type || 'class',
     name: d.name || '',
     component_id: d.component_id || '',
-    data: d.data || {},
+    data: arrangedByKey.get(`${d.type || 'class'}:${d.name || ''}`) || d.data || {},
   }));
   diagramStore.addDiagramsFromSpec(specs);
 
   // addDiagramsFromSpec selects the last diagram for historical reasons.
   // Review should instead focus the first diagram that actually changed.
-  const firstChanged = candidates[0];
+  const firstChanged = candidates.find((spec) => arrangedByKey.has(`${spec.type || 'class'}:${spec.name || ''}`));
   if (firstChanged) {
     const changedIndex = diagramStore.project.diagrams.findIndex(
       (d: any) => (d.diagram_type || 'class') === (firstChanged.type || 'class')
