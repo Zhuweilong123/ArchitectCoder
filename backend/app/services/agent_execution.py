@@ -15,7 +15,7 @@ from backend.config import get_settings
 
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
-from app.agent_base.host_api.errors import AgentInterrupted
+from app.agent_base.host_api.errors import AgentInterrupted, AgentAwaitingReview
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.adapters.review import ReviewAdapter
 from app.agent_base.adapters.execution import dispatch_execution
@@ -407,6 +407,8 @@ async def _request_fallback_uml_review(
                 content=request.content,
             )
         logger.info("[AgentChat] 兜底审核补推: review_id=%d", request.id)
+        if review_manager.persist_reviews and not review_manager.auto_approve_reviews:
+            return True
         await send({
             "event": "uml_review",
             "review_id": request.id,
@@ -668,6 +670,7 @@ async def handle_agent_execution(
     _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
     logger.info("[AgentExecution] initial checkpoint persisted run=%s", run_id)
     if review_mgr is not None:
+        review_mgr.persist_reviews = bool(run_id)
         # The UML review must happen while the source candidate is still
         # rolled back.  The chat transport restores the candidate only after
         # this review is accepted.
@@ -920,6 +923,10 @@ async def handle_agent_execution(
                     run_id=run_id,
                     workspace_root=workspace_root,
                 )
+                if fallback_review_requested:
+                    pending = review_mgr.get_pending()
+                    if pending:
+                        raise AgentAwaitingReview(review_mgr.get_request(pending[-1]["id"]))
 
                 execution_check = await dispatch_execution(ExecutionRequest(
                     ExecutionSlots.CHECK, run_id=run_id,
@@ -1078,6 +1085,24 @@ async def handle_agent_execution(
                 )
                 return
 
+    except AgentAwaitingReview as awaiting:
+        from app.services.pending_review import suspend_review, review_event
+        _sync_task_execution()
+        agent.last_run_checkpoint.update(workspace_root=workspace_root,
+                                         todos=list(get_runtime().todos or []))
+        agent.last_run_checkpoint = suspend_review(awaiting.request, agent.last_run_checkpoint, change_set)
+        _write_task_summary("waiting_approval")
+        _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint, status=RunStatus.WAITING_APPROVAL)
+        if fallback_review_runs is not None:
+            fallback_review_runs[awaiting.request.id] = run_id
+        if trace_log:
+            trace_log.review_request(review_id=awaiting.request.id, review_type=awaiting.request.review_type,
+                                     title=awaiting.request.title, content=awaiting.request.content,
+                                     question=awaiting.request.question)
+        await send(review_event(awaiting.request))
+        await send({"event": "done", "run_id": run_id,
+                    "result": "设计候选已保存，任务暂停等待审核；接受后继续执行。",
+                    "checkpoint": agent.last_run_checkpoint})
     except asyncio.CancelledError:
         disconnected = bool(disconnect_check and disconnect_check())
         user_stopped = bool(stop_check())

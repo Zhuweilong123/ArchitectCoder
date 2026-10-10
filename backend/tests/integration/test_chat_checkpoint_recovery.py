@@ -38,6 +38,64 @@ class _WebSocket:
         self.sent.append(payload)
 
 
+@pytest.mark.parametrize("action", ["accept", "reject", "repush", "stop", "cancel"])
+@pytest.mark.parametrize("agent_lost", [False, True])
+def test_durable_review_restores_across_session_recreation(tmp_path, monkeypatch, action, agent_lost):
+    from app.services.run_state import RunStore, RunStatus
+    from app.services.candidate_artifact import CandidateArtifactStore
+    from app.services.change_set import ChangeSet
+    from app.services.pending_review import suspend_review
+    project = tmp_path / "candidate.txt"
+    project.write_text("before", encoding="utf-8")
+    changes = ChangeSet()
+    changes.record(str(project), True, "before", "after")
+    project.write_text("after", encoding="utf-8")
+    store = RunStore(tmp_path / "runs.db")
+    run = store.claim(store.create(kind="agent_chat", session_id="checkpoint-recovery-test").run_id, "old-owner")
+    manager = ReviewManager(session_id="checkpoint-recovery-test")
+    request = manager.submit("uml_diff", title="Original candidate", metadata={
+        "diagrams": [{"name": "after"}], "original_diagrams": [{"name": "before"}]})
+    artifacts = CandidateArtifactStore(root=tmp_path / "artifacts")
+    checkpoint = suspend_review(request, {"run_id": run.run_id, "project_file": str(project),
+        "workspace_root": str(tmp_path), "request_summary": "Original task"}, changes, artifacts)
+    store.transition(run.run_id, RunStatus.WAITING_APPROVAL, owner_id="old-owner", metadata_patch={"checkpoint": checkpoint})
+    starts = []
+    agent = SimpleNamespace(llm=None, last_run_checkpoint={}, tool_registry=SimpleNamespace(get_tool=lambda name: None),
+                            append_task_summary=lambda summary: None)
+    recreated = ReviewManager(session_id="checkpoint-recovery-test")
+    session = SimpleNamespace(agent=None if agent_lost else agent, review_mgr=recreated, progress=None, prompt_builder=None,
+                              trace_log=_TraceLog(), run_owner=None, touch=lambda: None)
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _: session)
+    monkeypatch.setattr(chat_session, "get_run_store", lambda: store)
+    monkeypatch.setattr("app.services.pending_review.CandidateArtifactStore", lambda: artifacts)
+    monkeypatch.setattr(chat_session, "_record_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **kwargs: SimpleNamespace())
+    async def create(*args, **kwargs):
+        return agent, ReviewManager(session_id="checkpoint-recovery-test"), None
+    monkeypatch.setattr(chat_session, "create_dev_agent", create)
+    async def start(**kwargs):
+        starts.append(kwargs)
+    monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+    if action in {"accept", "reject"}:
+        payload = {"type": "review_response", "review_id": request.id, "decision": action, "feedback": "comment"}
+    elif action == "repush":
+        payload = {"type": "chat", "message": "再给我推送一下审核"}
+    elif action == "cancel":
+        payload = {"type": "chat", "message": "取消审核"}
+    else:
+        payload = {"type": "stop"}
+    websocket = _WebSocket([json.dumps(payload)])
+    asyncio.run(chat_session.ChatSessionCoordinator(websocket).run())
+    assert any(event.get("event") == "uml_review" and event["title"] == "Original candidate" for event in websocket.sent)
+    assert project.read_text() == ("after" if action == "accept" else "before")
+    assert len(starts) == (1 if action in {"accept", "reject"} else 0)
+    if starts:
+        assert starts[0]["parent_run_id"] == run.run_id
+        assert starts[0]["resume_checkpoint"]["review_status"] == ("accepted" if action == "accept" else "rejected")
+    else:
+        assert store.get(run.run_id).status == ("canceled" if action == "cancel" else "waiting_approval")
+
+
 @pytest.mark.parametrize("decision", ["accept", "reject"])
 @pytest.mark.parametrize("wire_format", ["feedback", "legacy_comment", "json_response", "empty_feedback", "no_comment"])
 def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_design_accept(

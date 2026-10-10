@@ -298,9 +298,10 @@ class ToolRoundExecutor:
             except BaseException as exc:
                 if operation.stage != HookEvent.TOOL_AFTER.value:
                     from ...core.exceptions import AgentInterrupted
+                    from ...host_api.errors import AgentAwaitingReview
                     await self.hooks.aemit(HookEvent.TOOL_AFTER, HookContext(
                         HookEvent.TOOL_AFTER, self.agent_name, run_id=get_runtime().run_id,
-                        tool_name=tool_name, payload={"status": "cancelled" if isinstance(exc, (asyncio.CancelledError, AgentInterrupted)) else "failed", "observers_only": True},
+                        tool_name=tool_name, payload={"status": "waiting_approval" if isinstance(exc, AgentAwaitingReview) else "cancelled" if isinstance(exc, (asyncio.CancelledError, AgentInterrupted)) else "failed", "observers_only": True},
                     ))
                 raise
 

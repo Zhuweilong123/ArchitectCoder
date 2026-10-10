@@ -600,6 +600,19 @@ class ChatSessionCoordinator:
         # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
         fallback_review_runs = state.fallback_review_runs
         source_dir, test_dir, project_file, workspace_root, design_dir = state.paths
+        from app.services.pending_review import restore_pending_reviews, review_event
+        if review_mgr is None:
+            from app.agent_base.tools.review import ReviewManager
+            review_mgr = session.review_mgr = ReviewManager(session_id=session_id)
+        restored_reviews = restore_pending_reviews(get_run_store(), session_id, review_mgr, fallback_review_runs)
+        for _, checkpoint, request in restored_reviews:
+            source_dir = checkpoint.get("source_dir") or source_dir
+            test_dir = checkpoint.get("test_dir") or test_dir
+            project_file = checkpoint.get("project_file") or project_file
+            workspace_root = checkpoint.get("workspace_root") or workspace_root
+            design_dir = checkpoint.get("design_dir") or design_dir
+            await state.send_json(review_event(request))
+        state.paths = (source_dir, test_dir, project_file, workspace_root, design_dir)
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
         trace_sink_token = set_current_trace_sink(trace_log)
@@ -607,6 +620,26 @@ class ChatSessionCoordinator:
 
         def _stop_check():
             return state.stop_requested
+
+        async def _cancel_pending_reviews():
+            for review_id, reviewed_run_id in list(fallback_review_runs.items()):
+                record = get_run_store().get(reviewed_run_id)
+                checkpoint = dict(record.metadata.get("checkpoint") or {})
+                if not checkpoint.get("pending_review"):
+                    continue
+                checkpoint.update(status="canceled", resume_available=False, review_status="canceled",
+                                  stop_reason="user_canceled_review")
+                checkpoint.pop("pending_review", None)
+                get_run_store().transition(reviewed_run_id, RunStatus.CANCELED,
+                                           expected={RunStatus.WAITING_APPROVAL},
+                                           metadata_patch={"checkpoint": checkpoint})
+                review_mgr.resolve(review_id, json.dumps({"decision": "reject", "feedback": "Canceled"}))
+                state.resolve_review(review_id)
+                fallback_review_runs.pop(review_id, None)
+                await state.send_json({"event": "review_expired", "review_id": review_id,
+                                       "reason": "user_canceled_review"})
+                await state.send_json({"event": "done", "result": "已取消待审任务，候选未应用。",
+                                       "checkpoint": checkpoint})
 
         async def _start_run(
             message: str,
@@ -699,6 +732,16 @@ class ChatSessionCoordinator:
                             })
                             continue
                         user_message = msg.get("message", "")
+                        durable_pending = [review_mgr.get_request(key) for key in fallback_review_runs]
+                        durable_pending = [request for request in durable_pending if request is not None]
+                        if durable_pending:
+                            if user_message.strip() in {"取消任务", "取消审核", "取消", "cancel"}:
+                                await _cancel_pending_reviews()
+                                continue
+                            for request in durable_pending:
+                                await state.send_json(review_event(request))
+                            await state.send_json({"event": "done", "result": "已有待审核候选，请先接受、拒绝或取消当前审核。"})
+                            continue
                         resume_record = None
                         resume_checkpoint = {}
                         if not user_message:
@@ -753,6 +796,7 @@ class ChatSessionCoordinator:
                         # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
                         if dev_agent is None:
                             progress = ProgressRelay()
+                            last_review_id = review_mgr.next_request_id - 1 if review_mgr else -1
                             try:
                                 dev_agent, review_mgr, prompt_builder = await create_dev_agent(
                                     llm, source_dir, test_dir, project_file, effective_user_message,
@@ -769,6 +813,7 @@ class ChatSessionCoordinator:
                                 continue
                             session.agent, session.review_mgr, session.progress = \
                                 dev_agent, review_mgr, progress
+                            review_mgr.reserve_through(last_review_id)
                             session.prompt_builder = prompt_builder
 
                         session.touch()
@@ -793,6 +838,13 @@ class ChatSessionCoordinator:
 
                     # ── 停止对话 ──
                     elif msg_type == "stop":
+                        durable = restore_pending_reviews(get_run_store(), session_id, review_mgr, fallback_review_runs)
+                        if durable and not state.running:
+                            for _, checkpoint, request in durable:
+                                await state.send_json(review_event(request))
+                            await state.send_json({"event": "done", "result": "执行已暂停，待审候选仍保留。",
+                                                   "checkpoint": checkpoint})
+                            continue
                         state.stop_requested = True
                         for reviewed_run_id in list(fallback_review_runs.values()):
                             try:
@@ -837,6 +889,9 @@ class ChatSessionCoordinator:
                                 "status": "paused",
                                 "resume_available": True,
                             })
+
+                    elif msg_type == "cancel":
+                        await _cancel_pending_reviews()
 
                     # ── 人工审核回复 ──
                     elif msg_type == "review_response":
@@ -904,9 +959,10 @@ class ChatSessionCoordinator:
                                         get_run_store(), agent_runtime,
                                     ).resolve_review(
                                         run_id=fallback_review_runs[review_id],
-                                        owner=connection_owner, accepted=decision == "accept",
+                                        owner=get_run_store().get(fallback_review_runs[review_id]).owner_id,
+                                        accepted=decision == "accept",
                                     )
-                                except RunStateError as exc:
+                                except (RunStateError, RuntimeError) as exc:
                                     await _ws_send(state, {"event": "error", "message": str(exc)})
                                     continue
                             resolved = review_mgr.resolve(review_id, response, session_id=session_id)
@@ -925,6 +981,7 @@ class ChatSessionCoordinator:
                             # 接受时刷新 baseline：本轮后续设计修改的 before = 已接受态
                             if decision == "accept" and project_file and (
                                 reviewed_checkpoint is None
+                                or dev_agent is None
                                 or dev_agent.last_run_checkpoint.get("run_id") == reviewed_checkpoint.get("run_id")
                             ):
                                 try:
@@ -960,6 +1017,26 @@ class ChatSessionCoordinator:
                             if review_id in fallback_review_runs:
                                 reviewed_run_id = fallback_review_runs.pop(review_id)
                                 checkpoint = reviewed_checkpoint
+                                if checkpoint.get("resolved_review"):
+                                    if dev_agent is None:
+                                        llm = BaseAgentsLLM.from_settings(temperature=0.3)
+                                        progress = ProgressRelay()
+                                        dev_agent, review_mgr, prompt_builder = await create_dev_agent(
+                                            llm, source_dir, test_dir, project_file, "继续审核后的任务",
+                                            progress=progress, restore_history=restore_history,
+                                            task_scope=session_id, workspace_root=workspace_root, design_dir=design_dir)
+                                        review_mgr.reserve_through(review_id)
+                                        session.agent, session.review_mgr, session.progress = dev_agent, review_mgr, progress
+                                        session.prompt_builder = prompt_builder
+                                    state.stop_requested = False
+                                    continuation = ("用户已接受待审设计，修改已应用。请从检查点继续剩余任务，勿重复修改已接受内容。"
+                                                    if decision == "accept" else
+                                                    "用户拒绝了待审设计，原工作区已保留。请根据反馈修订候选并重新提交审核。")
+                                    continuation += f"\n审核反馈：{feedback or ''}"
+                                    checkpoint.pop("candidate_artifact", None)
+                                    await _start_run(_resume_prompt(checkpoint, continuation),
+                                                     parent_run_id=reviewed_run_id, resume_checkpoint=checkpoint)
+                                    continue
                                 _record_audit(
                                     "review_accepted" if decision == "accept" else "review_rejected",
                                     run_id=reviewed_run_id, session_id=session_id,

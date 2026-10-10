@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 
 from ...convergence import ConvergenceController
 from ...core.exceptions import AgentInterrupted
+from ...host_api.errors import AgentAwaitingReview
 from ...core.hooks import (
     HookAction,
     HookContext,
@@ -750,6 +751,9 @@ async def _run_fc_loop_impl(
                 is_final=False,
             )
 
+    except AgentAwaitingReview:
+        runtime.lifecycle_status = "waiting_approval"
+        raise
     except (AgentInterrupted, asyncio.CancelledError):
         runtime.lifecycle_status = "cancelled"
         await publish(HookEvent.CANCEL, step=runtime.lifecycle_step)

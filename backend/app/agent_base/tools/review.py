@@ -115,6 +115,7 @@ class ReviewManager:
         # 最近一次被接受的设计状态（before 语义）。由编排层在每次 run 前捕获，
         # accept 时刷新；reject 时保持不变（diff 始终是「原始→当前」）。
         self.baseline: list | None = None
+        self.persist_reviews = False  # Enabled by the durable chat coordinator.
 
     def submit(self, review_type: str, title: str = "",
                content: str = "", question: str = "",
@@ -193,6 +194,26 @@ class ReviewManager:
     def get_request(self, request_id) -> ReviewRequest | None:
         """Return a live request for orchestration-side recovery hooks."""
         return self._find(request_id)
+
+    def restore(self, saved: dict) -> ReviewRequest:
+        """Restore a durable request without changing its identity or diff."""
+        existing = self.get_request(saved["id"])
+        if existing is not None:
+            return existing
+        request = ReviewRequest(**{key: saved[key] for key in (
+            "review_type", "title", "content", "question", "metadata", "session_id", "project_id")})
+        request.id, request.token = saved["id"], saved["token"]
+        self._pending.append(request)
+        self._next_id = max(self._next_id, request.id + 1)
+        return request
+
+    @property
+    def next_request_id(self) -> int:
+        return self._next_id
+
+    def reserve_through(self, request_id: int) -> None:
+        """Keep restored/replied identities distinct from future requests."""
+        self._next_id = max(self._next_id, request_id + 1)
 
     def resolve(self, request_index: int | str, response: str, session_id: str = "") -> bool:
         """按稳定请求 ID/token 完成审核。"""
@@ -449,6 +470,11 @@ class SubmitUmlReviewTool(Tool):
             metadata=metadata,
         )
 
+        from app.agent_base.host_api.errors import AgentAwaitingReview
+        if self.manager.persist_reviews and not self.manager.auto_approve_reviews:
+            # The host publishes the review only after its snapshot is durable.
+            raise AgentAwaitingReview(req)
+
         # 阻塞前先推审核事件（ProgressRelay → WebSocket），
         # 否则工具不返回，前端永远收不到推送。
         if self.progress is not None:
@@ -465,21 +491,9 @@ class SubmitUmlReviewTool(Tool):
         logger.info("🔔 Agent 请求 UML diff 审核: %s", title[:100])
 
         try:
-            result = await asyncio.wait_for(req.future, timeout=self.timeout)
+            result = await asyncio.wait_for(asyncio.shield(req.future), timeout=self.timeout)
         except asyncio.TimeoutError:
-            result = _json.dumps(
-                {"decision": "timeout", "feedback": "Human did not respond"},
-                ensure_ascii=False,
-            )
-            # 通知前端审核已超时失效（Agent 将继续自行推进）
-            if self.progress is not None:
-                self.progress.emit({
-                    "event": "review_timeout",
-                    "review_id": req.id,
-                    "review_type": "uml_diff",
-                    "title": title,
-                    "timeout": self.timeout,
-                })
+            raise AgentAwaitingReview(req)
         try:
             parsed_result = _json.loads(result)
         except (TypeError, ValueError):

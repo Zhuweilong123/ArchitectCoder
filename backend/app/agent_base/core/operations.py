@@ -58,8 +58,9 @@ def operation_scope(kind, *, run_id="", stage="", scope="run", plugin="", interf
         yield operation
     except BaseException as exc:
         from .exceptions import AgentInterrupted
+        from ..host_api.errors import AgentAwaitingReview
         if not (isinstance(exc, GeneratorExit) and kind == "run" and operation.status in {"completed", "failed", "cancelled"}):
-            operation.status = "cancelled" if isinstance(exc, (asyncio.CancelledError, GeneratorExit, AgentInterrupted)) else "failed"
+            operation.status = "waiting_approval" if isinstance(exc, AgentAwaitingReview) else "cancelled" if isinstance(exc, (asyncio.CancelledError, GeneratorExit, AgentInterrupted)) else "failed"
         details = {"error_type": type(exc).__name__, "error_message": str(exc)}
         raise
     finally:

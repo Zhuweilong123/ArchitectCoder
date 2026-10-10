@@ -26,6 +26,14 @@ class AgentInterrupted(AgentError):
     pass
 
 
+class AgentAwaitingReview(AgentInterrupted):
+    """Hand a pending human decision to the durable execution coordinator."""
+
+    def __init__(self, request):
+        super().__init__("Waiting for human review")
+        self.request = request
+
+
 class ToolError(BaseAgentsException):
     """工具执行相关错误"""
     pass

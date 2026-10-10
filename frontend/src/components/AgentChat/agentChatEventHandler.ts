@@ -2,7 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
   sendReviewResponse, type AgentEvent, type AgentProgressEvent, type AgentTodoItem,
 } from '../../services/agentChat';
-import { processDesignUpdated } from '../../services/designElementHandler';
+import { processDesignUpdated, restoreOriginalsToCanvas } from '../../services/designElementHandler';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useReviewStore } from '../../stores/reviewStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -244,13 +244,17 @@ export function createAgentChatEventHandler({
       }
 
       case 'review_expired': {
+        const canceled = event.reason === 'user_canceled_review';
+        if (canceled && useReviewStore.getState().reviewId === event.review_id) {
+          restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
+        }
         useDiagramStore.getState().endBatch();
-        useReviewStore.getState().expire('连接中断期间后端已取消该任务');
+        useReviewStore.getState().expire(canceled ? '已取消审核，候选未应用' : '审核请求已失效');
         setBusy(false);
         settleTodos('pending');
         appendSystemMessage(setMessages, {
           id: `review_expired_${Date.now()}`,
-          content: '⚠️ 审核已失效（连接中断期间后端已取消该任务）。请重新发起请求。',
+          content: canceled ? '已取消审核，候选未应用。' : '⚠️ 审核请求已失效，请重新发起请求。',
           timestamp: Date.now(),
         });
         break;

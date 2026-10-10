@@ -64,6 +64,44 @@ class _FakeOrchestrator:
         return OrchestrationPreparation()
 
 
+def test_execution_hands_review_to_durable_wait_without_committing(tmp_path, monkeypatch):
+    from app.agent_base.host_api.errors import AgentAwaitingReview
+    from app.agent_base.tools.review import ReviewManager
+    from app.services.change_set import ChangeSet
+    from app.services.candidate_artifact import CandidateArtifactStore
+    from app.services.run_state import RunStore
+    path = tmp_path / "design.umlproj"
+    before = '{"name":"before","revision":1,"diagrams":[]}'
+    after = '{"name":"after","revision":1,"diagrams":[]}'
+    path.write_text(before, encoding="utf-8")
+    manager = ReviewManager(session_id="review-host")
+    request = manager.submit("uml_diff", metadata={"original_diagrams": [], "diagrams": []})
+    class AwaitingAgent(_FakeAgent):
+        async def arun_stream(self, *args, **kwargs):
+            self.change_set.record(str(path), True, before, after)
+            path.write_text(after, encoding="utf-8")
+            raise AgentAwaitingReview(request)
+            yield  # async generator contract
+    agent = AwaitingAgent()
+    agent.change_set = ChangeSet()
+    store = RunStore(tmp_path / "runs.db")
+    run = store.claim(store.create(kind="agent_chat", session_id="review-host").run_id, "owner")
+    monkeypatch.setattr(agent_execution, "get_run_store", lambda: store)
+    artifacts = CandidateArtifactStore(root=tmp_path / "candidates")
+    monkeypatch.setattr("app.services.pending_review.CandidateArtifactStore", lambda: artifacts)
+    sent, mapping = [], {}
+    async def send(event):
+        sent.append(event)
+        return True
+    asyncio.run(agent_execution.handle_agent_execution(agent, manager, "edit", send, lambda: False,
+        project_file=str(path), workspace_root=str(tmp_path),
+        run_id=run.run_id, run_owner="owner", session_id="review-host", fallback_review_runs=mapping))
+    assert path.read_text() == before
+    assert store.get(run.run_id).status == "waiting_approval"
+    assert sent[-1]["checkpoint"]["pending_review"]["id"] == request.id
+    assert mapping[request.id] == run.run_id
+
+
 class _AnalysisAgent:
     def __init__(self):
         self._history = []

@@ -101,6 +101,7 @@ export interface AgentReviewTimeoutEvent {
 
 export interface AgentReviewExpiredEvent {
   event: 'review_expired';
+  reason?: string;
   review_id: number;               // 后端找不到该待审核请求（连接中断/会话回收/已超时）
 }
 
