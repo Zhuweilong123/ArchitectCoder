@@ -360,7 +360,14 @@ def test_spawn_subagent_does_not_accumulate_token_budget_across_requests(tmp_pat
     assert llm.count == 2
 
 
-def test_spawn_subagent_finalizes_before_cumulative_limit(tmp_path):
+@pytest.mark.parametrize(
+    "estimated_input, expected_choices, expected_usage",
+    [(1000, ["auto", "none"], 7100), (2500, ["none"], 100)],
+    ids=["explore-then-finalize", "finalize-without-exploring"],
+)
+def test_spawn_subagent_finalizes_before_cumulative_limit(
+    tmp_path, monkeypatch, estimated_input, expected_choices, expected_usage,
+):
     class _BudgetLLM:
         def __init__(self):
             self.choices = []
@@ -385,12 +392,22 @@ def test_spawn_subagent_finalizes_before_cumulative_limit(tmp_path):
         max_total_tokens=10000, max_cumulative_tokens=10000,
         token_finalization_reserve_tokens=1000,
     )
+    # Exercise request admission independently of evolving tool schemas,
+    # system prompts and platform-specific workspace paths.
+    monkeypatch.setattr(
+        tool.context_budget, "estimate_request_tokens",
+        lambda messages, *, tools=None: estimated_input,
+    )
+    tool.final_summary_max_tokens = 3000
 
     result = asyncio.run(tool._execute({"description": "Inspect project files", "toolkit": "strategy"}))
 
     assert result == "verified evidence summary"
-    assert llm.choices == ["auto", "none"]
-    assert tool.last_token_usage == 7100
+    assert llm.choices == expected_choices
+    assert tool.last_token_usage == expected_usage
+    assert [item["tool_name"] for item in tool.last_evidence_summary] == (
+        ["list_files"] if expected_choices[0] == "auto" else []
+    )
 
 
 @pytest.mark.parametrize("first_usage,expected_calls", [(7000, 2), (12000, 1)])
