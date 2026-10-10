@@ -18,6 +18,30 @@ from extensions.design_contract.language_adapters import (ClangAstAdapter, Langu
 from .kg_adapter import KnowledgeGraphContractAdapter
 
 
+def _source_artifact_record(facts):
+    status = facts.status
+    reason = "; ".join(item.get("message", "") for item in facts.diagnostics)
+    if status == "success" and "source_flows" not in facts.metadata:
+        status, reason = "unsupported", "Registered adapter does not provide control-flow facts."
+    return {"status": status, "language": facts.metadata.get("language", ""),
+            "functions": facts.metadata.get("source_flows", []), "reason": reason}
+
+
+class SnapshotSourceFacts:
+    """Per-check facts view; no persistent cache or extra compiler execution."""
+    def __init__(self, records, fallback=None):
+        self.records, self.fallback = records, fallback
+
+    def source_facts(self, path, *, workspace_root):
+        from app.agent_base.host_api.validation import SourceArtifact
+        record = self.records.get(str(Path(path).resolve()))
+        if record is not None:
+            return SourceArtifact.from_dict(record)
+        if self.fallback is not None:
+            return self.fallback.source_facts(path, workspace_root=workspace_root)
+        return SourceArtifact("unsupported", reason="Source artifact is outside the collected facts snapshot.")
+
+
 class DesignContractProvider:
     """Collect normalized facts without judging consistency or editing files."""
 
@@ -35,6 +59,12 @@ class DesignContractProvider:
             ))
         else:
             self._language_adapters = default_language_adapters()
+
+    def source_facts(self, path: str, *, workspace_root: str):
+        """Expose the language registry through the shared facts port."""
+        from app.agent_base.host_api.validation import SourceArtifact
+        facts = self._language_adapters.extract(path, project_root=workspace_root)
+        return SourceArtifact.from_dict(_source_artifact_record(facts))
 
     async def evaluate(self, context):
         from .gate import DefaultContractGate
@@ -111,11 +141,12 @@ class DesignContractProvider:
 
         entities: list[ContractEntity] = []
         errors: list[dict[str, str]] = []
+        design_diagrams = []
         for filepath in project_files:
-            self._collect_design(filepath, workspace, entities, errors)
-        self._collect_source(source_root, workspace, entities, errors)
+            self._collect_design(filepath, workspace, entities, errors, design_diagrams)
+        source_artifacts = {}
         self._collect_language_source(
-            source_root, workspace, entities, errors, self._language_adapters,
+            source_root, workspace, entities, errors, self._language_adapters, source_artifacts,
         )
         self._collect_tests(test_root, workspace, entities, errors)
         self._collect_language_tests(
@@ -146,6 +177,8 @@ class DesignContractProvider:
                 "entity_counts": _counts(entities),
                 "artifacts": artifacts,
                 "parser_version": "design-contract-v1",
+                "design_diagrams": design_diagrams,
+                "source_artifacts": source_artifacts,
             },
         )
 
@@ -155,6 +188,7 @@ class DesignContractProvider:
         workspace: str,
         entities: list[ContractEntity],
         errors: list[dict[str, str]],
+        diagrams_out: list | None = None,
     ) -> None:
         path = Path(filepath)
         relative = _relative(path, workspace)
@@ -171,6 +205,8 @@ class DesignContractProvider:
         for index, diagram in enumerate(payload.get("diagrams", [])):
             if not isinstance(diagram, dict):
                 continue
+            if diagrams_out is not None:
+                diagrams_out.append({"path": relative, "diagram": diagram})
             diagram_key = str(diagram.get("name") or diagram.get("id") or index)
             diagram_id = f"diagram:{relative}:{diagram_key}"
             entities.append(ContractEntity(
@@ -216,51 +252,19 @@ class DesignContractProvider:
                         ))
 
     @staticmethod
-    def _collect_source(
-        source_root: str,
-        workspace: str,
-        entities: list[ContractEntity],
-        errors: list[dict[str, str]],
-    ) -> None:
-        if not source_root or not Path(source_root).is_dir():
-            return
-        for path in sorted(Path(source_root).rglob("*.py")):
-            relative = _relative(path, workspace)
-            module_id = f"source_module:{relative}"
-            entities.append(ContractEntity(module_id, "source_module", path.stem, relative))
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            except (OSError, UnicodeError, SyntaxError) as exc:
-                errors.append({"path": relative, "error": f"cannot parse source: {exc}"})
-                continue
-            for node in tree.body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    entities.append(_source_method(node, relative, module_id, ""))
-                elif isinstance(node, ast.ClassDef):
-                    class_id = f"source_class:{relative}:{node.name}"
-                    entities.append(ContractEntity(class_id, "source_class", node.name, relative, node.lineno, module_id))
-                    for child in node.body:
-                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            entities.append(_source_method(child, relative, class_id, node.name))
-                        for attr in _instance_attributes(child):
-                            entities.append(ContractEntity(
-                                f"source_attribute:{relative}:{node.name}:{attr}",
-                                "source_attribute", attr, relative, getattr(child, "lineno", None), class_id,
-                            ))
-
-    @staticmethod
     def _collect_language_source(
         source_root: str,
         workspace: str,
         entities: list[ContractEntity],
         errors: list[dict[str, str]],
         adapters: LanguageAdapterRegistry,
+        artifacts_out: dict | None = None,
     ) -> None:
-        """Collect non-Python language facts through the extensible registry."""
+        """Collect source facts through the registry once, for every language."""
         if not source_root or not Path(source_root).is_dir():
             return
         for path in sorted(Path(source_root).rglob("*")):
-            if not path.is_file() or path.suffix.lower() in {".py", ".pyi"}:
+            if not path.is_file():
                 continue
             adapter = adapters.adapter_for(path)
             if adapter is None:
@@ -272,6 +276,8 @@ class DesignContractProvider:
                 project_root=workspace,
             )
             relative = _relative(path, workspace)
+            if artifacts_out is not None:
+                artifacts_out[str(path.resolve())] = _source_artifact_record(facts)
             for entity in facts.entities:
                 entities.append(replace(entity, path=relative))
             for diagnostic in facts.diagnostics:
@@ -350,31 +356,6 @@ class DesignContractProvider:
                     "error": str(diagnostic.get("message") or diagnostic),
                     "code": str(diagnostic.get("code") or "language_adapter_error"),
                 })
-
-
-def _source_method(node: ast.FunctionDef | ast.AsyncFunctionDef, path: str, parent: str, owner: str) -> ContractEntity:
-    args = [arg.arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)]
-    if owner and args and args[0] == "self":
-        args = args[1:]
-    return ContractEntity(
-        f"source_method:{path}:{owner + '.' if owner else ''}{node.name}",
-        "source_method", f"{owner + '.' if owner else ''}{node.name}", path,
-        node.lineno, parent, {"params": tuple(args), "async": isinstance(node, ast.AsyncFunctionDef)},
-    )
-
-
-def _instance_attributes(node: ast.AST) -> set[str]:
-    names: set[str] = set()
-    for child in ast.walk(node):
-        targets = []
-        if isinstance(child, ast.Assign):
-            targets = child.targets
-        elif isinstance(child, ast.AnnAssign):
-            targets = [child.target]
-        for target in targets:
-            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
-                names.add(target.attr)
-    return names
 
 
 def _infer_mappings(entities: list[ContractEntity]) -> list[ContractMapping]:

@@ -181,7 +181,7 @@ lifeA ──sync(msg1)──► lifeB    "getOrder(id)"
 lifeB ──return──► lifeA        "return orderData"
 ```
 
-`return` 消息没有单独的 request ID 字段。需要配对时，使用端点、顺序和语义标签推断；不要把不相关的返回消息画成某次调用的返回。
+`return` 消息通过 `reply_to` 引用对应调用消息 ID，端点与入口反向，顺序晚于入口。省略无信息量的返回可以保留抽象，但显式返回给自己必须配对到真实递归/self 调用。向外返回必须画到调用者，不能为了沿用旧图端点而画成自返回。
 
 子调用返回失败值只结束子调用，不自动结束调用方的交互。若调用方检查失败值后立即返回，应画出检查、失败状态/清理以及向上层调用方的返回，并用作用范围正确的 break（或完整的备选分支结构）表达跳过后续流程。不要使用对象销毁标记代替方法返回。
 
@@ -295,6 +295,27 @@ lifeA ──self──► lifeA   "validate()"
 反例：只画 `alt [else: failed]`，把失败返回框进去、成功流程放框外；把无条件执行的验证放入 `[validation failed]` operand；把仅成功时执行的下一阶段称为公共续行。这些不能通过调整框的高度修复语义。
 
 ---
+
+### 6.5 源码与最终图一致性审查
+
+**源码证据字段**
+
+图可填写 `source_scopes: [{id, path, symbol, lifeline_id, entry_message_id, coverage}]`，消息可填写 `source_refs: [{scope_id, line, kind}]` 和 `reply_to`；operand 可填写 `source_guard: {scope_id, line, kind: "condition"}`。这些字段需保留在最终 `.umlproj` 中，不只写进聊天摘要。
+
+`path` 是实际 workspace 根目录下的相对源码路径，不能用未配置的 source 别名、绝对路径或越界路径；`symbol` 是完整函数名，如 Python 的 `DPQPPathPlanner._plan` 或 C++ 的 `Planner::plan`；`line` 是对应 AST 调用/if/return 的起始行，不是函数定义行。`kind` 只能是 call/condition/return。一个行号含多个调用时无法精确确定调用顺序，应拆开源码证据范围或明确说明尚未核验，不为消除诊断改业务源码。
+
+**提交前执行**
+
+1. 在 `todo_write(validation_requirements=[{"rule_id":"sequence.source","diagram_name":"准确图名"}], todos=[...])` 声明源码一致性验收，再阅读入口函数及关键子调用。对所审查函数声明 scope，指定执行生命线及真实入口消息；调用者必须有生命线。先列出源码中的每个 return、控制条件及成功路径，再修改图。结构检查不能替代已声明的源码检查。
+2. 关键调用绑定 call 证据。核对最终 messages 的实际 order：例如 build_knots 的 order 必须小于 solve，不能只在 note/最终回复里声称“先构建”。多个互斥分支不应强制比较顺序，并发区域不能当成线性流程。
+3. 条件 return 绑定 return 证据，放入显式受条件控制的 operand，并在该 operand 及必要的外层 operand 上标 source_guard；guard 写真实条件与分支方向。写一条 self 消息“if ... -> return”不等于建模早退。QP 边界非法必须在调用 OSQP 前退出。
+4. 所有有源码 return 证据的消息使用 type=return，并通过 reply_to 指向该函数的入口消息，端点与入口反向；子函数返回 None 与 Planner 向外返回 [] 分属不同 scope，不可互相替代。递归 self 调用有明确入口时才可能对应 self 返回。
+5. 修复某函数的所有出口后，将该 scope 的 coverage 设为 returns；校验器会逐一检查该函数 return 的表示及条件归属。partial 只验证已提供证据，不证明无遗漏；returns 也不证明所有调用、异常和返回值等价。
+6. 运行 run_task(validate)，修复 SOURCE_ORDER、EARLY_EXIT_GUARD、SOURCE_RETURN_MISSING、REPLY_MISMATCH 等错误后再 submit_uml_review。提交摘要引用最终图事实与诊断，不把 warning 写成 error，不因结构通过或 contract_check=not_applicable 宣称完整语义正确。
+
+例如 scope `{ "id": "plan", "path": "engine/planner.py", "symbol": "Planner.plan", "lifeline_id": "planner", "entry_message_id": "plan_call", "coverage": "returns" }`；失败返回消息绑定 `{ "scope_id": "plan", "line": 42, "kind": "return" }`，reply_to 为 plan_call，失败 operand 的 source_guard 指向控制该 return 的 if 起始行。
+
+自动检查消费语言适配器提供的统一控制流事实，当前接入 Python AST 和 C++ Clang JSON AST，覆盖顺序、返回覆盖和引用关系，不执行业务源码。C++ 解析沿用现有 Broker 和编译配置；工具链缺失或语言不支持时明确报告 unavailable/unsupported。guard 文本等价性、动态派发、异常、异步调度和整体行为仍需审查，partial 不能称为完整语义验证通过。
 
 ## 7. LLM 输出规范
 

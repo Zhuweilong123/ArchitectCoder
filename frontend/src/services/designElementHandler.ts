@@ -194,6 +194,8 @@ export function handleDesignElement(
           label: o.label || 'message()', type: o.type || 'sync',
           order: o.order ?? 1, note: o.note || '',
           ...(typeof o.y === 'number' ? { y: o.y } : {}),
+          ...(o.source_refs ? { source_refs: o.source_refs } : {}),
+          ...(o.reply_to ? { reply_to: mapId(o.reply_to) } : {}),
         });
       }
     },
@@ -257,6 +259,11 @@ export function handleDesignElement(
     // Resolve its original ID once available without deriving new membership.
     if (['lifeline', 'message', 'fragment'].includes(event.type)) {
       const diagram = findDiagram('sequence', obj.diagram_name);
+      (diagram?.messages || []).forEach((message) => {
+        if (message.reply_to && mapId(message.reply_to) !== message.reply_to) {
+          store.updateMessage(message.id, { reply_to: mapId(message.reply_to) });
+        }
+      });
       (diagram?.fragments || []).forEach((fragment) => {
         const updates = {
           lifeline_ids: (fragment.lifeline_ids || []).map(mapId),

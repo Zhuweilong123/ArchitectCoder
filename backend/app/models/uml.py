@@ -106,6 +106,23 @@ class SeqLifeline(BaseModel):
     activations: list[float] = Field(default_factory=list)  # y-offsets of activation bars
 
 
+class SeqSourceRef(BaseModel):
+    model_config = {"extra": "ignore"}
+    scope_id: str
+    line: int = Field(ge=1)
+    kind: str = "call"  # call | condition | return
+
+
+class SeqSourceScope(BaseModel):
+    model_config = {"extra": "ignore"}
+    id: str
+    path: str  # workspace-relative source file
+    symbol: str  # qualified function, e.g. Planner._plan
+    lifeline_id: str
+    entry_message_id: str = ""
+    coverage: str = "partial"  # partial | returns (all returns in this function)
+
+
 class SeqOperand(BaseModel):
     """One guarded region of a combined fragment; membership is explicit."""
     model_config = {"extra": "ignore"}
@@ -114,6 +131,7 @@ class SeqOperand(BaseModel):
     message_ids: list[str] = Field(default_factory=list)
     y_start: float
     y_end: float
+    source_guard: Optional[SeqSourceRef] = None
 
 
 class SeqFragment(BaseModel):
@@ -143,6 +161,8 @@ class SeqMessage(BaseModel):
     order: int = 0         # vertical sequence number
     y: float = 0           # persisted Y position
     note: str = ""         # functional comment
+    source_refs: list[SeqSourceRef] = Field(default_factory=list)
+    reply_to: str = ""  # explicit request message, not inferred from labels
 
 
 # ---------- Component Diagram models ----------
@@ -186,6 +206,7 @@ class UmlDiagram(BaseModel):
     lifelines: list[SeqLifeline] = Field(default_factory=list)
     messages: list[SeqMessage] = Field(default_factory=list)
     fragments: list[SeqFragment] = Field(default_factory=list)
+    source_scopes: list[SeqSourceScope] = Field(default_factory=list)
     # --- Component diagram fields ---
     components: list[CompNode] = Field(default_factory=list)
     comp_relations: list[CompRelation] = Field(default_factory=list)

@@ -474,7 +474,8 @@ def test_validate_task_validates_uml_project_directly(tmp_path):
         "task": "validate", "target": "model.umlproj", "cwd": "design",
     }))
 
-    assert result == f"Validated UML project: {project} (diagrams=1)"
+    assert result.startswith(f"Validated UML project: {project} (diagrams=1)")
+    assert "Validation status: pass" in result
 
 
 def test_validate_task_accepts_workspace_qualified_target_with_cwd_alias(tmp_path):
@@ -502,7 +503,8 @@ def test_validate_task_accepts_workspace_qualified_target_with_cwd_alias(tmp_pat
         "task": "validate", "target": "design/model.umlproj", "cwd": "design",
     }))
 
-    assert result == f"Validated UML project: {project} (diagrams=1)"
+    assert result.startswith(f"Validated UML project: {project} (diagrams=1)")
+    assert "component.structure" in result
 
 
 def test_run_task_does_not_duplicate_test_alias_as_target(tmp_path):

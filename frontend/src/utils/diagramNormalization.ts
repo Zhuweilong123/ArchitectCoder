@@ -146,7 +146,14 @@ function normalizeMessage(value: unknown, index: number, used: Set<string>): Seq
     order: number(item.order, index + 1, 1),
     y: number(item.y, 190 + (index + 1) * 45),
     note: text(item.note),
+    ...(item.reply_to !== undefined ? { reply_to: text(item.reply_to) } : {}),
+    ...(item.source_refs !== undefined ? { source_refs: array(item.source_refs).map(normalizeSourceRef) } : {}),
   };
+}
+
+function normalizeSourceRef(value: unknown) {
+  const item = record(value);
+  return { scope_id: text(item.scope_id), line: number(item.line, 1, 1), kind: text(item.kind, 'call') };
 }
 
 function normalizeFragment(value: unknown, index: number, used: Set<string>): SeqFragment {
@@ -170,6 +177,7 @@ function normalizeFragment(value: unknown, index: number, used: Set<string>): Se
         message_ids: array(operand.message_ids).map((id) => text(id)),
         y_start: number(operand.y_start, yStart),
         y_end: number(operand.y_end, number(item.y_end, yStart + 120)),
+        ...(operand.source_guard ? { source_guard: normalizeSourceRef(operand.source_guard) } : {}),
       };
     }),
     lifeline_ids: array(item.lifeline_ids).map((id) => text(id)),
@@ -243,6 +251,11 @@ export function normalizeDiagram(value: unknown): UmlDiagram {
     lifelines,
     messages,
     fragments,
+    ...(item.source_scopes !== undefined ? { source_scopes: array(item.source_scopes).map((value) => {
+      const scope = record(value);
+      return { id: text(scope.id), path: text(scope.path), symbol: text(scope.symbol),
+        lifeline_id: text(scope.lifeline_id), entry_message_id: text(scope.entry_message_id), coverage: text(scope.coverage, 'partial') };
+    }) } : {}),
     components,
     comp_relations: compRelations,
     grid_visible: boolean(item.grid_visible, true),

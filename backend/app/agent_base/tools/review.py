@@ -256,6 +256,12 @@ class SubmitUmlReviewTool(Tool):
                 "diagrams itself and pushes them to the frontend DiffViewer. It "
                 "pauses until the user accepts or rejects, then returns the "
                 "decision so you can revise if rejected."
+                " Before review, registered project checks run on changed diagrams; "
+                "errors prevent submission. Consult the relevant design guide and run "
+                "run_task(task=validate, target=project_file) first. Check coverage and "
+                "unavailable capabilities are reported explicitly; do not treat no errors "
+                "as complete verification. "
+                "This review does not replace the separate design-contract commit gate."
             ),
         )
         self.manager = manager
@@ -416,13 +422,21 @@ class SubmitUmlReviewTool(Tool):
                 "original_diagrams": original,
             }
 
-        from app.services.sequence_validation import validate_sequence_diagrams, format_sequence_diagnostics
-        diagnostics = validate_sequence_diagrams(metadata["changed_diagrams"])
-        if any(item.severity == "error" for item in diagnostics):
-            return "Error: UML sequence validation failed before review\n" + format_sequence_diagnostics(diagnostics)
-        if diagnostics:
-            metadata["sequence_diagnostics"] = [item.to_dict() for item in diagnostics]
-            content += "\n\n" + format_sequence_diagnostics(diagnostics)
+        from app.services.design_validation import validate_project_diagrams, format_validation_report
+        from app.validation.policy import allows_design_review
+        selected = {(d.get("diagram_type", "class"), d.get("name", "")) for d in metadata["changed_diagrams"]}
+        from app.agent_base.core.hooks import get_runtime
+        requirements = get_runtime().policy_metadata.get("validation_requirements", [])
+        # Requested targets must be evaluated even when unchanged by this edit.
+        required_names = {item["diagram_name"] for item in requirements}
+        selected.update((d.get("diagram_type", "class"), d.get("name", ""))
+                        for d in metadata["diagrams"] if d.get("name") in required_names)
+        report = validate_project_diagrams(metadata["diagrams"], workspace_root=self.workspace_root or "",
+                                          selected_keys=selected, requirements=requirements)
+        if not allows_design_review(report):
+            return "Error: UML project validation failed before review\n" + format_validation_report(report)
+        metadata["validation_report"] = report.to_dict()
+        content += "\n\n" + format_validation_report(report)
 
         if self.manager.candidate_recovery:
             metadata["candidate_recovery"] = dict(self.manager.candidate_recovery)

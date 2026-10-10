@@ -130,6 +130,10 @@ class ApplicationHostServices:
             settings = self.configuration()
         return get_plugin_manager().load_optional(slot, settings=settings, kwargs=kwargs)
 
+    def validate_design(self, diagrams, *, workspace_root="", source_provider=None, requirements=()):
+        from app.services.design_validation import validate_project_diagrams
+        return validate_project_diagrams(diagrams, workspace_root, source_provider=source_provider, requirements=requirements)
+
     def run_store(self):
         from app.services.run_state import get_run_store
         return get_run_store()

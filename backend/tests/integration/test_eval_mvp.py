@@ -402,7 +402,7 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
     # This historical trace fixture uses class-relation "association" as both
     # a message type and a fragment operator. Keep it as a negative fixture;
     # syntactically valid JSON must no longer receive a false success verdict.
-    assert validated.startswith("Error: UML sequence validation failed")
+    assert validated.startswith("Error: UML project validation failed")
     assert "SEQ_MESSAGE_TYPE" in validated
     assert "SEQ_FRAGMENT_TYPE" in validated
 

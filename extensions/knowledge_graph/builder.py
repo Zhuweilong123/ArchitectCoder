@@ -581,6 +581,7 @@ class GraphBuilder:
                 "version": getattr(diagram, "version", "1.0"),
                 "project_file": filepath,
                 "diagram_index": diagram_index,
+                "source_scopes": [scope.model_dump() for scope in getattr(diagram, "source_scopes", [])],
             },
         )
         diag_node.content_text = _build_content_text(
@@ -1157,6 +1158,8 @@ class GraphBuilder:
                         "type": getattr(msg, "type", "sync"),
                         "order": msg_order,
                         "note": getattr(msg, "note", ""),
+                        "reply_to": getattr(msg, "reply_to", ""),
+                        "source_refs": [ref.model_dump() for ref in getattr(msg, "source_refs", [])],
                     },
                 ))
 

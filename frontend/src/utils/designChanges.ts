@@ -87,12 +87,22 @@ export function getDiagramChanges(original: UmlDiagram, optimized: UmlDiagram, i
       ...interfaces(a.required_interfaces || [], b.required_interfaces || [], 'required')]);
   compare(original.lifelines || [], optimized.lifelines || [], 'lifeline',
     (c) => [c.name, value(c.class_ref)], (c) => c.name);
+  // Scope changes are surfaced on the executing lifeline, even when a caller
+  // reuses the same lifeline object in its before/after snapshots.
+  (optimized.lifelines || []).forEach((lifeline) => {
+    const before = (original.source_scopes || []).filter(s => s.lifeline_id === lifeline.id);
+    const after = (optimized.source_scopes || []).filter(s => s.lifeline_id === lifeline.id);
+    if ((original.lifelines || []).some(l => l.id === lifeline.id)
+      && JSON.stringify(before) !== JSON.stringify(after) && !changes.some(c => c.id === lifeline.id)) {
+      changes.push({ id: lifeline.id, kind: 'lifeline', status: 'modified', label: lifeline.name, members: [] });
+    }
+  });
   // The numeric order can be renumbered during layout. Compare its ordinal
   // position instead, which still detects actual interaction-order changes.
   const orders = (d: UmlDiagram) => new Map([...(d.messages || [])].sort((a, b) => a.order - b.order).map((m, i) => [m.id, i]));
   const oldOrder = orders(original), newOrder = orders(optimized);
   compare(original.messages || [], optimized.messages || [], 'message',
-    (m) => [m.from_lifeline, m.to_lifeline, m.label, m.type, value(m.note)], (m) => m.label || m.id);
+    (m) => [m.from_lifeline, m.to_lifeline, m.label, m.type, value(m.note), value(m.reply_to), m.source_refs || []], (m) => m.label || m.id);
   const oldMessages = new Map((original.messages || []).map((m) => [m.id, m]));
   const commonOld = (original.messages || []).filter((m) => newOrder.has(m.id)).sort((a, b) => a.order - b.order).map((m) => m.id);
   const commonNew = (optimized.messages || []).filter((m) => oldOrder.has(m.id)).sort((a, b) => a.order - b.order).map((m) => m.id);
@@ -103,7 +113,7 @@ export function getDiagramChanges(original: UmlDiagram, optimized: UmlDiagram, i
   });
   compare(original.fragments || [], optimized.fragments || [], 'fragment',
     (f) => [f.type, f.label, sorted(f.lifeline_ids || []), value(f.parent_fragment_id), value(f.parent_operand_id),
-      (f.operands || []).map((o) => [o.id, o.guard, sorted(o.message_ids)])],
+      (f.operands || []).map((o) => [o.id, o.guard, sorted(o.message_ids), o.source_guard || null])],
     (f) => `${f.type} ${f.label}`);
   const names = new Map([...original.classes || [], ...optimized.classes || [], ...original.components || [], ...optimized.components || []].map((c) => [c.id, c.name]));
   const relationLabel = (r: { source: string; target: string; type: string }) => `${names.get(r.source) || r.source} → ${names.get(r.target) || r.target} (${r.type})`;

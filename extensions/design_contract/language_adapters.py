@@ -12,6 +12,7 @@ import json
 import shlex
 import subprocess
 from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -113,8 +114,19 @@ class PythonAstAdapter:
                         attributes={
                             "language": self.language,
                             "async": isinstance(node, ast.AsyncFunctionDef),
+                            "params": ast.unparse(node.args),
                         },
                     ))
+                    if parent_id != module_id:
+                        seen_attributes = set()
+                        for child in ast.walk(node):
+                            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Store) and isinstance(child.value, ast.Name) and child.value.id == "self" and child.attr not in seen_attributes:
+                                seen_attributes.add(child.attr)
+                                entities.append(ContractEntity(
+                                    entity_id=f"python:attribute:{source_path}:{parent_id}:{child.attr}",
+                                    entity_type="source_attribute", name=child.attr, path=str(source_path),
+                                    line=_line(child), parent_id=parent_id, attributes={"language": self.language},
+                                ))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
                     names = tuple(alias.name for alias in node.names)
                     entities.append(ContractEntity(
@@ -128,12 +140,14 @@ class PythonAstAdapter:
                     ))
 
         visit(tree.body)
+        from .python_flow import python_source_flows
         return ArtifactFacts(
             project_id=project_id,
             scope=scope,
             status="success",
             entities=tuple(entities),
-            metadata={"language": self.language, "path": str(source_path)},
+            metadata={"language": self.language, "path": str(source_path),
+                      "source_flows": [asdict(flow) for flow in python_source_flows(tree)]},
         )
 
 
@@ -241,6 +255,11 @@ class ClangAstAdapter:
         except json.JSONDecodeError as exc:
             return self._failed(project_id, scope, source_path, str(exc), code="clang_json_invalid")
         entities = tuple(self._entities(document, source_path))
+        from .clang_flow import clang_source_flows
+        try:
+            source_text = source_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            return self._failed(project_id, scope, source_path, str(exc), code="source_unreadable")
         return ArtifactFacts(
             project_id=project_id,
             scope=scope,
@@ -251,6 +270,7 @@ class ClangAstAdapter:
                 "path": str(source_path),
                 "compile_directory": str(command.directory),
                 "compiler": command.arguments[0] if command.arguments else self.clang_executable,
+                "source_flows": [asdict(flow) for flow in clang_source_flows(document, source_text, source_path)],
             },
         )
 

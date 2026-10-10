@@ -5,6 +5,10 @@ description: UML 2.5.1 schemas, semantics, validation and cross-diagram consiste
 
 # UML 2.5.1 Design Guide
 
+生成或修改设计后，使用通用项目校验入口检查最终产物，按图类型指南提供所需证据。区分结构检查、源码一致性和跨图一致性的覆盖范围；报告中 partial、not_applicable、unavailable、unsupported 均不代表完整语义通过。发现问题应修复实际设计数据，再提交审核；工具描述不承担各图类型的规则定义。
+
+开始有明确验证目标的任务时，在 `todo_write` 的顶层 `validation_requirements` 声明必需检查：`[{"rule_id": "注册规则 ID", "diagram_name": "准确图名"}]`。按任务及图类型指南选择规则，不把所有规则强加给布局任务。已声明要求在本任务及恢复执行中保留；未适用、未执行或证据不足不满足验收。读取源码并声称修复源码一致性时必须声明相应源码规则、补齐证据后再审核；报告的规则 ID 可用于声明，未注册规则会报告缺失，不得改用结构检查替代。
+
 这是一套面向 LLM 的 UML 2.5.1 设计参考。目标是生成语义正确、引用完整、可被 ArchitectCoder 加载的 UML JSON。
 
 ## 先区分两种 JSON 格式

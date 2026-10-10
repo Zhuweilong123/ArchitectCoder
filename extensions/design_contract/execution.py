@@ -16,11 +16,14 @@ def _gate_context(request, session):
     if enabled and not getattr(settings, "strict_production", False) and requested is not None:
         enabled = bool(requested)
     request.checkpoint["contract_enabled"] = enabled
+    requirements = deepcopy(get_host_services().runtime().policy_metadata.get("validation_requirements", []))
+    request.checkpoint["validation_requirements"] = requirements
     return ContractGateContext(
         workspace_manifest=deepcopy(request.data["workspace_manifest"]),
         changed_paths=tuple(deepcopy(request.data["changed_paths"])),
         emit=request.capabilities["emit"], request_review=request.capabilities.get("request_review"),
-        run_id=request.run_id, settings=settings, contract_enabled=enabled)
+        run_id=request.run_id, settings=settings, contract_enabled=enabled,
+        validation_requirements=tuple(requirements))
 
 
 async def check(context):

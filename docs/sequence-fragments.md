@@ -14,6 +14,16 @@
 
 检查包括：操作符、消息端点、自反消息、ID、operand 数量与守卫、else、范围及重叠、消息引用与唯一归属、嵌套引用与循环、生命线覆盖、break 作用范围。它不是源码控制流证明器，不判断任意自然语言守卫是否互斥、是否漏掉业务分支，也不自动修改不合理的图。
 
+## 源码证据检查
+
+源码驱动的时序图可通过 `source_scopes` 声明 workspace 相对源码路径、完整函数名、执行生命线和入口消息。消息 `source_refs` 记录 AST 调用/if/return 的起始行；operand `source_guard` 绑定控制条件；返回 `reply_to` 显式引用入口调用。前后端和审核布局保留这些字段。
+
+`run_task(validate)` 和主动 `submit_uml_review` 使用实际 workspace 读取源码，不执行源码。能够阻止有明确证据的调用顺序颠倒、条件 return 未归属受控 operand、返回端点/入口不匹配及缺失返回。`coverage=returns` 检查所声明函数的每一个 return（不包括嵌套函数）；`partial` 不检查遗漏。
+
+通用报告将没有 source_scopes 的源码规则标为 not_applicable，旧兼容接口仍给出 `SEQ_SOURCE_UNVERIFIED`。源码不完整或检查范围有限时报告 partial；事实能力缺失时报告 unavailable/unsupported。不能把这些状态称为完整语义验证通过。规则消费统一事实，Python AST 与 C++ Clang AST 通过现有语言适配器提供事实，C++ 编译器执行沿用 Broker。当前检查不证明 guard 文本等价性、返回值等价性、动态派发、异常或整体行为。
+
+后端重启后，新建项目 Agent 会话，按指南 §6.5 给需要修复的图补证据和真实 caller，再验证并提交审核。系统升级不会自动修改现有项目的设计图。
+
 当前人工编辑可调整片段标题与位置；分支结构由 Agent JSON 或项目文件输入，尚未提供专门的分支表单。不要通过拖动消息来表达分支归属变更。
 
 ## 项目 Agent 后续任务

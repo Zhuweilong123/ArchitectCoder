@@ -217,8 +217,10 @@ def _latest_resumable_run(session_id: str, *, store_factory=None):
             if not isinstance(checkpoint, dict) or not checkpoint:
                 return None
             contract_recovery = (
-                bool(checkpoint.get("candidate_artifact"))
-                and checkpoint.get("stop_reason") == "contract_check_failed"
+                (bool(checkpoint.get("candidate_artifact"))
+                 and checkpoint.get("stop_reason") == "contract_check_failed")
+                or (bool(checkpoint.get("validation_requirements") or checkpoint.get("task_validation"))
+                    and checkpoint.get("stop_reason") == "validation_requirements_unmet")
             )
             if record.status not in resumable_statuses and not (
                 record.status == RunStatus.PARTIAL.value and contract_recovery
@@ -239,6 +241,9 @@ def _resume_prompt(checkpoint: dict, user_message: str) -> str:
     pending = checkpoint.get("pending_items") or []
     verification = checkpoint.get("verification") or []
     last_step = checkpoint.get("last_step") or ""
+    requirements = checkpoint.get("validation_requirements") or []
+    requirement_context = ("\nRequired validation checks retained for this task: "
+        + json.dumps(requirements, ensure_ascii=False) + ". Complete their declared coverage before review or completion.\n") if requirements else ""
     if checkpoint.get("candidate_artifact"):
         prompt = (
             "A previous task was interrupted by a design-contract gate. Original request: " + original
@@ -251,7 +256,7 @@ def _resume_prompt(checkpoint: dict, user_message: str) -> str:
             + "evaluate the restored candidate against the accepted design and rewrite it if "
             + "needed. Run tests and let the contract gate decide."
         )
-        return prompt + "\n\nLatest user message (complete; follow this instruction):\n" + user_message
+        return prompt + requirement_context + "\n\nLatest user message (complete; follow this instruction):\n" + user_message
     prompt = (
         "A previous task was interrupted. Original request: " + original
         + ". Read the current files and existing changes first, skip completed steps, "
@@ -259,6 +264,7 @@ def _resume_prompt(checkpoint: dict, user_message: str) -> str:
         + (" Completed: " + "; ".join(map(str, completed[-16:])) + "." if completed else "")
         + (" Pending: " + "; ".join(map(str, pending[-16:])) + "." if pending else "")
         + (" Last step: " + str(last_step) + "." if last_step else "")
+        + requirement_context
         + (" Verification: " + "; ".join(map(str, verification[-16:])) + "." if verification else "")
     )
     return prompt + "\n\nLatest user message (complete; follow this instruction):\n" + user_message

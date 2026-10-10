@@ -756,7 +756,14 @@ class RunTaskTool(RunProgramTool):
             "The runtime may execute required prerequisite tasks automatically and returns "
             "step-level execution evidence. Use profile to select a build variant and "
             "dry_run=true to preview the plan without executing it. "
-            "validate checks UML project files directly for .umlproj/.uml/.json targets. "
+            "For task=validate with a .umlproj/.uml/.json target, the runtime runs "
+            "built-in UML project checks, not model-generated checking code. "
+            "Checks are selected through registered artifact rules and available fact providers. "
+            "The result lists checks performed, coverage, problems and unavailable capabilities. "
+            "Consult the relevant design guide for artifact-specific rules and evidence. "
+            "Fix errors and report partial or unavailable checks before submitting review. "
+            "No errors means only that the listed checks found none, not complete verification. "
+            "This does not replace the separate design-contract commit gate. "
             "A bare target is relative to cwd; absolute paths and workspace/source/test/design "
             "qualified targets share the file-tool resolver. cwd also accepts alias subpaths. "
             "For the full test suite use cwd=\"test\" with no target or target=\".\"."
@@ -1084,14 +1091,16 @@ class RunTaskTool(RunProgramTool):
             return ToolResult.error("Error: UML project must contain a non-empty diagrams list", "PROJECT_STRUCTURE_INVALID", True)
         if not all(isinstance(diagram, dict) for diagram in diagrams):
             return ToolResult.error("Error: UML project diagrams must be objects", "PROJECT_STRUCTURE_INVALID", True)
-        from app.services.sequence_validation import validate_sequence_diagrams, format_sequence_diagnostics
-        diagnostics = validate_sequence_diagrams(diagrams)
-        details = format_sequence_diagnostics(diagnostics)
-        if any(item.severity == "error" for item in diagnostics):
-            return ToolResult.error("Error: UML sequence validation failed\n" + details, "PROJECT_SEQUENCE_INVALID", True)
+        from app.services.design_validation import validate_project_diagrams, format_validation_report
+        from app.agent_base.core.hooks import get_runtime
+        report = validate_project_diagrams(diagrams, workspace_root=str(self._paths.workspace) if self._paths.workspace else "",
+            requirements=get_runtime().policy_metadata.get("validation_requirements", []))
+        details = format_validation_report(report)
+        if report.has_errors:
+            return ToolResult.error("Error: UML project validation failed\n" + details, "PROJECT_VALIDATION_FAILED", True)
         summary = f"Validated UML project: {path} (diagrams={len(diagrams)})"
         if details:
-            summary += "\nStructural validation only; semantic warnings remain:\n" + details
+            summary += "\n" + details
         return ToolResult.success(summary)
 
     def to_openai_schema(self) -> dict:
@@ -1104,19 +1113,20 @@ class RunTaskTool(RunProgramTool):
                         "task": {
                             "type": "string",
                             "description": (
-                                "Semantic task name such as build/test/lint, or a custom task "
-                                "declared by the project's task manifest."
+                                "Project task such as build/test/lint/validate, or a custom task "
+                                "declared by the project manifest. validate with a UML project "
+                                "file target uses built-in checks; other targets use project task resolution."
                             ),
                         },
-                        "target": {"type": "string"},
-                        "cwd": {"type": "string"},
+                        "target": {"type": "string", "description": "For built-in UML validation, the .umlproj/.uml/.json project file. Otherwise an optional task target or test selector."},
+                        "cwd": {"type": "string", "description": "Execution directory; bare targets resolve relative to it. Use workspace or a configured source/test/design alias, optionally with a subpath."},
                         "profile": {
                             "type": "string",
                             "description": "Optional build profile such as debug, release, asan, or coverage.",
                         },
                         "dry_run": {
                             "type": "boolean",
-                            "description": "If true, return the resolved execution plan without starting processes.",
+                            "description": "If true, preview resolved project tasks without starting processes. Built-in UML file validation still runs its read-only checks.",
                         },
                     },
                     "required": ["task"], "additionalProperties": False,

@@ -27,6 +27,14 @@ export interface SeqMessage {
   order: number;
   y: number;            // persisted Y position — survives diagram switches
   note: string;         // functional comment / 功能备注
+  source_refs?: SeqSourceRef[];
+  reply_to?: string;
+}
+
+export interface SeqSourceRef { scope_id: string; line: number; kind: string }
+export interface SeqSourceScope {
+  id: string; path: string; symbol: string; lifeline_id: string;
+  entry_message_id?: string; coverage: string;
 }
 
 // UML 2.5.1 Combined Fragment
@@ -44,6 +52,7 @@ export interface SeqOperand {
   message_ids: string[];
   y_start: number;
   y_end: number;
+  source_guard?: SeqSourceRef | null;
 }
 
 export interface SeqFragment {

@@ -95,6 +95,7 @@ class _ExecutionProgressForwarder:
                     "diagrams": metadata.get("diagrams", []),
                     "changed_diagrams": metadata.get("changed_diagrams"),
                     "original_diagrams": metadata.get("original_diagrams"),
+                    "validation_report": metadata.get("validation_report"),
                 })
             else:
                 await self._send({
@@ -351,6 +352,7 @@ async def _request_fallback_uml_review(
     send: Callable[[dict], Awaitable[bool]],
     fallback_review_runs: dict[int, str] | None,
     run_id: str,
+    workspace_root: str = "",
 ) -> bool:
     """Request review when a changed UML project bypassed the review tool."""
     if (
@@ -370,6 +372,17 @@ async def _request_fallback_uml_review(
         changed = changed_diagrams(after, review_manager.baseline)
         if not changed:
             return False
+        from app.services.design_validation import validate_project_diagrams, format_validation_report
+        requirements = get_runtime().policy_metadata.get("validation_requirements", [])
+        required_names = {r["diagram_name"] for r in requirements}
+        selected = {(d.get("diagram_type", "class"), d.get("name", ""))
+                    for d in [*changed, *(d for d in after if d.get("name") in required_names)]}
+        report = await asyncio.to_thread(validate_project_diagrams, after, workspace_root,
+                                         selected_keys=selected, requirements=requirements)
+        if report.has_errors:
+            get_runtime().policy_metadata["review_validation_failure"] = {
+                "report": report.to_dict(), "message": "Error: UML validation failed before fallback review\n" + format_validation_report(report)}
+            return False
         request = review_manager.submit(
             review_type="uml_diff",
             title="检测到未审核的设计变更",
@@ -379,6 +392,7 @@ async def _request_fallback_uml_review(
                 "diagrams": after,
                 "changed_diagrams": changed,
                 "original_diagrams": review_manager.baseline,
+                "validation_report": report.to_dict(),
             },
         )
         fallback_requested = True
@@ -400,6 +414,7 @@ async def _request_fallback_uml_review(
             "diagrams": after,
             "changed_diagrams": changed,
             "original_diagrams": review_manager.baseline,
+            "validation_report": report.to_dict(),
             "auto": True,
         })
         return True
@@ -666,6 +681,7 @@ async def handle_agent_execution(
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
         run_id=run_id,
+        policy_metadata={"validation_requirements": list(resume_checkpoint.get("validation_requirements") or [])},
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
     task_binding = None
@@ -674,6 +690,8 @@ async def handle_agent_execution(
     stream = None
 
     def _sync_task_execution() -> None:
+        agent.last_run_checkpoint["validation_requirements"] = list(
+            get_runtime().policy_metadata.get("validation_requirements", []))
         if task_binding is None:
             return
         try:
@@ -900,6 +918,7 @@ async def handle_agent_execution(
                     send=send,
                     fallback_review_runs=fallback_review_runs,
                     run_id=run_id,
+                    workspace_root=workspace_root,
                 )
 
                 execution_check = await dispatch_execution(ExecutionRequest(
@@ -915,6 +934,10 @@ async def handle_agent_execution(
                         "request_review": ReviewAdapter(review_mgr, progress_forwarder).ask if review_mgr else None,
                         "analyze": ReadOnlyAnalysisAdapter(agent).invoke,
                     }), agent_name=getattr(agent, "name", "Agent"))
+                from app.services.task_validation import ensure_task_validation
+                await ensure_task_validation(execution_check,
+                    get_runtime().policy_metadata.get("validation_requirements", []),
+                    review_failure=get_runtime().policy_metadata.get("review_validation_failure"))
                 _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint)
                 if not execution_check.allowed:
                     rollback_completed = False

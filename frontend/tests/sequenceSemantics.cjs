@@ -72,6 +72,25 @@ test('review prepares class and component candidates for the same canvas and pre
   }
 });
 
+test('source evidence survives normalization and review layout and appears in semantic diff', () => {
+  const { layoutReviewDiagram } = require('../src/utils/reviewLayout.ts');
+  const before = diagram();
+  const after = structuredClone(before);
+  after.source_scopes = [{ id: 'plan', path: 'planner.py', symbol: 'Planner.plan', lifeline_id: 'caller', entry_message_id: 'outside', coverage: 'returns' }];
+  after.messages[0].source_refs = [{ scope_id: 'plan', line: 10, kind: 'return' }];
+  after.messages[0].reply_to = 'outside';
+  after.fragments[0].operands[0].source_guard = { scope_id: 'plan', line: 9, kind: 'condition' };
+  const normalized = normalizeDiagram(after);
+  const arranged = layoutReviewDiagram(normalized);
+  assert.deepEqual(arranged.source_scopes, after.source_scopes);
+  assert.deepEqual(arranged.messages.find(m => m.id === 'ok').source_refs, after.messages[0].source_refs);
+  assert.equal(arranged.messages.find(m => m.id === 'ok').reply_to, 'outside');
+  assert.deepEqual(arranged.fragments[0].operands[0].source_guard, after.fragments[0].operands[0].source_guard);
+  assert.deepEqual(new Set(getDiagramChanges(before, arranged).map(c => c.kind)), new Set(['lifeline', 'message', 'fragment']));
+  const shared = { ...before, source_scopes: after.source_scopes };
+  assert.equal(getDiagramChanges(before, shared)[0].kind, 'lifeline');
+});
+
 function diagram() {
   return normalizeDiagram({
     name: 'Flow', diagram_type: 'sequence',

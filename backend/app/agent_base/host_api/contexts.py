@@ -59,6 +59,7 @@ class ContractGateContext:
     run_id: str = ""
     settings: Any = None
     contract_enabled: bool = True
+    validation_requirements: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

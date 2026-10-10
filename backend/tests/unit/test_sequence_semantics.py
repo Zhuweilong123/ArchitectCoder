@@ -35,6 +35,19 @@ def codes(diagram):
     return {d.code for d in validate_sequence_diagrams([diagram]) if d.severity == "error"}
 
 
+def test_self_return_requires_a_real_earlier_self_call():
+    diagram = {"name": "Recursion", "diagram_type": "sequence", "lifelines": [{"id": "service"}],
+        "messages": [{"id": "ret", "type": "return", "from_lifeline": "service",
+                      "to_lifeline": "service", "order": 2}]}
+    assert "SEQ_RETURN_UNPAIRED" in codes(diagram)
+    diagram["messages"].insert(0, {"id": "call", "type": "self", "from_lifeline": "service",
+                                   "to_lifeline": "service", "order": 1})
+    diagram["messages"][1]["reply_to"] = "call"
+    assert not codes(diagram)
+    diagram["messages"][1]["reply_to"] = "missing"
+    assert "SEQ_REPLY_MISMATCH" in codes(diagram)
+
+
 def test_explicit_alt_roundtrips_without_losing_operands(tmp_path):
     diagram = sequence()
     assert validate_sequence_diagrams([diagram]) == []
@@ -122,7 +135,7 @@ def test_agent_validate_rejects_invalid_branches_and_reports_legacy_warnings(tmp
     del diagram["fragments"][0]["operands"]
     path.write_text(json.dumps({"diagrams": [diagram]}), encoding="utf-8")
     result = asyncio.run(tool._execute({"task": "validate", "target": "model.umlproj", "cwd": "workspace"}))
-    assert "SEQ_LEGACY_OPERANDS" in result and "semantic warnings remain" in result
+    assert "SEQ_LEGACY_OPERANDS" in result and "sequence.source" in result and "not_applicable" in result
 
 
 def test_review_rejects_invalid_branch_before_auto_approval():
