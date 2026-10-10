@@ -370,4 +370,6 @@ python -m pytest test -q
 - **Provider**：通过 `AGENT_*_ENABLED` 和 `AGENT_*_PROVIDER` 控制可选能力；示例配置关闭知识图谱和编排，可按需启用。
 - **API 鉴权**：设置 `INTERNAL_API_TOKEN` 后，在 `frontend/.env.local` 配置相同的 `VITE_API_TOKEN`。
 
+本地默认只监听 `127.0.0.1`；外部文件访问始终受 `WORKSPACE_ROOTS` 限制，`safe=false` 不会扩大权限。生产部署使用严格模式和显式站点来源，详见 [生产部署与安全验证](docs/production-deployment.md)。
+
 详细配置与策略见[当前架构](docs/current-architecture.md)及[命令执行说明](docs/runtime-command-execution.md)。

@@ -14,7 +14,8 @@ router = APIRouter(prefix="/agent", tags=["agent-chat"])
 @router.websocket("/ws/chat")
 async def agent_chat_ws(websocket: WebSocket):
     """Authenticate the WebSocket and delegate session orchestration."""
-    await websocket.accept()
+    protocols = [p.strip() for p in websocket.headers.get("sec-websocket-protocol", "").split(",")]
+    await websocket.accept(subprotocol="architectcoder" if "architectcoder" in protocols else None)
     if not await require_ws_auth(websocket):
         return
     logger.info("[AgentChat] WebSocket connected")

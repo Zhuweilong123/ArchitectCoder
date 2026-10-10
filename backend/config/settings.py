@@ -205,6 +205,8 @@ class Settings(BaseSettings):
     app_name: str = "ArchitectCoder API"
     app_version: str = "1.0.0"
     debug: bool = True
+    api_host: str = "127.0.0.1"
+    api_port: int = Field(default=8001, ge=1, le=65535)
 
     # File storage
     runtime_dir: str = "../temp"

@@ -39,35 +39,32 @@ def resolve_path(user_path: str) -> str:
 
 
 def safe_path(user_path: str) -> str:
-    """Resolve a user-supplied path and ensure it stays within the project root.
-
-    Raises HTTPException(403) on directory traversal attempt.
-    """
+    """Resolve a path inside server-configured workspace roots, including links."""
     settings = get_settings()
-    # Resolve the project root (parent of backend/)
-    project_root = str(Path(__file__).resolve().parents[3])
-
-    if not user_path:
-        return os.path.abspath(settings.project_dir)
-
-    # If relative, anchor it to the project root
-    if not os.path.isabs(user_path):
-        candidate = os.path.abspath(os.path.join(project_root, user_path))
-    else:
-        candidate = os.path.abspath(user_path)
-
-    # Resolve symlinks to defeat symlink-based escapes
     try:
-        real_candidate = os.path.realpath(candidate)
-        real_root = os.path.realpath(project_root)
+        candidate = Path(user_path) if user_path else Path(settings.project_dir)
+        if not candidate.is_absolute():
+            candidate = Path(__file__).resolve().parents[3] / candidate
+        candidate = candidate.resolve()
+        roots = workspace_roots(settings)
+        if not any(candidate == root or candidate.is_relative_to(root) for root in roots):
+            raise HTTPException(status_code=403, detail="Access denied: path outside configured workspace roots")
+        return str(candidate)
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    # Must be within the project root
-    if os.path.commonpath([real_candidate, real_root]) != real_root:
-        raise HTTPException(status_code=403, detail="Access denied: path outside project")
 
-    return real_candidate
+def workspace_roots(settings) -> tuple[Path, ...]:
+    """Shared server-side boundary for file APIs and Agent workspace selection."""
+    repo_root = Path(__file__).resolve().parents[3]
+    roots = [Path(settings.project_dir).resolve(), Path(settings.runtime_dir).resolve()]
+    if not getattr(settings, "strict_production", False):
+        roots.append(repo_root)
+    for value in settings.workspace_roots.split(","):
+        if value.strip():
+            path = Path(value.strip())
+            roots.append((path if path.is_absolute() else repo_root / path).resolve())
+    return tuple(dict.fromkeys(roots))
 
 
 def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, str | None]:
@@ -83,14 +80,9 @@ def validate_agent_workspace_path(user_path: str, *, kind: str) -> tuple[str, st
         # security.py lives at backend/app/core/.  Agent workspaces are scoped
         # to the repository root (one level above backend), not backend/ alone.
         repo_root = Path(__file__).resolve().parents[3]
-        configured = [p.strip() for p in settings.workspace_roots.split(",") if p.strip()]
-        # The application repository is always a trusted workspace baseline.
-        # Configured roots extend that baseline for external projects; they must
-        # not accidentally make in-repository artifacts such as project/ or
-        # temp/ inaccessible.
-        roots = [repo_root, Path(settings.project_dir).resolve(),
-                 Path(settings.runtime_dir).resolve()]
-        roots.extend(Path(p).resolve() for p in configured)
+        # Local development includes the application repository; strict
+        # production only trusts deployment roots and its storage directories.
+        roots = workspace_roots(settings)
 
         candidate = Path(user_path)
         if not candidate.is_absolute():

@@ -46,6 +46,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import get_settings
 from app.core.auth import require_auth
+from app.core.production import validate_production_settings
 from app.api.files import router as files_router
 from app.api.llm import router as llm_router
 from app.api.testhub import router as testhub_router
@@ -58,6 +59,7 @@ from app.api.audit import router as audit_router
 from app.api.plugins import router as plugins_router
 
 settings = get_settings()
+validate_production_settings(settings)
 plugin_manager = get_plugin_manager()
 plugin_manager.configure(settings)
 extension_routers = [router for spec in plugin_manager.specs
@@ -118,9 +120,6 @@ app.include_router(runs_router, dependencies=[Depends(require_auth)])           
 app.include_router(audit_router, dependencies=[Depends(require_auth)])           # Harness audit events
 app.include_router(plugins_router, dependencies=[Depends(require_auth)])
 
-if settings.strict_production and (settings.debug or not settings.internal_api_token):
-    raise RuntimeError("strict_production requires debug=false and internal_api_token")
-
 if settings.strict_production:
     from app.runtime import ExecutionEnvironmentError, build_command_executor
 
@@ -128,7 +127,7 @@ if settings.strict_production:
         build_command_executor(settings).preflight()
     except ExecutionEnvironmentError as exc:
         raise RuntimeError(
-            f"strict_production requires a ready Linux command environment: {exc}"
+            f"strict_production requires a ready command environment: {exc}"
         ) from exc
 
 # Ensure required directories exist
@@ -162,8 +161,8 @@ if __name__ == "__main__":
     }
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8001,
+        host=settings.api_host,
+        port=settings.api_port,
         reload=reload_enabled,
         log_config=log_config,
     )

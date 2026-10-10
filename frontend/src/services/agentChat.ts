@@ -448,9 +448,14 @@ function _stopHeartbeat(): void {
 function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({ session_id: _getSessionId() });
-  if (token) params.set('token', token);
   const wsUrl = `${protocol}//${window.location.host}/api/agent/ws/chat?${params.toString()}`;
-  const ws = new WebSocket(wsUrl);
+  const protocols = ['architectcoder'];
+  if (token) {
+    const encoded = btoa(Array.from(new TextEncoder().encode(token), b => String.fromCharCode(b)).join(''))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    protocols.push(`auth.${encoded}`);
+  }
+  const ws = new WebSocket(wsUrl, protocols);
 
   ws.onmessage = (e) => {
     try {
@@ -521,12 +526,16 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     }
     // 非主动断开（网络抖动/后端重启）→ 通知界面解除"正在执行"状态
     if (!_intentionalClose) {
-      _notifyListeners({ event: 'ws_closed' });
+      _notifyListeners({ event: 'ws_closed', message: e.code === 1008
+        ? 'AI 助手连接被拒绝，请检查访问凭证和服务端允许的站点来源。自动重连已停止。'
+        : undefined });
       // 自动重连（指数退避，最多约 30s 一次）。面板常驻挂载，_onEvent 始终有效，
       // 重连后事件能正常到达界面；后端 session 按 session_id 复用。
       // 达到重试上限后停止后台自动重连，避免后端不可达时无限刷屏；
       // 用户下次发消息仍会通过 _ensureConnection 重新建连。
-      if (_onEvent && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      if (e.code === 1008) {
+        console.warn('[AgentChat] Authentication rejected; automatic reconnect stopped');
+      } else if (_onEvent && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.min(1000 * 2 ** _reconnectAttempts, 30000);
         _reconnectAttempts += 1;
         console.log(`[AgentChat] reconnecting in ${delay}ms (attempt ${_reconnectAttempts})`);

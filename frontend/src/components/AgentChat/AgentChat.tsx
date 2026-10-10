@@ -523,7 +523,7 @@ const AgentChat: React.FC = () => {
               id: `ws_closed_${Date.now()}`,
               role: 'system' as const,
               kind: 'disconnect',
-              content: '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
+              content: ev.message || '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
               timestamp: Date.now(),
             },
           ];

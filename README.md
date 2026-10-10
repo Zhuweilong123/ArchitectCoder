@@ -370,4 +370,6 @@ Configuration lives in `backend/.env`; definitions are in `backend/config/`. Sta
 - **Providers**: `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` control optional capabilities. Knowledge graph and orchestration are disabled in the example configuration; enable them when needed.
 - **API authentication**: if `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`.
 
+Local launch binds to `127.0.0.1` by default. External file access always requires configured `WORKSPACE_ROOTS`; `safe=false` never expands permissions. See [production deployment and security verification](docs/production-deployment.md) for strict mode and explicit browser origins.
+
 See [current architecture](docs/current-architecture.md) and [command execution](docs/runtime-command-execution.md) for detailed configuration and policy.

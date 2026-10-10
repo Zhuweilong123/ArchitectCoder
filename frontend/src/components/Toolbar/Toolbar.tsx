@@ -397,8 +397,8 @@ const Toolbar: React.FC = () => {
       || currentWorkspacePath
       || (currentFilepath ? pathDirName(currentFilepath) : '');
     // The unified design picker may target an explicitly configured external
-    // directory, so files opened from it must use the same unrestricted flag
-    // as the directory browse request.
+    // directory. Keep the legacy flag aligned with directory browsing;
+    // the backend always enforces its configured workspace roots.
     browseUnsafe.current = true;
     void handleOpen(designPath || undefined, true);
   };

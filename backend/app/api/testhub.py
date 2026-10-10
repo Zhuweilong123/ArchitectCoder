@@ -3,20 +3,22 @@
 import os
 import json
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from backend.config import get_settings
 from backend.config.paths import runtime_root
 from app.services.llm_service import chat
 from app.core.json_utils import clean_llm_json_response
+from app.core.auth import require_auth
+from app.core.security import safe_path
 
 try:
     import openpyxl
 except ImportError:
     openpyxl = None
 
-router = APIRouter(prefix="/api/testhub", tags=["testhub"])
+router = APIRouter(prefix="/api/testhub", tags=["testhub"], dependencies=[Depends(require_auth)])
 
 settings = get_settings()
 TESTHUB_DIR = str(runtime_root(settings) / "testHub")
@@ -25,11 +27,18 @@ TESTHUB_DIR = str(runtime_root(settings) / "testHub")
 def _get_testhub_dir(dir_override: str | None = None):
     """Resolve directory. Falls back to temp/testHub if no custom dir specified."""
     if dir_override:
-        d = os.path.abspath(dir_override)
+        d = safe_path(dir_override)
     else:
-        d = TESTHUB_DIR
+        d = safe_path(TESTHUB_DIR)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _excel_path(directory: str, filename: str) -> str:
+    path = safe_path(os.path.join(directory, filename))
+    if not path.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only Excel files can be accessed")
+    return path
 
 
 # ── List Excel files ───────────────────────────────────
@@ -42,7 +51,10 @@ async def list_test_files(dir: str | None = None):
     if os.path.isdir(d):
         for name in sorted(os.listdir(d)):
             if name.endswith(('.xlsx', '.xls')) and not name.startswith('~'):
-                fp = os.path.join(d, name)
+                try:
+                    fp = _excel_path(d, name)
+                except HTTPException:
+                    continue
                 files.append({
                     "name": name,
                     "path": fp.replace("\\", "/"),
@@ -61,7 +73,7 @@ async def load_test_file(filename: str = "", dir: str | None = None):
         raise HTTPException(status_code=500, detail="openpyxl not installed")
 
     d = _get_testhub_dir(dir)
-    fp = os.path.join(d, filename)
+    fp = _excel_path(d, filename)
     if not os.path.exists(fp):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
@@ -107,7 +119,7 @@ async def save_test_file(req: SaveCasesRequest):
         raise HTTPException(status_code=500, detail="openpyxl not installed")
 
     d = _get_testhub_dir()
-    fp = os.path.join(d, req.filename)
+    fp = _excel_path(d, req.filename)
 
     wb = openpyxl.load_workbook(fp)
     for sname, data in req.sheets.items():
