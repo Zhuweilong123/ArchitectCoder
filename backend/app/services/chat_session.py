@@ -27,7 +27,6 @@ import contextvars
 import json
 import logging
 import os
-import uuid
 from datetime import datetime
 from typing import Any, Callable
 from fastapi import WebSocket, WebSocketDisconnect
@@ -55,6 +54,7 @@ from app.services.run_state import RunStateError, RunStatus, get_run_store
 from app.services.audit_log import record_audit as _record_audit
 from app.services.run_lifecycle import RunLifecycle
 from app.services.session_compression import SessionContextCompressor
+from app.services.chat_connection import ChatConnection
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
@@ -592,25 +592,21 @@ class ChatSessionCoordinator:
         review_mgr = session.review_mgr
         progress: ProgressRelay | None = session.progress
         prompt_builder = session.prompt_builder
-        stop_requested = False
-        run_task: asyncio.Task | None = None
-        connection_owner = uuid.uuid4().hex
-        transport_disconnected = False
+        state = getattr(session, "chat_connection", None)
+        if state is None:
+            state = session.chat_connection = ChatConnection()
+        connection_owner = state.owner
         # 兜底审核（run 结束后补推的 uml_review）与其原始 run 的映射。
         # 这些请求没有 agent 在 future 上阻塞，reject 时需要主循环代为开启修订轮。
-        fallback_review_runs: dict[int, str] = {}
-        source_dir = ""
-        test_dir = ""
-        project_file = ""
-        workspace_root = ""
-        design_dir = ""
+        fallback_review_runs = state.fallback_review_runs
+        source_dir, test_dir, project_file, workspace_root, design_dir = state.paths
         _set_trace_bridge(trace_log)
         trace_hook_handler = _trace_hook_bridge
         trace_sink_token = set_current_trace_sink(trace_log)
         push_trace_hook(trace_hook_handler)
 
         def _stop_check():
-            return stop_requested
+            return state.stop_requested
 
         async def _start_run(
             message: str,
@@ -622,381 +618,409 @@ class ChatSessionCoordinator:
             request_id: str = "",
             design_contract_enabled: bool | None = None,
         ) -> None:
-            nonlocal run_task
-            task = await _start_agent_chat_run(
-                agent=dev_agent,
-                review_manager=review_mgr,
-                prompt_builder=prompt_builder,
-                progress=progress,
-                message=message,
-                raw_user_message=raw_user_message,
-                websocket=websocket,
-                trace_log=trace_log,
-                session_id=session_id,
-                connection_owner=connection_owner,
-                source_dir=source_dir,
-                test_dir=test_dir,
-                project_file=project_file,
-                workspace_root=workspace_root,
-                design_dir=design_dir,
-                fallback_review_runs=fallback_review_runs,
-                stop_check=_stop_check,
-                disconnect_check=lambda: transport_disconnected,
-                parent_run_id=parent_run_id,
-                resume_record=resume_record,
-                resume_checkpoint=resume_checkpoint,
-                request_id=request_id,
-                design_contract_enabled=design_contract_enabled,
-            )
-            if task is not None:
-                run_task = task
+            state.preparing = True
+            try:
+                task = await _start_agent_chat_run(
+                    agent=dev_agent,
+                    review_manager=review_mgr,
+                    prompt_builder=prompt_builder,
+                    progress=progress,
+                    message=message,
+                    raw_user_message=raw_user_message,
+                    websocket=state,
+                    trace_log=trace_log,
+                    session_id=session_id,
+                    connection_owner=connection_owner,
+                    source_dir=source_dir,
+                    test_dir=test_dir,
+                    project_file=project_file,
+                    workspace_root=workspace_root,
+                    design_dir=design_dir,
+                    fallback_review_runs=fallback_review_runs,
+                    stop_check=_stop_check,
+                    disconnect_check=lambda: False,
+                    parent_run_id=parent_run_id,
+                    resume_record=resume_record,
+                    resume_checkpoint=resume_checkpoint,
+                    request_id=request_id,
+                    design_contract_enabled=design_contract_enabled,
+                )
+                if task is not None:
+                    state.task = task
+
+            finally:
+                state.preparing = False
 
         try:
+            cursor = max(0, int(websocket.query_params.get("event_cursor", "0")))
+            await state.attach(websocket, cursor, websocket.query_params.get("event_epoch", ""))
             while True:
                 raw = await websocket.receive_text()
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
-                    await websocket.send_json({"event": "error", "message": "Invalid JSON"})
+                    await state.send_json({"event": "error", "message": "Invalid JSON"})
                     continue
 
                 msg_type = msg.get("type", "")
 
-                # Status is an explicit transport command, not a natural-language
-                # shortcut in the execution path.
-                if msg_type == "task_status":
-                    checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
-                    checkpoint = checkpoint or _latest_persisted_checkpoint(session_id)
-                    answer = _checkpoint_answer(checkpoint)
-                    await _ws_send(websocket, {
-                        "event": "done",
-                        "result": answer,
-                        "checkpoint": checkpoint,
-                    })
-                    continue
-
-                # ── 开始对话 ──
-                if msg_type == "chat":
-                    if run_task is not None and not run_task.done():
-                        await _ws_send(websocket, {
-                            "event": "error", "message": "Agent is still processing the previous request",
-                        })
+                async with state.command_lock:
+                    if not state.is_current(websocket):
                         continue
-                    if session.run_owner not in (None, connection_owner):
-                        await _ws_send(websocket, {
-                            "event": "error", "message": "This session is already running on another connection",
-                        })
-                        continue
-                    user_message = msg.get("message", "")
-                    resume_record = None
-                    resume_checkpoint = {}
-                    if not user_message:
-                        await websocket.send_json({"event": "error", "message": "Empty message"})
-                        continue
-                    resumable = _latest_resumable_run(session_id)
-                    if resumable is not None:
-                        resume_record, resume_checkpoint = resumable
-
-                    workspace_paths, workspace_error = _resolve_workspace_paths(
-                        msg,
-                        resume_checkpoint,
-                        source_dir=source_dir,
-                        test_dir=test_dir,
-                        project_file=project_file,
-                        workspace_root=workspace_root,
-                        design_dir=design_dir,
-                    )
-                    if workspace_error:
-                        await websocket.send_json({
-                            "event": "error", "message": workspace_error,
-                        })
-                        continue
-                    source_dir, test_dir, project_file, workspace_root, design_dir = workspace_paths
-                    effective_user_message = (
-                        _resume_prompt(resume_checkpoint, user_message)
-                        if resume_checkpoint else user_message
-                    )
-                    requested_contract_enabled = msg.get("design_contract_enabled")
-                    if not isinstance(requested_contract_enabled, bool):
-                        requested_contract_enabled = None
-                    if requested_contract_enabled is None and resume_checkpoint:
-                        previous_contract_enabled = resume_checkpoint.get("contract_enabled")
-                        if isinstance(previous_contract_enabled, bool):
-                            requested_contract_enabled = previous_contract_enabled
-
-                    # 记录用户消息（trace）
-                    # One session uses one configured coding model.  Do not infer
-                    # model changes from a short follow-up: that makes behaviour
-                    # less predictable and breaks provider prompt-cache prefixes.
-                    if llm is None:
-                        llm = BaseAgentsLLM.from_settings(temperature=0.3)
-                        if dev_agent is not None:
-                            dev_agent.llm = llm
-                            subagent = dev_agent.tool_registry.get_tool("spawn_subagent")
-                            if subagent is not None and hasattr(subagent, "llm"):
-                                subagent.llm = llm
-
-                    stop_requested = False
-
-                    # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
-                    if dev_agent is None:
-                        progress = ProgressRelay()
-                        try:
-                            dev_agent, review_mgr, prompt_builder = await create_dev_agent(
-                                llm, source_dir, test_dir, project_file, effective_user_message,
-                                progress=progress, restore_history=restore_history,
-                                task_scope=session_id,
-                                workspace_root=workspace_root,
-                                design_dir=design_dir,
-                            )
-                        except ValueError as exc:
-                            await websocket.send_json({
-                                "event": "error",
-                                "message": f"Invalid workspace layout: {exc}",
+                    # Status is an explicit transport command, not a natural-language
+                    # shortcut in the execution path.
+                    if msg_type == "task_status":
+                        if state.running:
+                            await _ws_send(state, {
+                                "event": "session_sync", "running": True,
+                                "stopping": state.stop_requested,
                             })
                             continue
-                        session.agent, session.review_mgr, session.progress = \
-                            dev_agent, review_mgr, progress
-                        session.prompt_builder = prompt_builder
-
-                    session.touch()
-
-                    # Session compression belongs between turns. The active
-                    # ReAct loop only compacts tool history; user/assistant
-                    # conversation is summarized here before the next turn.
-                    if dev_agent is not None and llm is not None:
-                        await _compress_session_context(
-                            dev_agent,
-                            llm,
-                            session_id=session_id,
-                            trace_log=trace_log,
-                        )
-
-                    await _start_run(
-                        effective_user_message, raw_user_message=user_message,
-                        resume_record=resume_record,
-                        resume_checkpoint=resume_checkpoint, request_id=msg.get("request_id", ""),
-                        design_contract_enabled=requested_contract_enabled,
-                    )
-
-                # ── 停止对话 ──
-                elif msg_type == "stop":
-                    stop_requested = True
-                    trace_log.error(event_type="user_stop", message="用户请求停止")
-                    # Cancel the background task as well as setting the hook flag.
-                    # This is necessary when the Agent is waiting for a review
-                    # future; otherwise it cannot observe the stop hook and the
-                    # session remains locked until a review response arrives.
-                    if run_task is not None and not run_task.done():
-                        run_task.cancel()
-                        try:
-                            await run_task
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception:
-                            logger.warning(
-                                "[AgentChat] Stopped run raised during cancellation",
-                                exc_info=True,
-                            )
-                        await websocket.send_json({
-                            "event": "stopped",
-                            "reason": "User requested stop",
-                            "status": "paused",
-                            "resume_available": True,
+                        checkpoint = getattr(dev_agent, "last_run_checkpoint", {}) if dev_agent else {}
+                        checkpoint = checkpoint or _latest_persisted_checkpoint(session_id)
+                        answer = _checkpoint_answer(checkpoint)
+                        await _ws_send(state, {
+                            "event": "done",
+                            "result": answer,
+                            "checkpoint": checkpoint,
                         })
-                    else:
-                        await websocket.send_json({
-                            "event": "stopped",
-                            "reason": "User requested stop",
-                            "status": "paused",
-                            "resume_available": True,
-                        })
+                        continue
 
-                # ── 人工审核回复 ──
-                elif msg_type == "review_response":
-                    logger.info("[AgentChat] review_response received: %s", raw[:200])
-                    review_id = msg.get("review_id", 0)
-                    # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
-                    decision = msg.get("decision", "")
-                    feedback = msg.get("feedback")
-                    if decision:
-                        # Older clients sent comments as response alongside decision.
-                        if feedback is None:
-                            feedback = msg.get("response", "") or ""
-                        response = json.dumps({
-                            "decision": decision,
-                            "feedback": feedback,
-                        }, ensure_ascii=False)
-                    else:
-                        response = msg.get("response", "")
-                        try:
-                            parsed_response = json.loads(response)
-                        except (ValueError, TypeError):
-                            parsed_response = None
-                        if isinstance(parsed_response, dict):
-                            decision = parsed_response.get("decision", "")
-                            feedback = parsed_response.get("feedback", "") or ""
-                        elif str(response).strip().lower() in {"accept", "approve", "approved", "批准", "同意", "接受"}:
-                            decision = "accept"
-                        else:
-                            decision = "reject"
-                    if feedback is None:
-                        feedback = response
-                    if review_mgr:
-                        review_request = review_mgr.get_request(review_id)
-                        candidate_recovery = (
-                            review_request.metadata.get("candidate_recovery")
-                            if review_request is not None and isinstance(review_request.metadata, dict)
-                            else None
+                    # ── 开始对话 ──
+                    if msg_type == "chat":
+                        if state.running:
+                            await _ws_send(state, {
+                                "event": "error", "message": "Agent is still processing the previous request", "running": True,
+                            })
+                            continue
+                        if session.run_owner not in (None, connection_owner):
+                            await _ws_send(state, {
+                                "event": "error", "message": "This session is already running on another connection",
+                            })
+                            continue
+                        user_message = msg.get("message", "")
+                        resume_record = None
+                        resume_checkpoint = {}
+                        if not user_message:
+                            await state.send_json({"event": "error", "message": "Empty message"})
+                            continue
+                        resumable = _latest_resumable_run(session_id)
+                        if resumable is not None:
+                            resume_record, resume_checkpoint = resumable
+
+                        workspace_paths, workspace_error = _resolve_workspace_paths(
+                            msg,
+                            resume_checkpoint,
+                            source_dir=source_dir,
+                            test_dir=test_dir,
+                            project_file=project_file,
+                            workspace_root=workspace_root,
+                            design_dir=design_dir,
                         )
-                        if decision == "accept" and candidate_recovery and callable(
-                            getattr(review_mgr, "candidate_restore_callback", None)
-                        ):
+                        if workspace_error:
+                            await state.send_json({
+                                "event": "error", "message": workspace_error,
+                            })
+                            continue
+                        source_dir, test_dir, project_file, workspace_root, design_dir = workspace_paths
+                        state.paths = workspace_paths
+                        effective_user_message = (
+                            _resume_prompt(resume_checkpoint, user_message)
+                            if resume_checkpoint else user_message
+                        )
+                        requested_contract_enabled = msg.get("design_contract_enabled")
+                        if not isinstance(requested_contract_enabled, bool):
+                            requested_contract_enabled = None
+                        if requested_contract_enabled is None and resume_checkpoint:
+                            previous_contract_enabled = resume_checkpoint.get("contract_enabled")
+                            if isinstance(previous_contract_enabled, bool):
+                                requested_contract_enabled = previous_contract_enabled
+
+                        # 记录用户消息（trace）
+                        # One session uses one configured coding model.  Do not infer
+                        # model changes from a short follow-up: that makes behaviour
+                        # less predictable and breaks provider prompt-cache prefixes.
+                        if llm is None:
+                            llm = BaseAgentsLLM.from_settings(temperature=0.3)
+                            if dev_agent is not None:
+                                dev_agent.llm = llm
+                                subagent = dev_agent.tool_registry.get_tool("spawn_subagent")
+                                if subagent is not None and hasattr(subagent, "llm"):
+                                    subagent.llm = llm
+
+                        state.stop_requested = False
+
+                        # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
+                        if dev_agent is None:
+                            progress = ProgressRelay()
                             try:
-                                review_mgr.candidate_restore_callback(candidate_recovery)
-                            except Exception as exc:
+                                dev_agent, review_mgr, prompt_builder = await create_dev_agent(
+                                    llm, source_dir, test_dir, project_file, effective_user_message,
+                                    progress=progress, restore_history=restore_history,
+                                    task_scope=session_id,
+                                    workspace_root=workspace_root,
+                                    design_dir=design_dir,
+                                )
+                            except ValueError as exc:
+                                await state.send_json({
+                                    "event": "error",
+                                    "message": f"Invalid workspace layout: {exc}",
+                                })
+                                continue
+                            session.agent, session.review_mgr, session.progress = \
+                                dev_agent, review_mgr, progress
+                            session.prompt_builder = prompt_builder
+
+                        session.touch()
+
+                        # Session compression belongs between turns. The active
+                        # ReAct loop only compacts tool history; user/assistant
+                        # conversation is summarized here before the next turn.
+                        if dev_agent is not None and llm is not None:
+                            await _compress_session_context(
+                                dev_agent,
+                                llm,
+                                session_id=session_id,
+                                trace_log=trace_log,
+                            )
+
+                        await _start_run(
+                            effective_user_message, raw_user_message=user_message,
+                            resume_record=resume_record,
+                            resume_checkpoint=resume_checkpoint, request_id=msg.get("request_id", ""),
+                            design_contract_enabled=requested_contract_enabled,
+                        )
+
+                    # ── 停止对话 ──
+                    elif msg_type == "stop":
+                        state.stop_requested = True
+                        for reviewed_run_id in list(fallback_review_runs.values()):
+                            try:
+                                checkpoint = RunLifecycle(get_run_store(), agent_runtime).pause_review(
+                                    run_id=reviewed_run_id, owner=connection_owner,
+                                )
+                                if dev_agent is not None and dev_agent.last_run_checkpoint.get("run_id") == reviewed_run_id:
+                                    dev_agent.last_run_checkpoint = checkpoint
+                            except RunStateError:
+                                logger.warning("Could not pause pending review %s", reviewed_run_id, exc_info=True)
+                        fallback_review_runs.clear()
+                        trace_log.error(event_type="user_stop", message="用户请求停止")
+                        # Cancel the background task as well as setting the hook flag.
+                        # This is necessary when the Agent is waiting for a review
+                        # future; otherwise it cannot observe the stop hook and the
+                        # session remains locked until a review response arrives.
+                        if state.task is not None and not state.task.done():
+                            state.task.cancel()
+                            try:
+                                await state.task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
                                 logger.warning(
-                                    "[Candidate] restore after design review failed",
+                                    "[AgentChat] Stopped run raised during cancellation",
                                     exc_info=True,
                                 )
-                                await _ws_send(websocket, {
-                                    "event": "error",
-                                    "message": f"设计已通过，但候选源码恢复失败：{exc}",
-                                })
-                                continue
-                        reviewed_checkpoint = None
-                        if review_id in fallback_review_runs:
-                            if decision not in {"accept", "reject"}:
-                                await _ws_send(websocket, {"event": "error", "message": "Invalid review decision"})
-                                continue
-                            # Validate the live request before committing its durable resolution.
-                            if not any(item["id"] == review_id for item in review_mgr.get_pending()):
-                                await _ws_send(websocket, {"event": "review_expired", "review_id": review_id})
-                                continue
-                            try:
-                                reviewed_checkpoint = RunLifecycle(
-                                    get_run_store(), agent_runtime,
-                                ).resolve_review(
-                                    run_id=fallback_review_runs[review_id],
-                                    owner=connection_owner, accepted=decision == "accept",
-                                )
-                            except RunStateError as exc:
-                                await _ws_send(websocket, {"event": "error", "message": str(exc)})
-                                continue
-                        resolved = review_mgr.resolve(review_id, response, session_id=session_id)
-                        if not resolved:
-                            # 待审核请求不存在（连接断开被清理/会话回收/重复回复）：
-                            # 明确告知前端，避免用户以为审核已生效而 agent 实际没收到
-                            logger.info("[AgentChat] Review %d 已失效，通知前端", review_id)
-                            await websocket.send_json({
-                                "event": "review_expired",
-                                "review_id": review_id,
+                            if review_mgr is not None:
+                                review_mgr.reset()
+                            await state.send_json({
+                                "event": "stopped",
+                                "reason": "User requested stop",
+                                "status": "paused",
+                                "resume_available": True,
                             })
-                            continue
+                        else:
+                            if review_mgr is not None:
+                                review_mgr.reset()
+                            await state.send_json({
+                                "event": "stopped",
+                                "reason": "User requested stop",
+                                "status": "paused",
+                                "resume_available": True,
+                            })
 
-                        # 接受时刷新 baseline：本轮后续设计修改的 before = 已接受态
-                        if decision == "accept" and project_file and (
-                            reviewed_checkpoint is None
-                            or dev_agent.last_run_checkpoint.get("run_id") == reviewed_checkpoint.get("run_id")
-                        ):
+                    # ── 人工审核回复 ──
+                    elif msg_type == "review_response":
+                        logger.info("[AgentChat] review_response received: %s", raw[:200])
+                        review_id = msg.get("review_id", 0)
+                        # 新版协议：decision + feedback；旧版纯文本 response 仍兼容
+                        decision = msg.get("decision", "")
+                        feedback = msg.get("feedback")
+                        if decision:
+                            # Older clients sent comments as response alongside decision.
+                            if feedback is None:
+                                feedback = msg.get("response", "") or ""
+                            response = json.dumps({
+                                "decision": decision,
+                                "feedback": feedback,
+                            }, ensure_ascii=False)
+                        else:
+                            response = msg.get("response", "")
                             try:
-                                from app.services.file_service import load_project
-                                review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
-                            except Exception:
-                                pass
-                        trace_log.review_response(
-                            review_id=review_id,
-                            response=response,
-                            review_type=(review_request.review_type if review_request else ""),
-                            decision=decision,
-                            feedback=feedback,
-                            candidate_recovery=bool(candidate_recovery),
-                        )
-                        logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
-                        from app.agent_base.host_api.lifecycle import HookContext, HookEvent
-                        from app.agent_base.core.hooks import get_hooks
-                        from app.agent_base.core.operations import operation_scope
-                        review_run_id = (reviewed_checkpoint or {}).get("run_id", "") or fallback_review_runs.get(review_id, "") or (dev_agent.last_run_checkpoint or {}).get("run_id", "")
-                        from app.agent_base.core.plugin_runtime import plugin_scope, snapshot_for_plan
-                        review_checkpoint = reviewed_checkpoint or dev_agent.last_run_checkpoint or {}
-                        review_snapshot = snapshot_for_plan(review_checkpoint.get("plugin_plan_id", ""))
-                        with plugin_scope(review_snapshot), operation_scope("review", run_id=review_run_id, stage="finalize", scope="request"):
-                            await get_hooks().aemit(HookEvent.REVIEW_AFTER, HookContext(
-                                HookEvent.REVIEW_AFTER, "DevAgent", run_id=review_run_id,
-                                payload={"status": decision, "source": "review_response"},
-                            ))
-
-                        # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──
-                        # accept 才把 waiting_approval 变为最终状态；reject 则把
-                        # 用户反馈作为新一轮修订任务。此前绝不能宣称 completed。
-                        if review_id in fallback_review_runs:
-                            reviewed_run_id = fallback_review_runs.pop(review_id)
-                            checkpoint = reviewed_checkpoint
-                            _record_audit(
-                                "review_accepted" if decision == "accept" else "review_rejected",
-                                run_id=reviewed_run_id, session_id=session_id,
+                                parsed_response = json.loads(response)
+                            except (ValueError, TypeError):
+                                parsed_response = None
+                            if isinstance(parsed_response, dict):
+                                decision = parsed_response.get("decision", "")
+                                feedback = parsed_response.get("feedback", "") or ""
+                            elif str(response).strip().lower() in {"accept", "approve", "approved", "批准", "同意", "接受"}:
+                                decision = "accept"
+                            else:
+                                decision = "reject"
+                        if feedback is None:
+                            feedback = response
+                        if review_mgr:
+                            review_request = review_mgr.get_request(review_id)
+                            candidate_recovery = (
+                                review_request.metadata.get("candidate_recovery")
+                                if review_request is not None and isinstance(review_request.metadata, dict)
+                                else None
                             )
-                            if dev_agent is not None and (
-                                dev_agent.last_run_checkpoint.get("run_id") == reviewed_run_id
+                            if decision == "accept" and candidate_recovery and callable(
+                                getattr(review_mgr, "candidate_restore_callback", None)
                             ):
-                                dev_agent.last_run_checkpoint = checkpoint
-                            if dev_agent is not None:
-                                dev_agent.append_task_summary(checkpoint["task_summary"])
-                            if decision == "accept":
-                                status = checkpoint["status"]
-                                reviewed_project = checkpoint.get("project_file") or ""
-                                with plugin_scope(snapshot_for_plan(checkpoint.get("plugin_plan_id", ""))):
-                                    await publish_task_result(
-                                        dev_agent, run_id=reviewed_run_id,
-                                        project_id=project_id_for(reviewed_project) if reviewed_project else "",
-                                        status=status, checkpoint=checkpoint,
-                                        user_message=checkpoint.get("request_summary", ""),
-                                        final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
-                                        tool_steps=checkpoint.get("tool_calls", []), trace_id=trace_log.trace_id,
-                                        conversation_history=recent_conversation_history(
-                                            dev_agent, turns=4, exclude_latest_turn=True,
-                                        ),
+                                try:
+                                    review_mgr.candidate_restore_callback(candidate_recovery)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[Candidate] restore after design review failed",
+                                        exc_info=True,
                                     )
-                                answer = (
-                                    "设计变更已通过审核，任务已完成。"
-                                    if status == "completed"
-                                    else "设计变更已通过审核；原任务未完整完成。"
-                                    + str(checkpoint.get("stop_reason") or "")
-                                )
-                                await _ws_send(websocket, {
-                                    "event": "done", "run_id": reviewed_run_id,
-                                    "result": answer, "checkpoint": checkpoint,
+                                    await _ws_send(state, {
+                                        "event": "error",
+                                        "message": f"设计已通过，但候选源码恢复失败：{exc}",
+                                    })
+                                    continue
+                            reviewed_checkpoint = None
+                            if review_id in fallback_review_runs:
+                                if decision not in {"accept", "reject"}:
+                                    await _ws_send(state, {"event": "error", "message": "Invalid review decision"})
+                                    continue
+                                # Validate the live request before committing its durable resolution.
+                                if not any(item["id"] == review_id for item in review_mgr.get_pending()):
+                                    await _ws_send(state, {"event": "review_expired", "review_id": review_id})
+                                    continue
+                                try:
+                                    reviewed_checkpoint = RunLifecycle(
+                                        get_run_store(), agent_runtime,
+                                    ).resolve_review(
+                                        run_id=fallback_review_runs[review_id],
+                                        owner=connection_owner, accepted=decision == "accept",
+                                    )
+                                except RunStateError as exc:
+                                    await _ws_send(state, {"event": "error", "message": str(exc)})
+                                    continue
+                            resolved = review_mgr.resolve(review_id, response, session_id=session_id)
+                            if resolved:
+                                state.resolve_review(review_id)
+                            if not resolved:
+                                # 待审核请求不存在（连接断开被清理/会话回收/重复回复）：
+                                # 明确告知前端，避免用户以为审核已生效而 agent 实际没收到
+                                logger.info("[AgentChat] Review %d 已失效，通知前端", review_id)
+                                await state.send_json({
+                                    "event": "review_expired",
+                                    "review_id": review_id,
                                 })
                                 continue
-                            if dev_agent is not None and (run_task is None or run_task.done()):
-                                feedback_text = feedback
-                                followup = (
-                                    "用户拒绝了刚才的 UML 设计变更"
-                                    + (f"，反馈：{feedback_text}" if feedback_text else "")
-                                    + "。请据此修改设计文件，然后调用 submit_uml_review 重新提交审核。"
+
+                            # 接受时刷新 baseline：本轮后续设计修改的 before = 已接受态
+                            if decision == "accept" and project_file and (
+                                reviewed_checkpoint is None
+                                or dev_agent.last_run_checkpoint.get("run_id") == reviewed_checkpoint.get("run_id")
+                            ):
+                                try:
+                                    from app.services.file_service import load_project
+                                    review_mgr.baseline = [d.model_dump() for d in load_project(project_file).diagrams]
+                                except Exception:
+                                    pass
+                            trace_log.review_response(
+                                review_id=review_id,
+                                response=response,
+                                review_type=(review_request.review_type if review_request else ""),
+                                decision=decision,
+                                feedback=feedback,
+                                candidate_recovery=bool(candidate_recovery),
+                            )
+                            logger.info("[AgentChat] Review %d resolved: %s", review_id, response[:80])
+                            from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+                            from app.agent_base.core.hooks import get_hooks
+                            from app.agent_base.core.operations import operation_scope
+                            review_run_id = (reviewed_checkpoint or {}).get("run_id", "") or fallback_review_runs.get(review_id, "") or (dev_agent.last_run_checkpoint or {}).get("run_id", "")
+                            from app.agent_base.core.plugin_runtime import plugin_scope, snapshot_for_plan
+                            review_checkpoint = reviewed_checkpoint or dev_agent.last_run_checkpoint or {}
+                            review_snapshot = snapshot_for_plan(review_checkpoint.get("plugin_plan_id", ""))
+                            with plugin_scope(review_snapshot), operation_scope("review", run_id=review_run_id, stage="finalize", scope="request"):
+                                await get_hooks().aemit(HookEvent.REVIEW_AFTER, HookContext(
+                                    HookEvent.REVIEW_AFTER, "DevAgent", run_id=review_run_id,
+                                    payload={"status": decision, "source": "review_response"},
+                                ))
+
+                            # ── 兜底审核：Agent 已结束，审核结果由编排层收口 ──
+                            # accept 才把 waiting_approval 变为最终状态；reject 则把
+                            # 用户反馈作为新一轮修订任务。此前绝不能宣称 completed。
+                            if review_id in fallback_review_runs:
+                                reviewed_run_id = fallback_review_runs.pop(review_id)
+                                checkpoint = reviewed_checkpoint
+                                _record_audit(
+                                    "review_accepted" if decision == "accept" else "review_rejected",
+                                    run_id=reviewed_run_id, session_id=session_id,
                                 )
-                                stop_requested = False
-                                await _start_run(followup, parent_run_id=reviewed_run_id)
+                                if dev_agent is not None and (
+                                    dev_agent.last_run_checkpoint.get("run_id") == reviewed_run_id
+                                ):
+                                    dev_agent.last_run_checkpoint = checkpoint
+                                if dev_agent is not None:
+                                    dev_agent.append_task_summary(checkpoint["task_summary"])
+                                if decision == "accept":
+                                    status = checkpoint["status"]
+                                    reviewed_project = checkpoint.get("project_file") or ""
+                                    with plugin_scope(snapshot_for_plan(checkpoint.get("plugin_plan_id", ""))):
+                                        await publish_task_result(
+                                            dev_agent, run_id=reviewed_run_id,
+                                            project_id=project_id_for(reviewed_project) if reviewed_project else "",
+                                            status=status, checkpoint=checkpoint,
+                                            user_message=checkpoint.get("request_summary", ""),
+                                            final_answer=(checkpoint.get("outcome") or {}).get("final_answer", ""),
+                                            tool_steps=checkpoint.get("tool_calls", []), trace_id=trace_log.trace_id,
+                                            conversation_history=recent_conversation_history(
+                                                dev_agent, turns=4, exclude_latest_turn=True,
+                                            ),
+                                        )
+                                    answer = (
+                                        "设计变更已通过审核，任务已完成。"
+                                        if status == "completed"
+                                        else "设计变更已通过审核；原任务未完整完成。"
+                                        + str(checkpoint.get("stop_reason") or "")
+                                    )
+                                    await _ws_send(state, {
+                                        "event": "done", "run_id": reviewed_run_id,
+                                        "result": answer, "checkpoint": checkpoint,
+                                    })
+                                    continue
+                                if dev_agent is not None and (state.task is None or state.task.done()):
+                                    feedback_text = feedback
+                                    followup = (
+                                        "用户拒绝了刚才的 UML 设计变更"
+                                        + (f"，反馈：{feedback_text}" if feedback_text else "")
+                                        + "。请据此修改设计文件，然后调用 submit_uml_review 重新提交审核。"
+                                    )
+                                    state.stop_requested = False
+                                    await _start_run(followup, parent_run_id=reviewed_run_id)
 
-                # ── 心跳 ──
-                elif msg_type == "ping":
-                    await _ws_send(websocket, {"event": "pong"})
+                    # ── 心跳 ──
+                    elif msg_type == "ping":
+                        await _ws_send(websocket, {"event": "pong"})
 
-                else:
-                    await websocket.send_json({
-                        "event": "error", "message": f"Unknown message type: {msg_type}",
-                    })
+                    else:
+                        await state.send_json({
+                            "event": "error", "message": f"Unknown message type: {msg_type}",
+                        })
 
         except WebSocketDisconnect:
-            transport_disconnected = True
-            stop_requested = True
             logger.info("[AgentChat] WebSocket disconnected")
         except RuntimeError as e:
             # 前端断开时 Starlette 会在 receive_text()/send_json() 抛这个错误；
             # 识别为正常断开，优雅收尾，不当作服务端错误处理。
             if "WebSocket is not connected" in str(e) or "not connected" in str(e):
-                transport_disconnected = True
-                stop_requested = True
                 logger.info("[AgentChat] WebSocket closed (client disconnected)")
             else:
                 logger.exception("[AgentChat] Unexpected error")
@@ -1009,33 +1033,8 @@ class ChatSessionCoordinator:
             except Exception:
                 pass
         finally:
-            # 取消未完成的 agent 后台任务，避免泄漏并确保 trace bridge 清理前任务已停。
-            if run_task is not None and not run_task.done():
-                run_task.cancel()
-                try:
-                    await run_task
-                except asyncio.CancelledError:
-                    pass
-            # 连接断开 → 该连接产生的待审核请求一并作废：被 cancel 的工具协程
-            # 不会消费 future，若不清理，重连后补发的 review_response 会 resolve
-            # 到无主 future 上（用户以为生效，实际无人继续）。
-            # 仅当本连接跑过任务时才清理（review 只能由本连接的 run 产生），
-            # 避免同 session 的其他空闲连接误杀进行中的审核。
-            if run_task is not None and review_mgr is not None:
-                for reviewed_run_id in fallback_review_runs.values():
-                    try:
-                        checkpoint = RunLifecycle(get_run_store(), agent_runtime).pause_review(
-                            run_id=reviewed_run_id, owner=connection_owner,
-                        )
-                        if dev_agent is not None and dev_agent.last_run_checkpoint.get("run_id") == reviewed_run_id:
-                            dev_agent.last_run_checkpoint = checkpoint
-                    except RunStateError:
-                        logger.warning("[RunState] Could not pause pending review %s", reviewed_run_id, exc_info=True)
-                review_mgr.reset()
-            # 日志器不在此 close — 由 AgentSession 回收时统一 finalize，
-            # 从而同一会话跨连接持续追加到同一 trace_*.jsonl。
+            state.detach(websocket)
             session.touch()
-            agent_runtime.release_run(session_id, connection_owner)
             pop_trace_hook(trace_hook_handler)
             reset_current_trace_sink(trace_sink_token)
             _set_trace_bridge(None)

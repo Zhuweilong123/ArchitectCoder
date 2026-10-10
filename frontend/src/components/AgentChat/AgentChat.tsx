@@ -75,6 +75,9 @@ const AgentChat: React.FC = () => {
     canRecallOlder, canRecallNewer, historyPosition, historyCount,
   } = useChatInputHistory(messages, getCurrentSessionId());
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
   const [sessions, setSessions] = useState<TraceMeta[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [designContractEnabled, setDesignContractEnabled] = useState(() => {
@@ -220,7 +223,10 @@ const AgentChat: React.FC = () => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat(createAgentChatEventHandler({
       setMessages,
-      setBusy,
+      setBusy: (value) => {
+        setBusy(value);
+        if (value === false) setStopping(false);
+      },
       setCurrentSteps,
       setCurrentTodos,
       setTodoPlanningMode,
@@ -317,6 +323,7 @@ const AgentChat: React.FC = () => {
 
   // ── 中断 ──
   const handleStop = useCallback(() => {
+    setStopping(true);
     sendStopMessage();
     // 后端会发 stopped 事件，由回调处理状态更新
   }, []);
@@ -475,7 +482,7 @@ const AgentChat: React.FC = () => {
           {
             id: `user_${Date.now()}`,
             role: 'user' as const,
-            content: ev.message || '',
+              content: ev.message || '连接断开，正在重连。后台任务继续运行。',
             timestamp: Date.now(),
           },
         ]);
@@ -500,15 +507,10 @@ const AgentChat: React.FC = () => {
             timestamp: Date.now(),
           },
         ]);
+      } else if (ev.event === 'ws_connected') {
+        setReconnecting(false);
       } else if (ev.event === 'ws_closed') {
-        useDiagramStore.getState().endBatch();
-        // 非主动断开：后端不会再推送 done/error，解除"正在执行"避免永久卡住；
-        // 挂起的审核随连接中断失效（后端断连时已取消任务）
-        setBusy(false);
-        liveStepsRef.current = [];
-        setCurrentSteps([]);
-        settleTodos('pending');
-        useReviewStore.getState().expire('连接中断，审核随之失效');
+        setReconnecting(true);
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           // 连续断线只保留一条气泡（仅刷新时间戳），避免后端不可达时无限刷屏
@@ -1020,17 +1022,20 @@ const AgentChat: React.FC = () => {
                   </Button>
                 </div>
               )}
+              {reconnecting && <span className="agent-chat-input-hint">{interfaceLanguage === 'zh' ? '正在重连' : 'Reconnecting'}</span>}
               {busy && historyPosition === null && (
                 <span className="agent-chat-input-hint">{copy('draftWhileRunning')}</span>
               )}
-              {busy ? (
+              {busy || review.status === 'pending' ? (
                 <Button
                   danger
                   icon={<StopOutlined />}
                   onClick={handleStop}
+                  loading={stopping}
+                  disabled={stopping}
                   size="small"
                 >
-                  {copy('stop')}
+                  {stopping ? (interfaceLanguage === 'zh' ? '正在停止' : 'Stopping') : copy('stop')}
                 </Button>
               ) : (
                 <Button

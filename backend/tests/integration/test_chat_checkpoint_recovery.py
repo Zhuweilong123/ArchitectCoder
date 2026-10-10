@@ -162,6 +162,57 @@ async def _async_noop(*_args, **_kwargs):
     return None
 
 
+def test_disconnect_reconnect_preserves_run_and_stop_reaches_original_task(tmp_path, monkeypatch):
+    trace = _TraceLog()
+    trace.error = lambda **_kwargs: None
+    agent = SimpleNamespace(llm=None, last_run_checkpoint={},
+                            tool_registry=SimpleNamespace(get_tool=lambda _name: None))
+    session = SimpleNamespace(agent=agent, review_mgr=None, progress=None,
+                              prompt_builder=None, trace_log=trace,
+                              run_owner=None, touch=lambda: None)
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _id: session)
+    monkeypatch.setattr(chat_session, "_latest_resumable_run", lambda _id: None)
+    monkeypatch.setattr(chat_session, "_resolve_workspace_paths", lambda *_a, **_kw: (("", "", "", str(tmp_path), ""), ""))
+    monkeypatch.setattr(chat_session, "_compress_session_context", _async_noop)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **_kw: SimpleNamespace())
+    starts, stopped = [], []
+
+    async def scenario():
+        ready = asyncio.Event()
+
+        async def start(**kwargs):
+            starts.append(kwargs)
+
+            async def execute():
+                ready.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    stopped.append(kwargs["stop_check"]())
+                    raise
+
+            return asyncio.create_task(execute())
+
+        monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+        first = _WebSocket([json.dumps({"type": "chat", "message": "repair"})])
+        await chat_session.ChatSessionCoordinator(first).run()
+        await ready.wait()
+        task = session.chat_connection.task
+        assert not task.done()
+        second = _WebSocket([
+            json.dumps({"type": "chat", "message": "duplicate"}),
+            json.dumps({"type": "stop"}),
+        ])
+        await chat_session.ChatSessionCoordinator(second).run()
+        assert len(starts) == 1
+        assert stopped == [True]
+        assert task.cancelled()
+        assert any(e.get("event") == "session_sync" and e["running"] for e in second.sent)
+        assert any(e.get("event") == "stopped" for e in second.sent)
+
+    asyncio.run(scenario())
+
+
 def test_online_coordinator_background_stays_in_session_after_disconnect(tmp_path, monkeypatch):
     from app.agent_base.adapters.tracing import _ResilientTraceProvider
     from app.agent_base.core.background_tasks import submit_background

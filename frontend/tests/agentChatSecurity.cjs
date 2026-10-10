@@ -82,3 +82,30 @@ test('local socket without credentials still uses the public application protoco
   assert.deepEqual(Array.from(sockets[0].protocols), ['architectcoder']);
   assert.equal(new URL(sockets[0].url).searchParams.has('token'), false);
 });
+
+test('reconnect carries cursor, ignores duplicates and queues stop without starting chat', () => {
+  const { api, sockets, timers } = chatHarness();
+  const received = [];
+  api.connectAgentChat(event => received.push(event));
+  const first = sockets[0];
+  first.open();
+  const event = { event: 'progress', step: 1, event_seq: 7, event_epoch: 'epoch' };
+  first.onmessage({ data: JSON.stringify(event) });
+  first.onmessage({ data: JSON.stringify(event) });
+  assert.equal(received.length, 1);
+  api.setPendingUmlReviewId(42);
+  first.close();
+  assert.equal(api.getPendingUmlReviewId(), 42);
+  api.sendStopMessage();
+  const second = sockets[1];
+  const params = new URL(second.url).searchParams;
+  assert.equal(params.get('event_cursor'), '7');
+  assert.equal(params.get('event_epoch'), 'epoch');
+  second.open();
+  assert.equal(second.sent.length, 1);
+  assert.equal(second.sent[0].type, 'stop');
+  first.onmessage({ data: JSON.stringify({ ...event, event_seq: 8 }) });
+  assert.equal(received.length, 1);
+  second.onmessage({ data: JSON.stringify({ ...event, event_seq: 8 }) });
+  assert.equal(received.length, 2);
+});

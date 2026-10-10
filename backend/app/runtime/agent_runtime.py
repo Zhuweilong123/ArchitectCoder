@@ -36,6 +36,7 @@ class AgentSession:
     trace_log: TraceSink | None = None
     last_active: float = field(default_factory=time.time)
     run_owner: str | None = None
+    chat_connection: Any = None
     _run_lock: threading.RLock = field(
         default_factory=threading.RLock, init=False, repr=False,
     )

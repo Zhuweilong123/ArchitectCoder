@@ -106,6 +106,8 @@ export interface AgentReviewExpiredEvent {
 
 export interface AgentDoneEvent {
   event: 'done';
+  event_seq?: number;
+  event_epoch?: string;
   result: string;
   history?: string[];
   checkpoint?: {
@@ -125,6 +127,7 @@ export interface AgentStoppedEvent {
 export interface AgentErrorEvent {
   event: 'error';
   message: string;
+  running?: boolean;
 }
 
 export interface AgentDesignElementEvent {
@@ -134,6 +137,8 @@ export interface AgentDesignElementEvent {
 }
 
 export type AgentEvent =
+  | { event: 'session_sync'; running: boolean; stopping: boolean; replay_truncated?: boolean; pending_review_ids?: number[] }
+  | { event: 'run_started'; run_id: string; status: string }
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
@@ -340,10 +345,17 @@ function _cleanupPendingReview(reviewId: number) {
 
 // 断线时暂存的 review_response，重连 onopen 后补发
 let _pendingReviewPayloads: Array<{ review_id: number; payload: string }> = [];
+let _pendingStop = false;
+const _eventCursors = new Map<string, { sequence: number; epoch: string }>();
 
 export function sendStopMessage() {
+  _pendingStop = true;
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify({ type: 'stop' }));
+    _pendingStop = false;
+  } else {
+    _reconnectAttempts = 0;
+    _ensureConnection();
   }
 }
 
@@ -387,6 +399,7 @@ export function sendReviewResponse(
 }
 
 export function disconnectAgentChat() {
+  _pendingStop = false;
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);
     _reconnectTimer = null;
@@ -447,7 +460,13 @@ function _stopHeartbeat(): void {
 
 function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const params = new URLSearchParams({ session_id: _getSessionId() });
+  const sessionId = _getSessionId();
+  const params = new URLSearchParams({ session_id: sessionId });
+  const cursor = _eventCursors.get(sessionId);
+  if (cursor) {
+    params.set('event_cursor', String(cursor.sequence));
+    params.set('event_epoch', cursor.epoch);
+  }
   const wsUrl = `${protocol}//${window.location.host}/api/agent/ws/chat?${params.toString()}`;
   const protocols = ['architectcoder'];
   if (token) {
@@ -458,6 +477,7 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   const ws = new WebSocket(wsUrl, protocols);
 
   ws.onmessage = (e) => {
+    if (_ws !== ws) return;
     try {
       const data = JSON.parse(e.data);
       // 心跳响应不进业务事件流
@@ -466,7 +486,12 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
         return;
       }
       // 路由给当前注册的回调（连接可被 AgentChat 重新绑定）
-      if (_onEvent) _onEvent(data as AgentEvent);
+      if (typeof data.event_seq === 'number' && typeof data.event_epoch === 'string') {
+        const previous = _eventCursors.get(sessionId);
+        if (previous && previous.epoch === data.event_epoch && previous.sequence >= data.event_seq) return;
+        if (_onEvent) _onEvent(data as AgentEvent);
+        _eventCursors.set(sessionId, { sequence: data.event_seq, epoch: data.event_epoch });
+      } else if (_onEvent) _onEvent(data as AgentEvent);
     } catch {
       console.error('[AgentChat] Failed to parse WS message:', e.data);
     }
@@ -478,6 +503,11 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     _reconnectAttempts = 0; // 连接成功，重置退避
     _lastPongAt = Date.now();
     _startHeartbeat(ws);
+    _notifyListeners({ event: 'ws_connected' });
+    if (_pendingStop) {
+      ws.send(JSON.stringify({ type: 'stop' }));
+      _pendingStop = false;
+    }
     // 发送连接建立前暂存的消息
     const pending = _pendingMessages.splice(0);
     for (const pm of pending) {
@@ -511,20 +541,6 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     _ws = null;
     _stopHeartbeat();
     // 排队待补发的审核回复随连接关闭而失效，通知界面
-    const undelivered = _pendingReviewPayloads.splice(0);
-    for (const u of undelivered) {
-      if (_pendingUmlReviewId === u.review_id) {
-        _pendingUmlReviewId = null;
-      }
-      _notifyListeners({ event: 'review_delivery_failed', review_id: u.review_id });
-    }
-    // 连接关闭后阻塞中的审核会被后端取消，清除待审核标记并通知界面收起审核卡
-    if (_pendingUmlReviewId !== null) {
-      const staleId = _pendingUmlReviewId;
-      _pendingUmlReviewId = null;
-      _notifyListeners({ event: 'review_resolved', review_id: staleId });
-    }
-    // 非主动断开（网络抖动/后端重启）→ 通知界面解除"正在执行"状态
     if (!_intentionalClose) {
       _notifyListeners({ event: 'ws_closed', message: e.code === 1008
         ? 'AI 助手连接被拒绝，请检查访问凭证和服务端允许的站点来源。自动重连已停止。'
