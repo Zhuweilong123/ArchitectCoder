@@ -34,7 +34,7 @@
 
 内置插件使用 `host_api/services.py` 中的窄协议：环境、Provider、运行时、观察、校验和 Agent 服务各有自己的 `get_*_services()` 入口；装配、执行和生命周期使用对应的组合协议。它们共享同一个请求绑定，保持后台任务继承和配置快照语义。
 
-`get_host_services()` 保留为自定义插件的兼容入口，新代码应按所需能力选择窄协议。插件通过 `configuration()` 获取当前请求配置，通过 `ExtensionContextPort.provider(name, Contract)`、`provider_options(name)` 和 `project_id` 读取绑定和项目身份；选项是脱离原数据的只读映射。插件私有状态继续使用 `state(name)`，不要直接依赖宿主的 `metadata` / `providers` 字典。常用配置由 `PluginConfiguration` 描述，执行数据与回调由 `ExecutionData` / `ExecutionCapabilities` 描述。
+所有插件按所需能力选择窄协议，不提供公开聚合接口。底层宿主实例由模块内部解析，请求作用域与后台任务继承机制统一管理。插件通过 `configuration()` 获取当前请求配置，通过 `ExtensionContextPort.provider(name, Contract)`、`provider_options(name)` 和 `project_id` 读取绑定和项目身份；选项是脱离原数据的只读映射。插件私有状态继续使用 `state(name)`，不要直接依赖宿主的 `metadata` / `providers` 字典。常用配置由 `PluginConfiguration` 描述，执行数据与回调由 `ExecutionData` / `ExecutionCapabilities` 描述。
 
 公共中英文分词实现在 `shared/tokenization.py`，memory 与 knowledge_graph 都依赖它；`extensions.memory.tokenizer` 仅保留公开函数的兼容导出。公共算法不应依赖某个插件的初始化和存储实现。
 

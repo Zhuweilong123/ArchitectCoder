@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, TypeVar, cast
 from functools import wraps
 import inspect
-from app.agent_base.host_api.services import HostServices, host_services_scope
+from app.agent_base.host_api.services import host_services_scope
 
 
 ProviderT = TypeVar("ProviderT")
@@ -24,7 +24,7 @@ class ExtensionContext:
     _states: dict[str, dict] = field(default_factory=dict, repr=False)
     _contributions: list = field(default_factory=list, repr=False)
     _registry: Any = field(default=None, repr=False)
-    host_services: HostServices | None = field(default=None, repr=False)
+    host_services: object | None = field(default=None, repr=False)
 
     def bind(self, name, provider, *, settings=None, options=None):
         """Bind a capability and its declared handlers for standalone use too."""

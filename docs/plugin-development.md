@@ -1,12 +1,12 @@
 # 插件开发工具包
 
-新增能力通过插件清单中的 slot、interfaces 和 contributions 接入统一主流程。阶段与贡献声明从 `app.agent_base.host_api.lifecycle` 导入；需要宿主能力时使用 `app.agent_base.host_api.services.get_host_services()`，不直接导入 `app.agent_base.core`。插件自己的领域请求和结果留在插件目录。
+新增能力通过插件清单中的 slot、interfaces 和 contributions 接入统一主流程。阶段与贡献声明从 `app.agent_base.host_api.lifecycle` 导入；需要宿主能力时按职责使用 `app.agent_base.host_api.services` 中的 `get_*_services()` 窄接口，不直接导入 `app.agent_base.core`。插件自己的领域请求和结果留在插件目录。
 
 ```python
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_observation_services
 
 def observe_prepare(context):
-    get_host_services().record_event(
+    get_observation_services().record_event(
         "plugin_example", stage=context.event.value, run_id=context.run_id,
     )
 ```
@@ -40,7 +40,7 @@ python backend/plugin_dev.py new team_checks --root temp/dev-plugins
 
 `AssemblyInputs` 列出宿主提供的路径和可选回调，`ProviderBinder` 定义绑定签名。插件自行定义领域数据；宿主验证输出工具及必需贡献，拒绝工具名称/别名冲突，以及不存在或未绑定到目标 slot 的检查。检查处理器只能保留或收紧已有拒绝决定，不应重新设置 `allowed=True`。
 
-插件内部读取自身配置时使用 `get_host_services().plugin_config(插件ID)`（或 `host_api.environment.plugin_config`），返回独立快照且顶层只读，修改嵌套数据也不影响任务配置。工厂的 `settings` 参数保持加载协议兼容；`configuration()` 保留用于现有共享部署配置，新插件不应依赖具体 Settings 类或其内部字段。
+插件内部读取自身配置时使用 `host_api.environment.plugin_config(插件ID)`，返回独立快照且顶层只读，修改嵌套数据也不影响任务配置。工厂的 `settings` 参数保持加载协议兼容；`configuration()` 保留用于现有共享部署配置，新插件不应依赖具体 Settings 类或其内部字段。
 
 ## 2. 检查清单与接口契约
 

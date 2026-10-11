@@ -22,7 +22,7 @@
 create_dev_agent()
     │
     ├─ assembly.bind → memory.assembly.bind
-    │      └─ HostServices.resolve_provider("memory")
+    │      └─ AssemblyServices.resolve_provider("memory")
     │             └─ extensions.memory:create
     │                    └─ SQLiteMemoryProvider
     │

@@ -134,22 +134,17 @@ class LifecycleServices(ContextServices, RuntimeServices, ObservationServices, P
     """Capabilities used by lifecycle observers and background archives."""
 
 
-class HostServices(EnvironmentServices, ProviderServices, ContextServices, RuntimeServices,
-                   ObservationServices, ValidationServices, AgentServices, Protocol):
-    """Compatibility aggregate; new integrations should use a narrow service port."""
+_services: ContextVar[object | None] = ContextVar("host_services", default=None)
+_default_services: object | None = None
 
 
-_services: ContextVar[HostServices | None] = ContextVar("host_services", default=None)
-_default_services: HostServices | None = None
-
-
-def install_host_services(services: HostServices) -> None:
+def install_host_services(services: object) -> None:
     """Bind the application's implementation at its composition root."""
     global _default_services
     _default_services = services
 
 
-def get_host_services() -> HostServices:
+def _resolve_services() -> object:
     services = _services.get()
     if services is None:
         services = _default_services
@@ -159,7 +154,7 @@ def get_host_services() -> HostServices:
 
 
 @contextmanager
-def host_services_scope(services: HostServices):
+def host_services_scope(services: object):
     """Override capabilities for one request; child tasks inherit its binding."""
     token = _services.set(services)
     try:
@@ -170,49 +165,49 @@ def host_services_scope(services: HostServices):
 
 def get_environment_services() -> EnvironmentServices:
     """Resolve this capability against the same active request binding."""
-    return cast(EnvironmentServices, get_host_services())
+    return cast(EnvironmentServices, _resolve_services())
 
 
 def get_provider_services() -> ProviderServices:
     """Resolve this capability against the same active request binding."""
-    return cast(ProviderServices, get_host_services())
+    return cast(ProviderServices, _resolve_services())
 
 
 def get_context_services() -> ContextServices:
     """Resolve this capability against the same active request binding."""
-    return cast(ContextServices, get_host_services())
+    return cast(ContextServices, _resolve_services())
 
 
 def get_runtime_services() -> RuntimeServices:
     """Resolve this capability against the same active request binding."""
-    return cast(RuntimeServices, get_host_services())
+    return cast(RuntimeServices, _resolve_services())
 
 
 def get_observation_services() -> ObservationServices:
     """Resolve this capability against the same active request binding."""
-    return cast(ObservationServices, get_host_services())
+    return cast(ObservationServices, _resolve_services())
 
 
 def get_validation_services() -> ValidationServices:
     """Resolve this capability against the same active request binding."""
-    return cast(ValidationServices, get_host_services())
+    return cast(ValidationServices, _resolve_services())
 
 
 def get_agent_services() -> AgentServices:
     """Resolve this capability against the same active request binding."""
-    return cast(AgentServices, get_host_services())
+    return cast(AgentServices, _resolve_services())
 
 
 def get_assembly_services() -> AssemblyServices:
     """Resolve this capability against the same active request binding."""
-    return cast(AssemblyServices, get_host_services())
+    return cast(AssemblyServices, _resolve_services())
 
 
 def get_execution_services() -> ExecutionServices:
     """Resolve this capability against the same active request binding."""
-    return cast(ExecutionServices, get_host_services())
+    return cast(ExecutionServices, _resolve_services())
 
 
 def get_lifecycle_services() -> LifecycleServices:
     """Resolve this capability against the same active request binding."""
-    return cast(LifecycleServices, get_host_services())
+    return cast(LifecycleServices, _resolve_services())

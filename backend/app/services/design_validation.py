@@ -1,6 +1,6 @@
 """Composition root; rule implementations depend only on public ports."""
 from app.agent_base.host_api.validation import ValidationContext
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_context_services, get_provider_services
 from app.validation.engine import ProjectValidator, ValidationRegistry
 from app.validation.rules.class_structure import ClassStructureRule
 from app.validation.rules.component_structure import ComponentStructureRule
@@ -14,13 +14,12 @@ def default_validation_registry():
 
 
 def source_facts_provider():
-    host = get_host_services()
-    session = host.extension_context()
-    binding = session.providers.get("design_contract") if session else None
+    session = get_context_services().extension_context()
+    binding = session.provider("design_contract", object) if session else None
     provider = getattr(binding, "gate", None)
     if provider is not None:
         return provider if callable(getattr(provider, "source_facts", None)) else None
-    provider = host.resolve_provider("design_contract")
+    provider = get_provider_services().resolve_provider("design_contract")
     return provider if callable(getattr(provider, "source_facts", None)) else None
 
 

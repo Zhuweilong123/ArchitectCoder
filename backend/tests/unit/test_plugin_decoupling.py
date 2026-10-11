@@ -155,7 +155,10 @@ assert not any(name.startswith("extensions.memory") for name in sys.modules)
 
 
 def test_plugins_do_not_reintroduce_host_aggregate_or_cross_plugin_implementations():
-    for path in (ROOT / "extensions").rglob("*.py"):
+    paths = [*(ROOT / "extensions").rglob("*.py"),
+             *(ROOT / "examples/plugins").rglob("*.py"),
+             ROOT / "backend/plugin_dev.py", ROOT / "backend/app/services/design_validation.py"]
+    for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
