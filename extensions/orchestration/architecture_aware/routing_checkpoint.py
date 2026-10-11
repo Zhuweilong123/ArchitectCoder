@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.agent_base.host_api.lifecycle import HookContext, HookEvent
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_observation_services
 
 _HEADING = "## Architecture routing checkpoint"
 
@@ -69,7 +69,7 @@ def _routing_checkpoint(ctx: HookContext):
 def register_routing_checkpoint_hooks() -> None:
     # Standalone provider users retain compatibility. Backend startup has already
     # installed these explicit contributions; never add duplicate bindings.
-    get_host_services().install_contributions(list_contributions(), plugin="orchestration")
+    get_observation_services().install_contributions(list_contributions(), plugin="orchestration")
 
 
 def list_contributions(*, settings=None):

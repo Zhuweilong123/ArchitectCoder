@@ -18,6 +18,8 @@ Cross-reference:
 
 from __future__ import annotations
 
+from shared.tokenization import tokenize_for_fts
+
 import ast
 import difflib
 import json
@@ -154,12 +156,7 @@ def _build_content_text(node_type: NodeType, name: str,
             parts.extend(operand.get("message_ids", []))
     raw_text = " ".join(set(p for p in parts if p))
 
-    # ── jieba 预分词 ──
-    try:
-        from extensions.memory.tokenizer import tokenize_for_fts
-        return tokenize_for_fts(raw_text)
-    except ImportError:
-        return raw_text
+    return tokenize_for_fts(raw_text)
 
 
 # ═══════════════════════════════════════════════════════════════

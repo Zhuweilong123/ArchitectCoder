@@ -1,16 +1,40 @@
 """Requests shared by execution slots; no agent or transaction implementation."""
-from dataclasses import dataclass, field
-from typing import Any, Callable
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, TypedDict
+from .contexts import AnalysisRequest, ReviewPrompt
+
+
+class ExecutionData(TypedDict, total=False):
+    user_message: str
+    project_file: str
+    source_dir: str
+    test_dir: str
+    design_dir: str
+    workspace_root: str
+    workspace_manifest: dict[str, Any]
+    changed_paths: tuple[dict[str, Any] | str, ...] | list[dict[str, Any]]
+    previous_checkpoint: dict[str, Any]
+    available_tools: tuple[str, ...]
+    design_contract_enabled: bool | None
+    record_event: Callable[..., None] | None
+    rollback_completed: bool | None
+    phase: str
+
+
+class ExecutionCapabilities(TypedDict, total=False):
+    emit: Callable[[dict], Awaitable[bool]]
+    request_review: Callable[[ReviewPrompt], Awaitable[str]] | None
+    analyze: Callable[[AnalysisRequest], Awaitable[str]]
 
 
 @dataclass
 class ExecutionRequest:
     interface_id: str
     run_id: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
-    capabilities: dict[str, Callable] = field(default_factory=dict)
+    data: ExecutionData = field(default_factory=dict)
+    capabilities: ExecutionCapabilities = field(default_factory=dict)
     checkpoint: dict[str, Any] = field(default_factory=dict)
     context: str = ""
     allowed_tools: list[str] | None = None

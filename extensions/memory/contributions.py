@@ -4,24 +4,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import cast
 
-from app.agent_base.host_api.services import get_host_services
-from .plugin_api import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest
+from app.agent_base.host_api.services import get_lifecycle_services
+from .plugin_api import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest, MemoryPort, MemoryRecallOptions
 
 logger = logging.getLogger(__name__)
 _MEMORY_BLOCK = re.compile(r"<project_memory>.*?</project_memory>", re.DOTALL)
 
 
 def _binding():
-    context = get_host_services().extension_context()
+    context = get_lifecycle_services().extension_context()
     if context is None:
         return None, None, None
-    return context, context.providers.get("memory"), context.state("memory")
+    return context, context.provider("memory", MemoryPort), context.state("memory")
 
 
 async def _recall(provider, project_id, query):
-    session = get_host_services().extension_context()
-    options = session.metadata.get("plugin_options", {}).get("memory", {}) if session else {}
+    session = get_lifecycle_services().extension_context()
+    options = cast(MemoryRecallOptions, session.provider_options("memory") if session else {})
     return await provider.recall(MemoryRecallRequest(
         project_id, query, top_k=options.get("recall_top_k", getattr(provider, "recall_top_k", 3)),
         max_tokens=options.get("recall_max_tokens", getattr(provider, "recall_max_tokens", 500)),
@@ -57,7 +58,7 @@ async def tool_after(context):
     session, provider, state = _binding()
     if provider is None or "result" not in context.payload or state.get("run_id") != context.run_id:
         return
-    project_id = session.metadata.get("project_id", "")
+    project_id = session.project_id
     observe = getattr(provider, "observe", None)
     if not project_id or observe is None:
         return
@@ -90,7 +91,7 @@ async def model_before(context):
         return
     replacement = ""
     try:
-        result = await _recall(provider, session.metadata.get("project_id", ""), state.get("query", ""))
+        result = await _recall(provider, session.project_id, state.get("query", ""))
         match = _MEMORY_BLOCK.search(result.context_block)
         replacement = match.group(0) if match else ""
         state["recall_report"] = result.metadata
@@ -129,13 +130,13 @@ def task_after(context):
     )
     state["archive_scheduled"] = True
     # The snapshot is frozen before background work; future runs cannot rebind evidence.
-    get_host_services().submit_background(archive_task(provider, request), owner="memory_archive",
+    get_lifecycle_services().submit_background(archive_task(provider, request), owner="memory_archive",
                       run_id=request.run_id, source_trace_id=request.trace_id)
 
 
 async def archive_task(memory, request):
     from app.agent_base.host_api.lifecycle import HookEvent
-    host = get_host_services()
+    host = get_lifecycle_services()
     runtime = host.runtime()
     parent_id = runtime.run_operation_id if request.run_id and runtime.run_id == request.run_id else None
     async def publish(stage, **data):

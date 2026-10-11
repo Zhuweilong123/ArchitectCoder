@@ -39,7 +39,7 @@ def test_default_shared_budget_funds_four_equal_128k_explorers():
 def test_cost_audit_records_instance_request_token_cap(monkeypatch, phase):
     events = []
     monkeypatch.setattr(
-        "extensions.orchestration.architecture_aware.provider.get_host_services",
+        "extensions.orchestration.architecture_aware.provider.get_observation_services",
         lambda: SimpleNamespace(emit_event=lambda kind, payload: events.append((kind, payload))),
     )
     impact = ImpactSlice("trade", {
@@ -67,7 +67,7 @@ def test_cost_audit_records_instance_request_token_cap(monkeypatch, phase):
 
 def test_dynamic_scheduler_rebalances_and_reuses_completed_work(tmp_path, monkeypatch):
     runs = RunStore(tmp_path / "runs.db")
-    monkeypatch.setattr(scheduling, "get_host_services", lambda: SimpleNamespace(run_store=lambda: runs))
+    monkeypatch.setattr(scheduling, "get_runtime_services", lambda: SimpleNamespace(run_store=lambda: runs))
     scheduler = scheduling.DynamicExplorationScheduler(max_workers=2, worker_seconds=1)
     items = tuple(
         WorkAssignment(item_id, (item_id,), 1.0, slot, 1)
@@ -194,7 +194,7 @@ def test_file_evidence_stays_inside_project_roots(tmp_path):
 
 def test_excerpt_only_exploration_is_partial(tmp_path, monkeypatch):
     runs = RunStore(tmp_path / "runs.db")
-    monkeypatch.setattr(scheduling, "get_host_services", lambda: SimpleNamespace(run_store=lambda: runs))
+    monkeypatch.setattr(scheduling, "get_runtime_services", lambda: SimpleNamespace(run_store=lambda: runs))
     source = tmp_path / "src"
     source.mkdir()
     file = source / "sales.py"
@@ -299,7 +299,7 @@ def test_orchestration_factory_passes_parent_workspace_to_real_worker_tools(tmp_
     from extensions.orchestration.provider import create
 
     runs = RunStore(tmp_path / "runs.db")
-    monkeypatch.setattr(scheduling, "get_host_services", lambda: SimpleNamespace(run_store=lambda: runs))
+    monkeypatch.setattr(scheduling, "get_runtime_services", lambda: SimpleNamespace(run_store=lambda: runs))
     design = tmp_path / "design" / "uml"
     design.mkdir(parents=True)
     project = design / "parking.umlproj"

@@ -382,7 +382,7 @@ def _build_live_registry(
     full：foundation 工具全部真实执行（写盘/跑命令有副作用，风险自负）；
          shell 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
     """
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_agent_services
 
     if tool_policy not in ("readonly", "full"):
         tool_policy = "readonly"
@@ -393,15 +393,15 @@ def _build_live_registry(
             "apply_changes", "run_program", "run_task", "shell",
         }
 
-    real = get_host_services().foundation_registry(source_dir, test_dir, real_policy)
+    real = get_agent_services().foundation_registry(source_dir, test_dir, real_policy)
 
     return HybridToolRegistry(events, real, real_policy, graceful=True)
 
 
 def _build_rerun_llm():
     """构建真实 LLM（rerun 模式）。"""
-    from app.agent_base.host_api.services import get_host_services
-    return get_host_services().create_model(temperature=0.3)
+    from app.agent_base.host_api.services import get_agent_services
+    return get_agent_services().create_model(temperature=0.3)
 
 
 async def replay_agent_session(
@@ -430,7 +430,7 @@ async def replay_agent_session(
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
     from extensions.trace.trace_reader import read_trace
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_agent_services, get_observation_services
 
     if mode not in ("mock", "rerun", "live"):
         raise ValueError(f"未知回放模式: {mode}（可选 mock / rerun / live）")
@@ -502,7 +502,7 @@ async def replay_agent_session(
         default=5,
     )
 
-    agent = get_host_services().create_loop_agent(
+    agent = get_agent_services().create_loop_agent(
         name="replay",
         llm=llm,
         tool_registry=registry,
@@ -510,11 +510,11 @@ async def replay_agent_session(
         max_steps=max(max_step, 5),
     )
 
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_observation_services
 
     # 回放期间屏蔽 trace 写入：rerun 模式真调 LLM，若全局 trace 钩子仍指向
     # 某会话，会把回放自身的调用写进该会话 trace，污染后续回放。压入 no-op 隔离。
-    with get_host_services().suppress_tracing():
+    with get_observation_services().suppress_tracing():
         results = []
         for idx, t in enumerate(turns):
             steps: list[dict] = []

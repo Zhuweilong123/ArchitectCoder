@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_provider_services, get_validation_services
 import uuid
 from pathlib import Path
 from typing import Any
@@ -61,7 +61,7 @@ class ContractHarness:
             )
 
         if contract_provider is None and language_runner is not None:
-            contract_provider = get_host_services().resolve_provider("design_contract",
+            contract_provider = get_provider_services().resolve_provider("design_contract",
                 settings=settings,
                 language_runner=language_runner,
                 language_adapters=adapters,
@@ -110,7 +110,7 @@ class ContractHarness:
                     continue
                 by_file.setdefault(record["path"], []).append(record["diagram"])
             for design_path, diagrams in by_file.items():
-                report = get_host_services().validate_design(diagrams,
+                report = get_validation_services().validate_design(diagrams,
                     workspace_root=workspace_root, source_provider=source_view,
                     requirements=tuple(requirement for requirement in requirements
                                        if any(d.get("name") == requirement.diagram_name for d in diagrams)))

@@ -8,10 +8,13 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping, TypeVar, cast
 from functools import wraps
 import inspect
 from app.agent_base.host_api.services import HostServices, host_services_scope
+
+
+ProviderT = TypeVar("ProviderT")
 
 
 @dataclass
@@ -37,6 +40,20 @@ class ExtensionContext:
         self.providers[name] = provider
         self.metadata.setdefault("plugin_options", {})[name] = dict(options or {})
         self._registry = None
+
+    @property
+    def project_id(self) -> str:
+        return str(self.metadata.get("project_id") or "")
+
+    def provider(self, name: str, contract: type[ProviderT]) -> ProviderT | None:
+        """Read a scoped binding through the consuming plugin's public contract."""
+        return cast(ProviderT | None, self.providers.get(name))
+
+    def provider_options(self, name: str) -> Mapping[str, object]:
+        """Return detached options; consumers cannot mutate request bindings."""
+        from copy import deepcopy
+        from types import MappingProxyType
+        return MappingProxyType(deepcopy(self.metadata.get("plugin_options", {}).get(name, {})))
 
     def state(self, name):
         return self._states.setdefault(name, {})

@@ -79,8 +79,8 @@ class SQLiteMemoryProvider:
 
     @staticmethod
     def _trace(event, **fields):
-        from app.agent_base.host_api.services import get_host_services
-        get_host_services().emit_event(event, fields)
+        from app.agent_base.host_api.services import get_observation_services
+        get_observation_services().emit_event(event, fields)
 
     def _file_resource(self, path):
         try:
@@ -222,8 +222,8 @@ class SQLiteMemoryProvider:
             async def extract(prompt: str) -> str:
                 # Keep background extraction visible in trace without making
                 # it part of the foreground Agent turn.
-                from app.agent_base.host_api.services import get_host_services
-                with get_host_services().trace_span("MemoryArchive"):
+                from app.agent_base.host_api.services import get_observation_services
+                with get_observation_services().trace_span("MemoryArchive"):
                     return await self.llm.ainvoke(
                         [{"role": "user", "content": prompt}],
                         max_tokens=None,

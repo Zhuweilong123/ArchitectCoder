@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_provider_services
 from typing import Any
 from .plugin_api import ContractProvider, ContractSnapshot
 from extensions.knowledge_graph.plugin_api import KnowledgeGraphProvider
@@ -24,7 +24,7 @@ def assemble_contract(
     Graph failures are reported in the assembly result and never invalidate
     the contract snapshot.
     """
-    contracts = contract_provider or get_host_services().resolve_provider("design_contract", settings=settings)
+    contracts = contract_provider or get_provider_services().resolve_provider("design_contract", settings=settings)
     if contracts is None:
         return ContractAssembly(snapshot=ContractSnapshot(project_id=project_id, scope=scope,
             status="blocked", metadata={"reason": "contract provider is unavailable"}),
@@ -57,7 +57,7 @@ def assemble_contract(
         return ContractAssembly(snapshot=snapshot, facts=facts, graph_status="not_requested")
 
     values = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
-    graph = knowledge_graph_provider or get_host_services().resolve_provider("knowledge_graph",
+    graph = knowledge_graph_provider or get_provider_services().resolve_provider("knowledge_graph",
         settings=settings,
         project_file=str(values.get("project_file") or ""),
         workspace_root=str(values.get("workspace_root") or ""),

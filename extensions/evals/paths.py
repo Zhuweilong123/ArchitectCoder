@@ -1,6 +1,6 @@
 """Evaluation-owned layout below the host-provided runtime directory."""
 from pathlib import Path
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_environment_services
 
 
 def data_root() -> Path:
@@ -25,7 +25,7 @@ def baseline_path() -> Path:
 
 
 def evaluation_root():
-    return get_host_services().runtime_path("evals")
+    return get_environment_services().runtime_path("evals")
 
 
 def evaluation_results_dir():

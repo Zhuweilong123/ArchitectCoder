@@ -2,6 +2,30 @@
 
 from __future__ import annotations
 from typing import Any, Protocol
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class GraphPreindexRequest:
+    project: object
+    project_id: str
+    project_file: str
+    source_dir: str
+    workspace_root: str
+
+
+@dataclass(frozen=True)
+class GraphPreindexResult:
+    design_nodes: int
+    source_nodes: int
+    design_edges: int
+    source_edges: int
+
+
+class GraphPreindexProvider(Protocol):
+    """Optional fixture indexing capability; the provider owns storage and parsing."""
+
+    def preindex_project(self, request: GraphPreindexRequest) -> GraphPreindexResult: ...
 
 
 class KnowledgeGraphProvider(Protocol):

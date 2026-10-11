@@ -165,7 +165,7 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
         captured.update(kwargs)
         return fake_agent, object(), SimpleNamespace()
 
-    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: SimpleNamespace(
+    monkeypatch.setattr("extensions.evals.runner.get_agent_services", lambda: SimpleNamespace(
         create_model=lambda **kwargs: "fake-llm", create_agent=_create_agent,
         create_progress=lambda: SimpleNamespace()))
     case = EvalCase(
@@ -221,7 +221,8 @@ def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeyp
     monkeypatch.setattr(host, "is_production_agent", lambda agent: isinstance(agent, _ProductionAgent))
     monkeypatch.setattr(host, "execute_agent", _execute)
     monkeypatch.setattr(host, "run_store", lambda: _RunStore())
-    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: host)
+    monkeypatch.setattr("extensions.evals.runner.get_agent_services", lambda: host)
+    monkeypatch.setattr("extensions.evals.runner.get_runtime_services", lambda: host)
 
     case = EvalCase(
         id="production-execution-path",

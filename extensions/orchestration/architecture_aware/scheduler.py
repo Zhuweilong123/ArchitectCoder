@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.agent_base.host_api.runs import RunConflict, RunStatus
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_runtime_services
 from app.agent_base.host_api.errors import AgentInterrupted
 
 from .impact import ImpactSlice
@@ -109,7 +109,7 @@ class DynamicExplorationScheduler:
     """Use RunStore leases for execution and CAS plan revisions for ownership."""
 
     def __init__(self, *, max_workers: int = 2, worker_seconds: float = 90.0):
-        self.runs = get_host_services().run_store()
+        self.runs = get_runtime_services().run_store()
         self.store = ScheduleStore(self.runs.db_path)
         self.max_workers = max(1, min(2, max_workers))
         self.worker_seconds = min(180.0, max(1.0, worker_seconds))

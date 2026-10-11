@@ -1,12 +1,12 @@
 """Bind the scheduler and contribute its tools through the generic assembly slot."""
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_assembly_services
 from .provider import UnavailableArchitectureScheduler
 
 
 def bind(context):
     request = context.invocation
-    host = get_host_services()
-    settings = host.extension_context().metadata["execution_settings"]
+    host = get_assembly_services()
+    settings = host.configuration()
     provider = host.resolve_provider("orchestration", settings=settings, **request.inputs)
     provider = provider or UnavailableArchitectureScheduler("configured provider is unavailable")
     request.bind("orchestration", provider)

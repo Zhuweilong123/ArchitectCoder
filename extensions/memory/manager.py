@@ -31,7 +31,7 @@ from .models import (
     MemoryEntry, MemoryType, MemoryConfig,
     RetrieveMode, RecallResult, _utc_now, _utc_now_dt,
 )
-from .tokenizer import tokenize_for_fts, tokenize
+from shared.tokenization import tokenize_for_fts, tokenize
 from .policy import MemoryRecallPolicy, MemoryWritePolicy, normalize_subject as _normalize_subject
 from .knowledge import KnowledgeLedger
 

@@ -1,22 +1,23 @@
 """Contract decisions and projections owned by the plugin, not the run loop."""
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_execution_services
 from app.agent_base.host_api.contexts import ContractGateContext, ContractFailureAnalysisContext
 from copy import deepcopy
+from .plugin_api import ContractBinding
 
 
 def _binding():
-    session = get_host_services().extension_context()
-    return session, session.providers.get("design_contract") if session else None
+    session = get_execution_services().extension_context()
+    return session, session.provider("design_contract", ContractBinding) if session else None
 
 
 def _gate_context(request, session):
-    settings = session.metadata["execution_settings"]
+    settings = get_execution_services().configuration()
     requested = request.data.get("design_contract_enabled")
     enabled = bool(getattr(settings, "agent_design_contract_enabled", True))
     if enabled and not getattr(settings, "strict_production", False) and requested is not None:
         enabled = bool(requested)
     request.checkpoint["contract_enabled"] = enabled
-    requirements = deepcopy(get_host_services().runtime().policy_metadata.get("validation_requirements", []))
+    requirements = deepcopy(get_execution_services().runtime().policy_metadata.get("validation_requirements", []))
     request.checkpoint["validation_requirements"] = requirements
     return ContractGateContext(
         workspace_manifest=deepcopy(request.data["workspace_manifest"]),
