@@ -21,9 +21,51 @@ class FileChangeEvidence(TypedDict):
     before_hash: NotRequired[str | None]
     after_hash: NotRequired[str | None]
 
+class CommandEvidencePayload(TypedDict):
+    command: str
+    cwd: str
+    exit_code: int
+
+class CallAttempt(TypedDict):
+    call_id: str
+    step: int
+    status: str
+    exact_retry_of: str | None
+
+class ToolExecutionEvidence(TypedDict, total=False):
+    call_attempt: CallAttempt
+    file_query: JsonObject
+    scan_errors: list[JsonObject]
+    kind: str
+    status: str
+    plan: JsonObject
+    steps: list[JsonObject]
+
+class ToolEffects(TypedDict, total=False):
+    changes: list[FileChangeEvidence]
+    execution: CommandEvidencePayload | None
+    verification: VerificationEvidence | None
+    execution_evidence: ToolExecutionEvidence | None
+
+class EvidenceSnapshot(TypedDict, total=False):
+    id: str
+    call_id: str
+    tool_name: str
+    status: str
+    facts: list[str]
+    detail: str
+    pending_edit: bool
+    effects: ToolEffects
+
+class ToolResultPayload(ToolEffects):
+    status: str
+    data: JsonValue
+    error_code: str
+    retryable: bool
+
 class ToolCallDetail(TypedDict, total=False):
     name: str
-    arguments: JsonObject
+    arguments: JsonObject | str
     observation: str
     status: str
     error_code: str
@@ -34,10 +76,10 @@ class ToolCallDetail(TypedDict, total=False):
     duration_ms: float
     changes: list[FileChangeEvidence]
     verification: VerificationEvidence | None
-    execution: JsonObject | None
-    evidence: JsonObject
+    execution: CommandEvidencePayload | None
+    evidence: EvidenceSnapshot
     call_id: str
-    execution_evidence: JsonObject
+    execution_evidence: ToolExecutionEvidence | None
 
 class StreamStep(TypedDict):
     step: int

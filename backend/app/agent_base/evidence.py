@@ -16,11 +16,14 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Iterable
-from .host_api.execution_types import RunCheckpoint, ToolCallDetail
+from typing import Iterable, Protocol
+from copy import deepcopy
+from .host_api.data import JsonObject, JsonValue
+from .host_api.payloads import json_object, optional_json_mapping
+from .host_api.execution_types import RunCheckpoint, ToolCallDetail, ToolEffects, EvidenceSnapshot
 
 
-def _short(value: Any, limit: int = 180) -> str:
+def _short(value: object, limit: int = 180) -> str:
     """Return a bounded, single-line excerpt while retaining both ends."""
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -30,32 +33,35 @@ def _short(value: Any, limit: int = 180) -> str:
     return f"{text[:head]}…{text[-tail:]}"
 
 
-def _sha256(value: Any) -> str:
+def _sha256(value: object) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:12]
 
 
-def _line_range(arguments: dict[str, Any]) -> str:
+def _line_range(arguments: JsonObject) -> str:
     try:
-        offset = max(0, int(arguments.get("offset") or 0))
-    except (TypeError, ValueError):
+        value = arguments.get("offset")
+        offset = max(0, int(value)) if isinstance(value, (str, int, float)) else 0
+    except (TypeError, ValueError, OverflowError):
         offset = 0
     limit = arguments.get("limit")
     if limit is None:
         return f"lines {offset + 1}+"
     try:
+        if not isinstance(limit, (str, int, float)):
+            return f"lines {offset + 1}+"
         count = max(1, int(limit))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return f"lines {offset + 1}+"
     return f"lines {offset + 1}-{offset + count}"
 
 
-def _json_mapping(value: str) -> dict[str, Any]:
+def _json_mapping(value: str) -> JsonObject:
     """Best-effort structured extraction without preserving a raw payload."""
     try:
-        parsed = json.loads(value)
+        parsed: object = json.loads(value)
+        return json_object(parsed) if isinstance(parsed, dict) else {}
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _is_verification_command(command: str) -> bool:
@@ -77,7 +83,7 @@ class EvidenceRecord:
     facts: list[str] = field(default_factory=list)
     detail: str = ""
     pending_edit: bool = False
-    effects: dict[str, Any] = field(default_factory=dict)
+    effects: ToolEffects = field(default_factory=lambda: ToolEffects())
 
     def render(self) -> str:
         state = "ok" if self.status == "success" else self.status
@@ -87,7 +93,7 @@ class EvidenceRecord:
             parts.append(self.detail)
         return "; ".join(parts)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> EvidenceSnapshot:
         return {
             "id": self.id,
             "tool_name": self.tool_name,
@@ -95,7 +101,7 @@ class EvidenceRecord:
             "facts": list(self.facts),
             "detail": self.detail,
             "pending_edit": self.pending_edit,
-            "effects": self.effects,
+            "effects": deepcopy(self.effects),
         }
 
 
@@ -107,7 +113,7 @@ class EvidenceLedger:
     the model has a stable reason to re-read a file or re-run a focused check.
     """
 
-    def __init__(self, max_records: int = 32):
+    def __init__(self, max_records: int = 32) -> None:
         self.max_records = max(1, max_records)
         self._records: list[EvidenceRecord] = []
         self._by_call: dict[str, EvidenceRecord] = {}
@@ -118,26 +124,27 @@ class EvidenceLedger:
         *,
         call_id: str,
         tool_name: str,
-        arguments: dict[str, Any],
+        arguments: JsonObject,
         observation: str,
         status: str = "success",
         error_code: str = "",
-        effects: dict[str, Any] | None = None,
+        effects: ToolEffects | None = None,
     ) -> EvidenceRecord:
         """Capture a tool fact and return it for progress/trace telemetry."""
         self._sequence += 1
         record = EvidenceRecord(
             id=f"E{self._sequence}", call_id=call_id, tool_name=tool_name,
             status=status,
-            effects=effects or {},
+            effects=deepcopy(effects or {}),
         )
         path = str(arguments.get("path") or "").strip()
 
         if effects and (effects.get("changes") or effects.get("execution") or effects.get("verification")):
             for change in effects.get("changes") or []:
                 record.facts.append(f"{change['operation']} file={change['path']}")
-                if change.get("after_hash"):
-                    record.facts.append(f"after_sha={change['after_hash'][:12]}")
+                after_hash = change.get("after_hash")
+                if after_hash:
+                    record.facts.append(f"after_sha={after_hash[:12]}")
                 self._link_edit_to_reads(change["path"], record)
             record.pending_edit = bool(effects.get("changes")) and status == "success"
             execution = effects.get("execution")
@@ -178,16 +185,16 @@ class EvidenceLedger:
             changes = arguments.get("changes")
             if isinstance(changes, list):
                 record.facts.append(f"changes={len(changes)}")
-                for change in changes[:8]:
-                    if not isinstance(change, dict):
+                for requested_change in changes[:8]:
+                    if not isinstance(requested_change, dict):
                         continue
-                    target = str(change.get("path") or change.get("to") or "")
+                    target = str(requested_change.get("path") or requested_change.get("to") or "")
                     if target:
                         record.facts.append(f"file={target}")
                         self._link_edit_to_reads(target, record)
-                    if change.get("op") == "patch":
-                        old_text = str(change.get("old_text") or "")
-                        new_text = str(change.get("new_text") or "")
+                    if requested_change.get("op") == "patch":
+                        old_text = str(requested_change.get("old_text") or "")
+                        new_text = str(requested_change.get("new_text") or "")
                         record.facts.extend((
                             f"target_sha={_sha256(old_text)}",
                             f"replacement_sha={_sha256(new_text)}",
@@ -204,8 +211,8 @@ class EvidenceLedger:
             record.detail = f"result={_short(observation, 180)!r}"
         elif tool_name == "get_project_map":
             payload = _json_mapping(observation)
-            stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
-            files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+            stats = optional_json_mapping(payload.get("stats")) or {}
+            files = optional_json_mapping(payload.get("files")) or {}
             if payload.get("project_id"):
                 record.facts.append(f"project_id={payload['project_id']}")
             for key in ("total_nodes", "total_edges"):
@@ -221,7 +228,7 @@ class EvidenceLedger:
                 record.detail = f"result_sha={_sha256(observation)}"
         elif tool_name == "compare_design_code":
             payload = _json_mapping(observation)
-            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            summary = optional_json_mapping(payload.get("summary")) or {}
             for key in (
                 "coverage_rate", "mismatches", "missing_implementations",
                 "extra_code", "total_design_classes", "total_code_classes",
@@ -235,7 +242,7 @@ class EvidenceLedger:
                 for item in item_list[:8]:
                     if not isinstance(item, dict):
                         continue
-                    detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+                    detail = optional_json_mapping(item.get("detail")) or {}
                     refs = [detail.get("code_ref"), detail.get("design_ref")]
                     for ref in refs:
                         if not isinstance(ref, dict):
@@ -351,9 +358,18 @@ def is_full_test_suite(tool_name: str, arguments: object) -> bool:
     return all(arg in {"-q", "-qq", "--quiet", "-v", "-vv", "--verbose"} for arg in argv)
 
 
+class VerificationPort(Protocol):
+    @property
+    def kind(self) -> str: ...
+    @property
+    def scope(self) -> str: ...
+    @property
+    def passed(self) -> bool: ...
+
+
 def record_runtime_verification(
     verifications: dict[tuple[str, str], bool],
-    check: Any,
+    check: VerificationPort,
     tool_name: str,
     arguments: object,
 ) -> None:
@@ -373,7 +389,7 @@ def update_checkpoint_evidence(checkpoint: RunCheckpoint, details: list[ToolCall
     for detail in details:
         for change in detail.get("changes") or []:
             if detail.get("status") == "success":
-                mutations[change["path"]] = dict(change)
+                mutations[change["path"]] = change.copy()
                 if change["path"] not in files:
                     files.append(change["path"])
         verification = detail.get("verification")
@@ -389,7 +405,7 @@ def update_checkpoint_evidence(checkpoint: RunCheckpoint, details: list[ToolCall
                     verification["kind"], verification["scope"],
                 )
             )]
-            checks.append(dict(verification))
+            checks.append(verification.copy())
     checkpoint["changed_files"] = files
     checkpoint["mutation_evidence"] = mutations
     checkpoint["verification_results"] = checks

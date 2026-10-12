@@ -19,6 +19,7 @@ from ...core.hooks import (
     get_runtime,
 )
 from ...evidence import EvidenceLedger, record_runtime_verification
+from ...host_api.payloads import tool_call_signature
 from ...tools.registry import ToolRegistry
 from ...tools.result import ToolResult
 from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
@@ -120,7 +121,7 @@ class ToolRoundExecutor:
             if isinstance(tool_args, str):
                 observation_full = observation_fed = execution[0]
 
-            signature = (tool_name, json.dumps(tool_args, sort_keys=True, ensure_ascii=False))
+            signature = tool_call_signature(tool_name, tool_args)
             previous = self._previous_attempts.get(signature)
             retry_of = None
             if (previous and previous["step"] < step
