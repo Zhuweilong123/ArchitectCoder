@@ -58,7 +58,7 @@ def test_worker_broker_reports_missing_capability(tmp_path):
         _Executor(), [str(tmp_path)], worker=_Worker(ready=True, supports=False),
     )
     evidence = asyncio.run(broker.execute(
-        _task(), str(tmp_path), policy=ExecutionPolicy(sandbox="wsl", network=NetworkPolicy.DENY),
+        _task(), str(tmp_path), policy=ExecutionPolicy(sandbox="container", network=NetworkPolicy.DENY),
     ))
 
     assert evidence.status == "blocked"
@@ -153,22 +153,5 @@ def test_build_execution_broker_selects_container_worker_without_host_fallback(t
 
     assert isinstance(broker, WorkerExecutionBroker)
     assert broker.sandbox_name == "container"
-    assert broker.executor is broker.worker.executor
-    assert broker.executor is not host_executor
-
-
-def test_build_execution_broker_wsl_mode_uses_worker_executor(tmp_path):
-    settings = SimpleNamespace(
-        agent_execution_worker="wsl",
-        agent_wsl_distribution="Ubuntu",
-        agent_wsl_executable="wsl.exe",
-        agent_wsl_preflight_timeout_seconds=2,
-    )
-    host_executor = _Executor()
-
-    broker = build_execution_broker(settings, host_executor, [str(tmp_path)])
-
-    assert isinstance(broker, WorkerExecutionBroker)
-    assert broker.sandbox_name == "wsl"
     assert broker.executor is broker.worker.executor
     assert broker.executor is not host_executor

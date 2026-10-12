@@ -366,7 +366,7 @@ python -m pytest test -q
 
 - **模型**：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID`。
 - **工作区**：仓库外项目通过 `WORKSPACE_ROOTS` 加入允许的根目录，并重启后端；将快启案例复制到仓库外时同样适用。
-- **执行环境**：默认使用原生命令环境，需要 WSL 时显式设置 `AGENT_COMMAND_ENVIRONMENT=wsl`。
+- **执行环境**：默认使用原生命令环境，需要 WSL 时通过 Windows `shell` 工具显式调用 `wsl.exe`，无需专用环境配置。
 - **Provider**：通过 `AGENT_*_ENABLED` 和 `AGENT_*_PROVIDER` 控制可选能力；示例配置关闭知识图谱和编排，可按需启用。
 - **API 鉴权**：设置 `INTERNAL_API_TOKEN` 后，在 `frontend/.env.local` 配置相同的 `VITE_API_TOKEN`。
 

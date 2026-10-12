@@ -152,22 +152,11 @@ class Settings(BaseSettings):
         self.__dict__.update(effective.__dict__)
         return self
 
-    # Command execution is selected by the runtime.  ``auto`` uses the native
-    # host environment; WSL is an explicit compatibility option for projects
-    # that require Linux on Windows.
-    agent_command_environment: Literal["auto", "native_windows", "native_posix", "native_linux", "wsl"] = "auto"
-    agent_wsl_distribution: str = ""
-    agent_wsl_executable: str = "wsl.exe"
-    # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
-    # this separate from the much longer per-command timeout used by ShellTool.
-    agent_wsl_preflight_timeout_seconds: float = 20.0
+    # Commands use the native host shell; external environments are explicit shell calls.
+    agent_command_environment: Literal["auto", "native_windows", "native_posix", "native_linux"] = "auto"
 
-    # Resolved project tasks use the local broker by default.  ``container``
-    # opts into the Docker worker only when the deployment has pre-pulled an
-    # image containing the project's toolchain.  ``wsl`` remains conservative
-    # and fails closed unless isolation capabilities are explicitly provided
-    # by a future worker implementation.
-    agent_execution_worker: Literal["local", "wsl", "container"] = "local"
+    # Resolved project tasks run locally or in the configured Docker worker.
+    agent_execution_worker: Literal["local", "container"] = "local"
     # Combined stdout/stderr collection limit per command, enforced while reading.
     agent_command_output_limit_bytes: int = 10 * 1024 * 1024
     agent_container_image: str = "ubuntu:24.04"

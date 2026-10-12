@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable
 
+
+_HOST_IS_WINDOWS = os.name == "nt"
 
 _PATH_KEYS = frozenset({"path", "project_file"})
 _PROTECTED_PATTERNS = (".git", ".git/*", ".env", ".env.*", ".ssh", ".ssh/*")
@@ -116,6 +119,10 @@ class CapabilityPolicy:
         if any(part == ".." for part in re.split(r"[\\/\s]+", command)):
             return "path traversal is not allowed in shell commands"
         for raw_path in _ABSOLUTE_PATH.findall(command):
+            # POSIX paths and slash-style options are not absolute host paths
+            # on Windows. Guest command arguments are interpreted by their tool.
+            if _HOST_IS_WINDOWS and raw_path.startswith("/"):
+                continue
             path = Path(raw_path.rstrip(".,;"))
             try:
                 resolved = path.resolve()

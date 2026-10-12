@@ -366,7 +366,7 @@ Configuration lives in `backend/.env`; definitions are in `backend/config/`. Sta
 
 - **Model**: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_ID`.
 - **Workspace**: add external project roots through `WORKSPACE_ROOTS` and restart the backend. This also applies when copying the quickstart outside the repository.
-- **Execution**: native command execution is the default; select WSL explicitly with `AGENT_COMMAND_ENVIRONMENT=wsl` when needed.
+- **Execution**: native command execution is the default; invoke WSL through the Windows `shell` tool with `wsl.exe` when needed.
 - **Providers**: `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` control optional capabilities. Knowledge graph and orchestration are disabled in the example configuration; enable them when needed.
 - **API authentication**: if `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`.
 

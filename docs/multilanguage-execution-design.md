@@ -89,7 +89,7 @@ runtime stop requests, terminates the process tree, caps output, and returns
 `ExecutionEvidence` with a machine-readable category.
 
 `LocalExecutionBroker` is deliberately not described as an OS sandbox. It is
-the compatibility seam for a WSL/container worker; until a worker proves the
+the compatibility seam for a container worker; until a worker proves the
 requested isolation capabilities, existing host executor restrictions remain
 authoritative.
 
@@ -100,10 +100,7 @@ distinguish policy blocks, start failures, process failures, cancellation, and
 timeouts.
 
 `backend/app/runtime/sandbox_worker.py` adds capability discovery and a
-`ContainerWorker` implementation. `WslWorker` reports launcher readiness
-separately from filesystem, network, and resource isolation. It refuses a
-policy that requires denied network or bounded writable roots unless deployment
-explicitly declares those capabilities. `ContainerWorker` owns a Docker
+`ContainerWorker` implementation. `ContainerWorker` owns a Docker
 executor that mounts only `/workspace` (the container root is read-only, with
 a bounded `/tmp` tmpfs) and always passes `--network none`/`--pull never`;
 Docker/image preflight failures are reported as unavailable rather than
@@ -116,7 +113,7 @@ process-count limits; disk limits remain an explicit blocked capability until
 a worker backend can enforce them portably.
 
 The production factory selects the worker through
-`agent_execution_worker` (`local` by default, `container` or `wsl` explicitly).
+`agent_execution_worker` (`local` by default, `container` explicitly).
 The selected worker's executor is bound into the broker, so capability checks
 and process launch cannot diverge. Worker attestation is attached to both
 blocked and terminal execution evidence, allowing traces to prove which worker
@@ -324,7 +321,7 @@ AGENT_TOOLCHAIN_VERSION_MATCH_MODE=compatible
 
 ### 4. 统一执行边界与 Worker 能力证明
 
-`ExecutionBroker` 负责所有解析任务的实际执行，当前提供本地受限执行、WSL Worker 和 Container Worker：
+`ExecutionBroker` 负责所有解析任务的实际执行，当前提供本地受限执行和 Container Worker：
 
 - 本地 Broker 负责路径校验、进程启动、取消、超时、输出上限和证据生成。
 - Worker 负责预检、隔离能力和资源限制能力证明。

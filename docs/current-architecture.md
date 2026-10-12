@@ -82,10 +82,10 @@ WebSocket / Evaluation / future HTTP or CLI
 | `apply_changes` | 文件创建、修改、删除、移动和复制 |
 | `run_task` | `test`、`build`、`lint`、`format`、`typecheck`、`validate` 等标准任务 |
 | `run_program` | 允许列表中的可执行文件 + 字面量参数 |
-| `shell` | 最后的单条原生命令；禁止管道、串联、重定向、替换和嵌套 Shell |
+| `shell` | 最后的单条宿主命令；Windows 可显式调用 WSL，禁止外层管道、串联、重定向和替换 |
 
 执行路由固定为：`run_task` → `run_program` → `shell`。Windows 默认使用
-原生 PowerShell；WSL Bash 只有在显式配置时启用。命令适配器和宿主策略位于
+原生 PowerShell；需要 WSL 时通过 shell 显式调用 wsl.exe，无专用配置或适配器。命令适配器和宿主策略位于
 `backend/app/runtime/command.py`，工具描述和路由规则位于 `assembly.py`。
 
 ## 4. 可选扩展

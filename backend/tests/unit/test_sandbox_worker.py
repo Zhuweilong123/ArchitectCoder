@@ -1,46 +1,7 @@
 import pytest
 
-from app.runtime.sandbox_worker import ContainerCommandExecutor, ContainerWorker, WslWorker
+from app.runtime.sandbox_worker import ContainerCommandExecutor, ContainerWorker
 from app.runtime.task_contracts import ExecutionPolicy, NetworkPolicy, ResourceLimits
-
-
-class _Executor:
-    def __init__(self, error=None):
-        self.error = error
-
-    def preflight(self):
-        if self.error:
-            raise self.error
-
-
-def test_wsl_worker_reports_launcher_but_not_isolation_by_default():
-    worker = WslWorker(_Executor())
-    status = worker.preflight()
-
-    assert status.ready
-    assert status.capabilities.worker_id == "wsl"
-    assert not status.capabilities.network_isolated
-    assert not worker.supports(ExecutionPolicy(sandbox="wsl", network=NetworkPolicy.DENY))
-
-
-def test_wsl_worker_can_be_enabled_only_with_explicit_capabilities():
-    worker = WslWorker(
-        _Executor(), filesystem_isolated=True, network_isolated=True,
-    )
-
-    policy = ExecutionPolicy(
-        sandbox="wsl", network=NetworkPolicy.DENY, writable_roots=("build",),
-    )
-    assert worker.supports(policy)
-
-
-def test_wsl_worker_preflight_reports_unavailable():
-    worker = WslWorker(_Executor(RuntimeError("not ready")))
-    status = worker.preflight()
-
-    assert not status.ready
-    assert status.status == "unavailable"
-    assert "not ready" in status.reason
 
 
 def test_container_executor_preflight_fails_closed_when_docker_is_missing(tmp_path, monkeypatch):

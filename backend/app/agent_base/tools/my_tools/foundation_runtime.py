@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.runtime.encoding import decode_process_output as _decode_output
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.runtime.process_output import (
     DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
@@ -93,19 +94,6 @@ _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 SHELL_TIMEOUT = 120  # 秒
 SHELL_OUTPUT_CAP = DEFAULT_OUTPUT_LIMIT_BYTES  # 采集时的字节硬上限；模型输出由运行时分页
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
-
-
-def _decode_output(data: bytes) -> str:
-    """解码子进程输出：优先 UTF-8，失败回退 GBK。
-
-    中文 Windows 上 cmd.exe 的错误信息是 GBK（cp936），而 Python 子进程
-    （PYTHONUTF8=1）输出 UTF-8。不能用 locale.getpreferredencoding()——它在
-    PYTHONUTF8=1 下会返回 utf-8，导致 GBK fallback 失效。
-    """
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("gbk", errors="replace")
 
 
 def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
@@ -731,9 +719,8 @@ class ShellTool(AsyncTool):
     def _validate_shell_command(command: str) -> str | None:
         """限制 shell=True 的逃逸面。
 
-        The production command contract is POSIX bash.  The host adapter owns
-        WSL/native process launch; this validator only enforces the stable
-        agent-facing command subset.
+        The host executor owns native process launch and shell syntax; this
+        fallback validates a simple POSIX command when no host validator exists.
         """
         if len(command) > 4000:
             return "command is too long (maximum 4000 characters)"
