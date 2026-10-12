@@ -43,6 +43,7 @@ import { createAgentChatEventHandler } from './agentChatEventHandler';
 import { MessageCopyButton } from './MessageCopyButton';
 import { MessageReadButton } from './MessageReadButton';
 import { useChatInputHistory } from './useChatInputHistory';
+import { mergeChatHistory } from './chatHistoryRecovery';
 import './AgentChat.css';
 
 // ── 组件 ──────────────────────────────────────────────
@@ -218,11 +219,24 @@ const AgentChat: React.FC = () => {
     return () => observer.disconnect();
   }, [agentChatVisible, handleMessagesScroll]);
 
+  const historyRequestRef = useRef(0);
+  const recoverHistory = useCallback(() => {
+    const sessionId = getCurrentSessionId();
+    const request = ++historyRequestRef.current;
+    void getTraceHistory(sessionId).then(history => {
+      if (request !== historyRequestRef.current || sessionId !== getCurrentSessionId()) return;
+      setMessages(previous => request === historyRequestRef.current
+        && sessionId === getCurrentSessionId()
+        ? mergeChatHistory(sessionId, history, previous) : previous);
+    }).catch(() => { /* A new session has no trace yet; retain the local cache. */ });
+  }, []);
+
   // ── 连接 WebSocket ──
   const connect = useCallback((open = true) => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat(createAgentChatEventHandler({
       setMessages,
+      onSessionSync: recoverHistory,
       setBusy: (value) => {
         setBusy(value);
         if (value === false) setStopping(false);
@@ -239,7 +253,7 @@ const AgentChat: React.FC = () => {
       handleDesignElement: handleDesignElementWrapper,
     }), token, open);
     return ws;
-  }, [handleDesignElementWrapper, settleTodos]);
+  }, [handleDesignElementWrapper, settleTodos, recoverHistory]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -425,24 +439,20 @@ const AgentChat: React.FC = () => {
   }, []);
 
   const handleResumeSession = useCallback(async (targetId: string) => {
-    if (busy || sessionsLoading || targetId === getCurrentSessionId()) return;
+    if (busy || sessionsLoading) return;
     setSessionsLoading(true);
     try {
       const history = await getTraceHistory(targetId);
+      const previousSessionId = getCurrentSessionId();
+      ++historyRequestRef.current;
       switchSession(targetId);
       activateInputSession(targetId);
       scrollToLatest();
       // Task checkpoints are internal recovery context, not user-facing chat
       // messages. Keep them in the trace/backend history for future resume,
       // but do not render them as assistant replies when loading a session.
-      setMessages(history
-        .filter((h) => h.role === 'user' || h.role === 'assistant')
-        .map((h, i) => ({
-        id: `resume_${Date.now()}_${i}`,
-        role: (h.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
-        content: h.content,
-        timestamp: Date.now(),
-        })));
+      setMessages(previous => mergeChatHistory(targetId, history,
+        targetId === previousSessionId ? previous : []));
       liveStepsRef.current = [];
       setCurrentSteps([]);
       liveTodosRef.current = [];

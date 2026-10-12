@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 function harness() {
-  const state = { busy: false, messages: [] };
+  const state = { busy: false, messages: [], recoveries: 0 };
   const review = { status: 'pending', reviewId: 42, clear() { this.status = 'idle'; } };
   const exports = {};
   const source = fs.readFileSync(require.resolve('../src/components/AgentChat/agentChatEventHandler.ts'), 'utf8');
@@ -20,6 +20,7 @@ function harness() {
   });
   const noop = () => {};
   const handle = exports.createAgentChatEventHandler({
+    onSessionSync: () => { state.recoveries++; },
     setMessages: update => { state.messages = typeof update === 'function' ? update(state.messages) : update; },
     setBusy: value => { state.busy = value; },
     setCurrentSteps: value => { state.steps = value; }, setCurrentTodos: noop, setTodoPlanningMode: noop,
@@ -38,6 +39,7 @@ test('session sync restores running state and retains the current pending review
   handle({ event: 'session_sync', running: false, stopping: false, pending_review_ids: [] });
   assert.equal(state.busy, false);
   assert.equal(review.status, 'idle');
+  assert.equal(state.recoveries, 2);
 });
 
 test('terminal snapshot on page refresh does not duplicate the persisted result', () => {
@@ -80,4 +82,12 @@ test('snapshot repairs the steps of an already displayed terminal result', () =>
     steps: [{ event: 'progress', step: 1 }, { event: 'progress', step: 2 }] });
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].steps.length, 2);
+});
+
+test('terminal replay after loading durable history updates identity without duplicating the reply', () => {
+  const { state, handle } = harness();
+  state.messages = [{ id: 'trace_saved', role: 'agent', content: 'finished', timestamp: 1 }];
+  handle({ event: 'done', event_epoch: 'epoch', event_seq: 10, result: 'finished' });
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].id, 'agent_result_epoch_10');
 });

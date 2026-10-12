@@ -255,6 +255,7 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
     """从 trace 重建会话历史（结论级：user_message + done 交错）。
 
     返回 ``[{role: 'user'|'assistant', content: str}, ...]``，按对话顺序排列；
+    user/assistant 的 metadata 保留 message_id 和原始 timestamp，供聊天框幂等恢复。
     该 session 无 trace 时返回 None。
 
     说明：agent 的 ``_history`` 只存 user/assistant 摘要（不含逐步工具步骤），
@@ -265,22 +266,28 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
         return None
 
     history: list[dict] = []
-    pending_user: str | None = None
+    pending_user: dict | None = None
     pending_task_summaries: list[dict] = []
     checkpoint: str = ""
     for e in data["events"]:
         et = e.get("event_type")
         if et == "user_message":
             if pending_user is not None:
-                history.append({"role": "user", "content": pending_user})
+                history.append(pending_user)
                 history.extend(pending_task_summaries)
             pending_task_summaries = []
-            pending_user = e.get("message", "")
+            pending_user = {
+                "role": "user", "content": e.get("message", ""),
+                "metadata": {"message_id": e.get("span_id", ""), "timestamp": e.get("ts_ms", 0)},
+            }
         elif et == "done":
             if pending_user is not None:
-                history.append({"role": "user", "content": pending_user})
+                history.append(pending_user)
                 pending_user = None
-            history.append({"role": "assistant", "content": e.get("answer", "")})
+            history.append({
+                "role": "assistant", "content": e.get("answer", ""),
+                "metadata": {"message_id": e.get("span_id", ""), "timestamp": e.get("ts_ms", 0)},
+            })
             history.extend(pending_task_summaries)
             pending_task_summaries = []
         elif et == EVT_CONTEXT_COMPACTED:
@@ -298,7 +305,7 @@ def reconstruct_history(session_id: str) -> list[dict] | None:
                     },
                 })
     if pending_user is not None:
-        history.append({"role": "user", "content": pending_user})
+        history.append(pending_user)
         history.extend(pending_task_summaries)
     if checkpoint:
         history.insert(0, {

@@ -14,6 +14,7 @@ type StateSetter<T> = Dispatch<SetStateAction<T>>;
 
 export interface AgentChatEventHandlerOptions {
   setMessages: StateSetter<ChatMessage[]>;
+  onSessionSync?: () => void;
   setBusy: StateSetter<boolean>;
   setCurrentSteps: StateSetter<AgentProgressEvent[]>;
   setCurrentTodos: StateSetter<AgentTodoItem[]>;
@@ -36,6 +37,7 @@ const appendSystemMessage = (
 
 export function createAgentChatEventHandler({
   setMessages,
+  onSessionSync,
   setBusy,
   setCurrentSteps,
   setCurrentTodos,
@@ -70,6 +72,7 @@ export function createAgentChatEventHandler({
         setBusy(true);
         break;
       case 'session_sync':
+        onSessionSync?.();
         setBusy(event.running);
         if (event.pending_review_ids) {
           const review = useReviewStore.getState();
@@ -285,6 +288,13 @@ export function createAgentChatEventHandler({
           : undefined;
         setMessages((prev) => {
           if (prev.some(message => message.id === resultId)) return prev;
+          const latestReply = [...prev].reverse().find(message => message.role !== 'system');
+          if (latestReply?.role === 'agent' && latestReply.id.startsWith('trace_')
+            && latestReply.content === event.result) {
+            return prev.map(message => message === latestReply
+              ? { ...message, id: resultId, action: recoveryAction,
+                  steps: finalSteps.length ? finalSteps : message.steps } : message);
+          }
           const hasStream = prev.some((message) => message.id.startsWith('stream_'));
           if (hasStream) {
             return prev.map((message) =>
