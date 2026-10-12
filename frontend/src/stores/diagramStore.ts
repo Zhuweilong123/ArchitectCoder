@@ -291,7 +291,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   selectedCompRelationId: null,
   isModified: false,
   currentFilepath: _initialFilepath,
-  currentWorkspacePath: null,
+  currentWorkspacePath: (() => {
+    const root = localStorage.getItem('projectRoot');
+    return root && root !== 'project' ? root : null;
+  })(),
   currentWorkspaceSafe: true,
   undoStack: [],
   redoStack: [],

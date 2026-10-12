@@ -276,7 +276,7 @@ const Toolbar: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: projectFile || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
     });
     setGlobalOptimizing(false);
     message.info('全局优化请求已发送到 AI 开发助手');
@@ -438,10 +438,8 @@ const Toolbar: React.FC = () => {
       normalizedRoot
       && (normalizedFolder === normalizedRoot || normalizedFolder.startsWith(`${normalizedRoot}/`)),
     );
-    if (projectRoot && !staysInWorkspaceRoot) {
-      setProjectRoot('');
-    }
-    setCurrentWorkspacePath(staysInWorkspaceRoot ? projectRoot : null, staysInWorkspaceRoot);
+    // Selecting design artifacts does not select a different workspace root.
+    setCurrentWorkspacePath(projectRoot || currentWorkspacePath, staysInWorkspaceRoot);
     currentFileSafe.current = safe;
     setCurrentFilepath(null);
 
@@ -489,7 +487,7 @@ const Toolbar: React.FC = () => {
         if (review.status !== 'pending' && review.reviewId !== null) review.clear();
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
-        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
+        setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
@@ -514,7 +512,7 @@ const Toolbar: React.FC = () => {
         setProject(proj);
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
-        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
+        setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success('文件已打开');
@@ -576,8 +574,7 @@ const Toolbar: React.FC = () => {
       if (designFiles.length === 1) {
         const designFile = designFiles[0];
         await handleOpenFile(designFile.path, designFile.type === 'project' || designFile.name.toLowerCase().endsWith('.umlproj'));
-        // Opening the design file sets its own folder as workspace. Keep the
-        // project root as the workspace so subsequent saves use project scope.
+        // Keep the explicitly selected root after loading its design project.
         setProjectRoot(root);
         setCurrentWorkspacePath(root, false);
         currentFileSafe.current = false;
@@ -628,7 +625,7 @@ const Toolbar: React.FC = () => {
       const result = await saveProject(proj, targetPath, targetSafe);
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
-      setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
+      setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
     } catch (error) {
       showProjectSaveError(error);
@@ -670,7 +667,7 @@ const Toolbar: React.FC = () => {
       );
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
-      setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
+      setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);
     } catch (error) {

@@ -220,6 +220,80 @@ async def _async_noop(*_args, **_kwargs):
     return None
 
 
+def test_workspace_switch_rebuilds_tools_and_preserves_conversation(tmp_path, monkeypatch):
+    from app.core.capabilities import CapabilityPolicy
+    from app.runtime.workspace import WorkspaceManifest
+    from app.services.chat_connection import ChatConnection
+
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    for root in (old_root, new_root):
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "main.py").write_text("pass\n", encoding="utf-8")
+    old_manifest = WorkspaceManifest.from_paths(workspace_root=str(old_root))
+    original_history = [{"role": "user", "content": "previous question"}]
+    agent = SimpleNamespace(
+        llm=None, last_run_checkpoint={}, workspace_manifest=old_manifest.to_dict(),
+        _history=original_history, _history_summary="previous context",
+        tool_registry=SimpleNamespace(get_tool=lambda _: None),
+    )
+    connection = ChatConnection()
+    connection.paths = (str(old_root / "src"), "", "", str(old_root), "")
+    session = SimpleNamespace(
+        agent=agent, review_mgr=None, progress=None, prompt_builder=None,
+        trace_log=_TraceLog(), run_owner=None, touch=lambda: None, chat_connection=connection,
+    )
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _: session)
+    monkeypatch.setattr(chat_session, "_latest_resumable_run", lambda _: None)
+    monkeypatch.setattr(chat_session, "validate_agent_workspace_path", lambda value, **_: (value, None))
+    monkeypatch.setattr(chat_session, "_compress_session_context", _async_noop)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **_: SimpleNamespace())
+    created, started = [], []
+
+    async def create(llm, source, tests, project, message, **kwargs):
+        manifest = WorkspaceManifest.from_paths(
+            source_dir=source, test_dir=tests, project_file=project,
+            workspace_root=kwargs["workspace_root"], design_dir=kwargs["design_dir"],
+        )
+        replacement = SimpleNamespace(
+            llm=llm, last_run_checkpoint={}, workspace_manifest=manifest.to_dict(),
+            _history=[], _history_summary="",
+            tool_registry=SimpleNamespace(get_tool=lambda _: None),
+            policy=CapabilityPolicy(workspace_roots=list(manifest.workspace_roots)),
+        )
+        created.append(replacement)
+        return replacement, ReviewManager(session_id="checkpoint-recovery-test"), None
+
+    async def start(**kwargs):
+        started.append(kwargs)
+
+    monkeypatch.setattr(chat_session, "create_dev_agent", create)
+    monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+    payload = {"type": "chat", "message": "inspect new workspace", "workspace_root": str(new_root)}
+    asyncio.run(chat_session.ChatSessionCoordinator(_WebSocket([
+        json.dumps(payload), json.dumps({**payload, "message": "continue"}),
+    ])).run())
+
+    assert len(created) == 1  # Same normalized workspace continues to reuse the Agent.
+    assert len(started) == 2
+    replacement = session.agent
+    assert replacement._history == original_history
+    assert replacement._history_summary == "previous context"
+    assert replacement.workspace_manifest["source_root"] == str((new_root / "src").resolve())
+    assert replacement.policy.check("read_file", {"path": str(new_root / "src" / "main.py")}) is None
+    assert replacement.policy.check("read_file", {"path": str(old_root / "src" / "main.py")})
+
+
+def test_explicit_empty_scopes_clear_previous_workspace_paths(monkeypatch):
+    monkeypatch.setattr(chat_session, "validate_agent_workspace_path", lambda value, **_: (value, None))
+    paths, error = chat_session._resolve_workspace_paths(
+        {"source_dir": "", "test_dir": "", "project_file": "", "design_dir": ""},
+        {"source_dir": "checkpoint-source"}, source_dir="old-source", test_dir="old-test",
+        project_file="old-project", workspace_root="root", design_dir="old-design",
+    )
+    assert error == ""
+    assert paths == ("", "", "", "root", "")
+
+
 def test_disconnect_reconnect_preserves_run_and_stop_reaches_original_task(tmp_path, monkeypatch):
     trace = _TraceLog()
     trace.error = lambda **_kwargs: None

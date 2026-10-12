@@ -55,6 +55,7 @@ from app.services.audit_log import record_audit as _record_audit
 from app.services.run_lifecycle import RunLifecycle
 from app.services.session_compression import SessionContextCompressor
 from app.services.chat_connection import ChatConnection
+from app.runtime.workspace import WorkspaceManifest
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
@@ -281,12 +282,26 @@ def _resolve_workspace_paths(
     design_dir: str = "",
 ) -> tuple[tuple[str, str, str, str, str] | None, str]:
     """Resolve and validate the chat request's workspace boundary."""
+    previous_root = resume_checkpoint.get("workspace_root") or workspace_root
+    requested_root = message.get("workspace_root")
+    changed_root = bool(isinstance(requested_root, str) and requested_root and previous_root
+                        and os.path.normcase(os.path.abspath(message["workspace_root"]))
+                        != os.path.normcase(os.path.abspath(previous_root)))
+    if changed_root:
+        # A new workspace must not inherit the previous project's directories.
+        resume_checkpoint = {}
+        source_dir = test_dir = project_file = design_dir = ""
+
+    def selected(key: str, previous: str) -> str:
+        # An explicit empty scope clears it; only omitted fields inherit state.
+        return message[key] if key in message else resume_checkpoint.get(key) or previous
+
     requested_paths = (
-        message.get("source_dir") or resume_checkpoint.get("source_dir") or source_dir,
-        message.get("test_dir") or resume_checkpoint.get("test_dir") or test_dir,
-        message.get("project_file") or resume_checkpoint.get("project_file") or project_file,
-        message.get("workspace_root") or resume_checkpoint.get("workspace_root") or workspace_root,
-        message.get("design_dir") or resume_checkpoint.get("design_dir") or design_dir,
+        selected("source_dir", source_dir),
+        selected("test_dir", test_dir),
+        selected("project_file", project_file),
+        selected("workspace_root", workspace_root),
+        selected("design_dir", design_dir),
     )
     validated: list[str] = []
     errors: list[str] = []
@@ -765,8 +780,25 @@ class ChatSessionCoordinator:
                                 "event": "error", "message": workspace_error,
                             })
                             continue
+                        previous_paths = (source_dir, test_dir, project_file, workspace_root, design_dir)
                         source_dir, test_dir, project_file, workspace_root, design_dir = workspace_paths
-                        state.paths = workspace_paths
+                        try:
+                            requested_manifest = WorkspaceManifest.from_paths(
+                                source_dir=source_dir, test_dir=test_dir, project_file=project_file,
+                                workspace_root=workspace_root, design_dir=design_dir,
+                            ).to_dict()
+                        except ValueError as exc:
+                            source_dir, test_dir, project_file, workspace_root, design_dir = previous_paths
+                            await state.send_json({"event": "error", "message": f"Invalid workspace layout: {exc}"})
+                            continue
+                        previous_manifest = getattr(dev_agent, "workspace_manifest", None)
+                        rebuild_workspace = previous_manifest is not None and previous_manifest != requested_manifest
+                        if resume_checkpoint and any(
+                            resume_checkpoint.get(key) and os.path.normcase(os.path.abspath(resume_checkpoint[key]))
+                            != os.path.normcase(os.path.abspath(requested_manifest[key] or "."))
+                            for key in ("workspace_root", "project_file")
+                        ):
+                            resume_record, resume_checkpoint = None, {}
                         effective_user_message = (
                             _resume_prompt(resume_checkpoint, user_message)
                             if resume_checkpoint else user_message
@@ -794,7 +826,8 @@ class ChatSessionCoordinator:
                         state.stop_requested = False
 
                         # ── 单 agent 承接所有消息：懒创建 + 跨轮复用 ──
-                        if dev_agent is None:
+                        if dev_agent is None or rebuild_workspace:
+                            previous_agent = dev_agent
                             progress = ProgressRelay()
                             last_review_id = review_mgr.next_request_id - 1 if review_mgr else -1
                             try:
@@ -806,16 +839,22 @@ class ChatSessionCoordinator:
                                     design_dir=design_dir,
                                 )
                             except ValueError as exc:
+                                source_dir, test_dir, project_file, workspace_root, design_dir = previous_paths
                                 await state.send_json({
                                     "event": "error",
                                     "message": f"Invalid workspace layout: {exc}",
                                 })
                                 continue
+                            if previous_agent is not None:
+                                # Rebuild paths, tools, policy and prompt together; keep the conversation.
+                                dev_agent._history = list(getattr(previous_agent, "_history", []) or [])
+                                dev_agent._history_summary = getattr(previous_agent, "_history_summary", "")
                             session.agent, session.review_mgr, session.progress = \
                                 dev_agent, review_mgr, progress
                             review_mgr.reserve_through(last_review_id)
                             session.prompt_builder = prompt_builder
 
+                        state.paths = workspace_paths
                         session.touch()
 
                         # Session compression belongs between turns. The active

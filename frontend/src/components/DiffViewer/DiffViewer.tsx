@@ -44,7 +44,7 @@ const DiffViewer: React.FC = () => {
     setRightPanelTab,
     setGlobalOptimizationResult, setActiveDiffDiagramType,
     optimizeInstructions,
-    designDir, sourceDir, testDir,
+    projectRoot, designDir, sourceDir, testDir,
   } = useUiStore();
 
   // Check if we're in multi-diagram mode (pipeline global optimize)
@@ -286,7 +286,7 @@ const DiffViewer: React.FC = () => {
             source_dir: sourceDir,
             test_dir: testDir,
             project_file: currentFilepath || '',
-            workspace_root: currentWorkspacePath || '',
+            workspace_root: projectRoot || currentWorkspacePath || '',
           },
         );
         // 优化结果通过 Agent WebSocket 的 design_updated 事件异步返回

@@ -55,7 +55,7 @@ const AgentChat: React.FC = () => {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
     agentChatPosition, setAgentChatPosition,
-    designDir, sourceDir, testDir, interfaceLanguage,
+    projectRoot, designDir, sourceDir, testDir, interfaceLanguage,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -267,7 +267,7 @@ const AgentChat: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
       design_contract_enabled: designContractEnabled,
       skipNotify: true,
     });
@@ -292,7 +292,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled, resetInputHistory, scrollToLatest]);
+  }, [inputValue, busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, projectRoot, currentWorkspacePath, designContractEnabled, resetInputHistory, scrollToLatest]);
 
   const handleMessageAction = useCallback((message: string) => {
     const text = message.trim();
@@ -304,7 +304,7 @@ const AgentChat: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
       design_contract_enabled: designContractEnabled,
       skipNotify: true,
     });
@@ -326,7 +326,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+  }, [busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, projectRoot, currentWorkspacePath, designContractEnabled]);
 
   const handleDesignContractToggle = useCallback((checked: boolean) => {
     setDesignContractEnabled(checked);
