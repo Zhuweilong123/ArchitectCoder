@@ -506,8 +506,7 @@ const AgentChat: React.FC = () => {
         setTodoExpanded(false);
         todoSeenInTaskRef.current = false;
       } else if (ev.event === 'review_delivery_failed') {
-        // 重连补发失败（如后端不可达）：审核置为失效并提示
-        useReviewStore.getState().expire('审核回复未能送达后端');
+        // The shared store restores the matching review to a retryable state.
         setMessages((prev) => [
           ...prev,
           {
@@ -880,6 +879,10 @@ const AgentChat: React.FC = () => {
               </div>
             )}
 
+            {review.status === 'submitting' && (
+              <Alert type="info" showIcon message={review.delivery === 'queued'
+                ? '审核回复等待重连补发，尚未发送' : '正在发送审核回复…'} />
+            )}
             {/* 审核请求（与 DiffViewer 联动，状态来自 reviewStore） */}
             {review.status === 'pending' && !review.deferred && (
               <div className="agent-review-card">

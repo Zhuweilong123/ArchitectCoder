@@ -97,6 +97,7 @@ const DiffViewer: React.FC = () => {
   const reviewStatus = useReviewStore((s) => s.status);
   const reviewType = useReviewStore((s) => s.reviewType);
   const reviewActedFrom = useReviewStore((s) => s.actedFrom);
+  const reviewDelivery = useReviewStore((s) => s.delivery);
   const reviewLinked = reviewId !== null && reviewType === 'uml_diff';
   const reviewPending = reviewLinked && reviewStatus === 'pending';
   // 联动模式下完成态由 store 决定；独立流程（单图优化/Pipeline）用本地 resolved
@@ -111,7 +112,7 @@ const DiffViewer: React.FC = () => {
     setRejectModalVisible(false);
     // 新对比数据到达且上一审核已终结（独立流程）→ 解除联动，避免按钮卡在旧状态
     const st = useReviewStore.getState();
-    if (st.reviewId !== null && st.status !== 'pending') {
+    if (st.reviewId !== null && st.status !== 'pending' && st.status !== 'submitting') {
       st.clear();
     }
   }, [optimizedCode]);
@@ -182,8 +183,8 @@ const DiffViewer: React.FC = () => {
   const handleAcceptConfirm = async () => {
     // ── 联动模式：委托共享 store（回复 agent + 落盘评审由 store 统一处理）──
     if (reviewPending) {
-      useReviewStore.getState().accept('diff', reviewComment);
-      message.success('已接受优化结果，评审已保存到 dev_review.txt');
+      const accepted = await useReviewStore.getState().accept('diff', reviewComment);
+      if (!accepted || useReviewStore.getState().status !== 'accepted') return;
       setRightPanelTab('properties');
       // 触发画布居中，确保用户可以看到更新后的图
       triggerRecenter();
@@ -268,7 +269,6 @@ const DiffViewer: React.FC = () => {
       }
       setRejectModalVisible(false);
       setReviewComment('');
-      message.success({ content: '已拒绝并反馈给 AI 助手，Agent 将带着反馈继续修改', key: 'reoptimize' });
       setReoptimizing(false);
       return;
     }
@@ -314,7 +314,6 @@ const DiffViewer: React.FC = () => {
     if (reviewPending) {
       const rejected = await useReviewStore.getState().reject('diff', reviewComment || '用户拒绝了此次变更');
       if (!rejected) return;
-      message.info('已拒绝优化结果，评审已保存到 dev_review.txt');
       setRejectModalVisible(false);
       setRightPanelTab('properties');
       return;
@@ -382,7 +381,9 @@ const DiffViewer: React.FC = () => {
     );
   }
 
-  const buttonsDisabled = resolvedEff && !reoptimizing;
+  const buttonsDisabled = reviewLinked
+    ? reviewStatus !== 'pending'
+    : resolvedEff && !reoptimizing;
 
   return (
     <div className="diff-viewer">
@@ -395,10 +396,13 @@ const DiffViewer: React.FC = () => {
         </h3>
         {/* 与 AgentChat 联动的审核状态徽标 */}
         {reviewPending && <Tag color="red">待审核</Tag>}
-        {reviewLinked && reviewStatus === 'accepted' && (
-          <Tag color="success">已批准{reviewActedFrom === 'chat' ? ' · 快捷批准' : ''}</Tag>
+        {reviewLinked && reviewStatus === 'submitting' && (
+          <Tag color="processing">{reviewDelivery === 'queued' ? '审核回复等待补发' : '审核回复发送中'}</Tag>
         )}
-        {reviewLinked && reviewStatus === 'rejected' && <Tag color="warning">已拒绝 · Agent 修订中</Tag>}
+        {reviewLinked && reviewStatus === 'accepted' && (
+          <Tag color="success">批准回复已发送{reviewActedFrom === 'chat' ? ' · 快捷批准' : ''}</Tag>
+        )}
+        {reviewLinked && reviewStatus === 'rejected' && <Tag color="warning">拒绝反馈已发送</Tag>}
         {reviewLinked && reviewStatus === 'expired' && <Tag>已失效</Tag>}
         {isNewDesign ? (
           <Tag color="purple" style={{ fontSize: 12 }}>从需求全新生成</Tag>

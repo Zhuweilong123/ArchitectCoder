@@ -91,3 +91,15 @@ test('terminal replay after loading durable history updates identity without dup
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].id, 'agent_result_epoch_10');
 });
+
+
+test('a late review expiry cannot stop a newer task or expire its current review', () => {
+  const { state, review, handle } = harness();
+  review.expire = () => { throw new Error('must not expire the current review'); };
+  handle({ event: 'run_started', run_id: 'new', status: 'running' });
+  handle({ event: 'review_expired', review_id: 41 });
+  handle({ event: 'review_timeout', review_id: 41, title: 'old', timeout: 60 });
+  assert.equal(state.busy, true);
+  assert.equal(review.status, 'pending');
+  assert.equal(state.messages.length, 0);
+});

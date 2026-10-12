@@ -235,8 +235,10 @@ export function createAgentChatEventHandler({
       }
 
       case 'review_timeout': {
+        const activeReview = useReviewStore.getState();
+        if (activeReview.reviewId !== null && activeReview.reviewId !== event.review_id) break;
         useReviewStore.getState().expire(
-          `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`,
+          `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`, event.review_id,
         );
         appendSystemMessage(setMessages, {
           id: `review_timeout_${Date.now()}`,
@@ -247,12 +249,14 @@ export function createAgentChatEventHandler({
       }
 
       case 'review_expired': {
+        const activeReview = useReviewStore.getState();
+        if (activeReview.reviewId !== null && activeReview.reviewId !== event.review_id) break;
         const canceled = event.reason === 'user_canceled_review';
         if (canceled && useReviewStore.getState().reviewId === event.review_id) {
           restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
         }
         useDiagramStore.getState().endBatch();
-        useReviewStore.getState().expire(canceled ? '已取消审核，候选未应用' : '审核请求已失效');
+        useReviewStore.getState().expire(canceled ? '已取消审核，候选未应用' : '审核请求已失效', event.review_id);
         setBusy(false);
         settleTodos('pending');
         appendSystemMessage(setMessages, {
