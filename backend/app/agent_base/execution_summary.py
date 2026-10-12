@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from .host_api.execution_types import ToolCallDetail, RunCheckpoint
 
 
 def _excerpt(value: object, limit: int = 220) -> str:
@@ -13,8 +15,8 @@ def _excerpt(value: object, limit: int = 220) -> str:
 
 
 def build_task_execution_summary(
-    tool_calls: list[dict],
-    checkpoint: dict,
+    tool_calls: Sequence[ToolCallDetail],
+    checkpoint: RunCheckpoint,
     status: str,
 ) -> str:
     """Summarize every call in order, bounding individual output excerpts only.

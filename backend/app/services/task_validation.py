@@ -1,5 +1,7 @@
 """Host task acceptance fallback when an optional gate supplies no coverage."""
 import asyncio
+from app.agent_base.host_api.execution import ExecutionRequest
+from app.agent_base.host_api.data import JsonObject
 import json
 from pathlib import Path
 from app.agent_base.host_api.validation import CheckResult, ValidationDiagnostic, ValidationReport
@@ -28,13 +30,13 @@ def _check(manifest, requirements):
                                  f"Required validation could not run: {exc}"),)),))
 
 
-async def ensure_task_validation(request, requirements, review_failure=None):
+async def ensure_task_validation(request: ExecutionRequest, requirements: list[dict[str, str]], review_failure: JsonObject | None = None) -> None:
     """Reuse a freshly evaluated gate report; never depend on plugin presence."""
     request.checkpoint["validation_requirements"] = list(requirements)
     if review_failure and request.allowed:
         request.checkpoint["task_validation"] = review_failure
         request.allowed = False
-        request.message = review_failure["message"]
+        request.message = str(review_failure["message"])
         request.stop_reason = "validation_requirements_unmet"
     if not requirements or not request.allowed:
         return

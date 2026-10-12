@@ -17,6 +17,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+from .host_api.execution_types import RunCheckpoint, ToolCallDetail
 
 
 def _short(value: Any, limit: int = 180) -> str:
@@ -364,7 +365,7 @@ def record_runtime_verification(
     verifications[(check.kind, check.scope)] = check.passed
 
 
-def update_checkpoint_evidence(checkpoint: dict, details: list[dict]) -> None:
+def update_checkpoint_evidence(checkpoint: RunCheckpoint, details: list[ToolCallDetail]) -> None:
     """Accumulate effects across steps and resumptions, retaining unresolved failures."""
     files = list(checkpoint.get("changed_files") or [])
     mutations = dict(checkpoint.get("mutation_evidence") or {})

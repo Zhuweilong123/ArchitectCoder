@@ -28,7 +28,11 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Callable
+from typing import Callable
+from app.agent_base.host_api.agents import ReviewManagerPort, PromptBuilderPort, ProgressPort
+from app.agent_base.host_api.data import JsonObject
+from app.agent_base.host_api.execution_types import RunCheckpoint
+from app.agent_base.host_api.runs import RunRecord
 from fastapi import WebSocket, WebSocketDisconnect
 from app.core.security import validate_agent_workspace_path
 from backend.config import get_settings
@@ -141,16 +145,10 @@ from app.services.agent_execution import (
 
 def _history_structure(agent: ReActAgent | None) -> dict:
     """Return history shape metadata without duplicating message content."""
-    history = list(getattr(agent, "_history", []) or []) if agent is not None else []
-    roles = []
-    contents = []
-    for message in history:
-        if isinstance(message, dict):
-            roles.append(str(message.get("role") or "unknown"))
-            contents.append(str(message.get("content") or ""))
-        else:
-            roles.append(str(getattr(message, "role", "unknown") or "unknown"))
-            contents.append(str(getattr(message, "content", "") or ""))
+    snapshot = agent.export_conversation() if agent is not None else None
+    history = snapshot.messages if snapshot is not None else ()
+    roles = [message.role for message in history]
+    contents = [message.content for message in history]
     return {
         "history_message_count": len(history),
         "history_role_sequence": roles,
@@ -159,14 +157,14 @@ def _history_structure(agent: ReActAgent | None) -> dict:
             for role, content in zip(roles, contents)
         ),
         "legacy_history_summary_present": bool(
-            getattr(agent, "_history_summary", "") if agent is not None else ""
+            snapshot.summary if snapshot is not None else ""
         ),
     }
 
 
 
 
-def _checkpoint_answer(checkpoint: dict) -> str:
+def _checkpoint_answer(checkpoint: RunCheckpoint) -> str:
     if not checkpoint:
         return "当前会话没有可用的任务执行记录。"
     lines = [f"任务状态：{checkpoint.get('status', 'unknown')}"]
@@ -235,7 +233,7 @@ def _latest_resumable_run(session_id: str, *, store_factory=None):
     return None
 
 
-def _resume_prompt(checkpoint: dict, user_message: str) -> str:
+def _resume_prompt(checkpoint: RunCheckpoint, user_message: str) -> str:
     """Give the agent the checkpoint and the complete latest user instruction."""
     original = str(checkpoint.get("request_summary") or checkpoint.get("message") or "")[:500]
     completed = checkpoint.get("completed_items") or []
@@ -364,7 +362,7 @@ async def _compress_session_context(
 
 
 
-async def _ws_send(websocket: WebSocket, payload: dict) -> bool:
+async def _ws_send(websocket: WebSocket, payload: JsonObject) -> bool:
     """发送 WebSocket 消息，连接已断开时返回 False 而非抛异常。
 
     前端可能在任何时刻断开（刷新/关闭面板），若继续在原连接上 send_json，
@@ -392,9 +390,9 @@ def _consume_task_exception(task: asyncio.Task) -> None:
 async def _start_agent_chat_run(
     *,
     agent: ReActAgent,
-    review_manager: Any,
-    prompt_builder: Any,
-    progress: ProgressRelay | None,
+    review_manager: ReviewManagerPort | None,
+    prompt_builder: PromptBuilderPort,
+    progress: ProgressPort | None,
     message: str,
     raw_user_message: str | None = None,
     websocket: WebSocket,
@@ -409,12 +407,12 @@ async def _start_agent_chat_run(
     stop_check: Callable[[], bool],
     disconnect_check: Callable[[], bool],
     parent_run_id: str = "",
-    resume_record: Any = None,
-    resume_checkpoint: dict | None = None,
+    resume_record: RunRecord | None = None,
+    resume_checkpoint: JsonObject | None = None,
     request_id: str = "",
     workspace_root: str = "",
     design_contract_enabled: bool | None = None,
-) -> asyncio.Task | None:
+) -> asyncio.Task[None] | None:
     """Create a durable run and start its transport-neutral execution task."""
     settings = get_settings()
     effective_contract_enabled = resolve_contract_enabled(
@@ -847,8 +845,7 @@ class ChatSessionCoordinator:
                                 continue
                             if previous_agent is not None:
                                 # Rebuild paths, tools, policy and prompt together; keep the conversation.
-                                dev_agent._history = list(getattr(previous_agent, "_history", []) or [])
-                                dev_agent._history_summary = getattr(previous_agent, "_history_summary", "")
+                                dev_agent.restore_conversation(previous_agent.export_conversation())
                             session.agent, session.review_mgr, session.progress = \
                                 dev_agent, review_mgr, progress
                             review_mgr.reserve_through(last_review_id)

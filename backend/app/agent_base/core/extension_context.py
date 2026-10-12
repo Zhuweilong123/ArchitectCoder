@@ -4,6 +4,8 @@ The host binds providers at assembly and publishes data through lifecycle hooks.
 Handlers access their provider without receiving an Agent or tool registry.
 """
 from __future__ import annotations
+from app.agent_base.host_api.execution_types import TaskResultPayload
+from typing import Unpack
 
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -145,7 +147,7 @@ def extension_request(function: Callable[P, Awaitable[R]]) -> Callable[P, Awaita
     return wrapped
 
 
-async def publish_task_result(agent, *, run_id="", **payload):
+async def publish_task_result(agent: object, *, run_id: str = "", **payload: Unpack[TaskResultPayload]) -> None:
     """Publish the post-check/review outcome without selecting any consumer."""
     from .hooks import HookContext, HookEvent, get_hooks
     session = getattr(agent, "extension_runs", {}).get(run_id) or current_extension_context()

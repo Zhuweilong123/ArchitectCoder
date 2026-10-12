@@ -20,11 +20,14 @@ Usage::
 
 import logging
 from contextlib import aclosing
-from typing import Optional, List, AsyncIterator
+from typing import Optional, List, AsyncIterator, AsyncGenerator
 
 from ..core.agent import Agent
-from ..host_api.agents import ModelPort, ToolRegistryPort
-from ..host_api.data import ConversationMessage
+from ..host_api.agents import ModelPort, ToolRegistryPort, ConversationSnapshot, HistoryEntry
+from copy import deepcopy
+from ..host_api.data import ConversationMessage, WorkspaceSnapshot
+from ..host_api.execution_types import RunCheckpoint, CompactionReport
+from collections.abc import Callable
 from ..core.message import Message
 from backend.config import AgentConfig
 from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
@@ -120,8 +123,10 @@ class ReActAgent(Agent):
         # Structured hand-off for a follow-up status query. The transport
         # updates this at run boundaries so status requests do not re-explore
         # the workspace.
-        self.last_run_checkpoint: dict = {}
-        self.on_context_compacted = None
+        self.last_run_checkpoint: RunCheckpoint = {}
+        self.workspace_manifest: WorkspaceSnapshot = {}
+        self.candidate_recovery_applied = False
+        self.on_context_compacted: Callable[[CompactionReport], None] | None = None
         logger.info(
             "✅ %s 初始化完成，开放循环模式，FC模式: %s",
             name, "启用",
@@ -147,6 +152,17 @@ class ReActAgent(Agent):
                 and (m.get("metadata") or {}).get("kind") == "task_execution"
             )
         ]
+
+    def export_conversation(self) -> ConversationSnapshot:
+        """Return a detached snapshot; consumers never access mutable Agent history."""
+        return ConversationSnapshot(tuple(HistoryEntry(
+            message.role, message.content, message.timestamp, deepcopy(message.metadata)
+        ) for message in self._history), self._history_summary)
+
+    def restore_conversation(self, snapshot: ConversationSnapshot) -> None:
+        self._history = [Message(entry.content, entry.role, timestamp=entry.timestamp,
+                                 metadata=deepcopy(entry.metadata)) for entry in snapshot.messages]
+        self._history_summary = snapshot.summary
 
     def append_task_summary(self, summary: str) -> None:
         """Keep a bounded internal checkpoint for the next turn.
@@ -182,7 +198,7 @@ class ReActAgent(Agent):
         """
         return await self._arun_with_fc(input_text, context=context, **kwargs)
 
-    async def arun_stream(self, input_text: str, context: str = "", **kwargs) -> AsyncIterator[ReActProgress]:
+    async def arun_stream(self, input_text: str, context: str = "", **kwargs) -> AsyncGenerator[ReActProgress, None]:
         """流式运行 ReAct 循环 — 每轮 yield :class:`ReActProgress`。
 
         用于前端实时展示、编排层监控等需要逐轮获取进度的场景。

@@ -13,6 +13,7 @@ from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
 from extensions.design_contract.analysis import (ModelContractFailureAnalyzer, build_contract_failure_report)
 from app.agent_base.host_api.orchestration import OrchestrationPreparation
 from app.agent_base.tools.registry import ToolRegistry
+from app.agent_base.host_api.agents import ConversationSnapshot
 
 
 def test_checkpoint_outcome_is_normalized_after_post_model_failure():
@@ -47,6 +48,7 @@ class _FakeAgent:
         self.last_run_checkpoint = {}
         self.last_context_report = {}
         self.change_set = None
+        self.workspace_manifest = {}
         self.task_summaries = []
 
     async def arun_stream(self, user_message, *, context, **kwargs):
@@ -54,6 +56,9 @@ class _FakeAgent:
         self.received_context = context
         self.received_kwargs = kwargs
         yield ReActProgress(step=1, is_final=True, final_answer="hello")
+
+    def export_conversation(self):
+        return ConversationSnapshot()
 
     def append_task_summary(self, summary):
         self.task_summaries.append(summary)

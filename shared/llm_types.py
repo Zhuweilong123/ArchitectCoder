@@ -1,8 +1,13 @@
 """Serializable model messages and schemas shared by gateways and Agent ports."""
 from __future__ import annotations
-from typing import Literal, NotRequired, TypeAlias, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypedDict, TYPE_CHECKING
+from typing_extensions import TypeAliasType
 
-JsonValue: TypeAlias = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
+if TYPE_CHECKING:
+    JsonValue: TypeAlias = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
+else:
+    # A named recursive alias lets runtime validators resolve the schema once.
+    JsonValue = TypeAliasType('JsonValue', str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue'])
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 class FunctionCall(TypedDict):

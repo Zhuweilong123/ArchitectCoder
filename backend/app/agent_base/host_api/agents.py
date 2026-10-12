@@ -2,8 +2,25 @@
 from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import NamedTuple, Protocol
+from dataclasses import dataclass
+from datetime import datetime
+from .data import ConversationRole
 from .data import ConversationMessage, JsonObject, ModelCallOptions, ModelMessage, ModelResponse, ToolSchema, TodoItem
 from typing import Unpack
+
+from .execution_types import RunCheckpoint, ToolCallDetail
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    role: ConversationRole
+    content: str
+    timestamp: datetime | None
+    metadata: JsonObject | None
+
+@dataclass(frozen=True)
+class ConversationSnapshot:
+    messages: tuple[HistoryEntry, ...] = ()
+    summary: str = ""
 
 class ModelPort(Protocol):
     model: str
@@ -15,12 +32,13 @@ class ModelPort(Protocol):
 class ProgressSnapshotPort(Protocol):
     step: int
     actions: list[str]
-    tool_calls_detail: list[JsonObject]
+    tool_calls_detail: list[ToolCallDetail]
     thought: str
     is_final: bool
     final_answer: str
 
 class ToolRegistryPort(Protocol):
+    def set_allowed_tools(self, names: list[str] | None) -> None: ...
     def get_openai_specs(self) -> list[ToolSchema]: ...
     def get_tools_description(self) -> str: ...
     def list_tools(self) -> list[str]: ...
@@ -34,10 +52,12 @@ class AgentPort(Protocol):
     def llm(self) -> ModelPort: ...
     @property
     def tool_registry(self) -> ToolRegistryPort: ...
-    last_run_checkpoint: JsonObject
+    last_run_checkpoint: RunCheckpoint
     def arun_stream(self, input_text: str, context: str = '') -> AsyncIterator[ProgressSnapshotPort]: ...
     async def arun(self, input_text: str, context: str = '') -> str: ...
     def restore_history(self, messages: list[ConversationMessage]) -> None: ...
+    def export_conversation(self) -> ConversationSnapshot: ...
+    def restore_conversation(self, snapshot: ConversationSnapshot) -> None: ...
 
 class ProgressPort(Protocol):
     @property
@@ -61,10 +81,17 @@ class ReviewRequestPort(Protocol):
     metadata: JsonObject
     @property
     def future(self) -> Awaitable[str]: ...
+    def to_dict(self) -> JsonObject: ...
 
 class ReviewManagerPort(Protocol):
     approval_events: list[JsonObject]
     baseline: list[JsonObject] | None
+    persist_reviews: bool
+    auto_approve_reviews: bool
+    candidate_recovery: JsonObject | None
+    candidate_restore_callback: Callable[[JsonObject], JsonObject] | None
+    def get_pending(self) -> list[JsonObject]: ...
+    def get_request(self, request_id: int) -> ReviewRequestPort | None: ...
     def submit(self, review_type: str, title: str = '', content: str = '', question: str = '',
                metadata: JsonObject | None = None) -> ReviewRequestPort: ...
 

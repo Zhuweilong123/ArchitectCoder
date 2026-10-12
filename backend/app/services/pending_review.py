@@ -2,17 +2,22 @@
 
 from copy import deepcopy
 from pathlib import Path
+from app.agent_base.host_api.agents import ReviewRequestPort
+from app.agent_base.host_api.execution_types import RunCheckpoint
+from app.agent_base.host_api.data import JsonObject
+from app.agent_base.host_api.payloads import parse_checkpoint
 
 from app.services.candidate_artifact import CandidateArtifactStore
 from app.services.change_set import ChangeSet
 
 
-def review_event(request):
+def review_event(request: ReviewRequestPort) -> JsonObject:
     return {"event": "uml_review", "review_id": request.id, "title": request.title,
             **deepcopy(request.metadata), "auto": False}
 
 
-def suspend_review(request, checkpoint, change_set, artifact_store=None):
+def suspend_review(request: ReviewRequestPort, checkpoint: RunCheckpoint, change_set: ChangeSet | None,
+                   artifact_store: CandidateArtifactStore | None = None) -> RunCheckpoint:
     """Snapshot a candidate and restore the approved workspace before waiting."""
     reference = None
     if change_set is not None and change_set.has_changes:
@@ -20,11 +25,11 @@ def suspend_review(request, checkpoint, change_set, artifact_store=None):
         if reference is None:
             raise RuntimeError("Could not persist the pending review candidate")
         change_set.rollback()
-    return {**checkpoint, "status": "waiting_approval", "review_status": "pending",
+    return parse_checkpoint({**checkpoint, "status": "waiting_approval", "review_status": "pending",
             "stop_reason": "waiting_for_review", "resume_available": False,
             "post_review_status": "partial", "review_baseline": request.metadata.get("original_diagrams"),
             "pending_review": {**request.to_dict(), "id": request.id},
-            "review_candidate": reference}
+            "review_candidate": reference})
 
 
 def restore_pending_reviews(store, session_id, manager, run_map):

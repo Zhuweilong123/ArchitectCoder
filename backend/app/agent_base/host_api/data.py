@@ -13,8 +13,10 @@ from shared.llm_types import (
     ModelCallOptions as ModelCallOptions,
 )
 
+ConversationRole = Literal['system', 'user', 'assistant', 'tool', 'summary']
+
 class ConversationMessage(TypedDict):
-    role: Literal['system', 'user', 'assistant', 'tool', 'summary']
+    role: ConversationRole
     content: str
     metadata: NotRequired[JsonObject]
 

@@ -45,6 +45,7 @@ class ContractCheckResult:
 
     def to_dict(self) -> JsonObject:
         value = asdict(self)
+        value["changed_paths"] = list(self.changed_paths)
         value["violations"] = [item.to_dict() for item in self.violations]
         value["requires_confirmation"] = self.requires_confirmation
         value["can_commit"] = self.can_commit

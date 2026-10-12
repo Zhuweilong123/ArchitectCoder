@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from ...host_api.execution_types import StreamStep, ToolCallDetail
 
 from ...outcome import RunOutcome
 
@@ -19,12 +20,12 @@ class ReActProgress:
         self,
         step: int,
         actions: Optional[list[str]] = None,
-        tool_calls_detail: Optional[list[dict]] = None,
+        tool_calls_detail: Optional[list[ToolCallDetail]] = None,
         thought: str = "",
         is_final: bool = False,
         final_answer: str = "",
         outcome: Optional[RunOutcome] = None,
-    ):
+    ) -> None:
         self.step = step
         self.actions = actions or []
         self.tool_calls_detail = tool_calls_detail or []
@@ -33,7 +34,7 @@ class ReActProgress:
         self.final_answer = final_answer
         self.outcome = outcome
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> StreamStep:
         return {
             "step": self.step,
             "actions": self.actions,

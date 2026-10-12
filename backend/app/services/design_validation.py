@@ -34,7 +34,7 @@ def validate_project_diagrams(diagrams, workspace_root="", *, selected_keys=None
     return enforce_requirements(report, diagrams, requirements)
 
 
-def format_validation_report(report):
+def format_validation_report(report: ValidationReport) -> str:
     lines = [f"Validation status: {report.status}. Only listed checks were evaluated."]
     for check in report.checks:
         lines.append(f"CHECK {check.rule_id} {check.path}: {check.status}" + (f" — {check.reason}" if check.reason else ""))

@@ -9,7 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+from app.agent_base.host_api.data import JsonObject, TodoItem
+from app.agent_base.host_api.execution_types import RunCheckpoint, StreamStep, ToolCallDetail, TodoProgressState, OutcomePayload
+from app.agent_base.host_api.agents import ReviewManagerPort, TaskBindingPort
+from app.agent_base.host_api.payloads import json_object, parse_checkpoint
 
 from backend.config import get_settings
 
@@ -33,12 +37,10 @@ from app.agent_base.core.plugin_runtime import pin_plugins
 from app.agent_base.execution_summary import build_task_execution_summary
 from app.agent_base.evidence import update_checkpoint_evidence
 from app.agent_base.outcome import RunOutcome
-from app.agent_base.tools.my_tools.conversation_tools import ProgressRelay
 from app.services.audit_log import record_audit as _record_audit
 from app.services.candidate_artifact import CandidateArtifactError, CandidateArtifactStore
+from app.agent_base.host_api.runs import RunStateError, RunStatus
 from app.services.run_state import (
-    RunStateError,
-    RunStatus,
     get_run_store,
     run_status_for_completion,
 )
@@ -50,78 +52,76 @@ _TASK_BIND_TIMEOUT_SECONDS = 5.0
 _REVIEW_BASELINE_TIMEOUT_SECONDS = 5.0
 
 
+def _event_id(event: JsonObject) -> int:
+    value = event.get("review_id", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("review_id must be an integer")
+    return value
+
+
 class _ExecutionProgressForwarder:
     """Translate domain progress events into transport events for one run."""
 
-    def __init__(self, send: Callable[[dict], Awaitable[bool]], trace_log: TraceSink | None):
+    def __init__(self, send: Callable[[JsonObject], Awaitable[bool]], trace_log: TraceSink | None):
         self._send = send
         self._trace_log = trace_log
         self.uml_review_seen = False
 
-    async def __call__(self, event: dict) -> None:
+    async def __call__(self, event: JsonObject) -> None:
         event_type = event.get("event")
         if event_type == "design_element":
-            await self._send({
+            await self._send(json_object({
                 "event": "design_element",
-                "type": event.get("type", ""),
-                "data": event.get("data", ""),
-            })
+                "type": str(event.get("type", "") or ""),
+                "data": str(event.get("data", "") or ""),
+            }))
         elif event_type == "review_timeout":
-            await self._send({
+            await self._send(json_object({
                 "event": "review_timeout",
-                "review_id": event.get("review_id", 0),
-                "review_type": event.get("review_type", ""),
-                "title": event.get("title", ""),
+                "review_id": _event_id(event),
+                "review_type": str(event.get("review_type", "") or ""),
+                "title": str(event.get("title", "") or ""),
                 "timeout": event.get("timeout", 0),
-            })
+            }))
         elif event_type == "review":
-            review_type = event.get("review_type", "code")
+            review_type = str(event.get("review_type", "code") or "code")
             if review_type == "uml_diff":
                 self.uml_review_seen = True
             if self._trace_log:
                 self._trace_log.review_request(
-                    review_id=event.get("review_id", 0),
+                    review_id=_event_id(event),
                     review_type=review_type,
-                    title=event.get("title", ""),
-                    question=event.get("question", ""),
-                    content=event.get("content", ""),
-                    metadata=event.get("metadata", {}) or {},
+                    title=str(event.get("title", "") or ""),
+                    question=str(event.get("question", "") or ""),
+                    content=str(event.get("content", "") or ""),
+                    metadata=json_object(event.get("metadata") or {}),
                 )
             if review_type == "uml_diff":
-                metadata = event.get("metadata", {}) or {}
-                await self._send({
+                metadata = json_object(event.get("metadata") or {})
+                await self._send(json_object({
                     "event": "uml_review",
-                    "review_id": event.get("review_id", 0),
-                    "title": event.get("title", ""),
+                    "review_id": _event_id(event),
+                    "title": str(event.get("title", "") or ""),
                     "diagrams": metadata.get("diagrams", []),
                     "changed_diagrams": metadata.get("changed_diagrams"),
                     "original_diagrams": metadata.get("original_diagrams"),
                     "validation_report": metadata.get("validation_report"),
-                })
+                }))
             else:
-                await self._send({
+                await self._send(json_object({
                     "event": "request_review",
-                    "review_id": event.get("review_id", 0),
+                    "review_id": _event_id(event),
                     "review_type": review_type,
-                    "title": event.get("title", ""),
-                    "content": event.get("content", ""),
-                    "question": event.get("question", ""),
-                })
+                    "title": str(event.get("title", "") or ""),
+                    "content": str(event.get("content", "") or ""),
+                    "question": str(event.get("question", "") or ""),
+                }))
 
 
-def _todo_progress_state() -> dict:
+def _todo_progress_state() -> TodoProgressState:
     runtime = get_runtime()
-    todos: list[dict] = []
-    for item in runtime.todos:
-        if not isinstance(item, dict):
-            continue
-        snapshot = {
-            key: item[key]
-            for key in ("content", "status", "kind", "acceptance")
-            if key in item
-        }
-        if snapshot:
-            todos.append(snapshot)
+    from pydantic import TypeAdapter
+    todos = TypeAdapter(list[TodoItem]).validate_python(runtime.todos, strict=True)
     return {
         "todos": todos,
         "planning_mode": runtime.requires_acceptance_todos,
@@ -131,7 +131,7 @@ def _todo_progress_state() -> dict:
 def _persist_run_checkpoint(
     run_id: str,
     owner_id: str,
-    checkpoint: dict,
+    checkpoint: RunCheckpoint,
     status: str | RunStatus = RunStatus.RUNNING,
     error: str = "",
 ) -> None:
@@ -144,13 +144,13 @@ def _persist_run_checkpoint(
             expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED},
             owner_id=owner_id,
             error=error,
-            metadata_patch={"checkpoint": dict(checkpoint)},
+            metadata_patch={"checkpoint": json_object(checkpoint)},
         )
     except RunStateError:
         logger.warning("[RunState] Could not persist checkpoint for run %s", run_id, exc_info=True)
 
 def _terminal_checkpoint_status(
-    outcome: RunOutcome | None, todos: list[dict],
+    outcome: RunOutcome | None, todos: list[TodoItem],
 ) -> tuple[str, str | None]:
     if outcome is not None and outcome.status != "completed":
         return outcome.status, outcome.stop_reason
@@ -163,7 +163,7 @@ def _terminal_checkpoint_status(
 
 
 def _sync_checkpoint_outcome(
-    checkpoint: dict,
+    checkpoint: RunCheckpoint,
     *,
     status: str,
     stop_reason: str | None,
@@ -178,8 +178,11 @@ def _sync_checkpoint_outcome(
     """
     previous = checkpoint.get("outcome")
     if isinstance(previous, dict) and preserve_as and previous.get("stop_reason") != stop_reason:
-        checkpoint[preserve_as] = dict(previous)
-    outcome = dict(previous) if isinstance(previous, dict) else {}
+        if preserve_as != "pre_gate_outcome":
+            raise ValueError("Unsupported preserved outcome field")
+        checkpoint["pre_gate_outcome"] = previous.copy()
+    outcome: OutcomePayload = previous.copy() if previous is not None else {
+        "status": status, "stop_reason": stop_reason or "", "final_answer": "", "total_tokens": 0}
     outcome["status"] = status
     if stop_reason:
         outcome["stop_reason"] = stop_reason
@@ -197,10 +200,10 @@ def _finalize_terminal_checkpoint(
     task_id: str,
     request_summary: str,
     fallback_review_requested: bool,
-    review_manager: Any,
-) -> tuple[str, list[dict]]:
+    review_manager: ReviewManagerPort | None,
+) -> tuple[str, list[TodoItem]]:
     """Shape the durable checkpoint for a completed streamed Agent run."""
-    todos = get_runtime().todos or []
+    todos = _todo_progress_state()["todos"]
     terminal_status, stop_reason = _terminal_checkpoint_status(outcome, todos)
     if terminal_status == "completed" and any(
         not item["passed"]
@@ -235,7 +238,7 @@ def _finalize_terminal_checkpoint(
         agent.last_run_checkpoint.update({
             "review_status": "pending",
             "post_review_status": terminal_status,
-            "review_baseline": review_manager.baseline,
+            "review_baseline": review_manager.baseline if review_manager else None,
         })
     return terminal_status, todos
 
@@ -248,15 +251,9 @@ def recent_conversation_history(
 ) -> tuple[dict[str, str], ...]:
     """Return the latest complete user/assistant turns without truncating text."""
     messages: list[tuple[str, str]] = []
-    for item in getattr(agent, "_history", ()) or ():
-        if isinstance(item, dict):
-            role = str(item.get("role") or "")
-            content = str(item.get("content") or "")
-        else:
-            role = str(getattr(item, "role", "") or "")
-            content = str(getattr(item, "content", "") or "")
-        if role in {"user", "assistant"}:
-            messages.append((role, content))
+    for item in agent.export_conversation().messages:
+        if item.role in {"user", "assistant"}:
+            messages.append((item.role, item.content))
 
     completed_turns: list[tuple[tuple[str, str], tuple[str, str]]] = []
     pending_user: tuple[str, str] | None = None
@@ -283,14 +280,14 @@ async def _create_task_execution_async(
     owner: str,
     subject: str,
     description: str,
-):
+) -> TaskBindingPort:
     """Create the optional durable task binding off the Agent event loop.
 
     Task persistence is an execution aid, not part of the response-critical
     Agent path.  File-system stalls or an import-time lock must not prevent
     the main Agent from reaching its first LLM call.
     """
-    def _bind():
+    def _bind() -> TaskBindingPort:
         logger.info(
             "[AgentExecution] task binding worker started run=%s scope=%s",
             run_id,
@@ -319,9 +316,9 @@ async def _create_task_execution_async(
         timeout=_TASK_BIND_TIMEOUT_SECONDS,
     )
 
-async def _load_review_baseline_async(project_file: str):
+async def _load_review_baseline_async(project_file: str) -> list[JsonObject] | None:
     """Read the review baseline without blocking the Agent event loop."""
-    def _load():
+    def _load() -> list[JsonObject] | None:
         logger.info("[AgentExecution] review baseline worker started")
         if not os.path.isfile(project_file):
             logger.info("[AgentExecution] review baseline file is unavailable")
@@ -346,11 +343,11 @@ async def _load_review_baseline_async(project_file: str):
 
 async def _request_fallback_uml_review(
     *,
-    review_manager: Any,
+    review_manager: ReviewManagerPort | None,
     uml_review_seen: bool,
     project_file: str,
     trace_log: TraceSink | None,
-    send: Callable[[dict], Awaitable[bool]],
+    send: Callable[[JsonObject], Awaitable[bool]],
     fallback_review_runs: dict[int, str] | None,
     run_id: str,
     workspace_root: str = "",
@@ -389,12 +386,12 @@ async def _request_fallback_uml_review(
             title="检测到未审核的设计变更",
             content="Agent 修改了设计文件但未提交 diff 审核",
             question="设计文件已被修改但未经审核，请确认是否接受此变更。",
-            metadata={
+            metadata=json_object({
                 "diagrams": after,
                 "changed_diagrams": changed,
                 "original_diagrams": review_manager.baseline,
                 "validation_report": report.to_dict(),
-            },
+            }),
         )
         fallback_requested = True
         if fallback_review_runs is not None:
@@ -410,7 +407,7 @@ async def _request_fallback_uml_review(
         logger.info("[AgentChat] 兜底审核补推: review_id=%d", request.id)
         if review_manager.persist_reviews and not review_manager.auto_approve_reviews:
             return True
-        await send({
+        await send(json_object({
             "event": "uml_review",
             "review_id": request.id,
             "title": request.title,
@@ -419,7 +416,7 @@ async def _request_fallback_uml_review(
             "original_diagrams": review_manager.baseline,
             "validation_report": report.to_dict(),
             "auto": True,
-        })
+        }))
         return True
     except Exception:
         logger.exception("[AgentChat] Fallback review check failed")
@@ -431,7 +428,7 @@ async def _publish_terminal_execution(
     agent: ReActAgent,
     terminal_status: str,
     fallback_review_requested: bool,
-    task_tool_calls: list[dict],
+    task_tool_calls: list[ToolCallDetail],
     user_message: str,
     final_answer: str,
     project_file: str,
@@ -440,7 +437,7 @@ async def _publish_terminal_execution(
     session_id: str,
     conversation_history: tuple[dict[str, str], ...],
     trace_log: TraceSink | None,
-    send: Callable[[dict], Awaitable[bool]],
+    send: Callable[[JsonObject], Awaitable[bool]],
     write_task_summary: Callable[[str], None],
 ) -> None:
     """Publish a terminal run as awaiting approval or a completed outcome."""
@@ -459,14 +456,14 @@ async def _publish_terminal_execution(
                 RunStatus.WAITING_APPROVAL,
                 expected={RunStatus.RUNNING},
                 owner_id=run_owner,
-                metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                metadata_patch={"checkpoint": json_object(agent.last_run_checkpoint)},
             )
         write_task_summary(summary_status)
-        await send({
+        await send(json_object({
             "event": "awaiting_review",
             "run_id": run_id,
             "checkpoint": agent.last_run_checkpoint,
-        })
+        }))
         return
 
     try:
@@ -483,7 +480,7 @@ async def _publish_terminal_execution(
             run_status_for_completion(terminal_status),
             expected={RunStatus.RUNNING},
             owner_id=run_owner,
-            metadata_patch={"checkpoint": agent.last_run_checkpoint},
+            metadata_patch={"checkpoint": json_object(agent.last_run_checkpoint)},
         )
         _record_audit(
             "run_succeeded" if terminal_status == "completed" else "run_partial",
@@ -516,22 +513,22 @@ async def _publish_terminal_execution(
                 "finalization_textual_tool_markup_blocked", False,
             ),
         })
-    await send({
+    await send(json_object({
         "event": "done",
         "result": final_answer,
         "run_id": run_id,
         "checkpoint": agent.last_run_checkpoint,
-    })
+    }))
 
 
 def _update_stream_checkpoint(
     agent: ReActAgent,
-    step: dict,
-    task_tool_calls: list[dict],
+    step: StreamStep,
+    task_tool_calls: list[ToolCallDetail],
     *,
     run_id: str,
     run_owner: str,
-) -> dict:
+) -> TodoProgressState:
     """Persist one stream step and return its current todo projection."""
     todo_state = _todo_progress_state()
     todos = todo_state.get("todos", [])
@@ -564,7 +561,7 @@ def _update_stream_checkpoint(
     return todo_state
 
 
-def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -> None:
+def _record_stream_step(trace_log: TraceSink | None, step: StreamStep, thought: str) -> None:
     """Write the stream step to the optional trace sink.
 
     Tool spans are emitted by ``ToolRoundExecutor`` at the actual execution
@@ -581,9 +578,9 @@ def _record_stream_step(trace_log: TraceSink | None, step: dict, thought: str) -
     )
 
 
-def _stream_progress_event(step: dict, todo_state: dict) -> dict:
+def _stream_progress_event(step: StreamStep, todo_state: TodoProgressState) -> JsonObject:
     """Build the bounded transport payload for a stream step."""
-    return {
+    return json_object({
         "event": "progress",
         "step": step["step"],
         "actions": step["actions"],
@@ -599,16 +596,16 @@ def _stream_progress_event(step: dict, todo_state: dict) -> dict:
         "is_final": step["is_final"],
         "final_answer": step["final_answer"] if step["is_final"] else "",
         **todo_state,
-    }
+    })
 
 @pin_plugins
 @extension_request
 async def handle_agent_execution(
     agent: ReActAgent,
-    review_mgr,
+    review_mgr: ReviewManagerPort | None,
     user_message: str,
-    send: Callable[[dict], Awaitable[bool]],
-    stop_check,
+    send: Callable[[JsonObject], Awaitable[bool]],
+    stop_check: Callable[[], bool],
     trace_log: TraceSink | None = None,
     project_file: str = "",
     source_dir: str = "",
@@ -621,7 +618,7 @@ async def handle_agent_execution(
     run_id: str = "",
     run_owner: str = "",
     session_id: str = "",
-    resume_checkpoint: dict | None = None,
+    resume_checkpoint: JsonObject | None = None,
     disconnect_check: Callable[[], bool] | None = None,
     design_contract_enabled: bool | None = None,
 ) -> None:
@@ -642,27 +639,27 @@ async def handle_agent_execution(
 
     # 本轮是否经过 submit_uml_review 审核（兜底检测用，见 is_final 分支）
     progress_forwarder = _ExecutionProgressForwarder(send, trace_log)
-    resume_checkpoint = dict(resume_checkpoint or {})
+    previous_checkpoint = parse_checkpoint(resume_checkpoint or {})
     checkpoint_request_summary = str(
-        resume_checkpoint.get("request_summary") or user_message
+        previous_checkpoint.get("request_summary") or user_message
     )[:500]
     agent.last_run_checkpoint = {
         "run_id": run_id,
         "plugin_plan_id": get_hooks().plan_id,
         "status": "running",
         "request_summary": checkpoint_request_summary,
-        "completed_items": list(resume_checkpoint.get("completed_items") or []),
-        "pending_items": list(resume_checkpoint.get("pending_items") or []),
-        "changed_files": list(resume_checkpoint.get("changed_files") or []),
-        "verification": list(resume_checkpoint.get("verification") or []),
-        "verification_results": list(resume_checkpoint.get("verification_results") or []),
-        "mutation_evidence": dict(resume_checkpoint.get("mutation_evidence") or {}),
+        "completed_items": list(previous_checkpoint.get("completed_items") or []),
+        "pending_items": list(previous_checkpoint.get("pending_items") or []),
+        "changed_files": list(previous_checkpoint.get("changed_files") or []),
+        "verification": list(previous_checkpoint.get("verification") or []),
+        "verification_results": list(previous_checkpoint.get("verification_results") or []),
+        "mutation_evidence": dict(previous_checkpoint.get("mutation_evidence") or {}),
         "last_error": None,
         "stop_reason": None,
         "resume_available": False,
-        "resume_of": resume_checkpoint.get("run_id", ""),
-        "candidate_artifact": resume_checkpoint.get("candidate_artifact"),
-        "candidate_recovery": bool(resume_checkpoint.get("candidate_artifact")),
+        "resume_of": previous_checkpoint.get("run_id", ""),
+        "candidate_artifact": previous_checkpoint.get("candidate_artifact"),
+        "candidate_recovery": bool(previous_checkpoint.get("candidate_artifact")),
         "project_file": project_file,
         "source_dir": source_dir,
         "test_dir": test_dir,
@@ -676,8 +673,8 @@ async def handle_agent_execution(
         # rolled back.  The chat transport restores the candidate only after
         # this review is accepted.
         review_mgr.candidate_recovery = (
-            dict(resume_checkpoint.get("candidate_artifact"))
-            if isinstance(resume_checkpoint.get("candidate_artifact"), dict)
+            dict(previous_checkpoint.get("candidate_artifact") or {})
+            if isinstance(previous_checkpoint.get("candidate_artifact"), dict)
             else None
         )
 
@@ -685,11 +682,11 @@ async def handle_agent_execution(
     _runtime_token = set_runtime(AgentRuntime(
         stop_check=stop_check,
         run_id=run_id,
-        policy_metadata={"validation_requirements": list(resume_checkpoint.get("validation_requirements") or [])},
+        policy_metadata={"validation_requirements": list(previous_checkpoint.get("validation_requirements") or [])},
     ))
     logger.info("[AgentExecution] runtime context installed run=%s", run_id)
-    task_binding = None
-    task_tool_calls: list[dict] = []
+    task_binding: TaskBindingPort | None = None
+    task_tool_calls: list[ToolCallDetail] = []
     task_summary_written = False
     stream = None
 
@@ -701,7 +698,7 @@ async def handle_agent_execution(
         try:
             task_binding.sync(
                 todos=list(get_runtime().todos or []),
-                checkpoint=agent.last_run_checkpoint,
+                checkpoint=json_object(agent.last_run_checkpoint),
             )
         except Exception:
             logger.warning(
@@ -732,7 +729,7 @@ async def handle_agent_execution(
             try:
                 task_binding.finalize(
                     status,
-                    checkpoint=agent.last_run_checkpoint,
+                    checkpoint=json_object(agent.last_run_checkpoint),
                 )
             except Exception:
                 logger.warning(
@@ -761,8 +758,8 @@ async def handle_agent_execution(
             logger.info("[AgentExecution] loading review baseline run=%s", run_id)
             try:
                 review_mgr.baseline = (
-                    resume_checkpoint["review_baseline"]
-                    if "review_baseline" in resume_checkpoint
+                    previous_checkpoint["review_baseline"]
+                    if "review_baseline" in previous_checkpoint
                     else await _load_review_baseline_async(project_file)
                 )
                 logger.info(
@@ -819,14 +816,14 @@ async def handle_agent_execution(
             change_set.begin()
         if review_mgr is not None:
             review_mgr.candidate_restore_callback = None
-            candidate_reference = resume_checkpoint.get("candidate_artifact")
+            candidate_reference = previous_checkpoint.get("candidate_artifact")
             if change_set is not None and isinstance(candidate_reference, dict):
                 allowed_roots = tuple(
                     value for value in (workspace_root, source_dir, test_dir, design_dir, project_file)
                     if value
                 )
 
-                def _restore_candidate_after_design(reference: dict):
+                def _restore_candidate_after_design(reference: JsonObject) -> JsonObject:
                     if getattr(agent, "candidate_recovery_applied", False):
                         return agent.last_run_checkpoint.get("candidate_restore", {})
                     restored = CandidateArtifactStore(get_settings()).restore(
@@ -851,7 +848,7 @@ async def handle_agent_execution(
                     return restored
 
                 review_mgr.candidate_restore_callback = _restore_candidate_after_design
-        task_tool_calls: list[dict] = []
+        task_tool_calls = []
         agent.tool_registry.set_allowed_tools(None)
         context = "\n\n".join(filter(None, [
             context, enabled_tools_context(),
@@ -861,7 +858,7 @@ async def handle_agent_execution(
             checkpoint=agent.last_run_checkpoint, data={
                 "user_message": user_message, "project_file": project_file,
                 "source_dir": source_dir, "test_dir": test_dir,
-                "previous_checkpoint": resume_checkpoint,
+                "previous_checkpoint": json_object(previous_checkpoint),
                 "available_tools": tuple(agent.tool_registry.list_tools()),
                 "record_event": trace_log.event if trace_log else None,
             }), agent_name=getattr(agent, "name", "Agent"))
@@ -924,16 +921,19 @@ async def handle_agent_execution(
                     run_id=run_id,
                     workspace_root=workspace_root,
                 )
-                if fallback_review_requested:
+                if fallback_review_requested and review_mgr is not None:
                     pending = review_mgr.get_pending()
                     if pending:
-                        raise AgentAwaitingReview(review_mgr.get_request(pending[-1]["id"]))
+                        request = review_mgr.get_request(_event_id({"review_id": pending[-1]["id"]}))
+                        if request is None:
+                            raise RuntimeError("Pending review request disappeared")
+                        raise AgentAwaitingReview(request)
 
                 execution_check = await dispatch_execution(ExecutionRequest(
                     ExecutionSlots.CHECK, run_id=run_id,
                     checkpoint=agent.last_run_checkpoint, allowed_tools=main_allowed_tools,
                     data={
-                        "workspace_manifest": dict(getattr(agent, "workspace_manifest", {}) or {}),
+                        "workspace_manifest": agent.workspace_manifest,
                         "changed_paths": change_set.manifest() if change_set is not None else (),
                         "design_contract_enabled": design_contract_enabled,
                         "record_event": trace_log.event if trace_log else None,
@@ -971,11 +971,11 @@ async def handle_agent_execution(
                                     artifact_id=candidate_artifact.get("artifact_id", ""),
                                     file_count=candidate_artifact.get("file_count", 0),
                                 )
-                            await send({
+                            await send(json_object({
                                 **execution_check.recovery_event,
                                 "run_id": run_id,
                                 "file_count": candidate_artifact.get("file_count", 0),
-                            })
+                            }))
                         change_set.rollback()
                         rollback_completed = True
                         if trace_log:
@@ -1036,11 +1036,11 @@ async def handle_agent_execution(
                     for item in manifest:
                         committed_path = str(item.get("path", ""))
                         if committed_path.lower().endswith(".umlproj") and os.path.isfile(committed_path):
-                            await send({
+                            await send(json_object({
                                 "event": "project_committed",
                                 "filepath": committed_path,
                                 "revision": project_repository.revision(committed_path),
-                            })
+                            }))
                     if trace_log:
                         trace_log.event(
                             "changes_committed",
@@ -1089,8 +1089,8 @@ async def handle_agent_execution(
     except AgentAwaitingReview as awaiting:
         from app.services.pending_review import suspend_review, review_event
         _sync_task_execution()
-        agent.last_run_checkpoint.update(workspace_root=workspace_root,
-                                         todos=list(get_runtime().todos or []))
+        agent.last_run_checkpoint.update({"workspace_root": workspace_root,
+                                         "todos": _todo_progress_state()["todos"]})
         agent.last_run_checkpoint = suspend_review(awaiting.request, agent.last_run_checkpoint, change_set)
         _write_task_summary("waiting_approval")
         _persist_run_checkpoint(run_id, run_owner, agent.last_run_checkpoint, status=RunStatus.WAITING_APPROVAL)
@@ -1101,15 +1101,15 @@ async def handle_agent_execution(
                                      title=awaiting.request.title, content=awaiting.request.content,
                                      question=awaiting.request.question)
         await send(review_event(awaiting.request))
-        await send({"event": "done", "run_id": run_id,
+        await send(json_object({"event": "done", "run_id": run_id,
                     "result": "设计候选已保存，任务暂停等待审核；接受后继续执行。",
-                    "checkpoint": agent.last_run_checkpoint})
+                    "checkpoint": agent.last_run_checkpoint}))
     except asyncio.CancelledError:
         disconnected = bool(disconnect_check and disconnect_check())
         user_stopped = bool(stop_check())
         is_paused = disconnected or user_stopped
         agent.last_run_checkpoint = {
-            **getattr(agent, "last_run_checkpoint", {}),
+            **agent.last_run_checkpoint,
             "run_id": run_id,
             "status": "paused" if is_paused else "stopped",
             "resume_available": is_paused,
@@ -1150,7 +1150,7 @@ async def handle_agent_execution(
         # user-controlled stop path.
         is_paused = True
         agent.last_run_checkpoint = {
-            **getattr(agent, "last_run_checkpoint", {}),
+            **agent.last_run_checkpoint,
             "run_id": run_id,
             "status": "paused",
             "resume_available": True,
@@ -1163,7 +1163,7 @@ async def handle_agent_execution(
                     run_id, RunStatus.PAUSED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error="user requested stop",
-                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                    metadata_patch={"checkpoint": json_object(agent.last_run_checkpoint)},
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s paused", run_id, exc_info=True)
@@ -1171,13 +1171,13 @@ async def handle_agent_execution(
                 "run_paused", run_id=run_id, session_id=session_id,
                 reason="user requested stop",
             )
-        await send( {
+        await send( json_object({
             "event": "stopped", "reason": "User requested stop",
             "status": "paused", "resume_available": is_paused,
-        })
+        }))
     except Exception as e:
         agent.last_run_checkpoint = {
-            **getattr(agent, "last_run_checkpoint", {}),
+            **agent.last_run_checkpoint,
             "run_id": run_id,
             "status": "failed",
             "last_error": f"{type(e).__name__}: {e}",
@@ -1196,7 +1196,7 @@ async def handle_agent_execution(
                     run_id, RunStatus.FAILED,
                     expected={RunStatus.RUNNING, RunStatus.WAITING_APPROVAL},
                     owner_id=run_owner, error=f"{type(e).__name__}: {e}",
-                    metadata_patch={"checkpoint": agent.last_run_checkpoint},
+                    metadata_patch={"checkpoint": json_object(agent.last_run_checkpoint)},
                 )
             except RunStateError:
                 logger.warning("[RunState] Could not mark run %s failed", run_id, exc_info=True)
@@ -1206,9 +1206,9 @@ async def handle_agent_execution(
             )
         if trace_log:
             trace_log.error(event_type="agent", message=f"Agent error: {type(e).__name__}: {e}")
-        await send( {
+        await send( json_object({
             "event": "error", "message": f"Agent error: {type(e).__name__}: {e}",
-        })
+        }))
     finally:
         try:
             if stream is not None:

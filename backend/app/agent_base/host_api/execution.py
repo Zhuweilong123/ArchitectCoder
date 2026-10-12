@@ -5,11 +5,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TypedDict, Protocol
 from .data import JsonObject, JsonValue, WorkspaceSnapshot, ChangedPath, ExecutionRejection
+from .execution_types import RunCheckpoint
 from .contexts import AnalysisRequest, ReviewPrompt
 
 
 class EventRecorder(Protocol):
-    def __call__(self, event_type: str, **payload: JsonValue) -> None: ...
+    def __call__(self, event_type: str, **payload: JsonValue) -> JsonObject | None: ...
 
 
 class ExecutionData(TypedDict, total=False):
@@ -41,7 +42,7 @@ class ExecutionRequest:
     run_id: str = ""
     data: ExecutionData = field(default_factory=lambda: ExecutionData())
     capabilities: ExecutionCapabilities = field(default_factory=lambda: ExecutionCapabilities())
-    checkpoint: JsonObject = field(default_factory=dict)
+    checkpoint: RunCheckpoint = field(default_factory=lambda: RunCheckpoint())
     context: str = ""
     allowed_tools: list[str] | None = None
     allowed: bool = True

@@ -230,10 +230,11 @@ def test_workspace_switch_rebuilds_tools_and_preserves_conversation(tmp_path, mo
         (root / "src").mkdir(parents=True)
         (root / "src" / "main.py").write_text("pass\n", encoding="utf-8")
     old_manifest = WorkspaceManifest.from_paths(workspace_root=str(old_root))
-    original_history = [{"role": "user", "content": "previous question"}]
+    from app.agent_base.host_api.agents import ConversationSnapshot, HistoryEntry
+    original_history = ConversationSnapshot((HistoryEntry("user", "previous question", None, {}),), "previous context")
     agent = SimpleNamespace(
         llm=None, last_run_checkpoint={}, workspace_manifest=old_manifest.to_dict(),
-        _history=original_history, _history_summary="previous context",
+        export_conversation=lambda: original_history,
         tool_registry=SimpleNamespace(get_tool=lambda _: None),
     )
     connection = ChatConnection()
@@ -256,10 +257,12 @@ def test_workspace_switch_rebuilds_tools_and_preserves_conversation(tmp_path, mo
         )
         replacement = SimpleNamespace(
             llm=llm, last_run_checkpoint={}, workspace_manifest=manifest.to_dict(),
-            _history=[], _history_summary="",
+            conversation=ConversationSnapshot(),
             tool_registry=SimpleNamespace(get_tool=lambda _: None),
             policy=CapabilityPolicy(workspace_roots=list(manifest.workspace_roots)),
         )
+        replacement.restore_conversation = lambda snapshot: setattr(replacement, "conversation", snapshot)
+        replacement.export_conversation = lambda: replacement.conversation
         created.append(replacement)
         return replacement, ReviewManager(session_id="checkpoint-recovery-test"), None
 
@@ -276,8 +279,7 @@ def test_workspace_switch_rebuilds_tools_and_preserves_conversation(tmp_path, mo
     assert len(created) == 1  # Same normalized workspace continues to reuse the Agent.
     assert len(started) == 2
     replacement = session.agent
-    assert replacement._history == original_history
-    assert replacement._history_summary == "previous context"
+    assert replacement.export_conversation() == original_history
     assert replacement.workspace_manifest["source_root"] == str((new_root / "src").resolve())
     assert replacement.policy.check("read_file", {"path": str(new_root / "src" / "main.py")}) is None
     assert replacement.policy.check("read_file", {"path": str(old_root / "src" / "main.py")})

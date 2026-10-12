@@ -18,7 +18,12 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 from app.agent_base.host_api.agents import AgentPort, PromptBuilderPort, ProgressPort, ProgressSnapshotPort, ReviewManagerPort
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+from app.agent_base.host_api.data import JsonObject
+from app.agent_base.host_api.execution_types import RunCheckpoint, ToolCallDetail
+from app.agent_base.host_api.tracing import TraceSink
+from app.agent_base.host_api.payloads import parse_checkpoint, json_object
+from .runtime_types import EvaluationActiveTurn, EvaluationTurnRecord, CheckerRuntime
 
 from app.agent_base.host_api.services import get_agent_services, get_observation_services, get_runtime_services
 from app.agent_base.execution_summary import build_task_execution_summary
@@ -200,11 +205,11 @@ def _tag_criteria(
     return results
 
 
-def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str, Any]]:
+def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[ToolCallDetail]:
     """Return production tool calls after a turn's trace offset."""
     if not trace_path:
         return []
-    tools: list[dict[str, Any]] = []
+    tools: list[ToolCallDetail] = []
     try:
         for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
             event = json.loads(line)
@@ -212,7 +217,7 @@ def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str,
                 continue
             tools.append({
                 "name": str(event.get("tool_name") or ""),
-                "arguments": event.get("arguments") or {},
+                "arguments": json_object(event.get("arguments") or {}),
                 "status": "completed",
             })
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
@@ -346,7 +351,7 @@ class EvalRunner:
         self,
         case: EvalCase,
         agent_factory: AgentFactory | None = None,
-        result_metadata: dict[str, Any] | None = None,
+        result_metadata: JsonObject | None = None,
         *,
         fixture_override: tuple[Path, ProjectManifest] | None = None,
     ) -> EvalResult:
@@ -492,7 +497,7 @@ class EvalRunner:
                             )
                     turn_hard_checker_results: list[CheckerResult] = []
                     turn_score_checker_results: list[CheckerResult] = []
-                    active_turn: dict[str, Any] = {
+                    active_turn: EvaluationActiveTurn = {
                         "turn": 0,
                         "details": [],
                         "checkpoint": {},
@@ -502,7 +507,7 @@ class EvalRunner:
 
                     def finalize_task(
                         status: str,
-                        checkpoint: dict[str, Any] | None = None,
+                        checkpoint: RunCheckpoint | None = None,
                     ) -> None:
                         nonlocal task_finalized
                         if task_binding is None:
@@ -510,7 +515,7 @@ class EvalRunner:
                         if task_finalized:
                             return
                         try:
-                            effective_checkpoint = dict(
+                            effective_checkpoint = parse_checkpoint(
                                 checkpoint or getattr(
                                     agent, "last_run_checkpoint", {}
                                 ) or {}
@@ -539,7 +544,7 @@ class EvalRunner:
                         nonlocal execution_error, failure_phase
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
-                        turn_records: list[dict[str, Any]] = []
+                        turn_records: list[EvaluationTurnRecord] = []
                         # Every user request is a production task.  Multi-turn
                         # cases preserve the same Agent/history, but each turn
                         # gets a fresh production task budget.  Totals below
@@ -555,7 +560,7 @@ class EvalRunner:
                             agent, "tool_registry"
                         )
 
-                        def sync_task_binding(checkpoint: dict[str, Any]) -> None:
+                        def sync_task_binding(checkpoint: RunCheckpoint) -> None:
                             if task_binding is None:
                                 return
                             try:
@@ -572,12 +577,12 @@ class EvalRunner:
 
                         def sync_progress_checkpoint(
                             step: int,
-                            details: list[dict],
+                            details: list[ToolCallDetail],
                         ) -> None:
                             """Persist a bounded checkpoint before a turn can be interrupted."""
                             if task_binding is None:
                                 return
-                            checkpoint = dict(
+                            checkpoint = parse_checkpoint(
                                 getattr(agent, "last_run_checkpoint", {}) or {}
                             )
                             checkpoint.update({
@@ -599,8 +604,8 @@ class EvalRunner:
 
                         def record_tool_details(
                             step: int,
-                            details: list[dict],
-                            collector: list[dict] | None = None,
+                            details: list[ToolCallDetail],
+                            collector: list[ToolCallDetail] | None = None,
                         ) -> None:
                             """Mirror streamed tool details into the evaluation trace."""
                             if collector is not None:
@@ -654,7 +659,7 @@ class EvalRunner:
                                 turn_tool_calls = 0
                                 turn_tokens = 0
                                 final_answer = ""
-                                turn_tool_details: list[dict] = active_turn["details"]
+                                turn_tool_details: list[ToolCallDetail] = active_turn["details"]
                                 async for progress in agent.arun_stream(prompt):
                                     details = progress.tool_calls_detail or []
                                     record_tool_details(progress.step, details, turn_tool_details)
@@ -684,7 +689,7 @@ class EvalRunner:
                                     # not be truncated before they are checked.
                                     "answer": final_answer,
                                 })
-                                active_turn["checkpoint"] = dict(
+                                active_turn["checkpoint"] = parse_checkpoint(
                                     getattr(agent, "last_run_checkpoint", {}) or {}
                                 )
                                 sync_task_binding(active_turn["checkpoint"])
@@ -715,16 +720,16 @@ class EvalRunner:
                             turn_tool_calls = 0
                             turn_tokens = 0
                             final_answer = ""
-                            turn_tool_details: list[dict] = active_turn["details"]
+                            turn_tool_details: list[ToolCallDetail] = active_turn["details"]
                             tool_budget_exceeded = False
                             if production_agent:
                                 # Use the same transport-neutral coordinator as
                                 # the WebSocket path.  The sender is the only
                                 # frontend boundary and is intentionally stubbed
                                 # for an offline evaluation.
-                                sent_events: list[dict] = []
+                                sent_events: list[JsonObject] = []
 
-                                async def _eval_send(payload: dict) -> bool:
+                                async def _eval_send(payload: JsonObject) -> bool:
                                     sent_events.append(payload)
                                     return True
 
@@ -859,7 +864,7 @@ class EvalRunner:
                                 }
                                 if task_binding is not None:
                                     agent.last_run_checkpoint["task_id"] = task_binding.task_id
-                            active_turn["checkpoint"] = dict(agent.last_run_checkpoint)
+                            active_turn["checkpoint"] = parse_checkpoint(agent.last_run_checkpoint)
                             sync_task_binding(active_turn["checkpoint"])
                             if production_agent and active_turn["checkpoint"].get("task_id"):
                                 result.metadata["task_id"] = active_turn["checkpoint"]["task_id"]
@@ -970,7 +975,7 @@ class EvalRunner:
                             timeout=evaluation_deadline_seconds,
                         )
                     except asyncio.TimeoutError:
-                        timeout_checkpoint = dict(
+                        timeout_checkpoint = parse_checkpoint(
                             active_turn.get("checkpoint") or {}
                         )
                         timeout_checkpoint["status"] = "timed_out"
@@ -1027,7 +1032,7 @@ class EvalRunner:
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {evaluation_deadline_seconds}s"
                 result.failure_category = "timeout"
-                timeout_checkpoint = dict(
+                timeout_checkpoint = parse_checkpoint(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
                 timeout_checkpoint["status"] = "timed_out"
@@ -1055,7 +1060,7 @@ class EvalRunner:
                     if failure_phase == "agent"
                     else "environment_failure"
                 )
-                failed_checkpoint = dict(
+                failed_checkpoint = parse_checkpoint(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
                 failed_checkpoint["status"] = "failed"
@@ -1163,7 +1168,7 @@ class EvalRunner:
         return baseline_hashes
 
     @staticmethod
-    def _record_auto_approval_result(result: EvalResult, review_manager: Any) -> None:
+    def _record_auto_approval_result(result: EvalResult, review_manager: ReviewManagerPort | None) -> None:
         """Add the required auto-approval gate from captured review events."""
         approval_events = (
             review_manager.approval_events if review_manager is not None else []
@@ -1190,8 +1195,8 @@ class EvalRunner:
 
     @staticmethod
     def _write_turn_summary(
-        tracer: Any,
-        active_turn: dict[str, Any],
+        tracer: TraceSink,
+        active_turn: EvaluationActiveTurn,
         status: str,
         *,
         stop_reason: str = "",
@@ -1199,7 +1204,7 @@ class EvalRunner:
         """Write exactly one summary event for an active evaluation turn."""
         if not active_turn["turn"] or active_turn["summary_written"]:
             return
-        checkpoint = dict(active_turn.get("checkpoint") or {})
+        checkpoint = parse_checkpoint(active_turn.get("checkpoint") or {})
         if stop_reason:
             checkpoint["stop_reason"] = stop_reason
             active_turn["checkpoint"] = checkpoint
@@ -1216,13 +1221,13 @@ class EvalRunner:
 
     @staticmethod
     async def _run_checkers(
-        configs: list[dict[str, Any]],
+        configs: list[JsonObject],
         *,
         workspace: Path,
         baseline_hashes: dict[str, str | None],
         answer: str,
         trace_path: str,
-        runtime: dict[str, Any],
+        runtime: CheckerRuntime,
     ) -> list[CheckerResult]:
         """Build and run one criteria group with a consistent checker context."""
         return list(await asyncio.gather(*(
@@ -1380,7 +1385,7 @@ class EvalRunner:
         with self.results_path.open("a", encoding="utf-8") as handle:
             handle.write(result.model_dump_json() + "\n")
 
-    def list_results(self, limit: int = 100) -> list[dict]:
+    def list_results(self, limit: int = 100) -> list[JsonObject]:
         if not self.results_path.is_file():
             return []
         lines = self.results_path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 1000)):]
