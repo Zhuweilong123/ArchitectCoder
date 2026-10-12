@@ -13,6 +13,10 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from typing import Protocol
+from app.agent_base.host_api.agents import AgentPort, PromptBuilderPort, ProgressPort, ProgressSnapshotPort, ReviewManagerPort
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -34,7 +38,21 @@ from .models import (
 )
 from .projects import load_projects, resolve_fixture
 
-AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
+class EvaluationAgentPort(Protocol):
+    """Minimal injected agent used by isolated test harnesses."""
+    def arun_stream(self, input_text: str, context: str = '') -> AsyncIterator[ProgressSnapshotPort]: ...
+
+@dataclass(frozen=True)
+class EvaluationAgentBinding:
+    agent: AgentPort | EvaluationAgentPort
+    review_manager: ReviewManagerPort | None = None
+    prompt_builder: PromptBuilderPort | None = None
+    progress: ProgressPort | None = None
+    source_dir: str = ''
+    test_dir: str = ''
+    project_file: str = ''
+
+AgentFactory = Callable[[Path, EvalCase], Awaitable[EvaluationAgentBinding | EvaluationAgentPort]]
 logger = logging.getLogger(__name__)
 
 EVAL_FIXTURE_LAYOUT_VERSION = "design-src-test-v1"
@@ -271,7 +289,7 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
 
 async def dev_agent_factory(
     workspace: Path, case: EvalCase, *, manifest_override: ProjectManifest | None = None,
-) -> Any:
+) -> EvaluationAgentBinding:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
     The interactive WebSocket path and this factory share the same agent
@@ -299,14 +317,8 @@ async def dev_agent_factory(
         auto_approve_reviews=True,
         **budget,
     )
-    agent._eval_prompt_builder = prompt_builder
-    agent._eval_source_dir = str(source_dir)
-    agent._eval_test_dir = str(test_dir)
-    agent._eval_project_file = str(project_file)
-    agent._eval_progress = progress
-    agent._eval_review_manager = review_mgr
-    agent._eval_agent_mode = "devagent"
-    return agent
+    return EvaluationAgentBinding(agent=agent, review_manager=review_mgr, prompt_builder=prompt_builder,
+        progress=progress, source_dir=str(source_dir), test_dir=str(test_dir), project_file=str(project_file))
 
 
 class EvalRunner:
@@ -390,7 +402,7 @@ class EvalRunner:
         try:
             fixture, manifest = fixture_override or resolve_fixture(case)
             if fixture_override and agent_factory is None:
-                async def factory(workspace: Path, case: EvalCase) -> Any:
+                async def factory(workspace: Path, case: EvalCase) -> EvaluationAgentBinding:
                     return await dev_agent_factory(workspace, case, manifest_override=manifest)
         except ValueError as exc:
             finished = self._finish(
@@ -435,7 +447,11 @@ class EvalRunner:
                 )
                 async with trace_session as tracer:
                     result.trace_id = tracer.trace_id
-                    agent = await factory(workspace, case)
+                    created = await factory(workspace, case)
+                    binding = created if isinstance(created, EvaluationAgentBinding) else EvaluationAgentBinding(agent=created)
+                    agent = binding.agent
+                    review_mgr, progress_relay = binding.review_manager, binding.progress
+                    prompt_builder = binding.prompt_builder
                     failure_phase = "agent"
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
                     result.metadata["agent"] = "devagent"
@@ -474,8 +490,6 @@ class EvalRunner:
                                 run_id,
                                 exc_info=True,
                             )
-                    review_mgr = getattr(agent, "_eval_review_manager", None)
-                    progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
                     turn_score_checker_results: list[CheckerResult] = []
                     active_turn: dict[str, Any] = {
@@ -536,7 +550,6 @@ class EvalRunner:
                         traced_total_tokens = 0
                         review_offset = 0
                         approval_offset = 0
-                        prompt_builder = getattr(agent, "_eval_prompt_builder", None)
                         production_agent = get_agent_services().is_production_agent(agent)
                         coordinated_agent = production_agent or hasattr(
                             agent, "tool_registry"
@@ -628,9 +641,9 @@ class EvalRunner:
                             })
                             tracer.user_message(
                                 prompt,
-                                project_file=getattr(agent, "_eval_project_file", ""),
-                                source_dir=getattr(agent, "_eval_source_dir", ""),
-                                test_dir=getattr(agent, "_eval_test_dir", ""),
+                                project_file=binding.project_file,
+                                source_dir=binding.source_dir,
+                                test_dir=binding.test_dir,
                             )
                             tracer.event(
                                 "agent_model", model=getattr(getattr(agent, "llm", None), "model", ""),
@@ -683,9 +696,9 @@ class EvalRunner:
                             context = ""
                             if prompt_builder is not None:
                                 context = await prompt_builder.build_context(
-                                    getattr(agent, "_eval_project_file", ""),
-                                    getattr(agent, "_eval_source_dir", ""),
-                                    getattr(agent, "_eval_test_dir", ""),
+                                    binding.project_file,
+                                    binding.source_dir,
+                                    binding.test_dir,
                                     prompt,
                                 )
                                 tracer.event(
@@ -742,9 +755,9 @@ class EvalRunner:
                                     _eval_send,
                                     lambda: False,
                                     trace_log=tracer,
-                                    project_file=getattr(agent, "_eval_project_file", ""),
-                                    source_dir=getattr(agent, "_eval_source_dir", ""),
-                                    test_dir=getattr(agent, "_eval_test_dir", ""),
+                                    project_file=binding.project_file,
+                                    source_dir=binding.source_dir,
+                                    test_dir=binding.test_dir,
                                     progress=progress_relay,
                                     context=context,
                                     fallback_review_runs={},

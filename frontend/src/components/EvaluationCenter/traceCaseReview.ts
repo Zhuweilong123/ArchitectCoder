@@ -1,3 +1,4 @@
+import type { CheckerConfig } from '../../types/evaluation';
 import type { TraceCaseDraft, TraceCaseTurn } from '../../services/api';
 
 export function draftTurns(draft: TraceCaseDraft): TraceCaseTurn[] {
@@ -11,8 +12,8 @@ export function draftTurns(draft: TraceCaseDraft): TraceCaseTurn[] {
 }
 
 export function reviewPayload(
-  name: string, projectId: string, checkers: Array<Record<string, any>>,
-  hardCheckers: Array<Record<string, any>>, turns: TraceCaseTurn[], confirmed: boolean,
+  name: string, projectId: string, checkers: CheckerConfig[],
+  hardCheckers: CheckerConfig[], turns: TraceCaseTurn[], confirmed: boolean,
 ) {
   return { name: name.trim(), project_id: projectId, checkers, hard_checkers: hardCheckers, turns, fixture_state_confirmed: confirmed };
 }
@@ -22,7 +23,7 @@ export function savedReviewPayload(draft: TraceCaseDraft) {
     draft.case.hard_checkers || [], draftTurns(draft), Boolean(draft.capture?.baseline_confirmed));
 }
 
-export function hasHardCriteria(hard: Array<Record<string, any>>, turns: TraceCaseTurn[]): boolean {
+export function hasHardCriteria(hard: CheckerConfig[], turns: TraceCaseTurn[]): boolean {
   return hard.length > 0 || turns.some((turn) => turn.hard_checkers.length > 0);
 }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from app.agent_base.host_api.tracing import BackgroundRegistryPort
 
 from app.agent_base.host_api.tracing import TraceSessionRequest, TraceSink, TraceProvider
 from app.agent_base.adapters.tracing import load_trace
@@ -45,7 +46,7 @@ class TraceSession:
         self._bridge = None
         self._sink_token = None
         self.background_timeout_seconds = background_timeout_seconds
-        self.background_registry = None
+        self.background_registry: BackgroundRegistryPort | None = None
         self._background_token = None
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
         self.llm_requests = 0

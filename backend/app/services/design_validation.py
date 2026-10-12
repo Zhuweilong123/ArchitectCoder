@@ -1,5 +1,5 @@
 """Composition root; rule implementations depend only on public ports."""
-from app.agent_base.host_api.validation import ValidationContext
+from app.agent_base.host_api.validation import ValidationContext, ValidationReport
 from app.agent_base.host_api.services import get_context_services, get_provider_services
 from app.validation.engine import ProjectValidator, ValidationRegistry
 from app.validation.rules.class_structure import ClassStructureRule
@@ -24,7 +24,7 @@ def source_facts_provider():
 
 
 def validate_project_diagrams(diagrams, workspace_root="", *, selected_keys=None,
-                              source_provider=None, registry=None, requirements=()):
+                              source_provider=None, registry=None, requirements=()) -> ValidationReport:
     if source_provider is None and any(d.get("source_scopes") for d in diagrams if isinstance(d, dict)):
         source_provider = source_facts_provider()
     context = ValidationContext(str(workspace_root or ""), source_provider=source_provider)

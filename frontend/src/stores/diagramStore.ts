@@ -1,6 +1,7 @@
 /** Diagram store — manages Project state with multiple diagrams. */
 
 import { create } from 'zustand';
+import type { DiagramSpec } from '../types/designEvents';
 import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project, GridSettings } from '../types/uml';
 import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
 import type { SeqLifeline, SeqMessage, SeqFragment, MessageType } from '../types/sequence';
@@ -173,7 +174,7 @@ export interface DiagramState {
   newProject: (name?: string) => void;
   setActiveDiagram: (index: number) => void;
   addDiagram: (type?: string, name?: string, componentId?: string) => void;
-  addDiagramsFromSpec: (specs: Array<{type: string; name: string; component_id: string; data: Record<string, unknown>}>) => void;
+  addDiagramsFromSpec: (specs: DiagramSpec[]) => void;
   removeDiagram: (index: number) => void;
 
   // ── Active-diagram actions ──────────────────────

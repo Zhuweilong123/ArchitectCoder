@@ -7,7 +7,8 @@ and disabled/unavailable fallbacks live in the host adapters package.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
+from .data import JsonObject
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,7 @@ class OrchestrationRequest:
     project_file: str = ""
     source_dir: str = ""
     test_dir: str = ""
-    previous_checkpoint: dict[str, Any] = field(default_factory=dict)
+    previous_checkpoint: JsonObject = field(default_factory=dict)
     available_tools: tuple[str, ...] = ()
     run_id: str = ""
     workspace_root: str = ""
@@ -30,7 +31,7 @@ class OrchestrationPreparation:
     context_blocks: tuple[str, ...] = ()
     excluded_tools: tuple[str, ...] = ()
     phase: str = "disabled"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
     @property
     def context(self) -> str:

@@ -7,7 +7,8 @@ import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeVar
+WorkResult = TypeVar("WorkResult")
 
 logger = logging.getLogger(__name__)
 _active_tasks: set[asyncio.Task] = set()
@@ -37,7 +38,7 @@ class BackgroundTaskRegistry:
         self.records: list[BackgroundTaskRecord] = []
         self.wrapper = wrapper
 
-    def submit(self, work: Awaitable, *, owner: str, run_id: str = "", source_trace_id: str = ""):
+    def submit(self, work: Awaitable[WorkResult], *, owner: str, run_id: str = "", source_trace_id: str = "") -> asyncio.Task[WorkResult | None]:
         record = BackgroundTaskRecord(owner, run_id, source_trace_id)
         self.records.append(record)
         from app.agent_base.core.observability import emit_trace
@@ -130,7 +131,7 @@ def reset_background_registry(token):
     _registry.reset(token)
 
 
-def submit_background(work: Awaitable, *, owner: str, run_id: str = "", source_trace_id: str = ""):
+def submit_background(work: Awaitable[WorkResult], *, owner: str, run_id: str = "", source_trace_id: str = "") -> asyncio.Task[WorkResult | None]:
     registry = _registry.get()
     if registry is None:
         from app.runtime.trace_session import background_trace

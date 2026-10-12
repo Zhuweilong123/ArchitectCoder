@@ -15,7 +15,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Callable, Any, Mapping
 
 from backend.config.plugin_catalog import (
     BUILTIN_PLUGIN_ROOT, config_path, scan_manifests, packaged_manifests,
@@ -396,10 +396,10 @@ class PluginManager:
             logger.warning("[Plugins] %s contribution %s failed", name, method, exc_info=True)
             return default if default is not None else []
 
-    def load_optional(self, name, **kwargs):
+    def load_optional(self, name: str, *, settings=None, kwargs: dict[str, object] | None = None, factory_loader: Callable[[str], Callable[..., object]] | None = None) -> object | None:
         """Domain ports retain their NoOp behavior when a plugin is absent."""
         try:
-            return self.load(name, **kwargs)
+            return self.load(name, settings=settings, kwargs=kwargs, factory_loader=factory_loader)
         except KeyError:
             return None
 

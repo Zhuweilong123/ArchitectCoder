@@ -13,6 +13,7 @@ from typing import Any, Optional
 from app.agent_base.execution.tool_executor import ToolExecutor
 from app.core.capabilities import CapabilityPolicy
 
+from shared.llm_types import ToolSchema
 from .base import Tool
 from .result import ToolResult
 
@@ -118,7 +119,7 @@ class ToolRegistry:
         strip_parameter_descriptions(parameters)
         return compact
 
-    def get_openai_specs(self, compact: bool = False) -> list[dict]:
+    def get_openai_specs(self, compact: bool = False) -> list[ToolSchema]:
         specs = []
         for name, tool in self._tools.items():
             if name != tool.name:

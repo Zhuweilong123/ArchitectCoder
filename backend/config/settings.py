@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
+    # Resolved plugin declaration options, populated by the configuration catalog.
+    plugin_configs: dict[str, dict[str, object]] = Field(default_factory=dict, exclude=True)
     # OpenAI-compatible LLM endpoint — credentials MUST come from .env.
     llm_api_key: str = Field(
         ...,

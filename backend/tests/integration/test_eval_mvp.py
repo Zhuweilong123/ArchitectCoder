@@ -176,13 +176,17 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
         max_total_tokens=1000,
     )
 
-    agent = asyncio.run(dev_agent_factory(tmp_path, case))
+    binding = asyncio.run(dev_agent_factory(tmp_path, case))
+    assert binding.agent is fake_agent
+    assert binding.source_dir == str(tmp_path)
+    assert binding.test_dir == str(tmp_path)
+    assert binding.project_file == str(tmp_path / "evaluation.umlproj")
 
     assert captured["user_message"] == case.prompt
     assert captured["max_tool_calls"] == settings.agent_max_tool_calls
     assert captured["max_run_seconds"] == settings.agent_max_run_seconds
     assert captured["max_total_tokens"] == settings.agent_context_soft_limit_tokens
-    assert not hasattr(agent, "_eval_context")
+    assert not any(name.startswith("_eval_") for name in vars(fake_agent))
 
 
 def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeypatch):

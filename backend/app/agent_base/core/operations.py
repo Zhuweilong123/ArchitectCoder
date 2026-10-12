@@ -7,6 +7,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from collections.abc import Iterator
 
 
 @dataclass
@@ -26,7 +27,7 @@ class Operation:
 _current: ContextVar[Operation | None] = ContextVar("plugin_operation", default=None)
 
 
-def current_operation():
+def current_operation() -> Operation | None:
     return _current.get()
 
 
@@ -45,7 +46,7 @@ def _record(operation, status, **details):
 
 
 @contextmanager
-def operation_scope(kind, *, run_id="", stage="", scope="run", plugin="", interface_id="", contribution_id="", parent_operation_id=None):
+def operation_scope(kind: str, *, run_id: str = "", stage: str = "", scope: str = "run", plugin: str = "", interface_id: str = "", contribution_id: str = "", parent_operation_id: str | None = None) -> Iterator[Operation]:
     parent = current_operation()
     operation = Operation(uuid.uuid4().hex, parent_operation_id if parent_operation_id is not None else parent.operation_id if parent else "", kind,
                           scope, run_id or (parent.run_id if parent else ""),

@@ -4,6 +4,8 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 from functools import wraps
+from typing import TypeVar, cast
+ProviderT = TypeVar("ProviderT")
 
 from .hooks import HookContext, HookEvent, HookRegistry, PUBLIC_STAGES, get_hooks, get_runtime
 from .operations import current_operation, operation_scope
@@ -55,13 +57,13 @@ def service_contributions(spec):
                              interface_id=f"{spec.name}.{method}", scope="invocation") for method in methods)
 
 
-def schedule_tool_provider(provider, name):
+def schedule_tool_provider(provider: ProviderT, name: str) -> ProviderT:
     """Keep extension-created tools on the same scheduler as their parent provider."""
     if isinstance(provider, ScheduledProvider):
         return provider
     from .plugins import get_plugin_manager
     spec = get_plugin_manager().get_spec(name)
-    return ScheduledProvider(provider, spec)
+    return cast(ProviderT, ScheduledProvider(provider, spec))
 
 
 class ScheduledProvider:

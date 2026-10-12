@@ -296,3 +296,31 @@ export function normalizeProject(value: unknown): Project {
     active_diagram_index: activeIndex,
   };
 }
+
+
+/** Decode untrusted streamed data once before it reaches graph/store operations. */
+export function normalizeStreamElement(type: string, value: unknown): import('../types/designEvents').DesignStreamElement | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const item = record(value);
+  const diagram_name = text(item.diagram_name);
+  const ids = new Set<string>();
+  switch (type) {
+    case 'diagram_create': return { type, data: { type: text(item.type, 'class'), name: text(item.name), component_id: text(item.component_id) } };
+    case 'diagram_meta': return { type, data: { diagram_name } };
+    case 'class': return { type, data: { ...normalizeClass(item, 0, ids), diagram_name } };
+    case 'relation': return { type, data: { ...normalizeRelation(item, 0, ids), diagram_name } };
+    case 'lifeline': return { type, data: { ...normalizeLifeline(item, 0, ids), diagram_name } };
+    case 'message': {
+      const { y, ...message } = normalizeMessage(item, 0, ids);
+      return { type, data: { ...message, ...(typeof item.y === 'number' ? { y } : {}), diagram_name } };
+    }
+    case 'fragment': return { type, data: { ...normalizeFragment(item, 0, ids), diagram_name } };
+    case 'component': return { type, data: { ...normalizeComponent(item, 0, ids), diagram_name } };
+    case 'comp_rel': return { type, data: { ...normalizeComponentRelation(item, 0, ids), diagram_name } };
+    case 'diagram_update': return { type, data: {
+      type: text(item.type, 'class'), name: text(item.name), component_id: text(item.component_id),
+      data: normalizeDiagram(item.data),
+    } };
+    default: return null;
+  }
+}

@@ -13,6 +13,11 @@ Usage::
     response = await llm.invoke(messages)
 """
 
+from __future__ import annotations
+from typing import Unpack
+from shared.llm_types import ModelMessage, ToolSchema, ModelResponse, ModelCallOptions
+from app.agent_base.host_api.configuration import PluginConfiguration
+
 import os
 import asyncio
 import logging
@@ -216,7 +221,7 @@ class BaseAgentsLLM:
     # ── 工厂方法 ─────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, settings=None, model: Optional[str] = None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, **kwargs):
+    def from_settings(cls, settings: PluginConfiguration | None = None, model: Optional[str] = None, temperature: float = 0.7, max_tokens: Optional[int] = None, timeout: int = 120, *, provider: str = "auto") -> BaseAgentsLLM:
         """从项目的 ``Settings`` 对象创建实例（零配置对接现有体系）。
 
         自动读取 settings 中的 llm_api_key / llm_base_url / llm_model_id，
@@ -241,7 +246,7 @@ class BaseAgentsLLM:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            **kwargs,
+            provider=provider,
         )
 
     def _resolve_credentials(self, api_key: Optional[str], base_url: Optional[str]) -> tuple:
@@ -312,7 +317,7 @@ class BaseAgentsLLM:
 
     # ── 异步调用 ───────────────────────────────────────────
 
-    async def ainvoke(self, messages: list[dict], **kwargs) -> str:
+    async def ainvoke(self, messages: list[ModelMessage], **kwargs: Unpack[ModelCallOptions]) -> str:
         result = await self.ainvoke_with_metadata(messages, **kwargs)
         return str(result.get("content") or "")
 
@@ -414,11 +419,11 @@ class BaseAgentsLLM:
 
     async def ainvoke_with_tools(
         self,
-        messages: list[dict],
-        tools: list[dict],
+        messages: list[ModelMessage],
+        tools: list[ToolSchema],
         tool_choice: str = "auto",
-        **kwargs,
-    ) -> dict:
+        **kwargs: Unpack[ModelCallOptions],
+    ) -> ModelResponse:
         """异步调用 LLM，支持原生 Function Calling
 
         Returns:
@@ -462,7 +467,7 @@ class BaseAgentsLLM:
             raise
         # Return usage to the ReAct loop as well as recording it in trace.
         # Without this field the configured token budget cannot accumulate.
-        result: dict = {
+        result: ModelResponse = {
             "content": response.content or None,
             "tool_calls": response.tool_calls,
             "usage": response.usage.to_dict() if response.usage else None,

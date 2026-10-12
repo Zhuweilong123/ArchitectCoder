@@ -1,4 +1,5 @@
 """BaseAgents 异常体系"""
+from .agents import ReviewRequestPort
 
 
 class BaseAgentsException(Exception):
@@ -29,7 +30,7 @@ class AgentInterrupted(AgentError):
 class AgentAwaitingReview(AgentInterrupted):
     """Hand a pending human decision to the durable execution coordinator."""
 
-    def __init__(self, request):
+    def __init__(self, request: ReviewRequestPort) -> None:
         super().__init__("Waiting for human review")
         self.request = request
 

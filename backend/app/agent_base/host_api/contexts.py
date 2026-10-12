@@ -7,7 +7,9 @@ owned by a plugin stay in that plugin's ``plugin_api.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Protocol
+from .data import JsonObject, WorkspaceSnapshot, ChangedPath
+from .configuration import PluginConfiguration
 
 from .contract_checks import ContractCheckResult
 
@@ -18,7 +20,7 @@ class AnalysisRequest:
     evidence: str = ""
     run_id: str = ""
     allowed_tools: tuple[str, ...] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,7 @@ class ReviewPrompt:
     content: str
     question: str
     timeout_seconds: float
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -52,12 +54,12 @@ class ContractFailureAnalyzerPort(Protocol):
 
 @dataclass(frozen=True)
 class ContractGateContext:
-    workspace_manifest: dict[str, Any]
-    changed_paths: tuple[dict[str, Any] | str, ...]
-    emit: Callable[[dict], Awaitable[bool]]
+    workspace_manifest: JsonObject
+    changed_paths: tuple[ChangedPath | str, ...]
+    emit: Callable[[JsonObject], Awaitable[bool]]
     request_review: Callable[[ReviewPrompt], Awaitable[str]] | None = None
     run_id: str = ""
-    settings: Any = None
+    settings: PluginConfiguration | None = None
     contract_enabled: bool = True
     validation_requirements: tuple[dict[str, str], ...] = ()
 

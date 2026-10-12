@@ -264,3 +264,21 @@ test('streaming output maps branch references, preserves Y and resolves a late p
   assert.deepEqual(child.operands[0].message_ids, [ids.get('M1')]);
   assert.equal(active().messages[0].y, 290);
 });
+
+
+test('stream boundary rejects non-object input and unsupported element types', () => {
+  const { normalizeStreamElement } = require('../src/utils/diagramNormalization.ts');
+  for (const value of [null, undefined, 'bad', 42, [], ['class']]) {
+    assert.equal(normalizeStreamElement('class', value), null);
+  }
+  assert.equal(normalizeStreamElement('unsupported', {}), null);
+});
+
+test('stream boundary normalizes fields while preserving omitted message coordinates', () => {
+  const { normalizeStreamElement } = require('../src/utils/diagramNormalization.ts');
+  const message = normalizeStreamElement('message', { id: 'm', label: 42 });
+  assert.equal(message.type, 'message');
+  assert.equal(typeof message.data.label, 'string');
+  assert.equal(Object.hasOwn(message.data, 'y'), false);
+  assert.equal(normalizeStreamElement('message', { id: 'm', y: 180 }).data.y, 180);
+});

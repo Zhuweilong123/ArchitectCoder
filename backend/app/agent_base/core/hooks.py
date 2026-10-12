@@ -31,7 +31,7 @@ import inspect
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from app.agent_base.host_api.lifecycle import (
     HookEvent, PUBLIC_STAGES, NOTIFICATIONS, HookAction, HookDecision, HookContext,
@@ -109,7 +109,7 @@ def reset_runtime(token) -> None:
 
 
 HookResult = Optional[str | HookDecision]
-Hook = Callable[[HookContext], HookResult]
+Hook = Callable[[HookContext], HookResult | Awaitable[HookResult]]
 
 
 class HookRegistry:
@@ -165,7 +165,7 @@ class HookRegistry:
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
                     self.unregister(stage, handler)
 
-    def has_contribution(self, identifier, *, interface_id=None):
+    def has_contribution(self, identifier: str, *, interface_id: str | None = None) -> bool:
         return any(meta.get("id") == identifier and (interface_id is None or
                    (meta.get("mode") == "service" and meta.get("interface_id") == interface_id))
                    for meta in self._metadata.values())

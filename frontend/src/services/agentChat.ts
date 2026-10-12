@@ -7,6 +7,8 @@
  * Toolbar 和 AgentChat 共享同一连接 — 通过 connectAgentChat / sendAgentMessage 操作。
  */
 
+import type { ReviewDiagramPayload } from '../types/designEvents';
+
 export interface AgentTodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -79,9 +81,9 @@ export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
   title: string;
-  changed_diagrams?: any[];
-  diagrams: any[];                 // 更新后的图对象列表
-  original_diagrams: any[] | null; // 修改前的图对象列表（DiffViewer 对比用）
+  changed_diagrams?: ReviewDiagramPayload[];
+  diagrams: ReviewDiagramPayload[];                 // 更新后的图对象列表
+  original_diagrams: ReviewDiagramPayload[] | null; // 修改前的图对象列表（DiffViewer 对比用）
   auto?: boolean;                  // true = 框架兜底补推（Agent 漏调 submit_uml_review）
 }
 
@@ -293,7 +295,7 @@ export function sendAgentMessage(message: string, opts?: {
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify(payload));
     if (!opts?.skipNotify) {
-      _notifyListeners({ event: 'user_message' as any, message });
+      _notifyListeners({ event: 'user_message', message });
     }
     return true;
   }
@@ -533,7 +535,7 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
       if (_ws && _ws.readyState === WebSocket.OPEN) {
         _ws.send(JSON.stringify(pm.opts));
         if (!pm.skipNotify) {
-          _notifyListeners({ event: 'user_message' as any, message: pm.message });
+          _notifyListeners({ event: 'user_message', message: pm.message });
         }
       }
     }

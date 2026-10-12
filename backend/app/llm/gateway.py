@@ -8,18 +8,19 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
 from openai import AsyncOpenAI
+from shared.llm_types import ModelMessage, ToolSchema, ModelToolCall, TokenUsage, JsonObject
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class LLMRequest:
-    messages: list[dict[str, Any]]
+    messages: list[ModelMessage]
     model: str
     temperature: float = 0.7
     max_tokens: int | None = None
     json_mode: bool = False
-    tools: list[dict[str, Any]] | None = None
+    tools: list[ToolSchema] | None = None
     tool_choice: str = "auto"
     timeout: float | None = None
 
@@ -31,7 +32,7 @@ class LLMUsage:
     total_tokens: int | None = None
     cached_tokens: int | None = None
 
-    def to_dict(self) -> dict[str, int | None]:
+    def to_dict(self) -> TokenUsage:
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -45,7 +46,7 @@ class LLMResponse:
     content: str = ""
     model: str = ""
     finish_reason: str = ""
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[ModelToolCall] | None = None
     usage: LLMUsage | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,11 +96,11 @@ def _usage(source: Any) -> LLMUsage | None:
     )
 
 
-def _tool_calls(message: Any) -> list[dict[str, Any]] | None:
+def _tool_calls(message: Any) -> list[ModelToolCall] | None:
     calls = _value(message, "tool_calls")
     if not calls:
         return None
-    normalized = []
+    normalized: list[ModelToolCall] = []
     for call in calls:
         function = _value(call, "function", {})
         normalized.append({

@@ -8,6 +8,8 @@ HTTP/CLI entry points) can build the same Agent without importing one another.
 from __future__ import annotations
 
 import os
+from app.agent_base.host_api.agents import AgentAssembly, EnvironmentPromptPort, ModelPort, ProgressPort
+from app.agent_base.host_api.data import ConversationMessage
 from datetime import datetime
 
 from backend.config import get_settings
@@ -64,7 +66,7 @@ class DevPromptBuilder:
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
-        environment_context=None,
+        environment_context: EnvironmentPromptPort | None = None,
         skill_catalog: SkillCatalog | None = None,
         extension_context: ExtensionContext | None = None,
     ):
@@ -140,13 +142,13 @@ class DevPromptBuilder:
             prompt_parts.extend(["", skills_section])
         return "\n".join(prompt_parts)
 
-    async def build_context(self, *args, **kwargs):
+    async def build_context(self, project_file: str, source_dir: str, test_dir: str, user_message: str) -> str:
         from app.agent_base.host_api.lifecycle import HookEvent
         from app.agent_base.core.hooks import get_runtime
         from app.agent_base.core.operations import operation_scope, current_operation
         parent = current_operation()
         with extension_scope(self.extension_context.fork()), operation_scope("prepare", run_id=get_runtime().run_id or (parent.run_id if parent else ""), stage=HookEvent.PREPARE.value):
-            return await self._build_context_impl(*args, **kwargs)
+            return await self._build_context_impl(project_file, source_dir, test_dir, user_message)
 
     async def _build_context_impl(
         self, project_file: str, source_dir: str, test_dir: str, user_message: str
@@ -175,23 +177,14 @@ class DevPromptBuilder:
         return self._ctx_value
 
 @pin_plugins
-async def create_dev_agent(*args, **kwargs):
-    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
-    from app.agent_base.core.hooks import get_hooks
-    from app.agent_base.core.operations import operation_scope
-    with operation_scope("initialize", stage=HookEvent.INITIALIZE.value, scope="agent"):
-        await get_hooks().aemit(HookEvent.INITIALIZE, HookContext(HookEvent.INITIALIZE, "DevAgent"))
-        return await _create_dev_agent_impl(*args, **kwargs)
-
-
-async def _create_dev_agent_impl(
-    llm: BaseAgentsLLM,
+async def create_dev_agent(
+    llm: ModelPort,
     source_dir: str = "",
     test_dir: str = "",
     project_file: str = "",
     user_message: str = "",
-    progress: ProgressRelay | None = None,
-    restore_history: list[dict] | None = None,
+    progress: ProgressPort | None = None,
+    restore_history: list[ConversationMessage] | None = None,
     task_scope: str = "",
     auto_approve_reviews: bool = False,
     max_tool_calls: int | None = None,
@@ -199,7 +192,33 @@ async def _create_dev_agent_impl(
     max_total_tokens: int | None = None,
     design_dir: str = "",
     workspace_root: str = "",
-):
+) -> AgentAssembly:
+    from app.agent_base.host_api.lifecycle import HookContext, HookEvent
+    from app.agent_base.core.hooks import get_hooks
+    from app.agent_base.core.operations import operation_scope
+    with operation_scope("initialize", stage=HookEvent.INITIALIZE.value, scope="agent"):
+        await get_hooks().aemit(HookEvent.INITIALIZE, HookContext(HookEvent.INITIALIZE, "DevAgent"))
+        return await _create_dev_agent_impl(llm, source_dir, test_dir, project_file, user_message,
+            progress, restore_history, task_scope, auto_approve_reviews, max_tool_calls,
+            max_run_seconds, max_total_tokens, design_dir, workspace_root)
+
+
+async def _create_dev_agent_impl(
+    llm: ModelPort,
+    source_dir: str = "",
+    test_dir: str = "",
+    project_file: str = "",
+    user_message: str = "",
+    progress: ProgressPort | None = None,
+    restore_history: list[ConversationMessage] | None = None,
+    task_scope: str = "",
+    auto_approve_reviews: bool = False,
+    max_tool_calls: int | None = None,
+    max_run_seconds: float | None = None,
+    max_total_tokens: int | None = None,
+    design_dir: str = "",
+    workspace_root: str = "",
+) -> AgentAssembly:
     """Assemble the production DevAgent independently of any transport."""
     settings = get_settings()
     # The manifest discovers only existing workspace directories. Do not fill
@@ -327,7 +346,7 @@ async def _create_dev_agent_impl(
     agent.workspace_manifest = manifest.to_dict()
     if restore_history:
         agent.restore_history(restore_history)
-    return agent, review_mgr, prompt_builder
+    return AgentAssembly(agent=agent, review_manager=review_mgr, prompt_builder=prompt_builder)
 
 
 __all__ = ["DevPromptBuilder", "ProgressRelay", "create_dev_agent", "enabled_tools_context"]

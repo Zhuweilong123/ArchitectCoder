@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from .message import Message
-from .llm import BaseAgentsLLM
+from ..host_api.agents import ModelPort
 from backend.config import AgentConfig
 
 
@@ -28,7 +28,7 @@ class Agent(ABC):
     def __init__(
         self,
         name: str,
-        llm: BaseAgentsLLM,
+        llm: ModelPort,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
     ):

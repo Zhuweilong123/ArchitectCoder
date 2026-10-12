@@ -1,3 +1,5 @@
+import { normalizeDiagram } from '../../utils/diagramNormalization';
+import type { DiagramSpec } from '../../types/designEvents';
 import type { AgentProgressEvent, AgentReviewEvent, AgentTodoItem } from '../../services/agentChat';
 
 export interface ChatMessage {
@@ -67,16 +69,16 @@ export function truncateTitle(value: string): string {
 // 将后端 uml_review 的 diagram 对象归一化为 {type, name, component_id, data}
 // 兼容两种形态：{type,name,data} 包裹式，或原始图对象（diagram_type/classes/... 平铺）。
 export function normalizeReviewDiagrams(
-  raw: any[] | null | undefined,
-): Array<{ type: string; name: string; component_id: string; data: any }> {
+  raw: unknown,
+): DiagramSpec[] {
   if (!Array.isArray(raw)) return [];
-  return raw.map((diagram) => {
-    const type = diagram.type || diagram.diagram_type || 'class';
-    const name = diagram.name || '';
-    const component_id = diagram.component_id || '';
+  return raw.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)).map((diagram) => {
+    const type = typeof diagram.type === 'string' ? diagram.type : typeof diagram.diagram_type === 'string' ? diagram.diagram_type : 'class';
+    const name = typeof diagram.name === 'string' ? diagram.name : '';
+    const component_id = typeof diagram.component_id === 'string' ? diagram.component_id : '';
     const data = (diagram.data && typeof diagram.data === 'object' && !Array.isArray(diagram.data))
       ? diagram.data
       : diagram;
-    return { type, name, component_id, data };
+    return { type, name, component_id, data: normalizeDiagram({ ...data, diagram_type: type, name, component_id }) };
   });
 }

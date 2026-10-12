@@ -2,8 +2,19 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional, Protocol
+from .data import JsonObject, ModelMessage, ModelResponse
+from .assembly import AssemblyRequest
+from .execution import ExecutionRequest
 from .services import RuntimePort
+
+class ProviderInvocationPort(Protocol):
+    """Framework-managed call state; plugin observers never receive it."""
+    interface_id: str
+    executed: bool
+    asynchronous: bool
+    result: object
+
 
 class HookEvent(str, Enum):
     INITIALIZE = "initialize"
@@ -51,7 +62,7 @@ class HookDecision:
     action: HookAction | str = HookAction.CONTINUE
     reason: str = ""
     message: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass
@@ -61,17 +72,17 @@ class HookContext:
     event: HookEvent
     agent_name: str
     tool_name: Optional[str] = None
-    tool_input: Optional[dict] = None
+    tool_input: Optional[JsonObject] = None
     tool_status: Optional[str] = None       # TOOL_AFTER result status
     error_code: Optional[str] = None        # TOOL_AFTER normalized error code
     tool_output: Optional[str] = None      # 仅 TOOL_AFTER
-    messages: Optional[list] = None        # 仅 MODEL_BEFORE / MODEL_AFTER
-    llm_response: Optional[dict] = None    # 仅 MODEL_AFTER
+    messages: Optional[list[ModelMessage]] = None        # 仅 MODEL_BEFORE / MODEL_AFTER
+    llm_response: Optional[ModelResponse] = None    # 仅 MODEL_AFTER
     run_id: str = ""
     phase: str = ""
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: JsonObject = field(default_factory=dict)
     runtime: Optional[RuntimePort] = None
-    invocation: Any = None  # Private per-call service state; hidden from observers.
+    invocation: AssemblyRequest | ExecutionRequest | ProviderInvocationPort | None = None  # Private per-call service state; hidden from observers.
 
 
 @dataclass(frozen=True)

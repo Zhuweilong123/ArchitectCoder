@@ -285,20 +285,6 @@ def create_default_project(name: str = "Untitled") -> Project:
     return project
 
 
-# ---------- LLM ----------
-
-class LlmRequest(BaseModel):
-    prompt: str
-    system_prompt: Optional[str] = None
-    temperature: float = 0.7
-    max_tokens: int = 4096
-
-
-class LlmResponse(BaseModel):
-    content: str
-    usage: dict = Field(default_factory=dict)
-
-
 # ---------- Markdown Export ----------
 
 class ExportRequest(BaseModel):

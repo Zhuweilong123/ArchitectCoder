@@ -1,3 +1,4 @@
+import type { CheckerConfig } from '../../types/evaluation';
 import type { EvalArchive, EvalResult } from '../../services/api';
 
 export const EVAL_AGENT_LABEL = 'DevAgent';
@@ -125,28 +126,27 @@ export const checkerDefinitions = Object.fromEntries(
   TRACE_CHECKER_DEFINITIONS.map((definition) => [definition.type, definition]),
 );
 
-export function validateCheckerConfigs(configs: Array<Record<string, any>>, scope: string): void {
+export function validateCheckerConfigs(configs: CheckerConfig[], scope: string): void {
   configs.forEach((config, index) => {
     const definition = checkerDefinitions[String(config.type || '')];
     if (!definition) throw new Error(`${scope}[${index}] 的 Checker 类型无效`);
-    const missing = definition.fields.filter((field) => field.required && (
-      config[field.key] === undefined
-      || config[field.key] === ''
-      || (Array.isArray(config[field.key]) && config[field.key].length === 0)
-    ));
+    const missing = definition.fields.filter((field) => {
+      const value = config[field.key];
+      return field.required && (value === undefined || value === '' || (Array.isArray(value) && value.length === 0));
+    });
     if (missing.length) throw new Error(`${scope}[${index}] 缺少：${missing.map((field) => field.label).join('、')}`);
     if (config.type === 'answer_contains_groups') {
       const ids = new Set<string>();
       if (!Array.isArray(config.groups) || !config.groups.length) {
         throw new Error(`${scope}[${index}] 表达分组必须是非空数组`);
       }
-      config.groups.forEach((group: any) => {
+      config.groups.forEach((group) => {
         if (!group || typeof group.id !== 'string' || !group.id.trim() || ids.has(group.id)) {
           throw new Error(`${scope}[${index}] 分组 id 必须是唯一的非空字符串`);
         }
         ids.add(group.id);
         if (!Array.isArray(group.any_of) || !group.any_of.length
-          || group.any_of.some((text: any) => typeof text !== 'string' || !text.trim())) {
+          || group.any_of.some((text) => typeof text !== 'string' || !text.trim())) {
           throw new Error(`${scope}[${index}] any_of 必须是非空字符串数组`);
         }
       });

@@ -494,20 +494,15 @@ async def replay_agent_session(
     else:
         registry = MockToolRegistry(events, graceful=(mode == "rerun"))
 
-    # max_steps 给足记录中的最大 step，避免回放过早截断
-    max_step = max(
-        (int(e.get("step")) for e in events
-         if e.get("event_type") in ("agent_step", "tool_call", "tool_result")
-         and isinstance(e.get("step"), int)),
-        default=5,
-    )
+    # Budget by recorded tool calls; ReActAgent has no max_steps constructor option.
+    max_tool_calls = max(5, len(_pick(events, 'tool_call')))
 
     agent = get_agent_services().create_loop_agent(
         name="replay",
         llm=llm,
         tool_registry=registry,
         system_prompt=original_system_prompt or None,
-        max_steps=max(max_step, 5),
+        max_tool_calls=max_tool_calls,
     )
 
     from app.agent_base.host_api.services import get_observation_services
@@ -533,8 +528,8 @@ async def replay_agent_session(
                     if progress.is_final:
                         answer = progress.final_answer
                 if not answer:
-                    # 达到 max_steps 仍未收敛：与 arun() 的兜底口径一致
-                    answer = f"抱歉，在 {agent.max_steps} 步内未能完成任务。"
+                    # 未产生最终回答时返回明确状态，不读取已移除的 max_steps 属性。
+                    answer = "回放未产生最终回答。"
                 error = None
             except ReplayExhausted as exc:
                 answer = ""

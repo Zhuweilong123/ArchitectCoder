@@ -16,6 +16,7 @@ from backend.config import get_settings
 from app.agent_base.agents.react_agent import ReActAgent
 from app.agent_base.assembly import enabled_tools_context
 from app.agent_base.host_api.errors import AgentInterrupted, AgentAwaitingReview
+from app.agent_base.host_api.agents import ProgressPort
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.adapters.review import ReviewAdapter
 from app.agent_base.adapters.execution import dispatch_execution
@@ -614,7 +615,7 @@ async def handle_agent_execution(
     test_dir: str = "",
     design_dir: str = "",
     workspace_root: str = "",
-    progress: ProgressRelay | None = None,
+    progress: ProgressPort | None = None,
     context: str = "",
     fallback_review_runs: dict[int, str] | None = None,
     run_id: str = "",
@@ -623,7 +624,7 @@ async def handle_agent_execution(
     resume_checkpoint: dict | None = None,
     disconnect_check: Callable[[], bool] | None = None,
     design_contract_enabled: bool | None = None,
-):
+) -> None:
     """ReActAgent 执行 — 单 agent 承接所有消息，进度推送到前端。
 
     该函数同时服务闲聊与开发：agent 依据 system prompt 自行决定

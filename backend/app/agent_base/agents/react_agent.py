@@ -23,7 +23,8 @@ from contextlib import aclosing
 from typing import Optional, List, AsyncIterator
 
 from ..core.agent import Agent
-from ..core.llm import BaseAgentsLLM
+from ..host_api.agents import ModelPort, ToolRegistryPort
+from ..host_api.data import ConversationMessage
 from ..core.message import Message
 from backend.config import AgentConfig
 from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
@@ -63,8 +64,8 @@ class ReActAgent(Agent):
     def __init__(
         self,
         name: str,
-        llm: BaseAgentsLLM,
-        tool_registry: ToolRegistry,
+        llm: ModelPort,
+        tool_registry: ToolRegistryPort,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
         max_tool_calls: int = 0,
@@ -126,7 +127,7 @@ class ReActAgent(Agent):
             name, "启用",
         )
 
-    def restore_history(self, messages: list[dict]) -> None:
+    def restore_history(self, messages: list[ConversationMessage]) -> None:
         """从 [{role, content}] 恢复对话历史（结论级：仅 user/assistant）。
 
         用于「恢复历史会话」——agent 据此在继续对话时记住之前的结论。

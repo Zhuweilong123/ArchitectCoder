@@ -2,6 +2,8 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
   sendReviewResponse, type AgentEvent, type AgentProgressEvent, type AgentTodoItem,
 } from '../../services/agentChat';
+import type { UmlDiagram } from '../../types/uml';
+import { normalizeDiagram } from '../../utils/diagramNormalization';
 import { processDesignUpdated, restoreOriginalsToCanvas } from '../../services/designElementHandler';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useReviewStore } from '../../stores/reviewStore';
@@ -196,9 +198,9 @@ export function createAgentChatEventHandler({
         const changedDiagrams = event.changed_diagrams === undefined
           ? undefined
           : normalizeReviewDiagrams(event.changed_diagrams);
-        const snapshot: Record<string, any> = {};
+        const snapshot: Record<string, UmlDiagram> = {};
         for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
-          snapshot[`${spec.type}:${spec.name || ''}`] = spec.data;
+          snapshot[`${spec.type}:${spec.name || ''}`] = normalizeDiagram(spec.data);
         }
         processDesignUpdated(
           diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
