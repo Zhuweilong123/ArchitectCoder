@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from app.api import files, testhub
+from app.api import files
 from app.core import auth, security
 from app.services import agent_chat_ws
 from app.services.project_repository import ProjectRepository
@@ -33,7 +33,6 @@ def secured_app(tmp_path, monkeypatch):
                                workspace_roots=str(workspace), strict_production=True)
     for module in (auth, security, files):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
-    monkeypatch.setattr(testhub, "TESTHUB_DIR", str(runtime / "testHub"))
     repository = ProjectRepository()
     monkeypatch.setattr(files, "load_project", repository.load)
     monkeypatch.setattr(files, "ensure_project_graph", lambda *args: None)
@@ -53,7 +52,6 @@ def secured_app(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_chat_ws, "ChatSessionCoordinator", EchoSession)
     app = FastAPI()
     app.include_router(files.router)
-    app.include_router(testhub.router)
     app.include_router(agent_chat_ws.router, prefix="/api")
     with TestClient(app) as client:
         yield client, settings, workspace, tmp_path
@@ -66,7 +64,7 @@ def test_file_reads_require_authentication(secured_app, endpoint):
     assert client.get(f"/api/files/{endpoint}", headers={"Authorization": "Bearer wrong"}).status_code == 403
 
 
-@pytest.mark.parametrize("endpoint", ["save", "new", "save-project", "save-review", "upload/excel", "export/markdown"])
+@pytest.mark.parametrize("endpoint", ["save", "new", "save-project", "save-review", "export/markdown"])
 def test_file_writes_require_authentication(secured_app, endpoint):
     client, *_ = secured_app
     assert client.post(f"/api/files/{endpoint}").status_code == 401
@@ -137,17 +135,6 @@ def test_symlink_escape_is_not_listed_or_opened(secured_app):
                       params={"filepath": str(link), "safe": False}).status_code == 403
     assert not client.get("/api/files/browse", headers=headers,
                           params={"path": str(workspace), "safe": False}).json()["files"]
-
-
-def test_testhub_cannot_escape_through_directory_or_filename(secured_app):
-    client, _, workspace, outside = secured_app
-    assert client.get("/api/testhub/list").status_code == 401
-    headers = {"Authorization": f"Bearer {TOKEN}"}
-    denied = outside / "must-not-be-created"
-    assert client.get("/api/testhub/list", headers=headers, params={"dir": str(denied)}).status_code == 403
-    assert not denied.exists()
-    assert client.get("/api/testhub/load", headers=headers,
-                      params={"dir": str(workspace), "filename": "../private.xlsx"}).status_code == 403
 
 
 def test_browser_websocket_authenticates_and_does_not_echo_credential(secured_app):

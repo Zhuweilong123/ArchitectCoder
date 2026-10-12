@@ -214,7 +214,7 @@ Case 将使目录加载失败，不再静默改变分母。`hard_checkers` 现�
 | Constraint | 表达依赖、分层、接口、兼容性和 NFR 规则 |
 | DesignElement | 现有组件、类、接口、生命线和消息 |
 | CodeSymbol | 文件、类、方法、字段和调用点 |
-| TestCase | 自动测试、TestHub 用例或人工验证 |
+| TestCase | 自动测试或人工验证 |
 | Run | 一次联合演进任务及其状态 |
 | Evidence | 测试、构建、静态检查、Diff 和审批结果 |
 | Waiver | 有理由、有责任人、有期限的临时偏离 |
@@ -261,7 +261,7 @@ Decision ──explains──> DesignElement / Constraint
 
 ## 8. 产品体验：以 Evolution Run 为中心
 
-现有画布、聊天、DiffViewer、TraceViewer、TestHub 和 Evaluation Center 应保留，但
+现有画布、聊天、DiffViewer、TraceViewer 和 Evaluation Center 应保留，但
 导航和信息架构要围绕一次变更重组。
 
 建议新增统一的 **Evolution Run 工作台**：
@@ -325,7 +325,7 @@ draft → analyzing → design_pending → waiting_approval
 - 从 Python 项目逆向生成可审核的设计基线；
 - 实现代码变更的增量影响分析和漂移检测；
 - 将设计审核状态接入源码写入硬门禁；
-- 将 TestHub 用例纳入 Requirement/DesignElement 的追溯关系；
+- 将自动测试结果纳入 Requirement/DesignElement 的追溯关系；
 - 上线 Evolution Run 工作台；
 - 上线设计债务面板；
 - 以雷达项目制作完整黄金路径和回归集。

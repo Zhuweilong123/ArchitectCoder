@@ -62,15 +62,6 @@ export async function exportMarkdown(diagram: UmlDiagram): Promise<string> {
   return data;
 }
 
-export async function uploadExcel(file: File): Promise<{
-  filename: string; sheets: Record<string, unknown[]>; sheet_names: string[];
-}> {
-  const form = new FormData();
-  form.append('file', file);
-  const { data } = await api.post('/files/upload/excel', form);
-  return data;
-}
-
 // ─── LLM ────────────────────────────────────────────────
 
 export async function getSupportedLanguages(): Promise<string[]> {
@@ -116,63 +107,15 @@ export async function validateWorkspacePath(
   return data;
 }
 
-// ─── Review ────────────────────────────────────────────
-
-// ─── TestHub ──────────────────────────────────────────
-
-export async function listTestFiles(dir?: string): Promise<{
-  files: Array<{ name: string; path: string; size: number; modified: string }>;
-  testhub_dir: string;
-}> {
-  const { data } = await api.get('/testhub/list', { params: dir ? { dir } : {} });
-  return data;
-}
-
-export async function loadTestFile(filename: string, dir?: string): Promise<{
-  filename: string;
-  sheets: Record<string, { headers: string[]; rows: Record<string, string>[] }>;
-  sheet_names: string[];
-  filepath: string;
-}> {
-  const params: Record<string, string> = { filename };
-  if (dir) params.dir = dir;
-  const { data } = await api.get('/testhub/load', { params });
-  return data;
-}
-
-export async function saveTestFile(req: {
-  filename: string;
-  sheets: Record<string, { headers: string[]; rows: Record<string, string>[] }>;
-}): Promise<{ success: boolean; filename: string }> {
-  const { data } = await api.post('/testhub/save', req);
-  return data;
-}
-
-export async function saveTestReview(req: {
-  action: string;
-  comment: string;
-  filename: string;
-  sheet: string;
-  case_id: string;
-  details: string;
-}): Promise<{ success: boolean; file: string }> {
-  const { data } = await api.post('/testhub/save-review', req);
-  return data;
-}
-
-// ─── Unified Review ─────────────────────────────────────
+// ─── UML Review ─────────────────────────────────────
 
 export async function saveReview(review: {
-  action: string;
+  action: 'accept' | 'reject';
   comment: string;
   requirements: string;
   original_name: string;
   optimized_name: string;
   timestamp: string;
-  filename?: string;
-  sheet?: string;
-  case_id?: string;
-  details?: string;
 }): Promise<{ success: boolean; file: string }> {
   const { data } = await api.post('/files/save-review', review);
   return data;

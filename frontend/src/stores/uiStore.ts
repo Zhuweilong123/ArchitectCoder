@@ -40,8 +40,6 @@ interface UiState {
   activeDiffDiagramType: DiffDiagramType;     // which diagram tab is active in DiffViewer
   optimizationConsistencyReport: any[];        // cross-validation consistency report
 
-  showTestCaseInCanvas: boolean; // toggle main canvas to show test cases
-  testCaseData: string; // Excel test case summary for pipeline Stage 5
 
   // Project directories (shared by Agent chat, etc.)
   projectRoot: string;
@@ -92,9 +90,6 @@ interface UiState {
   toggleShowingVersion: () => void;
   setShowingOptimized: (v: boolean) => void;
   setDesignComparisonVisible: (visible: boolean) => void;
-  toggleTestCaseInCanvas: () => void;
-  setShowTestCaseInCanvas: (v: boolean) => void;
-  setTestCaseData: (data: string) => void;
 
   setProjectRoot: (dir: string) => void;
   setDesignDir: (dir: string) => void;
@@ -144,8 +139,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   diffContents: {},
   activeDiffDiagramType: 'class',
   optimizationConsistencyReport: [],
-  showTestCaseInCanvas: false,
-  testCaseData: '',
   projectRoot: (() => {
     const stored = localStorage.getItem('projectRoot') || '';
     // `project` was the old implicit default, not a user-selected root.
@@ -248,9 +241,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   toggleShowingVersion: () => set((s) => ({ showingOptimized: !s.showingOptimized })),
   setShowingOptimized: (v) => set({ showingOptimized: v }),
   setDesignComparisonVisible: (visible) => set({ designComparisonVisible: visible }),
-  toggleTestCaseInCanvas: () => set((s) => ({ showTestCaseInCanvas: !s.showTestCaseInCanvas })),
-  setShowTestCaseInCanvas: (v) => set({ showTestCaseInCanvas: v }),
-  setTestCaseData: (data) => set({ testCaseData: data }),
 
   setProjectRoot: (dir) => {
     localStorage.setItem('projectRoot', dir);

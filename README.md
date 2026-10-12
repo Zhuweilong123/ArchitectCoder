@@ -225,7 +225,6 @@ On GitHub, download the **raw HTML file** and open it in a browser. No installat
 
 - **DevAgent Capability Benchmark Center**: run versioned cases in isolated workspaces using the production Agent; inspect checker results, tool/token usage, duration, and linked traces. Compare builds and archive results.
 - **Trace Viewer & Replay**: inspect recorded model/tool events and compare replayed steps. `mock` replay uses recorded data without model calls; `rerun` and `live` modes have different model/tool execution policies.
-- **TestHub**: load, edit, and save Excel test cases in the canvas, with review records. Ask DevAgent to write or update test code through the workspace workflow.
 - **Knowledge graph and memory**: configurable providers for design/code/test indexing and project-scoped recall.
 - **Extensible runtime**: replace orchestration, memory, Trace, evaluation, knowledge graph, and design-contract implementations through plugin contracts. See the [plugin walkthrough](#plugin-walkthrough) for the stage and slot model.
 

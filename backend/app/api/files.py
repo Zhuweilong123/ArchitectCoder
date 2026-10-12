@@ -3,8 +3,9 @@
 import logging
 import os
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
 from app.models.uml import UmlDiagram, Project, ExportRequest
@@ -85,32 +86,6 @@ async def export_to_markdown(req: ExportRequest):
     """Export UML diagram to Markdown design document."""
     md = export_markdown(req.diagram)
     return md
-
-
-@router.post("/upload/excel", dependencies=[Depends(require_auth)])
-async def upload_excel(file: UploadFile = File(...)):
-    """Upload an Excel test case file — parsed in memory, temp file cleaned up."""
-    import pandas as pd
-    import tempfile
-    content = await file.read()
-
-    # Sanitize filename — strip path components to prevent traversal
-    raw_name = file.filename or "testCase.xlsx"
-    safe_name = os.path.basename(raw_name)
-    if not safe_name or safe_name.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-
-    # Save to temp file, parse, then clean up
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=True) as tmp:
-        tmp.write(content)
-        tmp.flush()
-        xls = pd.ExcelFile(tmp.name)
-        sheets = {}
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
-            sheets[sheet_name] = df.fillna("").to_dict(orient="records")
-
-    return {"filename": file.filename, "sheets": sheets, "sheet_names": xls.sheet_names}
 
 
 # ── Directory browsing ──────────────────────────────────
@@ -195,34 +170,28 @@ async def validate_workspace_path(path: str, kind: str = "directory"):
     }
 
 
-# ── Unified review log ──────────────────────────────────
+# ── UML review log ──────────────────────────────────
 
 class ReviewRequest(BaseModel):
-    action: str  # "accept", "reject", "case_review", etc.
+    action: Literal["accept", "reject"]
     comment: str = ""
     requirements: str = ""
     original_name: str = ""
     optimized_name: str = ""
     timestamp: str = ""
-    # Case review fields (optional)
-    filename: str = ""
-    sheet: str = ""
-    case_id: str = ""
-    details: str = ""
 
 
 @router.post("/save-review", dependencies=[Depends(require_auth)])
 async def save_review(req: ReviewRequest):
-    """Save review record to dev_review.txt (unified UML + case review log)."""
+    """Save a UML review record to dev_review.txt."""
     settings = get_settings()
     review_file = str(runtime_root(settings) / "dev_review.txt")
     review_file = os.path.abspath(review_file)
 
     ts = req.timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if req.action in ("accept", "reject"):
-        action_label = "接受" if req.action == "accept" else "拒绝"
-        entry = f"""============================================================
+    action_label = "接受" if req.action == "accept" else "拒绝"
+    entry = f"""============================================================
 [{ts}] UML评审结果: {action_label}
 优化需求: {req.requirements if req.requirements else '(无)'}
 原始版本: {req.original_name}
@@ -230,21 +199,6 @@ async def save_review(req: ReviewRequest):
 评审意见: {req.comment if req.comment else '(无)'}
 ============================================================
 """
-    else:
-        # Case review operation log
-        entry = f"[{ts}] {req.action}"
-        if req.filename:
-            entry += f" | File: {req.filename}"
-        if req.sheet:
-            entry += f" | Sheet: {req.sheet}"
-        if req.case_id:
-            entry += f" | Case: {req.case_id}"
-        if req.comment:
-            entry += f"\n  Comment: {req.comment}"
-        if req.details:
-            entry += f"\n  Details: {req.details}"
-        entry += "\n"
-
     with open(review_file, "a", encoding="utf-8") as f:
         f.write(entry)
 

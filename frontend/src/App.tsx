@@ -23,7 +23,6 @@ const SeqEditor = lazy(() => import('./components/Canvas/SeqEditor'));
 const CompEditor = lazy(() => import('./components/Canvas/CompEditor'));
 const PropertyPanel = lazy(() => import('./components/PropertyPanel/PropertyPanel'));
 const DiffViewer = lazy(() => import('./components/DiffViewer/DiffViewer'));
-const TestCaseViewer = lazy(() => import('./components/TestCaseViewer/TestCaseViewer'));
 const AgentChat = lazy(() => import('./components/AgentChat/AgentChat'));
 const TraceViewer = lazy(() => import('./components/TraceViewer/TraceViewer'));
 const EvaluationCenter = lazy(() => import('./components/EvaluationCenter/EvaluationCenter'));
@@ -37,7 +36,7 @@ const App: React.FC = () => {
   const {
     rightPanelVisible, rightPanelTab, rightPanelWidth,
     setRightPanelTab, setRightPanelWidth, toggleRightPanel,
-    showTestCaseInCanvas, agentChatVisible, interfaceLanguage, pluginArchitectureVisible,
+    agentChatVisible, interfaceLanguage, pluginArchitectureVisible,
     projectRoot, designDir, sourceDir, testDir, setProjectRoot, setDesignDir, setSourceDir, setTestDir,
   } = useUiStore();
   const currentFilepath = useDiagramStore((s) => s.currentFilepath);
@@ -143,11 +142,7 @@ const App: React.FC = () => {
     },
   ];
 
-  const statusText = showTestCaseInCanvas
-    ? (interfaceLanguage === 'en'
-      ? 'Double-click a cell to edit test cases · Save changes from the toolbar'
-      : '双击单元格编辑用例 · 在工具栏保存修改')
-    : !hasDiagrams
+  const statusText = !hasDiagrams
       ? copy('noDiagramHint')
       : diagramType === 'sequence'
         ? (interfaceLanguage === 'en'
@@ -167,9 +162,7 @@ const App: React.FC = () => {
 
       <Layout className="app-main">
         <Content className="app-content">
-          {showTestCaseInCanvas ? (
-            <Suspense fallback={<LoadingFallback />}><TestCaseViewer embedded /></Suspense>
-          ) : !hasDiagrams ? (
+          {!hasDiagrams ? (
             <div className="empty-canvas">
               <div className="empty-canvas-icon">⌘</div>
               <p className="empty-canvas-title">{copy('noDiagram')}</p>
@@ -183,7 +176,7 @@ const App: React.FC = () => {
             <Suspense fallback={<LoadingFallback />}><UMLEditor key={'uml_' + activeIdx} /></Suspense>
           )}
 
-          {!showTestCaseInCanvas && hasDiagrams && <DesignChangeOverlay />}
+          {hasDiagrams && <DesignChangeOverlay />}
           <div className="status-bar">
             <span>{statusText}</span>
             <span>
@@ -194,14 +187,14 @@ const App: React.FC = () => {
           </div>
         </Content>
 
-        {rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
+        {rightPanelVisible && !agentChatVisible && (
           <div
             className="resize-handle"
             onMouseDown={(e) => handleResize(e, 'left')}
           />
         )}
 
-        {rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
+        {rightPanelVisible && !agentChatVisible && (
           <div className="right-panel" style={{ width: rightPanelWidth }}>
             <div className="right-panel-tabs">
               <Tabs
@@ -223,7 +216,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {!rightPanelVisible && !showTestCaseInCanvas && !agentChatVisible && (
+        {!rightPanelVisible && !agentChatVisible && (
           <Tooltip title={interfaceLanguage === 'en' ? 'Show side panel' : '显示右侧面板'}>
             <Button
               type="primary"

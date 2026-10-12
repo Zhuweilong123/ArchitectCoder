@@ -13,7 +13,7 @@ import {
   FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
-  DownOutlined, TableOutlined,
+  DownOutlined,
   ProjectOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
   ExportOutlined, ApartmentOutlined,
 } from '@ant-design/icons';
@@ -181,7 +181,6 @@ const Toolbar: React.FC = () => {
     selectedLanguage,
     setSelectedLanguage,
     fileDialogVisible, setFileDialogVisible,
-    showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
     projectRoot, designDir, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
     setProjectRoot, setDesignDir, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible, setPluginArchitectureVisible,
@@ -937,7 +936,7 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         {/* Diagram dropdowns — grouped by type */}
-        <div className={showTestCaseInCanvas ? 'toolbar-mode-controls is-hidden' : 'toolbar-mode-controls'}>
+        <div className="toolbar-mode-controls">
         <DiagramTypeControls
           project={project}
           copy={copy}
@@ -1089,7 +1088,7 @@ const Toolbar: React.FC = () => {
       </div>
 
       <div className="toolbar-right">
-        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
+        <div className="toolbar-design-controls">
         <Tooltip title={copy('grid')}>
           <Button
             icon={gridSettings.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
@@ -1109,17 +1108,7 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         </div>
-        <Tooltip title={showTestCaseInCanvas ? (interfaceLanguage === 'en' ? 'Return to UML canvas' : '返回 UML 画布') : copy('testCases')}>
-          <Button
-            icon={<TableOutlined />}
-            type={showTestCaseInCanvas ? 'primary' : 'default'}
-            onClick={toggleTestCaseInCanvas}
-          >
-            {copy('testCases')}
-          </Button>
-        </Tooltip>
-
-        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
+        <div className="toolbar-design-controls">
         <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>
