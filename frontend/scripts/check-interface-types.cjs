@@ -5,7 +5,9 @@ const ts = require('typescript');
 const files = [
   'src/services/api.ts', 'src/services/agentChat.ts', 'src/services/apiErrors.ts',
   'src/services/designElementHandler.ts', 'src/types/designEvents.ts',
-  'src/types/evaluation.ts', 'src/types/json.ts',
+  'src/types/evaluation.ts', 'src/types/json.ts', 'src/types/trace.ts',
+  'src/utils/traceNormalization.ts', 'src/components/TraceViewer/TraceViewer.tsx',
+  'src/components/TraceViewer/traceNavigation.ts', 'src/components/TraceViewer/traceTimeline.ts',
 ];
 let failed = false;
 for (const file of files) {

@@ -23,7 +23,6 @@ WebSocket 协议:
 """
 
 import asyncio
-import contextvars
 import json
 import logging
 import os
@@ -49,7 +48,7 @@ from app.agent_base.tools.my_tools.conversation_tools import (
 )
 from app.agent_base.host_api.tracing import TraceSessionRequest, TraceSink
 from app.agent_base.core.observability import (
-    current_trace_spans, pop_trace_hook, push_trace_hook,
+    pop_trace_hook, push_trace_hook,
     reset_current_trace_sink, set_current_trace_sink,
 )
 from app.agent_base.adapters.tracing import load_trace
@@ -60,82 +59,10 @@ from app.services.run_lifecycle import RunLifecycle
 from app.services.session_compression import SessionContextCompressor
 from app.services.chat_connection import ChatConnection
 from app.runtime.workspace import WorkspaceManifest
+from app.runtime.trace_bridge import TraceHookBridge
 from app.runtime.agent_runtime import SessionBusyError
 
 logger = logging.getLogger(__name__)
-
-def _trace_hook_bridge(kind: str, *args, **kwargs):
-    """全局 LLM trace hook 处理器 — 转发到当前会话的 ChatTraceLogger。
-
-    由 llm.py 的 _trace_hook() 调用，签名: (kind, **kwargs)。
-    kind: 'llm_request' | 'llm_response'
-    """
-    tracer = _TRACE_BRIDGE.get()
-    if tracer is None:
-        return None
-    spans = current_trace_spans()
-    span_path = "/".join(spans) if spans else ""
-    try:
-        if kind == "llm_request":
-            return tracer.llm_request(
-                provider=kwargs.get("provider", "unknown"),
-                model=kwargs.get("model", ""),
-                messages=kwargs.get("messages", []),
-                temperature=kwargs.get("temperature"),
-                max_tokens=kwargs.get("max_tokens"),
-                tools=kwargs.get("tools"),
-                tool_choice=kwargs.get("tool_choice"),
-                response_format=kwargs.get("response_format"),
-                timeout=kwargs.get("timeout"),
-                request_context=kwargs.get("request_context"),
-                span_path=span_path,
-            )
-        elif kind == "llm_response":
-            tracer.llm_response(
-                span_id=kwargs.get("span_id", ""),
-                content=kwargs.get("content", ""),
-                tool_calls=kwargs.get("tool_calls"),
-                usage=kwargs.get("usage"),
-                error=kwargs.get("error", ""),
-                duration_ms=kwargs.get("duration_ms", 0.0),
-                span_path=span_path,
-            )
-            return None
-        elif kind == "tool_call":
-            return tracer.tool_call(
-                step=int(kwargs.get("step") or 0),
-                tool_name=kwargs.get("tool_name", ""),
-                arguments=kwargs.get("arguments") if isinstance(kwargs.get("arguments"), dict) else {},
-                parent_span_id=kwargs.get("parent_span_id", ""),
-                span_path=span_path,
-            )
-        elif kind == "tool_result":
-            tracer.tool_result(
-                span_id=kwargs.get("span_id", ""),
-                tool_name=kwargs.get("tool_name", ""),
-                observation=str(kwargs.get("observation", "")),
-                duration_ms=float(kwargs.get("duration_ms") or 0.0),
-                error=kwargs.get("error", ""),
-                fed_truncated=bool(kwargs.get("fed_truncated", False)),
-                fed_length=int(kwargs.get("fed_length") or 0),
-                evidence=kwargs.get("evidence") if isinstance(kwargs.get("evidence"), dict) else None,
-                span_path=span_path,
-            )
-            return None
-    except Exception:
-        logger.exception("[Trace] Bridge failed for kind=%s", kind)
-    return None
-
-
-
-_TRACE_BRIDGE: contextvars.ContextVar[TraceSink | None] = contextvars.ContextVar(
-    "agent_chat_trace_bridge", default=None,
-)
-
-
-def _set_trace_bridge(tracer: TraceSink | None):
-    _TRACE_BRIDGE.set(tracer)
-
 
 from app.services.agent_execution import (
     handle_agent_execution,
@@ -626,8 +553,7 @@ class ChatSessionCoordinator:
             design_dir = checkpoint.get("design_dir") or design_dir
             await state.send_json(review_event(request))
         state.paths = (source_dir, test_dir, project_file, workspace_root, design_dir)
-        _set_trace_bridge(trace_log)
-        trace_hook_handler = _trace_hook_bridge
+        trace_hook_handler = TraceHookBridge(trace_log)
         trace_sink_token = set_current_trace_sink(trace_log)
         push_trace_hook(trace_hook_handler)
 
@@ -1150,4 +1076,3 @@ class ChatSessionCoordinator:
             session.touch()
             pop_trace_hook(trace_hook_handler)
             reset_current_trace_sink(trace_sink_token)
-            _set_trace_bridge(None)

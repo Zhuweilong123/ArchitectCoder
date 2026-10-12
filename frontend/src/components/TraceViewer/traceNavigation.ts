@@ -1,11 +1,13 @@
+import type { TraceEvent } from '../../types/trace';
+
 export interface SearchDocument { id: string; value: unknown; }
 export interface TraceSearchHit { id: string; field: string; text: string; offset: number; length: number; }
 
 /** Tool-call commentary and child-agent output belong to the execution process. */
 export function traceConversationText(item: {
   kind: string;
-  request?: Record<string, any>;
-  response?: Record<string, any>;
+  request?: Pick<TraceEvent, 'error' | 'background_task_id' | 'tool_calls' | 'span_path' | 'content'>;
+  response?: Pick<TraceEvent, 'error' | 'background_task_id' | 'tool_calls' | 'span_path' | 'content'>;
 }): string {
   if (item.kind !== 'llm' || item.response?.error || item.request?.background_task_id || item.response?.background_task_id) return '';
   const response = item.response;

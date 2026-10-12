@@ -1,3 +1,6 @@
+import { normalizeTraceDetail, normalizeTraceReplay } from '../utils/traceNormalization';
+import type { TraceDetail, TraceReplayResult, TraceReplayMode } from '../types/trace';
+export type { TraceDetail, TraceReplayResult, TraceReplayMode, TraceReplayStep, TraceReplayTurn, TraceReplayStepToolCall } from '../types/trace';
 /** API service – communicates with the FastAPI backend. */
 
 import axios from 'axios';
@@ -161,10 +164,6 @@ export interface TraceMeta {
   trace_type?: 'chat' | 'evaluation';
 }
 
-export interface TraceDetail {
-  session_id: string;
-  events: JsonObject[];
-}
 
 export interface TraceCaseProject {
   id: string;
@@ -305,11 +304,11 @@ export async function listTraces(signal?: AbortSignal): Promise<TraceMeta[]> {
 }
 
 export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type'], signal?: AbortSignal): Promise<TraceDetail> {
-  const { data } = await api.get<TraceDetail>(`/trace/${encodeURIComponent(sessionId)}`, {
+  const { data } = await api.get<unknown>(`/trace/${encodeURIComponent(sessionId)}`, {
     params: traceType ? { trace_type: traceType } : undefined,
     signal,
   });
-  return data;
+  return normalizeTraceDetail(data);
 }
 
 export interface TraceHistoryEntry {
@@ -577,50 +576,11 @@ export async function archiveEvalPerformanceResult(resultId: string, version = '
   return data;
 }
 
-export interface TraceReplayStepToolCall {
-  name: string;
-  arguments: JsonObject | string;
-  observation: string;
-}
-
-export interface TraceReplayStep {
-  step: number;
-  thought: string;
-  actions: string[];
-  tool_calls: TraceReplayStepToolCall[];
-  is_final: boolean;
-}
-
-export interface TraceReplayTurn {
-  user_message: string;
-  final_answer: string;
-  recorded_answer: string | null;
-  matches: boolean;
-  error?: string | null;
-  steps?: TraceReplayStep[];
-  recorded_steps?: TraceReplayStep[];
-}
-
-export interface TraceReplayResult {
-  session_id: string;
-  mode: string;
-  turns: TraceReplayTurn[];
-  executed_turns: number;
-  total_turns: number;
-  llm_calls: number | null;
-  llm_total: number;
-  tool_calls: number;
-  tool_total: number;
-  all_matched: boolean;
-}
-
-export type TraceReplayMode = 'mock' | 'rerun' | 'live';
-
 export async function replayTrace(
   sessionId: string, mode: TraceReplayMode = 'mock', turn?: number,
   tool_policy?: 'readonly' | 'full',
 ): Promise<TraceReplayResult> {
-  const { data } = await api.post<TraceReplayResult>(
+  const { data } = await api.post<unknown>(
     `/trace/${encodeURIComponent(sessionId)}/replay`, null,
     {
       params: {
@@ -630,5 +590,5 @@ export async function replayTrace(
       },
     },
   );
-  return data;
+  return normalizeTraceReplay(data);
 }

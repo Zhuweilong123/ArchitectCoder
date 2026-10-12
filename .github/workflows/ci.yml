@@ -55,4 +55,5 @@ jobs:
       - run: npm run test:layout
       - run: npm run test:html
       - run: npm run test:plugins
+      - run: npm run test:trace
       - run: npm run test:trace-cases

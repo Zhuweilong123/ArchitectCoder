@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypedDict, Unpack
 from types import TracebackType
 from collections.abc import Sequence
 from .data import JsonObject, JsonValue, ModelMessage, ModelToolCall, TokenUsage, ToolSchema, ConversationMessage
@@ -124,3 +124,34 @@ class TraceSessionPort(Protocol):
     async def __aenter__(self) -> TraceSink: ...
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None,
                         exc_tb: TracebackType | None) -> bool: ...
+
+class TraceHookPayload(TypedDict, total=False):
+    provider: str
+    model: str
+    messages: list[ModelMessage]
+    temperature: float | None
+    max_tokens: int | None
+    tools: list[ToolSchema] | None
+    tool_choice: str | None
+    response_format: JsonObject | None
+    timeout: float | None
+    request_context: JsonObject | None
+    span_id: str
+    content: str | None
+    tool_calls: list[ModelToolCall] | None
+    usage: TokenUsage | None
+    error: str
+    duration_ms: float
+    step: int
+    tool_name: str
+    arguments: JsonObject
+    parent_span_id: str
+    observation: str
+    fed_truncated: bool
+    fed_length: int
+    evidence: JsonObject | None
+    event_type: str
+    payload: JsonObject
+
+class TraceHookPort(Protocol):
+    def __call__(self, kind: str, **payload: Unpack[TraceHookPayload]) -> str | None: ...
