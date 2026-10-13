@@ -8,6 +8,7 @@ from asyncio import Task
 from pathlib import Path
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from .runs import RunStorePort
+from .execution_types import RuntimePolicyMetadata
 from .data import JsonObject, JsonValue, ConversationMessage, TodoItem
 from .agents import AgentAssembly, AgentPort, ModelPort, ProgressPort, ReviewManagerPort, TaskBindingPort, ToolRegistryPort
 from .tracing import TraceProvider, TraceSessionPort, TraceSink
@@ -25,7 +26,7 @@ class RuntimePort(Protocol):
     run_id: str
     run_operation_id: str
     plugin_plan_id: str
-    policy_metadata: JsonObject
+    policy_metadata: RuntimePolicyMetadata
     todos: list[TodoItem]
 
 

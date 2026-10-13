@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent_base.agents.react_runtime.fc_loop import _invoke_fc_model_impl
+from app.agent_base.agents.react_runtime.fc_model import _invoke_fc_model_impl
 from app.agent_base.core.hooks import AgentRuntime, set_runtime, reset_runtime
 from app.agent_base.core.exceptions import AgentInterrupted
 

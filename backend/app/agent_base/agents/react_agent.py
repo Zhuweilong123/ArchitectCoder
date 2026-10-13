@@ -20,22 +20,22 @@ Usage::
 
 import logging
 from contextlib import aclosing
-from typing import Optional, List, AsyncIterator, AsyncGenerator
+from typing import Optional, List, AsyncGenerator, Unpack
 
 from ..core.agent import Agent
-from ..host_api.agents import ModelPort, ToolRegistryPort, ConversationSnapshot, HistoryEntry
+from ..host_api.agents import ModelPort, ConversationSnapshot, HistoryEntry
 from copy import deepcopy
 from ..host_api.data import ConversationMessage, WorkspaceSnapshot
-from ..host_api.execution_types import RunCheckpoint, CompactionReport
+from ..host_api.execution_types import RunCheckpoint, CompactionReport, EvidenceSnapshot
 from collections.abc import Callable
 from ..core.message import Message
 from backend.config import AgentConfig
 from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
-from ..tools.registry import ToolRegistry
+from ..tools.contracts import NativeToolRegistryPort
 from ..outcome import RunOutcome
 from ..core.policy import ExecutionBudget
 from app.services.context_manager import ContextBudgetManager
-from .react_runtime.react_types import ReActProgress
+from .react_runtime.react_types import NativeRunOptions, ReActProgress
 from .react_runtime.fc_loop import run_fc_loop
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class ReActAgent(Agent):
         self,
         name: str,
         llm: ModelPort,
-        tool_registry: ToolRegistryPort,
+        tool_registry: NativeToolRegistryPort,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
         max_tool_calls: int = 0,
@@ -119,7 +119,8 @@ class ReActAgent(Agent):
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
         self.last_context_report: dict = {}
-        self.last_evidence_summary: list[dict] = []
+        self.last_evidence_summary: list[EvidenceSnapshot] = []
+        self._run_verifications: dict[tuple[str, str], bool] = {}
         # Structured hand-off for a follow-up status query. The transport
         # updates this at run boundaries so status requests do not re-explore
         # the workspace.
@@ -188,7 +189,7 @@ class ReActAgent(Agent):
     # Public API
     # ═══════════════════════════════════════════════════════
 
-    async def arun(self, input_text: str, context: str = "", **kwargs) -> str:
+    async def arun(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> str:
         """异步运行 ReAct 循环（推荐入口）。
 
         使用原生 Function Calling 执行开放式 ReAct 循环。
@@ -198,7 +199,7 @@ class ReActAgent(Agent):
         """
         return await self._arun_with_fc(input_text, context=context, **kwargs)
 
-    async def arun_stream(self, input_text: str, context: str = "", **kwargs) -> AsyncGenerator[ReActProgress, None]:
+    async def arun_stream(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> AsyncGenerator[ReActProgress, None]:
         """流式运行 ReAct 循环 — 每轮 yield :class:`ReActProgress`。
 
         用于前端实时展示、编排层监控等需要逐轮获取进度的场景。
@@ -220,7 +221,7 @@ class ReActAgent(Agent):
         base = self.system_prompt or FC_SYSTEM_PROMPT
         return base
 
-    async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs) -> str:
+    async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> str:
         """一次性 FC 循环 — 收集流式输出，返回最终答案。"""
         final_answer = ""
         async with aclosing(self._arun_with_fc_stream(input_text, context=context, **kwargs)) as stream:
@@ -264,8 +265,8 @@ class ReActAgent(Agent):
         return ReActProgress(**kwargs, outcome=outcome)
 
     async def _arun_with_fc_stream(
-        self, input_text: str, context: str = "", **kwargs
-    ) -> AsyncIterator[ReActProgress]:
+        self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]
+    ) -> AsyncGenerator[ReActProgress, None]:
         # Each forwarding generator owns its child. Closing the public stream
         # must unwind run scopes in this task, before asyncgen GC takes over.
         async with aclosing(run_fc_loop(self, input_text, context=context, **kwargs)) as stream:

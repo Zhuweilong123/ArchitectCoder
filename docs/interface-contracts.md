@@ -6,6 +6,10 @@
 - ToolResult 的数据限制为 JSON，文件效果、命令执行、验证结果、调用尝试和证据快照分别有结构化定义；结果边界拒绝无法序列化的数据和错误证据字段。证据快照与原结果分离，修改结果不会污染已记录的事实。
 - 原生工具循环与任务摘要共用规范化调用签名，区分布尔、整数、浮点和非法参数字符串；摘要先按签名建索引，再查找后续重试。
 - 执行检查点、工具效果、验证证据和流式步骤定义在 backend/app/agent_base/host_api/execution_types.py。恢复数据通过公共 payloads 模块校验已声明字段；JSON 扩展字段会保留，非 JSON 值和错误字段类型会被拒绝。
+- 原生模型调用边界独立在 fc_model 中：消息、工具 schema、请求上下文、运行时和返回结果均有明确类型；超时重试、取消及 MODEL_AFTER 生命周期由这一边界统一管理。
+- 原生循环选项使用 NativeRunOptions，明确工具白名单、初始 token 用量、温度和请求超时。工具批次使用具名调用、执行结果及 ToolCallDetail，参数入口仅接受 JSON 对象；数组、标量、非法 JSON 和非有限数值被阻止，并保留原始参数和 INVALID_ARGUMENTS 原因，Hook 与执行记录保持一致。
+- 工具执行依赖 NativeToolRegistryPort，声明结构化结果、schema 筛选、并发判断和输出存储能力；宿主工厂在装配时检查这些能力；仅提供文本结果的回放注册表通过 TextToolRegistryAdapter 转换，顺序消费记录并统一归一化结果，不完整的注册表在装配时被拒绝。恢复路径通过可选 RecoveryPathPort 暴露，恢复控制器不再读取工具的私有路径解析器、工作目录或目标判断方法；活动失败记录保存独立快照。
+- 运行时 TODO 列表使用 TodoItem，验证要求、Review 验证失败和架构路由状态使用 RuntimePolicyMetadata 的具名字段。
 - 会话迁移通过 export_conversation/restore_conversation 获取独立快照，保留消息角色、内容、时间和元数据，避免共享可变历史。
 - Agent、Review、Prompt、Progress 及工具注册表端口定义在 backend/app/agent_base/host_api/agents.py；宿主服务通过明确的参数和返回类型提供能力。
 - AgentAssembly 使用具名字段 agent、review_manager、prompt_builder，兼容原来的三项解包。评测配置通过 EvaluationAgentBinding 返回，不再往 Agent 上动态写入私有配置属性。
@@ -29,4 +33,4 @@ python -m pytest -q
 
 在 frontend 目录执行 npm run check:interfaces、npm run build 和对应行为测试。CI 同样执行接口类型检查和前端回归。
 
-mypy 当前严格检查 host_api、宿主适配器、共享 Trace 桥接器、执行协调器、工具结果、证据账本、任务摘要、消息模型、流式步骤和评测轮次状态，以及共享模型类型；尚未对整个后端启用 strict。其余实现代码中的宽泛类型需要按模块逐步收紧，不能把当前检查范围理解为全仓库已经没有 Any。
+mypy 当前严格检查 host_api、宿主适配器、共享 Trace 桥接器、执行协调器、工具结果、原生模型调用边界、工具批次执行器、失败恢复及工具能力接口、证据账本、任务摘要、消息模型、流式步骤和评测轮次状态，以及共享模型类型；尚未对整个后端启用 strict。其余实现代码中的宽泛类型需要按模块逐步收紧，不能把当前检查范围理解为全仓库已经没有 Any。

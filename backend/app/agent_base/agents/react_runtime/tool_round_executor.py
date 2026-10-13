@@ -7,20 +7,19 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import NamedTuple, Optional, TypeAlias, TypedDict
 
 from ...core.hooks import (
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookEvent,
     HookRegistry,
     get_hooks,
     get_runtime,
 )
 from ...evidence import EvidenceLedger, record_runtime_verification
-from ...host_api.payloads import tool_call_signature
-from ...tools.registry import ToolRegistry
+from ...host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
+from ...host_api.data import JsonObject, ModelToolCall
+from ...host_api.execution_types import CallAttempt, EvidenceSnapshot, ToolCallDetail
+from ...host_api.payloads import json_object, tool_call_signature
+from ...tools.contracts import NativeToolRegistryPort
 from ...tools.result import ToolResult
 from ...tools.tool_output import first_tool_output_page, tool_output_page_budget
 from app.agent_base.core.observability import current_trace_sink, emit_trace
@@ -28,13 +27,35 @@ from app.runtime.tool_outputs import current_tool_output_store
 from .failure_recovery import EDIT_REFRESH_CODES, RecoveryScopes
 
 
+class ToolObservation(TypedDict):
+    tool_call_id: str
+    content: str
+
+
+class ParsedToolCall(NamedTuple):
+    call: ModelToolCall
+    name: str
+    arguments: JsonObject | str
+    blocked: str | None
+
+
+class ToolExecutionResult(NamedTuple):
+    observation: str
+    fed_observation: str
+    result: ToolResult
+    duration_ms: float
+
+
+ToolTraceExecution: TypeAlias = tuple[ToolExecutionResult, str]
+
+
 @dataclass
 class ToolRoundResult:
     """Structured output consumed by the ReAct loop after a tool batch."""
 
-    tool_results: list[dict] = field(default_factory=list)
+    tool_results: list[ToolObservation] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
-    details: list[dict] = field(default_factory=list)
+    details: list[ToolCallDetail] = field(default_factory=list)
 
 
 class ToolRoundExecutor:
@@ -44,13 +65,13 @@ class ToolRoundExecutor:
 
     def __init__(
         self,
-        tool_registry: ToolRegistry,
+        tool_registry: NativeToolRegistryPort,
         *,
         agent_name: str,
         allowed_tools: Optional[set[str]] = None,
         hooks: Optional[HookRegistry] = None,
         evidence_ledger: Optional[EvidenceLedger] = None,
-        evidence_summary: Optional[list[dict]] = None,
+        evidence_summary: Optional[list[EvidenceSnapshot]] = None,
         current_history: Optional[list[str]] = None,
         verifications: Optional[dict[tuple[str, str], bool]] = None,
     ) -> None:
@@ -67,17 +88,17 @@ class ToolRoundExecutor:
         # history, so a later user turn starts with a clean recovery boundary.
         self._edit_recovery_paths: set[str] = set()
         self._recovery_scopes = RecoveryScopes(tool_registry)
-        self._previous_attempts: dict[tuple[str, str], dict] = {}
+        self._previous_attempts: dict[tuple[str, str], CallAttempt] = {}
 
-    async def execute(self, tool_calls: list[dict], *, step: int) -> ToolRoundResult:
+    async def execute(self, tool_calls: list[ModelToolCall], *, step: int) -> ToolRoundResult:
         parsed_calls = self._parse_calls(tool_calls)
 
         async def execute_one(
-            tool_call: dict,
+            tool_call: ModelToolCall,
             tool_name: str,
-            tool_args: dict | str,
+            tool_args: JsonObject | str,
             blocked: str | None,
-        ):
+        ) -> ToolTraceExecution:
             # Record the call at the point the tool actually starts.  The
             # previous implementation waited for ReActProgress and recorded
             # tool_call/tool_result afterwards, which made a blocking review
@@ -97,6 +118,7 @@ class ToolRoundExecutor:
         parallel = len(executable) > 1 and all(
             self.tool_registry.can_parallel(item[1]) for item in executable
         )
+        executions: list[ToolTraceExecution]
         if parallel:
             executions = await asyncio.gather(*(
                 execute_one(item[0], item[1], item[2], item[3]) for item in parsed_calls
@@ -110,16 +132,7 @@ class ToolRoundExecutor:
         for item, execution_with_span in zip(parsed_calls, executions):
             tc, tool_name, tool_args, blocked = item
             execution, tool_span = execution_with_span
-            if blocked is not None and isinstance(tool_args, str):
-                observation_full = observation_fed = blocked
-                tool_result = ToolResult(
-                    status="blocked", data=blocked, error_code="INVALID_ARGUMENTS",
-                )
-                duration_ms = 0.0
-            else:
-                observation_full, observation_fed, tool_result, duration_ms = execution
-            if isinstance(tool_args, str):
-                observation_full = observation_fed = execution[0]
+            observation_full, observation_fed, tool_result, duration_ms = execution
 
             signature = tool_call_signature(tool_name, tool_args)
             previous = self._previous_attempts.get(signature)
@@ -127,7 +140,7 @@ class ToolRoundExecutor:
             if (previous and previous["step"] < step
                     and previous["status"] not in {"success", "completed"}):
                 retry_of = previous["call_id"]
-            attempt = {
+            attempt: CallAttempt = {
                 "call_id": str(tc.get("id") or ""), "step": step,
                 "status": tool_result.status, "exact_retry_of": retry_of,
             }
@@ -191,7 +204,7 @@ class ToolRoundExecutor:
                 "content": observation_fed,
             })
             result.actions.append(tool_name)
-            result.details.append({
+            call_detail: ToolCallDetail = {
                 "name": tool_name,
                 "arguments": tool_args,
                 "observation": observation_full,
@@ -202,8 +215,13 @@ class ToolRoundExecutor:
                 "retryable": tool_result.retryable,
                 "duration_ms": round(duration_ms, 1),
                 "evidence": evidence.to_dict(),
-                **tool_result.effects(),
-            })
+            }
+            effects = tool_result.effects()
+            call_detail["changes"] = effects.get("changes", [])
+            call_detail["execution"] = effects.get("execution")
+            call_detail["verification"] = effects.get("verification")
+            call_detail["execution_evidence"] = effects.get("execution_evidence")
+            result.details.append(call_detail)
 
         return result
 
@@ -211,11 +229,12 @@ class ToolRoundExecutor:
     def _normalise_path(value: object) -> str:
         return os.path.normcase(os.path.normpath(str(value).replace("/", os.sep)))
 
-    def _paths_for_call(self, tool_name: str, tool_args: object,
+    def _paths_for_call(self, tool_name: str, tool_args: JsonObject | str,
                         tool_result: ToolResult | None = None) -> set[str]:
-        detail = {"name": tool_name, "arguments": tool_args}
+        detail: ToolCallDetail = {"name": tool_name, "arguments": tool_args}
         if tool_result is not None:
-            detail.update(status=tool_result.status, observation=tool_result.text)
+            detail["status"] = tool_result.status
+            detail["observation"] = tool_result.text
         return set(self._recovery_scopes.paths(detail))
 
     @classmethod
@@ -227,7 +246,7 @@ class ToolRoundExecutor:
     def _update_edit_recovery_state(
         self,
         tool_name: str,
-        tool_args: object,
+        tool_args: JsonObject | str,
         tool_result: ToolResult,
     ) -> None:
         paths = self._paths_for_call(tool_name, tool_args, tool_result)
@@ -249,19 +268,19 @@ class ToolRoundExecutor:
                 if not any(self._paths_overlap(pending, path) for path in paths)
             }
 
-    def _parse_calls(self, tool_calls: list[dict]) -> list[tuple[dict, str, dict | str, str | None]]:
-        parsed_calls = []
+    def _parse_calls(self, tool_calls: list[ModelToolCall]) -> list[ParsedToolCall]:
+        parsed_calls: list[ParsedToolCall] = []
         for tool_call in tool_calls:
             fn = tool_call["function"]
             tool_name = fn["name"]
             try:
-                tool_args = json.loads(fn["arguments"])
-            except json.JSONDecodeError:
+                tool_args = json_object(json.loads(fn["arguments"]))
+            except ValueError:
                 err_obs = (
                     f"Invalid JSON arguments for '{tool_name}'. "
-                    f"Raw: {fn.get('arguments', '')[:200]}. Please re-send with valid JSON."
+                    f"Raw: {fn.get('arguments', '')[:200]}. Please re-send with a valid JSON object."
                 )
-                parsed_calls.append((tool_call, tool_name, fn.get("arguments", ""), err_obs))
+                parsed_calls.append(ParsedToolCall(tool_call, tool_name, fn.get("arguments", ""), err_obs))
                 continue
 
             blocked: str | None = None
@@ -283,12 +302,12 @@ class ToolRoundExecutor:
                         "First call read_file or search_text for the exact target, then "
                         "rebuild a fresh, minimal apply_changes request."
                     )
-            parsed_calls.append((tool_call, tool_name, tool_args, blocked))
+            parsed_calls.append(ParsedToolCall(tool_call, tool_name, tool_args, blocked))
         return parsed_calls
 
     async def _execute_one(
-        self, tool_name, tool_args, blocked, *, event_id="",
-    ):
+        self, tool_name: str, tool_args: JsonObject | str, blocked: str | None, *, event_id: str = "",
+    ) -> ToolExecutionResult:
         from ...core.operations import operation_scope
         with operation_scope("tool", run_id=get_runtime().run_id, stage=HookEvent.TOOL_BEFORE.value) as operation:
             try:
@@ -298,7 +317,7 @@ class ToolRoundExecutor:
                 return result
             except BaseException as exc:
                 if operation.stage != HookEvent.TOOL_AFTER.value:
-                    from ...core.exceptions import AgentInterrupted
+                    from ...host_api.errors import AgentInterrupted
                     from ...host_api.errors import AgentAwaitingReview
                     await self.hooks.aemit(HookEvent.TOOL_AFTER, HookContext(
                         HookEvent.TOOL_AFTER, self.agent_name, run_id=get_runtime().run_id,
@@ -309,13 +328,16 @@ class ToolRoundExecutor:
     async def _execute_one_impl(
         self,
         tool_name: str,
-        tool_args: dict | str,
+        tool_args: JsonObject | str,
         blocked: str | None,
         *, event_id: str = "",
-    ):
+    ) -> ToolExecutionResult:
         if blocked is not None:
             return await self._after_tool(tool_name, tool_args,
-                ToolResult(status="blocked", data=blocked, error_code="POLICY_BLOCKED"), 0.0, event_id=event_id)
+                ToolResult(status="blocked", data=blocked, error_code="INVALID_ARGUMENTS" if isinstance(tool_args, str) else "POLICY_BLOCKED"), 0.0, event_id=event_id)
+
+        if isinstance(tool_args, str):
+            raise ValueError("Unvalidated tool arguments cannot be executed")
 
         runtime = get_runtime()
         if (
@@ -338,7 +360,7 @@ class ToolRoundExecutor:
                 run_id=runtime.run_id,
                 runtime=runtime,
                 tool_name=tool_name,
-                tool_input=tool_args,
+                tool_input=tool_args if isinstance(tool_args, dict) else None,
             ),
         )
         if isinstance(veto, HookDecision):
@@ -367,7 +389,10 @@ class ToolRoundExecutor:
 
         return await self._after_tool(tool_name, tool_args, tool_result, duration_ms, event_id=event_id)
 
-    async def _after_tool(self, tool_name, tool_args, tool_result, duration_ms, *, event_id=""):
+    async def _after_tool(
+        self, tool_name: str, tool_args: JsonObject | str, tool_result: ToolResult,
+        duration_ms: float, *, event_id: str = "",
+    ) -> ToolExecutionResult:
         runtime = get_runtime()
         observation_full = tool_result.text
         fed = await self.hooks.atrigger(
@@ -378,19 +403,19 @@ class ToolRoundExecutor:
                 run_id=runtime.run_id,
                 runtime=runtime,
                 tool_name=tool_name,
-                tool_input=tool_args,
+                tool_input=tool_args if isinstance(tool_args, dict) else None,
                 tool_output=observation_full,
                 tool_status=tool_result.status,
                 error_code=tool_result.error_code,
                 payload={"result": {"status": tool_result.status, "error_code": tool_result.error_code,
-                                    "retryable": tool_result.retryable, **tool_result.effects()},
+                                    "retryable": tool_result.retryable, **json_object(tool_result.effects())},
                          "duration_ms": duration_ms, "event_id": event_id,
                          "trace_id": str(getattr(current_trace_sink(), "trace_id", "") or "")},
             ),
         )
         if isinstance(fed, HookDecision):
             fed = fed.message if fed.action in {HookAction.REPLACE, "replace"} else None
-        return (
+        return ToolExecutionResult(
             observation_full,
             fed if fed is not None else observation_full,
             tool_result,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncIterator
+from typing import AsyncGenerator, TYPE_CHECKING, Unpack
 
 from ...convergence import ConvergenceController
 from ...core.exceptions import AgentInterrupted
@@ -22,110 +22,25 @@ from ...core.policy import ExecutionBudget
 from ...evidence import EvidenceLedger
 from app.services.context_manager import HistoryCompaction
 from .react_parser import remove_textual_tool_markup
-from .react_types import ReActProgress
+from .react_types import NativeRunOptions, ReActProgress
+from .fc_model import ModelRequestContext, _invoke_fc_model
 from .tool_round_executor import ToolRoundExecutor
 from .failure_recovery import FailureRecoveryController
+
+if TYPE_CHECKING:
+    from ..react_agent import ReActAgent
 
 logger = logging.getLogger(__name__)
 
 
-async def _invoke_fc_model(agent, **kwargs):
-    from ...core.operations import operation_scope
-    runtime = kwargs["runtime"]
-    with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
-        response = None
-        status = "failed"
-        try:
-            result = await _invoke_fc_model_impl(agent, **kwargs)
-            response = result[0]
-            status = "completed" if response is not None else "blocked" if result[1] == "hook_stop" else "failed"
-            operation.status = status
-            return result
-        except (asyncio.CancelledError, AgentInterrupted):
-            status = "cancelled"
-            raise
-        finally:
-            await get_hooks().atrigger(HookEvent.MODEL_AFTER, HookContext(
-                HookEvent.MODEL_AFTER, agent.name, run_id=runtime.run_id, runtime=runtime,
-                messages=kwargs["messages"], llm_response=response,
-                payload={"status": status, "observers_only": status != "completed"},
-            ))
-
-
-async def _invoke_fc_model_impl(
-    agent,
-    *,
-    messages: list[dict[str, Any]],
-    tool_specs: list[dict[str, Any]],
-    finalization_mode: bool,
-    request_context: dict[str, Any],
-    runtime: Any,
-    temperature: float,
-    timeout_seconds: float,
-) -> tuple[Any | None, str, str]:
-    """Invoke the model inside its hook and tracing boundary.
-
-    Returns ``(response, failure_kind, reason)``. A missing response is an
-    intentional terminal condition, either stopped by a hook or timed out.
-    """
-    before_decision = await get_hooks().atrigger(
-        HookEvent.MODEL_BEFORE,
-        HookContext(
-            event=HookEvent.MODEL_BEFORE,
-            agent_name=agent.name,
-            run_id=runtime.run_id,
-            runtime=runtime,
-            messages=messages,
-            payload={"current_user_index": request_context.get("current_user_index", -1)},
-        ),
-    )
-    if (
-        isinstance(before_decision, HookDecision)
-        and before_decision.action == HookAction.STOP
-    ):
-        return None, "hook_stop", before_decision.reason
-
-    from app.agent_base.core.observability import trace_span
-
-    retries = max(0, int(getattr(agent, "llm_timeout_retries", 3)))
-    with trace_span(agent.name):
-        for attempt in range(retries + 1):
-            if runtime.stop_check():
-                raise AgentInterrupted("User requested stop")
-            try:
-                response = await asyncio.wait_for(
-                    agent.llm.ainvoke_with_tools(
-                        messages=messages,
-                        tools=tool_specs,
-                        tool_choice="none" if finalization_mode else "auto",
-                        temperature=temperature,
-                        trace_context={**request_context, "timeout_seconds": timeout_seconds,
-                                       "timeout_attempt": attempt + 1, "timeout_max_attempts": retries + 1},
-                    ),
-                    timeout=timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                will_retry = attempt < retries
-                await get_hooks().aemit(HookEvent.ERROR, HookContext(
-                    event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
-                    runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm",
-                                              "attempt": attempt + 1, "max_attempts": retries + 1,
-                                              "timeout_seconds": timeout_seconds, "will_retry": will_retry},
-                ))
-                if not will_retry:
-                    return None, "timeout", "llm_timeout"
-                logger.warning("[LLM] Request timed out after %.1fs; retry %d/%d",
-                               timeout_seconds, attempt + 1, retries)
-                continue
-            return response, "", ""
-
-
-async def run_fc_loop(agent, *args, **kwargs):
+async def run_fc_loop(
+    agent: ReActAgent, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     from ...core.plugin_runtime import plugin_scope
     from ...core.extension_context import extension_scope, current_extension_context
     session = getattr(agent, "extension_context", None)
     with plugin_scope(), extension_scope(current_extension_context() or (session.fork() if session else None)):
-        stream = _run_fc_loop_scoped(agent, *args, **kwargs)
+        stream = _run_fc_loop_scoped(agent, input_text, context=context, **kwargs)
         try:
             async for progress in stream:
                 yield progress
@@ -133,11 +48,13 @@ async def run_fc_loop(agent, *args, **kwargs):
             await stream.aclose()
 
 
-async def _run_fc_loop_scoped(agent, *args, **kwargs):
+async def _run_fc_loop_scoped(
+    agent: ReActAgent, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     from ...core.operations import operation_scope
     with operation_scope("run", run_id=get_runtime().run_id, stage=HookEvent.RUN_START.value) as operation:
         get_runtime().run_operation_id = operation.operation_id
-        stream = _run_fc_loop_impl(agent, *args, **kwargs)
+        stream = _run_fc_loop_impl(agent, input_text, context=context, **kwargs)
         try:
             async for progress in stream:
                 yield progress
@@ -147,11 +64,11 @@ async def _run_fc_loop_scoped(agent, *args, **kwargs):
 
 
 async def _run_fc_loop_impl(
-    agent,
+    agent: ReActAgent,
     input_text: str,
     context: str = "",
-    **kwargs,
-) -> AsyncIterator[ReActProgress]:
+    **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     """原生 Function Calling 驱动的流式主循环。
 
     每轮 yield :class:`ReActProgress` — 包含步骤号、工具调用详情、
@@ -404,7 +321,7 @@ async def _run_fc_loop_impl(
                 agent.last_context_report["loop_dropped_messages"] = (
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
                 )
-            request_context = {
+            request_context: ModelRequestContext = {
                 "current_user_index": current_user_index,
                 "scope": "single_llm_request",
                 "estimated_context_tokens": agent.context_budget.estimate_request_tokens(

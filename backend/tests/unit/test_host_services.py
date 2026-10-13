@@ -18,6 +18,21 @@ def test_aggregate_service_entrypoints_are_not_public():
     assert not hasattr(services, "HostServices")
 
 
+def test_native_loop_factory_rejects_incomplete_registry_before_running():
+    host = ApplicationHostServices()
+    with pytest.raises(TypeError, match="Loop registry must implement"):
+        host.create_loop_agent(name="test", llm=SimpleNamespace(), tool_registry=SimpleNamespace())
+
+
+def test_native_loop_factory_accepts_the_structured_registry():
+    from app.agent_base.tools.registry import ToolRegistry
+    registry = ToolRegistry()
+    agent = ApplicationHostServices().create_loop_agent(
+        name="test", llm=SimpleNamespace(), tool_registry=registry,
+    )
+    assert agent.tool_registry is registry
+
+
 def test_concurrent_plugins_and_background_children_keep_injected_capabilities():
     default = get_observation_services()
     events = []

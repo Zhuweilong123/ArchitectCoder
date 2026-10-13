@@ -261,6 +261,7 @@ class MockToolRegistry:
         self._specs = _step_level_tool_specs(events)
         self._cursor = 0
         self._graceful = graceful
+        self._allowed_tools: set[str] | None = None
 
     @property
     def cursor(self) -> int:
@@ -279,7 +280,13 @@ class MockToolRegistry:
     def list_tools(self) -> list[str]:
         return []
 
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        self._allowed_tools = set(names) if names is not None else None
+
     async def aexecute_tool_with_params(self, name: str, parameters: dict) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return f"Error: Tool '{name}' is not enabled"
+
         if self._cursor >= len(self._results):
             if self._graceful:
                 # rerun 模式：真 LLM 偏离原始轨迹（多调了工具），mock 无结果可用。
@@ -324,6 +331,7 @@ class HybridToolRegistry:
         self._real_policy = real_policy
         self._specs = _step_level_tool_specs(events)
         self._graceful = graceful
+        self._allowed_tools: set[str] | None = None
         self._by_tool: dict[str, list[str]] = {}
         for r in _pick(events, "tool_result"):
             self._by_tool.setdefault(r.get("tool_name", ""), []).append(
@@ -349,7 +357,13 @@ class HybridToolRegistry:
     def list_tools(self) -> list[str]:
         return [s.get("function", {}).get("name", "") for s in self._specs]
 
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        self._allowed_tools = set(names) if names is not None else None
+
     async def aexecute_tool_with_params(self, name: str, parameters: dict) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return f"Error: Tool '{name}' is not enabled"
+
         self._calls += 1
         if name in self._real_policy:
             return await self._real.aexecute_tool_with_params(name, parameters)

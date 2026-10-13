@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from app.agent_base.tools.base import Tool, ToolParameter
+from app.agent_base.tools.recovery import WorkspaceRecoveryMixin
 from app.agent_base.tools.result import ToolResult
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 
@@ -34,7 +35,7 @@ _TEXT_BOMS = (
 )
 
 
-class GrepFileTool(Tool):
+class GrepFileTool(WorkspaceRecoveryMixin, Tool):
     """Search text files portably and return reusable absolute hit locations."""
 
     def __init__(

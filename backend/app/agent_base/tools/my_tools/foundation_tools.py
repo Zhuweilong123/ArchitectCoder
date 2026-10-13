@@ -19,6 +19,7 @@ from app.runtime.command import ExecutionEnvironmentError
 from app.runtime.process_output import collect_process_output
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.agent_base.tools.base import Tool
+from app.agent_base.tools.recovery import WorkspaceRecoveryMixin
 from app.agent_base.tools.result import (
     CommandEvidence,
     ToolResult,
@@ -136,7 +137,7 @@ class ListFilesTool(BaseListFilesTool):
         return schema
 
 
-class ApplyChangesTool(Tool):
+class ApplyChangesTool(WorkspaceRecoveryMixin, Tool):
     """Apply a validated batch of semantic workspace changes."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,

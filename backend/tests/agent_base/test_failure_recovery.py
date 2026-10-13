@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.agent_base.agents.react_agent import ReActAgent
-from app.agent_base.agents.react_runtime.failure_recovery import FailureRecoveryController
+from app.agent_base.agents.react_runtime.failure_recovery import FailureRecoveryController, RecoveryScopes
 from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
 from app.agent_base.tools.my_tools.foundation_tools import create_foundation_tools
 from app.agent_base.tools.registry import ToolRegistry
@@ -141,6 +141,48 @@ def test_command_recovery_respects_cwd_relative_target(workspace):
         "target": str(root / "engine" / "other" / "main.py"),
     })])
     assert not reminders(messages)
+
+
+def test_later_detail_mutation_does_not_change_active_command_failure(workspace):
+    _, registry = workspace
+    controller = FailureRecoveryController(registry)
+    messages = []
+    failed = detail("run_task", code="PROCESS_EXIT_ERROR", arguments={
+        "task": "test", "cwd": "workspace", "target": "source/main.py",
+    })
+    controller.update(messages, [failed])
+    failed["arguments"]["target"] = "source/other/main.py"
+    failed["error_code"] = "MUTATED"
+    controller.update(messages, [detail("run_task", status="success", arguments=failed["arguments"])])
+    assert "PROCESS_EXIT_ERROR" in reminders(messages)[0]["content"]
+    controller.update(messages, [detail("run_task", status="success", arguments={
+        "task": "test", "cwd": "workspace", "target": "source/main.py",
+    })])
+    assert not reminders(messages)
+
+
+def test_recovery_matches_public_path_capability_without_private_attributes(tmp_path):
+    class PublicPaths:
+        recovery_working_directory = str(tmp_path)
+
+        def resolve_recovery_path(self, value, *, relative_to=""):
+            return str((tmp_path / value.removeprefix("source/")).resolve())
+
+    class Registry:
+        def get_tool(self, name):
+            return PublicPaths()
+
+    scopes = RecoveryScopes(Registry())
+    assert scopes.paths(detail(path="source/main.py")) == scopes.paths(detail(path=str(tmp_path / "main.py")))
+
+
+def test_recovery_keeps_literal_path_for_tools_without_path_capability():
+    class Registry:
+        def get_tool(self, name):
+            return object()
+
+    scopes = RecoveryScopes(Registry())
+    assert scopes.paths(detail(path="source/main.py")) == (scopes.path("read_file", "source/main.py"),)
 
 
 def test_blocked_retry_of_batch_does_not_add_constraints_to_unaffected_files(workspace):

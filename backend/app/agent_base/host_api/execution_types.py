@@ -2,6 +2,17 @@
 from typing import Literal, NotRequired, TypedDict
 from .data import JsonValue, JsonObject, TodoItem, WorkspaceSnapshot
 
+class RuntimePolicyMetadata(TypedDict, total=False):
+    validation_requirements: list[dict[str, str]]
+    validation_requirement_corrections: list[dict[str, str]]
+    review_validation_failure: JsonObject
+    architecture_scheduling_enabled: bool
+    architecture_schedule_root: str
+    architecture_route_decided: bool
+    architecture_route_pending: bool
+    architecture_route_checkpoint_sent: bool
+
+
 class OutcomePayload(TypedDict):
     status: str
     stop_reason: str

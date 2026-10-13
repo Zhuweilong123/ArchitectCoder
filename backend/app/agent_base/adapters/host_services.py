@@ -220,7 +220,15 @@ class ApplicationHostServices:
 
     def create_loop_agent(self, *, name: str, llm: ModelPort, tool_registry: ToolRegistryPort, system_prompt: str | None = None, max_tool_calls: int = 0) -> AgentPort:
         from app.agent_base.agents.react_agent import ReActAgent
-        return ReActAgent(name=name, llm=llm, tool_registry=tool_registry, system_prompt=system_prompt, max_tool_calls=max_tool_calls)
+        from app.agent_base.tools.contracts import NativeToolRegistryPort
+        from app.agent_base.adapters.tool_registry import TextToolRegistryAdapter
+        if isinstance(tool_registry, NativeToolRegistryPort):
+            native_registry: NativeToolRegistryPort = tool_registry
+        elif isinstance(tool_registry, ToolRegistryPort):
+            native_registry = TextToolRegistryAdapter(tool_registry)
+        else:
+            raise TypeError("Loop registry must implement ToolRegistryPort or NativeToolRegistryPort")
+        return ReActAgent(name=name, llm=llm, tool_registry=native_registry, system_prompt=system_prompt, max_tool_calls=max_tool_calls)
 
     def foundation_registry(self, source_dir: str, test_dir: str, allowed_tools: set[str]) -> ToolRegistryPort:
         from app.agent_base.tools.registry import ToolRegistry

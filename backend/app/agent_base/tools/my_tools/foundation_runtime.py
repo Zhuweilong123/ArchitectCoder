@@ -32,6 +32,7 @@ from app.runtime.process_output import (
 )
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.async_tool import AsyncTool
+from app.agent_base.tools.recovery import WorkspaceRecoveryMixin
 from app.agent_base.tools.result import ToolResult, command_result
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
 from app.agent_base.tools.my_tools.file_inventory import file_metrics
@@ -175,7 +176,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
             pass
 
 
-class ReadFileTool(AsyncTool):
+class ReadFileTool(WorkspaceRecoveryMixin, AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
     _MAX_PATH_SUGGESTIONS = 5
@@ -388,7 +389,7 @@ class ReadFileTool(AsyncTool):
         }
 
 
-class BaseListFilesTool(AsyncTool):
+class BaseListFilesTool(WorkspaceRecoveryMixin, AsyncTool):
     """Shared glob listing and file metrics for workspace tools."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
@@ -618,8 +619,12 @@ class BaseListFilesTool(AsyncTool):
         }
 
 
-class ShellTool(AsyncTool):
+class ShellTool(WorkspaceRecoveryMixin, AsyncTool):
     """在 workspace 内跑 shell 命令（高危直接拒绝 + 敏感人工审核 + 超时守卫）。"""
+
+    @property
+    def recovery_working_directory(self) -> str:
+        return self._cwd
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  review_manager=None, progress=None,

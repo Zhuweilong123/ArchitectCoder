@@ -7,7 +7,12 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from collections.abc import Sequence
+from copy import deepcopy
+
+from ...host_api.data import JsonValue, ModelMessage
+from ...host_api.execution_types import ToolCallDetail
+from ...host_api.recovery import RecoveryPathPort, RecoveryToolLookup
 
 
 EDIT_REFRESH_CODES = frozenset({
@@ -22,20 +27,19 @@ _SEARCH_LOCATION = re.compile(r"^(.+):\d+:\d+: ", re.MULTILINE)
 class RecoveryScopes:
     """Identify the same target across aliases, absolute paths and batch errors."""
 
-    def __init__(self, registry):
+    def __init__(self, registry: RecoveryToolLookup) -> None:
         self.registry = registry
 
     def path(self, name: str, value: str) -> str:
         tool = self.registry.get_tool(name)
-        resolver = getattr(tool, "_paths", None)
-        if resolver is not None:
+        if isinstance(tool, RecoveryPathPort):
             try:
-                value = str(resolver.resolve(value))
+                value = tool.resolve_recovery_path(value)
             except (ValueError, OSError, RuntimeError):
                 pass
         return os.path.normcase(os.path.normpath(value.replace("/", os.sep)))
 
-    def paths(self, detail: dict[str, Any]) -> tuple[str, ...]:
+    def paths(self, detail: ToolCallDetail) -> tuple[str, ...]:
         name = detail.get("name", "")
         args = detail.get("arguments")
         if not isinstance(args, dict):
@@ -48,36 +52,37 @@ class RecoveryScopes:
             return ()
         if detail.get("status") in {"error", "blocked"}:
             try:
-                payload = json.loads(detail.get("observation") or "")
+                payload: object = json.loads(detail.get("observation") or "")
             except (ValueError, TypeError):
                 payload = {}
             index = payload.get("change_index") if isinstance(payload, dict) else None
             if type(index) is int and 0 <= index < len(changes):
                 changes = [changes[index]]
-        return tuple(sorted({
-            self.path(name, change[field])
-            for change in changes if isinstance(change, dict)
-            for field in ("path", "from", "to")
-            if isinstance(change.get(field), str) and change[field].strip()
-        }))
+        paths = set()
+        for change in changes:
+            if isinstance(change, dict):
+                for field in ("path", "from", "to"):
+                    value = change.get(field)
+                    if isinstance(value, str) and value.strip():
+                        paths.add(self.path(name, value))
+        return tuple(sorted(paths))
 
-    def invocation(self, detail: dict[str, Any]) -> str:
-        args = detail.get("arguments")
+    def invocation(self, detail: ToolCallDetail) -> str:
+        args: JsonValue = detail.get("arguments")
         name = str(detail.get("name") or "tool")
         if name in EXECUTION_TOOLS and isinstance(args, dict):
             args = dict(args)
             tool = self.registry.get_tool(name)
-            cwd = args.get("cwd") or getattr(tool, "_cwd", "")
+            cwd = args.get("cwd") or (tool.recovery_working_directory if isinstance(tool, RecoveryPathPort) else "")
             if isinstance(cwd, str) and cwd:
                 args["cwd"] = self.path(name, cwd)
             target = args.get("target")
             if isinstance(target, str) and target:
                 path, separator, selector = target.partition("::")
-                resolver = getattr(tool, "_paths", None)
-                qualified = getattr(tool, "_is_qualified_target", lambda value: True)
-                if resolver is not None and not qualified(path):
+                if isinstance(tool, RecoveryPathPort):
                     try:
-                        path = str(resolver.resolve(path, relative_to=args.get("cwd") or ""))
+                        base = args.get("cwd")
+                        path = tool.resolve_recovery_path(path, relative_to=base if isinstance(base, str) else "")
                     except (ValueError, OSError, RuntimeError):
                         pass
                 args["target"] = self.path(name, path) + separator + selector
@@ -85,9 +90,9 @@ class RecoveryScopes:
             if isinstance(argv, list):
                 args["args"] = [self.path(name, value) if isinstance(value, str) and Path(value).is_absolute()
                                 else value for value in argv]
-        return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+        return json.dumps(args, sort_keys=True, ensure_ascii=False)
 
-    def fresh_content_paths(self, detail: dict[str, Any]) -> set[str]:
+    def fresh_content_paths(self, detail: ToolCallDetail) -> set[str]:
         if detail.get("status") != "success":
             return set()
         name = detail.get("name")
@@ -102,7 +107,7 @@ class RecoveryScopes:
 
 @dataclass
 class _Failure:
-    detail: dict[str, Any]
+    detail: ToolCallDetail
     paths: tuple[str, ...]
     attempts: int = 1
     correction: str = ""
@@ -119,11 +124,11 @@ class _Failure:
 class FailureRecoveryController:
     HEADER = "## Active tool recovery\n"
 
-    def __init__(self, registry):
+    def __init__(self, registry: RecoveryToolLookup) -> None:
         self.scopes = RecoveryScopes(registry)
         self._active: dict[tuple[str, tuple[str, ...], str], _Failure] = {}
 
-    def update(self, messages: list[dict], details: list[dict]) -> None:
+    def update(self, messages: list[ModelMessage], details: Sequence[ToolCallDetail]) -> None:
         for detail in details:
             name = str(detail.get("name") or "tool")
             paths = self.scopes.paths(detail)
@@ -147,7 +152,7 @@ class FailureRecoveryController:
                         recovered = bool(resolved)
                     elif failure.name in FILE_ACCESS_TOOLS:
                         recovered = (name == failure.name and matched) or refreshed or (
-                            failure.correction and failure.correction in fresh
+                            bool(failure.correction) and failure.correction in fresh
                         )
                     else:
                         recovered = name == failure.name and invocation == self.scopes.invocation(failure.detail)
@@ -173,7 +178,7 @@ class FailureRecoveryController:
                         guard.attempts += 1
                     continue
             attempts = previous.attempts + 1 if previous and previous.code == detail.get("error_code") else 1
-            failure = _Failure(detail, paths, attempts)
+            failure = _Failure(deepcopy(detail), paths, attempts)
             # A single candidate offered by read_file establishes a safe
             # corrected-path relation. Ambiguous same-name files do not.
             if name == "read_file" and failure.code == "PATH_NOT_FOUND":
@@ -185,10 +190,10 @@ class FailureRecoveryController:
             self._active[key] = failure
         self.sync(messages)
 
-    def sync(self, messages: list[dict]) -> None:
+    def sync(self, messages: list[ModelMessage]) -> None:
         """Update one owned system message, also after context compaction."""
         content = self._render() if self._active else ""
-        kept = []
+        kept: list[ModelMessage] = []
         found = False
         for message in messages:
             owned = message.get("role") == "system" and str(message.get("content") or "").startswith(self.HEADER)

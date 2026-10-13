@@ -1,7 +1,7 @@
 """Agent, prompt, progress and task capabilities exposed to plugins."""
 from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import NamedTuple, Protocol
+from typing import NamedTuple, Protocol, runtime_checkable
 from dataclasses import dataclass
 from datetime import datetime
 from .data import ConversationRole
@@ -37,6 +37,7 @@ class ProgressSnapshotPort(Protocol):
     is_final: bool
     final_answer: str
 
+@runtime_checkable
 class ToolRegistryPort(Protocol):
     def set_allowed_tools(self, names: list[str] | None) -> None: ...
     def get_openai_specs(self) -> list[ToolSchema]: ...

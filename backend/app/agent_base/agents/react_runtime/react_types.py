@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, TypedDict
 from ...host_api.execution_types import StreamStep, ToolCallDetail
 
 from ...outcome import RunOutcome
+
+
+class NativeRunOptions(TypedDict, total=False):
+    allowed_tools: list[str] | None
+    initial_token_usage: int
+    temperature: float
+    llm_timeout_seconds: float
 
 
 class ReActProgress:

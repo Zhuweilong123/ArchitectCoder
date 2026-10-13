@@ -68,7 +68,7 @@ def test_concurrent_plugin_calls_inherit_phase_scope_and_parent_without_phase_br
 
 @pytest.mark.parametrize("outcome", ["success", "timeout", "error", "cancel", "blocked"])
 def test_model_after_records_every_attempt_once(recording, outcome):
-    from app.agent_base.agents.react_runtime.fc_loop import _invoke_fc_model
+    from app.agent_base.agents.react_runtime.fc_model import _invoke_fc_model
     registry, events = recording
     seen = []
     async def model(**kwargs):

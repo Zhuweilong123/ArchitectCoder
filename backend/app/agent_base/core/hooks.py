@@ -39,6 +39,8 @@ from app.agent_base.host_api.lifecycle import (
 from .exceptions import AgentInterrupted
 from .policy import ExecutionBudget
 from ..convergence import ConvergenceController
+from ..host_api.data import TodoItem
+from ..host_api.execution_types import RuntimePolicyMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class AgentRuntime:
     """
 
     stop_check: Callable[[], bool] = field(default_factory=lambda: (lambda: False))
-    todos: list = field(default_factory=list)
+    todos: list[TodoItem] = field(default_factory=list)
     rounds_since_todo: int = 0
     # Complex cross-artifact tasks opt into an explicit acceptance contract.
     # Keep this per-run: ordinary repairs should retain the lightweight path.
@@ -63,7 +65,7 @@ class AgentRuntime:
     execution_budget: Optional[ExecutionBudget] = None
     convergence_controller: Optional[ConvergenceController] = None
     control_decision: Optional[HookDecision] = None
-    policy_metadata: dict[str, Any] = field(default_factory=dict)
+    policy_metadata: RuntimePolicyMetadata = field(default_factory=dict)
     plugin_plan_id: str = ""
     run_operation_id: str = ""
     lifecycle_round_open: bool = False
