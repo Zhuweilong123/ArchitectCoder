@@ -9,6 +9,7 @@ from ...host_api.errors import AgentInterrupted
 from ...core.hooks import AgentRuntime, get_hooks
 from ...host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
 from ...host_api.agents import ModelPort
+from ...host_api.context import ModelRequestContext
 from ...host_api.data import ModelMessage, ModelResponse, ToolSchema
 from ...host_api.payloads import json_object
 
@@ -22,22 +23,6 @@ class ModelInvocationAgent(Protocol):
     def llm(self) -> ModelPort: ...
     @property
     def llm_timeout_retries(self) -> int: ...
-
-
-class ModelRequestContext(TypedDict, total=False):
-    current_user_index: int
-    scope: str
-    estimated_context_tokens: int
-    message_count: int
-    tool_schema_tokens: int
-    tool_schema_mode: str
-    tool_schema_stable: bool
-    request_budget_target_tokens: int
-    request_budget_emergency_tokens: int
-    context_soft_threshold_ratio: float
-    context_compaction_threshold_ratio: float
-    context_hard_limit_tokens: int
-    task_total_tokens_observed: int
 
 
 class ModelInvocationOptions(TypedDict):

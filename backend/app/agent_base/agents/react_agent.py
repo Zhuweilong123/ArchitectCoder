@@ -26,6 +26,7 @@ from ..core.agent import Agent
 from ..host_api.agents import ModelPort, ConversationSnapshot, HistoryEntry
 from copy import deepcopy
 from ..host_api.data import ConversationMessage, WorkspaceSnapshot
+from ..host_api.context import ContextReport
 from ..host_api.execution_types import RunCheckpoint, CompactionReport, EvidenceSnapshot
 from collections.abc import Callable
 from ..core.message import Message
@@ -118,7 +119,7 @@ class ReActAgent(Agent):
         self.llm_timeout_retries = max(0, int(llm_timeout_retries))
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
-        self.last_context_report: dict = {}
+        self.last_context_report: ContextReport = {}
         self.last_evidence_summary: list[EvidenceSnapshot] = []
         self._run_verifications: dict[tuple[str, str], bool] = {}
         # Structured hand-off for a follow-up status query. The transport

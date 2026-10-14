@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ...host_api.context import ContextReport, ModelRequestContext
+
 import logging
 import asyncio
 import json
@@ -247,7 +249,7 @@ class SpawnSubagentTool(AsyncTool):
         ))
         self.context_budget = context_budget or ContextBudgetManager.from_settings(settings)
         self.last_token_usage = 0
-        self.last_context_report: dict = {}
+        self.last_context_report: ContextReport = {}
         self.last_evidence_summary: list[dict] = []
         self.final_summary_max_tokens = settings.agent_final_summary_max_tokens
         self.toolkits = tuple(toolkits)
@@ -637,11 +639,13 @@ class SpawnSubagentTool(AsyncTool):
                             self.last_context_report.get("compacted_tokens", 0) + dropped_tokens
                         )
 
-                messages, _ = self.context_budget.fit_messages(
+                fitted = self.context_budget.fit_messages(
                     messages,
                     tools=active_tools,
                     current_user_index=current_user_index,
                 )
+                messages = fitted.messages
+                current_user_index = fitted.current_user_index
                 if finalization_mode and self.max_cumulative_tokens is not None:
                     remaining = max(0, self.max_cumulative_tokens - budget.total_tokens)
                     call_ids = [str(m.get("tool_call_id") or "") for m in messages
@@ -659,7 +663,7 @@ class SpawnSubagentTool(AsyncTool):
                     self.last_context_report["compacted_tokens"] = (
                         self.last_context_report.get("compacted_tokens", 0) + dropped_tokens
                     )
-                request_context = {
+                request_context: ModelRequestContext = {
                     "scope": "single_llm_request",
                     "estimated_context_tokens": self.context_budget.estimate_request_tokens(
                         messages, tools=active_tools,

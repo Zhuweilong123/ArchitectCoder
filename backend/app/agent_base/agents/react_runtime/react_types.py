@@ -53,4 +53,4 @@ class ReActProgress:
         }
 
 
-__all__ = ["ReActProgress"]
+__all__ = ["NativeRunOptions", "ReActProgress"]

@@ -146,6 +146,11 @@ extensions/<plugin>/               plugin.json、provider、存储和领域算�
 
 - 上下文预算由 `backend/app/services/context_manager.py` 管理；它只负责本次请求的
   prompt 预算、历史压缩和恢复，不直接实现长期记忆。
+- 上下文契约集中在 `backend/app/agent_base/host_api/context.py`：历史消息、预算配置、
+  请求报告和裁剪结果都有明确字段。`fit_messages` 返回 `MessageFit`，主循环和子任务
+  必须沿用其中更新后的 `current_user_index`，不能通过消息内容重新寻找当前任务。
+  历史选择和裁剪按完整工具调用及结果分组；返回消息是独立快照，硬上限估算包含
+  消息序列化开销和工具 schema。固定字段本身超过预算时仍由调用方硬上限检查拒绝请求。
 - 会话级压缩由 `backend/app/services/session_compression.py` 的
   `SessionContextCompressor` 负责，在会话层调用模型生成带来源引用的摘要；失败时保留
   原始历史，不把语义压缩逻辑塞进 ReAct 回合循环。

@@ -7,23 +7,22 @@ import logging
 from typing import AsyncGenerator, TYPE_CHECKING, Unpack
 
 from ...convergence import ConvergenceController
-from ...core.exceptions import AgentInterrupted
+from ...host_api.errors import AgentInterrupted
 from ...host_api.errors import AgentAwaitingReview
 from ...core.hooks import (
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookEvent,
     get_hooks,
     get_runtime,
     todo_plan_complete,
 )
 from ...core.policy import ExecutionBudget
 from ...evidence import EvidenceLedger
-from app.services.context_manager import HistoryCompaction
+from ...host_api.context import ModelRequestContext
+from ...host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
+from ...host_api.data import JsonValue
+from ...host_api.payloads import json_value
 from .react_parser import remove_textual_tool_markup
 from .react_types import NativeRunOptions, ReActProgress
-from .fc_model import ModelRequestContext, _invoke_fc_model
+from .fc_model import _invoke_fc_model
 from .tool_round_executor import ToolRoundExecutor
 from .failure_recovery import FailureRecoveryController
 
@@ -93,26 +92,23 @@ async def _run_fc_loop_impl(
     )
     # Session-level semantic compression runs between turns. Do not compact
     # user/assistant conversation inside an active task execution.
-    compacted = HistoryCompaction(
-        messages=list(agent._history),
-        summary=agent._history_summary,
-    )
+    history = agent.export_conversation()
     built = agent.context_budget.build_messages(
         agent._build_fc_system_prompt(),
-        compacted.messages,
+        history.messages,
         input_text,
         context=context,
-        history_summary=agent._history_summary,
+        history_summary=history.summary,
         tools=full_tool_specs,
     )
     messages = built.messages
-    current_user_index = built.current_user_index
+    current_user_index: int | None = built.current_user_index
     agent.last_context_report = built.to_dict()
     agent.last_context_report["token_budget_stop_reason"] = "model_answer"
     agent._run_verifications = {}
     agent.last_context_report.update({
-        "compacted_messages": compacted.dropped_messages,
-        "compacted_tokens": compacted.dropped_tokens,
+        "compacted_messages": 0,
+        "compacted_tokens": 0,
         "convergence_policy": {
             "budget_threshold_tokens": agent.max_total_tokens,
             "evidence_max_records": agent.evidence_max_records,
@@ -129,13 +125,6 @@ async def _run_fc_loop_impl(
             "compaction_target_tokens": agent.context_budget.budget.max_history_tokens,
         },
     })
-    if compacted.dropped_messages and agent.on_context_compacted:
-        agent.on_context_compacted({
-            "summary": compacted.summary,
-            "dropped_messages": compacted.dropped_messages,
-            "dropped_tokens": compacted.dropped_tokens,
-        })
-
     agent.current_history = []
     no_tool_call_streak = 0
     _turn_recorded = False
@@ -188,8 +177,8 @@ async def _run_fc_loop_impl(
     runtime.lifecycle_status = "running"
     runtime.lifecycle_finalized = False
     agent.last_context_report["plugin_plan_id"] = runtime.plugin_plan_id
-    async def publish(stage, **payload):
-        return await get_hooks().aemit(stage, HookContext(
+    async def publish(stage: HookEvent, **payload: JsonValue) -> None:
+        await get_hooks().aemit(stage, HookContext(
             event=stage, agent_name=agent.name, run_id=runtime.run_id,
             runtime=runtime, payload=payload,
         ))
@@ -312,11 +301,14 @@ async def _run_fc_loop_impl(
                     "triggered_at_tool_calls": tool_call_count,
                     "token_budget_used": budget.request_tokens,
                 }
-            messages, dropped = agent.context_budget.fit_messages(
+            fitted = agent.context_budget.fit_messages(
                 messages,
                 tools=active_tool_specs,
                 current_user_index=current_user_index,
             )
+            messages = fitted.messages
+            current_user_index = fitted.current_user_index
+            dropped = fitted.dropped_messages
             if dropped:
                 agent.last_context_report["loop_dropped_messages"] = (
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
@@ -598,8 +590,8 @@ async def _run_fc_loop_impl(
                     runtime=runtime,
                     phase="tool_batch_complete",
                     payload={
-                        "details": details,
-                        "actions": actions,
+                        "details": json_value(details),
+                        "actions": json_value(actions),
                         "step": step,
                     },
                 ),

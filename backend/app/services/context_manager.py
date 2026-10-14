@@ -11,7 +11,14 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from copy import deepcopy
+
+from app.agent_base.host_api.context import (
+    ContextBuildMetadata, ContextReport, ContextSettingsPort, HistoryMessage,
+    MessageFit, ToolHistoryCompaction,
+)
+from app.agent_base.host_api.data import ModelMessage, ToolSchema
 
 
 TokenCounter = Callable[[str], int]
@@ -42,33 +49,48 @@ def estimate_tokens(text: str) -> int:
     return max(1, cjk + math.ceil(other / 4))
 
 
-def _content(value: Any) -> str:
+def _content(value: ModelMessage) -> str:
+    return value.get("content") or ""
+
+
+def _as_message(value: HistoryMessage) -> ModelMessage:
     if isinstance(value, dict):
-        return str(value.get("content") or "")
-    return str(getattr(value, "content", "") or "")
+        return deepcopy(value)
+    return {"role": value.role, "content": value.content}
 
 
-def _role(value: Any) -> str:
-    if isinstance(value, dict):
-        return str(value.get("role") or "user")
-    return str(getattr(value, "role", "user") or "user")
+def _tool_group_end(messages: Sequence[ModelMessage], index: int) -> int:
+    end = index + 1
+    if messages[index].get("role") == "assistant" and messages[index].get("tool_calls"):
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+    return end
 
 
-def _as_message(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    return {"role": _role(value), "content": _content(value)}
+def _message_groups(messages: list[ModelMessage]) -> list[list[ModelMessage]]:
+    groups = []
+    index = 0
+    while index < len(messages):
+        end = _tool_group_end(messages, index)
+        groups.append(messages[index:end])
+        index = end
+    return groups
 
 
-def _as_model_history_message(message: dict[str, Any]) -> dict[str, Any]:
+def _validate_anchor(messages: Sequence[ModelMessage], index: int | None) -> None:
+    if index is not None and not 0 <= index < len(messages):
+        raise ValueError("current_user_index must reference an existing message")
+
+
+def _as_model_history_message(message: ModelMessage) -> ModelMessage:
     """Convert internal history-only roles to valid model message roles."""
-    result = dict(message)
+    result = message.copy()
     if result.get("role") == "summary":
         result["role"] = "system"
     return result
 
 
-def _message_tokens(message: dict[str, Any], counter: TokenCounter) -> int:
+def _message_tokens(message: ModelMessage, counter: TokenCounter) -> int:
     # Include tool call metadata because it is sent to the model as part of
     # the request even when the visible content is empty.
     payload = json.dumps(message, ensure_ascii=False, sort_keys=True)
@@ -83,25 +105,29 @@ def truncate_text(text: str, max_tokens: int, counter: TokenCounter = estimate_t
         return text
     if not text:
         return ""
-    # Binary search by character length keeps this O(log n) and works for
-    # both CJK and ASCII text without assuming a fixed token/character ratio.
+    # The counter may include serialization overhead. Measure each candidate,
+    # including its marker, rather than treating tokens as character counts.
     marker = "\n…[context truncated]…\n"
-    if counter(marker) >= max_tokens:
-        return text[: max(1, max_tokens)]
-    target = max_tokens - counter(marker)
-    low, high = 1, len(text)
-    best = 1
+    use_marker = counter(marker) <= max_tokens
+
+    def candidate(size: int) -> str:
+        if not use_marker:
+            return text[:size]
+        head = max(1, int(size * 0.65)) if size else 0
+        tail = size - head
+        return text[:head] + marker + (text[-tail:] if tail else "")
+
+    low, high = 0, len(text)
+    best = ""
     while low <= high:
         size = (low + high) // 2
-        head = max(1, int(size * 0.65))
-        candidate = text[:head] + marker + text[-(size - head):]
-        if counter(candidate) <= target + counter(marker):
-            best = size
+        value = candidate(size)
+        if counter(value) <= max_tokens:
+            best = value
             low = size + 1
         else:
             high = size - 1
-    head = max(1, int(best * 0.65))
-    return text[:head] + marker + text[-(best - head):]
+    return best
 
 
 def _checkpoint_evidence_lines(checkpoint: str) -> list[str]:
@@ -155,7 +181,7 @@ class ContextBudget:
 
 @dataclass
 class HistoryCompaction:
-    messages: list[dict[str, Any]]
+    messages: list[ModelMessage]
     summary: str
     dropped_messages: int = 0
     dropped_tokens: int = 0
@@ -163,7 +189,7 @@ class HistoryCompaction:
 
 @dataclass
 class ContextBuild:
-    messages: list[dict[str, Any]]
+    messages: list[ModelMessage]
     current_user_index: int
     estimated_tokens: int
     history_tokens: int
@@ -171,18 +197,20 @@ class ContextBuild:
     summary_tokens: int
     dropped_messages: int = 0
     truncated_current_task: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: ContextBuildMetadata = field(default_factory=ContextBuildMetadata)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self) -> ContextReport:
+        report: ContextReport = {
             "estimated_tokens": self.estimated_tokens,
             "history_tokens": self.history_tokens,
             "tool_tokens": self.tool_tokens,
             "summary_tokens": self.summary_tokens,
             "dropped_messages": self.dropped_messages,
             "truncated_current_task": self.truncated_current_task,
-            **self.metadata,
         }
+        if "max_context_tokens" in self.metadata:
+            report["max_context_tokens"] = self.metadata["max_context_tokens"]
+        return report
 
 
 class HistoryCompactor:
@@ -194,12 +222,12 @@ class HistoryCompactor:
     agent loop.
     """
 
-    def __init__(self, token_counter: TokenCounter = estimate_tokens):
+    def __init__(self, token_counter: TokenCounter = estimate_tokens) -> None:
         self.token_counter = token_counter
 
     def compact(
         self,
-        messages: Iterable[Any],
+        messages: Iterable[HistoryMessage],
         prior_summary: str = "",
         *,
         max_turns: int = 12,
@@ -211,22 +239,22 @@ class HistoryCompactor:
             return HistoryCompaction([], prior_summary)
 
         keep_limit = max(0, max_turns * 2)
-        kept_reversed: list[dict[str, Any]] = []
+        kept_groups: list[list[ModelMessage]] = []
+        kept_count = 0
         total = 0
-        for message in reversed(normalized):
-            cost = _message_tokens(message, self.token_counter)
-            if kept_reversed and (len(kept_reversed) >= keep_limit or total + cost > max_tokens):
+        for group in reversed(_message_groups(normalized)):
+            cost = sum(_message_tokens(message, self.token_counter) for message in group)
+            if keep_limit <= 0:
                 break
-            if not kept_reversed and keep_limit > 0:
-                kept_reversed.append(message)
-                total += cost
-                continue
-            if keep_limit <= 0 or total + cost > max_tokens:
+            if kept_groups and (kept_count + len(group) > keep_limit or total + cost > max_tokens):
                 break
-            kept_reversed.append(message)
+            # Retain the newest complete group, even when it alone exceeds
+            # the soft history budget. Never separate a call from its results.
+            kept_groups.append(group)
+            kept_count += len(group)
             total += cost
 
-        kept = list(reversed(kept_reversed))
+        kept = [message for group in reversed(kept_groups) for message in group]
         dropped = normalized[: len(normalized) - len(kept)]
         if not dropped:
             return HistoryCompaction(normalized, prior_summary)
@@ -239,7 +267,7 @@ class HistoryCompactor:
             lines.append(f"Previous checkpoint:\n{prior_summary}")
         lines.append("Compacted turns:")
         for message in dropped:
-            role = _role(message)
+            role = message["role"]
             snippet = truncate_text(_content(message).strip(), 260, self.token_counter)
             if snippet:
                 lines.append(f"- {role}: {snippet}")
@@ -260,13 +288,13 @@ class ContextBudgetManager:
         budget: ContextBudget | None = None,
         token_counter: TokenCounter = estimate_tokens,
         compactor: HistoryCompactor | None = None,
-    ):
+    ) -> None:
         self.budget = budget or ContextBudget()
         self.token_counter = token_counter
         self.compactor = compactor or HistoryCompactor(token_counter)
 
     @classmethod
-    def from_settings(cls, settings: Any | None = None) -> "ContextBudgetManager":
+    def from_settings(cls, settings: ContextSettingsPort | None = None) -> "ContextBudgetManager":
         """Build an isolated manager from the central Agent context settings."""
         if settings is None:
             from backend.config import get_settings
@@ -281,7 +309,7 @@ class ContextBudgetManager:
 
     def prepare_history(
         self,
-        history: Iterable[Any],
+        history: Iterable[HistoryMessage],
         prior_summary: str = "",
     ) -> HistoryCompaction:
         return self.compactor.compact(
@@ -295,30 +323,31 @@ class ContextBudgetManager:
     def build_messages(
         self,
         system_prompt: str,
-        history: Iterable[Any],
+        history: Iterable[HistoryMessage],
         current_input: str,
         *,
         context: str = "",
         history_summary: str = "",
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSchema] | None = None,
     ) -> ContextBuild:
         system = truncate_text(system_prompt or "", self.budget.max_system_tokens, self.token_counter)
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        messages: list[ModelMessage] = [{"role": "system", "content": system}]
         summary = truncate_text(history_summary or "", self.budget.max_summary_tokens, self.token_counter)
         if summary:
             messages.append({"role": "system", "content": summary})
 
         normalized_history = [_as_message(message) for message in history]
-        history_messages: list[dict[str, Any]] = []
+        model_history = [_as_model_history_message(message) for message in normalized_history]
+        history_groups: list[list[ModelMessage]] = []
         history_total = 0
-        for message in reversed(normalized_history):
-            model_message = _as_model_history_message(message)
-            cost = _message_tokens(model_message, self.token_counter)
-            if history_messages and history_total + cost > self.budget.max_history_tokens:
+        for group in reversed(_message_groups(model_history)):
+            cost = sum(_message_tokens(message, self.token_counter) for message in group)
+            if history_groups and history_total + cost > self.budget.max_history_tokens:
                 break
-            history_messages.append(model_message)
+            history_groups.append(group)
             history_total += cost
-        messages.extend(reversed(history_messages))
+        history_messages = [message for group in reversed(history_groups) for message in group]
+        messages.extend(history_messages)
 
         current = f"{context}\n\n{current_input}" if context else current_input
         current_before = current
@@ -327,16 +356,15 @@ class ContextBudgetManager:
         messages.append({"role": "user", "content": current})
 
         tool_tokens = self._tool_tokens(tools)
-        messages, dropped = self.fit_messages(
+        fitted = self.fit_messages(
             messages,
             tools=tools,
             current_user_index=current_user_index,
         )
-        current_user_index = next(
-            (index for index, message in enumerate(messages)
-             if message.get("role") == "user" and message.get("content") == current),
-            len(messages) - 1,
-        )
+        messages = fitted.messages
+        if fitted.current_user_index is None:
+            raise RuntimeError("Context fitting lost the current user anchor")
+        current_user_index = fitted.current_user_index
         total = self._messages_tokens(messages) + tool_tokens
         return ContextBuild(
             messages=messages,
@@ -349,8 +377,8 @@ class ContextBudgetManager:
             ),
             tool_tokens=tool_tokens,
             summary_tokens=self.token_counter(summary),
-            dropped_messages=dropped,
-            truncated_current_task=current != current_before,
+            dropped_messages=len(normalized_history) - len(history_messages) + fitted.dropped_messages,
+            truncated_current_task=current != current_before or fitted.truncated_current_task,
             metadata={
                 "max_context_tokens": self.budget.max_context_tokens,
             },
@@ -358,22 +386,22 @@ class ContextBudgetManager:
 
     def estimate_request_tokens(
         self,
-        messages: Iterable[dict[str, Any]],
+        messages: Iterable[ModelMessage],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSchema] | None = None,
     ) -> int:
         """Estimate the full request footprint, including tool schemas."""
         return self._messages_tokens(messages) + self._tool_tokens(tools)
 
-    def tool_schema_tokens(self, tools: list[dict[str, Any]] | None = None) -> int:
+    def tool_schema_tokens(self, tools: list[ToolSchema] | None = None) -> int:
         """Return the estimated token footprint of the exact tool payload."""
         return self._tool_tokens(tools)
 
     def should_compact(
         self,
-        messages: Iterable[dict[str, Any]],
+        messages: Iterable[ModelMessage],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSchema] | None = None,
     ) -> bool:
         """Return whether the request is using too much of its context budget."""
         return self.estimate_request_tokens(messages, tools=tools) >= (
@@ -382,9 +410,9 @@ class ContextBudgetManager:
 
     def soft_threshold_reached(
         self,
-        messages: Iterable[dict[str, Any]],
+        messages: Iterable[ModelMessage],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSchema] | None = None,
     ) -> bool:
         """Return whether the request should explicitly converge."""
         return self.estimate_request_tokens(messages, tools=tools) >= (
@@ -393,13 +421,15 @@ class ContextBudgetManager:
 
     def fit_messages(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[ModelMessage],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSchema] | None = None,
         current_user_index: int | None = None,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> MessageFit:
         """Trim oldest non-essential messages while preserving the active task."""
-        result = [dict(message) for message in messages]
+        _validate_anchor(messages, current_user_index)
+        result = deepcopy(messages)
+        truncated = False
         dropped = 0
         limit = max(1, self.budget.max_context_tokens)
         tool_tokens = self._tool_tokens(tools)
@@ -418,21 +448,28 @@ class ContextBudgetManager:
             anchor = current_user_index if current_user_index is not None else len(result) - 1
             if 0 <= anchor < len(result):
                 message = result[anchor]
+                original_content = _content(message)
+                available = limit - self._messages_tokens(result[:anchor] + result[anchor + 1:]) - tool_tokens
+
+                def serialized_content_tokens(content: str) -> int:
+                    candidate = message.copy()
+                    candidate["content"] = content
+                    return _message_tokens(candidate, self.token_counter)
+
                 message["content"] = truncate_text(
-                    _content(message),
-                    max(1, limit - self._messages_tokens(result[:anchor] + result[anchor + 1:]) - tool_tokens),
-                    self.token_counter,
+                    original_content, max(0, available), serialized_content_tokens,
                 )
-        return result, dropped
+                truncated = _content(message) != original_content
+        return MessageFit(result, current_user_index, dropped, truncated)
 
     def compact_tool_history(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[ModelMessage],
         *,
         current_user_index: int | None = None,
         target_tokens: int | None = None,
         evidence_by_call: dict[str, str] | None = None,
-    ) -> tuple[list[dict[str, Any]], int | None, int, int]:
+    ) -> ToolHistoryCompaction:
         """Fold old FC tool history into a token-bounded checkpoint.
 
         A step is one assistant message containing tool calls plus all
@@ -446,6 +483,8 @@ class ContextBudgetManager:
         Returns ``(messages, current_user_index, dropped_message_count,
         dropped_token_count)``.
         """
+        _validate_anchor(messages, current_user_index)
+        messages = deepcopy(messages)
         target_tokens = max(
             1,
             int(target_tokens if target_tokens is not None else self.budget.max_history_tokens),
@@ -455,9 +494,7 @@ class ContextBudgetManager:
         while index < len(messages):
             message = messages[index]
             if message.get("role") == "assistant" and message.get("tool_calls"):
-                end = index + 1
-                while end < len(messages) and messages[end].get("role") == "tool":
-                    end += 1
+                end = _tool_group_end(messages, index)
                 groups.append(list(range(index, end)))
                 index = end
                 continue
@@ -487,7 +524,7 @@ class ContextBudgetManager:
         retained_groups.reverse()
         old_groups = groups[: len(groups) - len(retained_groups)]
         if not old_groups:
-            return messages, current_user_index, 0, 0
+            return ToolHistoryCompaction(messages, current_user_index, 0, 0)
         old_indices = {item for group in old_groups for item in group}
         previous_evidence_lines: list[str] = []
         for pos in sorted(checkpoint_indices):
@@ -538,17 +575,15 @@ class ContextBudgetManager:
             current_user_index = sum(
                 pos < current_user_index for pos in range(len(messages)) if pos not in replacement_indices
             ) + (1 if first <= current_user_index else 0)
-        # The caller currently recomputes the anchor from its own state; the
-        # third return value is kept for telemetry and future anchor updates.
         dropped_tokens = sum(self._message_tokens_for(messages[pos]) for pos in old_indices)
-        return kept, current_user_index, len(old_indices), dropped_tokens
+        return ToolHistoryCompaction(kept, current_user_index, len(old_indices), dropped_tokens)
 
-    def _message_tokens_for(self, message: dict[str, Any]) -> int:
+    def _message_tokens_for(self, message: ModelMessage) -> int:
         return _message_tokens(message, self.token_counter)
 
     @staticmethod
     def _oldest_removable_group(
-        messages: list[dict[str, Any]], current_user_index: int | None,
+        messages: list[ModelMessage], current_user_index: int | None,
     ) -> list[int]:
         """Return the oldest safe-to-drop message group.
 
@@ -567,31 +602,17 @@ class ContextBudgetManager:
             ):
                 continue
             if message.get("role") == "assistant" and message.get("tool_calls"):
-                call_ids = {
-                    call.get("id") for call in message.get("tool_calls", [])
-                    if isinstance(call, dict) and call.get("id")
-                }
-                end = index + 1
-                while end < len(messages) and messages[end].get("role") == "tool":
-                    end += 1
-                result_ids = {
-                    messages[pos].get("tool_call_id") for pos in range(index + 1, end)
-                }
-                if call_ids and call_ids <= result_ids:
-                    return list(range(index, end))
-                # Malformed/incomplete history: remove the assistant and any
-                # immediately following tool messages as one safe unit.
-                return list(range(index, end))
+                return list(range(index, _tool_group_end(messages, index)))
             if message.get("role") == "tool":
                 # Defensive handling for traces restored from an older format.
                 return [index]
             return [index]
         return []
 
-    def _messages_tokens(self, messages: Iterable[dict[str, Any]]) -> int:
+    def _messages_tokens(self, messages: Iterable[ModelMessage]) -> int:
         return sum(_message_tokens(message, self.token_counter) for message in messages)
 
-    def _tool_tokens(self, tools: list[dict[str, Any]] | None) -> int:
+    def _tool_tokens(self, tools: list[ToolSchema] | None) -> int:
         if not tools:
             return 0
         payload = json.dumps(tools, ensure_ascii=False, sort_keys=True)
