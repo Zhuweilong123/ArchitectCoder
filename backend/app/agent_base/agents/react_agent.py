@@ -1,6 +1,6 @@
 """ReActAgent — Reasoning + Acting 范式
 
-支持两种运行模式:
+支持原生 Function Calling:
 
 1. **原生 Function Calling** (推荐, 默认) — ``await agent.arun(input)``
    利用 LLM 内置的工具调用能力，结构化 JSON 参数，支持多工具并行。
@@ -14,7 +14,7 @@ Usage::
 
     # 流式获取每轮进度（用于前端实时展示）
     async for progress in agent.arun_stream("帮我优化这段代码"):
-        print(f"Round {progress['step']}: {progress['actions']}")
+        print(f"Round {progress.step}: {progress.actions}")
 
 """
 
@@ -27,11 +27,12 @@ from ..host_api.agents import ModelPort, ConversationSnapshot, HistoryEntry
 from copy import deepcopy
 from ..host_api.data import ConversationMessage, WorkspaceSnapshot
 from ..host_api.context import ContextReport
-from ..host_api.execution_types import RunCheckpoint, CompactionReport, EvidenceSnapshot
+from ..host_api.execution_types import RunCheckpoint, CompactionReport, EvidenceSnapshot, ToolCallDetail
 from collections.abc import Callable
 from ..core.message import Message
 from backend.config import AgentConfig
-from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
+from ..core.hooks import get_runtime, todo_plan_complete, get_hooks
+from ..host_api.lifecycle import HookEvent, HookContext
 from ..tools.contracts import NativeToolRegistryPort
 from ..outcome import RunOutcome
 from ..core.policy import ExecutionBudget
@@ -54,7 +55,7 @@ Never fabricate answers. If the tool results are insufficient, continue using ot
 """
 
 # ── Function Calling system prompt ───────────────────────
-class ReActAgent(Agent):
+class ReActAgent(Agent[ModelPort]):
     """ReAct (Reasoning + Acting) Agent
 
     核心循环:
@@ -86,7 +87,7 @@ class ReActAgent(Agent):
         context_budget: ContextBudgetManager | None = None,
         execution_budget: ExecutionBudget | None = None,
         llm_timeout_retries: int = 3,
-    ):
+    ) -> None:
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
         self.current_history: List[str] = []
@@ -155,6 +156,11 @@ class ReActAgent(Agent):
             )
         ]
 
+    def clear_history(self) -> None:
+        """Clear both retained turns and their conversation checkpoint."""
+        super().clear_history()
+        self._history_summary = ""
+
     def export_conversation(self) -> ConversationSnapshot:
         """Return a detached snapshot; consumers never access mutable Agent history."""
         return ConversationSnapshot(tuple(HistoryEntry(
@@ -210,9 +216,6 @@ class ReActAgent(Agent):
             async for progress in stream:
                 yield progress
 
-    def run(self, input_text: str, **kwargs) -> str:
-        """同步入口不支持；请使用异步 Function Calling 入口。"""
-        raise RuntimeError("ReActAgent requires async arun() or arun_stream(); textual ReAct is no longer supported")
     # ═══════════════════════════════════════════════════════
     # Function Calling 核心
     # ═══════════════════════════════════════════════════════
@@ -233,7 +236,11 @@ class ReActAgent(Agent):
             final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
-    async def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+    async def _final_progress(
+        self, *, total_tokens: int, step: int, final_answer: str,
+        thought: str = "", actions: list[str] | None = None,
+        tool_calls_detail: list[ToolCallDetail] | None = None,
+    ) -> ReActProgress:
         runtime = get_runtime()
         if runtime.lifecycle_round_open:
             runtime.lifecycle_round_open = False
@@ -248,13 +255,13 @@ class ReActAgent(Agent):
         self.last_context_report["token_usage_total_observed"] = total_tokens
         outcome = RunOutcome.from_stop(
             self.last_context_report.get("token_budget_stop_reason", "model_answer"),
-            kwargs.get("final_answer", ""),
+            final_answer,
             total_tokens=total_tokens,
             plan_complete=todo_plan_complete(get_runtime()) and all(
                 todo.get("status") == "completed" for todo in get_runtime().todos
             ),
             verification_failed=any(
-                not passed for passed in getattr(self, "_run_verifications", {}).values()
+                not passed for passed in self._run_verifications.values()
             ),
         )
         runtime.lifecycle_status = outcome.status
@@ -263,7 +270,10 @@ class ReActAgent(Agent):
             event=HookEvent.FINALIZE, agent_name=self.name, runtime=runtime,
             run_id=runtime.run_id, payload={"status": outcome.status, "stop_reason": outcome.stop_reason},
         ))
-        return ReActProgress(**kwargs, outcome=outcome)
+        return ReActProgress(
+            step=step, actions=actions, tool_calls_detail=tool_calls_detail,
+            thought=thought, is_final=True, final_answer=final_answer, outcome=outcome,
+        )
 
     async def _arun_with_fc_stream(
         self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]

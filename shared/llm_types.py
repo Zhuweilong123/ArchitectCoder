@@ -48,11 +48,14 @@ class ModelResponse(TypedDict):
     tool_calls: list[ModelToolCall] | None
     usage: TokenUsage | None
 
-class ModelCallOptions(TypedDict, total=False):
-    model: str
+class TextGenerationOptions(TypedDict, total=False):
     temperature: float
     max_tokens: int | None
-    timeout: float
     json_mode: bool
+
+
+class ModelCallOptions(TextGenerationOptions, total=False):
+    model: str
+    timeout: float
     trace_context: JsonObject
 

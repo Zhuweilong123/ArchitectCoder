@@ -4,7 +4,7 @@
 >
 > 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-10-07
+> 文档同步：2026-10-15
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -46,6 +46,9 @@ WebSocket / Evaluation / future HTTP or CLI
 |---|---|---|
 | Agent 组合 | `backend/app/agent_base/assembly.py` | 统一创建 LLM、工具、运行时、记忆和提示词 |
 | Agent 循环 | `backend/app/agent_base/agents/react_agent.py` | 推理、工具调用、预算和收敛控制 |
+| Agent 公共状态 | `backend/app/agent_base/core/agent.py` | 通用模型类型参数、配置和独立历史副本；执行入口由具体 Agent 定义 |
+| 子 Agent 工具装配 | `backend/app/agent_base/tools/my_tools/subagent_toolkits.py` | 工具包范围、验证任务限制、注册表和提示词；执行循环由 `subagent_tool.py` 负责 |
+| 模型调用边界 | `backend/app/agent_base/agents/react_runtime/fc_model.py` | 主 Agent 与子 Agent 共用模型前后事件、超时、取消和请求参数传递 |
 | 单次执行 | `backend/app/services/agent_execution.py` | 生命周期、checkpoint、审批、证据和结果 |
 | 会话/传输 | `backend/app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
 | 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
@@ -71,6 +74,22 @@ WebSocket / Evaluation / future HTTP or CLI
 | Canvas 生命周期 | `frontend/src/components/Canvas/core/canvasLifecycle.ts` | Graph 注册、注销、事件清理和销毁顺序 |
 | Canvas 公共运行时 | `frontend/src/components/Canvas/core/createCanvasGraph.ts`、`canvasCommon.ts`、`canvasEventAdapter.ts`、`useCanvasGraphViewport.ts` | Graph 创建、网格/视口同步和通用事件适配 |
 | 前端请求边界 | `frontend/src/services/api.ts`、`evaluationCenterApi.ts` | Toolbar 工程文件直接使用通用 API；评测资源和 Trace Case 批量请求由 EvaluationCenter 服务管理 |
+
+公共基类 `Agent[ModelT]` 不规定同步执行能力。`ReActAgent` 依赖异步 `ModelPort`，
+入口为 `arun` / `arun_stream`，原先始终抛异常的 `run` 已移除；`PlanAndSolveAgent`
+依赖 `SyncModelPort`，保留同步 `run`。模型协议位于 `host_api/agents.py`，具体客户端
+由装配层注入，Agent 实现不导入 `BaseAgentsLLM`。
+
+同步规划入口只接受 `TextGenerationOptions` 中的生成参数（temperature、max_tokens、
+json_mode），自定义提示词只包含 planner / executor。模型规划输出须通过非空字符串
+列表校验后才能执行；system prompt 同时传给规划与执行请求。最终 ReAct 进度使用明确
+参数构造，并由收尾函数统一标记终态。公共历史读写隔离可变数据，清空 ReAct 历史也会
+清除压缩摘要。
+
+子 Agent 通过 `ModelCaller` 提供调用身份、模型协议与重试策略，保持单次超时即停止、
+`child_agent` Trace 范围和累计预算的输出限制。工具包构造使用明确的审核、进度、命令执行
+协议；证据、工具调用、工具结果和 schema 均使用结构化契约。子任务准备完成后才切换
+运行时上下文，执行退出时恢复父任务上下文，避免准备失败污染后续请求。
 
 ## 3. 当前基础工具契约
 

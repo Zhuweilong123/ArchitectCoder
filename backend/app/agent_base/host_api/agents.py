@@ -7,6 +7,7 @@ from datetime import datetime
 from .data import ConversationRole
 from .data import ConversationMessage, JsonObject, ModelCallOptions, ModelMessage, ModelResponse, ToolSchema, TodoItem
 from typing import Unpack
+from shared.llm_types import TextGenerationOptions
 
 from .execution_types import RunCheckpoint, ToolCallDetail
 
@@ -22,9 +23,17 @@ class ConversationSnapshot:
     messages: tuple[HistoryEntry, ...] = ()
     summary: str = ""
 
-class ModelPort(Protocol):
+class ModelIdentityPort(Protocol):
+    @property
+    def provider(self) -> str: ...
+
+
+class SyncModelPort(ModelIdentityPort, Protocol):
+    def invoke(self, messages: list[ModelMessage], **options: Unpack[TextGenerationOptions]) -> str: ...
+
+
+class ModelPort(ModelIdentityPort, Protocol):
     model: str
-    provider: str
     async def ainvoke(self, messages: list[ModelMessage], **options: Unpack[ModelCallOptions]) -> str: ...
     async def ainvoke_with_tools(self, messages: list[ModelMessage], tools: list[ToolSchema],
                                 tool_choice: str = 'auto', **options: Unpack[ModelCallOptions]) -> ModelResponse: ...

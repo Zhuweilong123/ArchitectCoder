@@ -6,12 +6,16 @@ tools remain available only to compatibility and trace-replay callers.
 
 from __future__ import annotations
 
+from app.agent_base.host_api.data import ToolSchema
+
 import asyncio
 import hashlib
 import json
 import shlex
 from dataclasses import replace
-from typing import Any
+from typing import Any, Unpack
+from app.agent_base.tools.command_options import CommandToolOptions
+from app.runtime.execution_broker import ExecutionBroker
 from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
@@ -124,7 +128,7 @@ class ListFilesTool(BaseListFilesTool):
         except WorkspacePathError as exc:
             return [], pattern, f"Error: {exc}"
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         schema = super().to_openai_schema()
         props = schema["function"]["parameters"]["properties"]
         props["path"] = {
@@ -160,7 +164,7 @@ class ApplyChangesTool(WorkspaceRecoveryMixin, Tool):
     def get_parameters(self) -> list:
         return []
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -627,8 +631,9 @@ def _quote_program(program: str, args: list[str], executor) -> str:
 
 
 class RunProgramTool(ShellTool):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 **kwargs: Unpack[CommandToolOptions]) -> None:
+        super().__init__(source_dir, test_dir, design_dir, **kwargs)
         self.name = "run_program"
         self.description = (
             "Run one allowlisted executable directly with literal argv in the workspace. "
@@ -719,7 +724,7 @@ class RunProgramTool(ShellTool):
             proc.returncode, output or "(no output)", argv=[program, *args],
         )
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function", "function": {
                 "name": self.name, "description": self.description,
@@ -746,8 +751,10 @@ class RunTaskTool(RunProgramTool):
         "validate": ("python", ["-m", "pytest"]),
     }
 
-    def __init__(self, *args, execution_broker=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 *, execution_broker: ExecutionBroker | None = None,
+                 **kwargs: Unpack[CommandToolOptions]) -> None:
+        super().__init__(source_dir, test_dir, design_dir, **kwargs)
         self.name = "run_task"
         self.description = (
             "Run a semantic project task such as test, build, lint, format, typecheck, or validate; "
@@ -1104,7 +1111,7 @@ class RunTaskTool(RunProgramTool):
             summary += "\n" + details
         return ToolResult.success(summary)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function", "function": {
                 "name": self.name, "description": self.description,

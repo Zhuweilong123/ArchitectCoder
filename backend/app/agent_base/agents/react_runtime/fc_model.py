@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal, NamedTuple, Protocol, TypedDict, Unpack
+from dataclasses import dataclass
+from typing import Literal, NamedTuple, NotRequired, Protocol, TypedDict, Unpack
 
 from ...host_api.errors import AgentInterrupted
 from ...core.hooks import AgentRuntime, get_hooks
 from ...host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
 from ...host_api.agents import ModelPort
 from ...host_api.context import ModelRequestContext
-from ...host_api.data import ModelMessage, ModelResponse, ToolSchema
+from ...host_api.data import ModelCallOptions, ModelMessage, ModelResponse, ToolSchema
 from ...host_api.payloads import json_object
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,14 @@ class ModelInvocationAgent(Protocol):
     def llm_timeout_retries(self) -> int: ...
 
 
+@dataclass(frozen=True)
+class ModelCaller:
+    """Invocation identity and policy, independent of any Agent or Tool class."""
+    name: str
+    llm: ModelPort
+    llm_timeout_retries: int = 0
+
+
 class ModelInvocationOptions(TypedDict):
     messages: list[ModelMessage]
     tool_specs: list[ToolSchema]
@@ -33,6 +42,7 @@ class ModelInvocationOptions(TypedDict):
     runtime: AgentRuntime
     temperature: float
     timeout_seconds: float
+    trace_span_name: NotRequired[str]
 
 
 class ModelInvocationResult(NamedTuple):
@@ -74,6 +84,7 @@ async def _invoke_fc_model_impl(
     runtime: AgentRuntime,
     temperature: float,
     timeout_seconds: float,
+    trace_span_name: str = "",
 ) -> ModelInvocationResult:
     """Invoke the model inside its hook and tracing boundary.
 
@@ -100,19 +111,24 @@ async def _invoke_fc_model_impl(
     from app.agent_base.core.observability import trace_span
 
     retries = max(0, int(getattr(agent, "llm_timeout_retries", 3)))
-    with trace_span(agent.name):
+    with trace_span(trace_span_name or agent.name):
         for attempt in range(retries + 1):
             if runtime.stop_check():
                 raise AgentInterrupted("User requested stop")
             try:
+                options: ModelCallOptions = {
+                    "temperature": temperature,
+                    "trace_context": {**json_object(request_context), "timeout_seconds": timeout_seconds,
+                                      "timeout_attempt": attempt + 1, "timeout_max_attempts": retries + 1},
+                }
+                if "output_token_limit" in request_context:
+                    options["max_tokens"] = request_context["output_token_limit"]
                 response = await asyncio.wait_for(
                     agent.llm.ainvoke_with_tools(
                         messages=messages,
                         tools=tool_specs,
                         tool_choice="none" if finalization_mode else "auto",
-                        temperature=temperature,
-                        trace_context={**json_object(request_context), "timeout_seconds": timeout_seconds,
-                                       "timeout_attempt": attempt + 1, "timeout_max_attempts": retries + 1},
+                        **options,
                     ),
                     timeout=timeout_seconds,
                 )

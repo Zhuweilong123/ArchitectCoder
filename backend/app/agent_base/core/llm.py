@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 from typing import Unpack
 from shared.llm_types import ModelMessage, ToolSchema, ModelResponse, ModelCallOptions
+from shared.llm_types import TextGenerationOptions
 from app.agent_base.host_api.configuration import PluginConfiguration
 
 import os
@@ -259,7 +260,7 @@ class BaseAgentsLLM:
 
     # ── 同步调用 ───────────────────────────────────────────
 
-    def invoke(self, messages: list[dict], **kwargs) -> str:
+    def invoke(self, messages: list[ModelMessage], **kwargs: Unpack[TextGenerationOptions]) -> str:
         """同步调用 LLM，返回文本响应"""
         if self._client is None:
             raise RuntimeError(

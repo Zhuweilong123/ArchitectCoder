@@ -39,3 +39,32 @@ def test_recent_history_excludes_incomplete_turns_and_internal_summaries():
         {'role': 'user', 'content': 'second'}, {'role': 'assistant', 'content': 'answer2'})
     assert recent_conversation_history(source, turns=1, exclude_latest_turn=True) == (
         {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer'})
+
+
+def test_history_input_and_output_do_not_expose_mutable_agent_state():
+    source = agent()
+    message = Message('question', 'user', metadata={'refs': ['a']})
+    source.add_message(message)
+    message.content = 'changed input'
+    message.metadata['refs'].append('input change')
+    exported = source.get_history()
+    exported[0].content = 'changed output'
+    exported[0].metadata['refs'].append('output change')
+    assert source.get_history()[0].content == 'question'
+    assert source.get_history()[0].metadata == {'refs': ['a']}
+
+
+def test_clear_history_removes_compressed_summary_from_next_request():
+    source = agent()
+    source.restore_history([
+        {'role': 'summary', 'content': 'old compressed context'},
+        {'role': 'user', 'content': 'old question'},
+        {'role': 'assistant', 'content': 'old answer'},
+    ])
+    source.clear_history()
+    snapshot = source.export_conversation()
+    assert snapshot.messages == ()
+    assert snapshot.summary == ''
+    built = source.context_budget.build_messages('system', snapshot.messages, 'new question',
+                                                history_summary=snapshot.summary)
+    assert [message['content'] for message in built.messages] == ['system', 'new question']

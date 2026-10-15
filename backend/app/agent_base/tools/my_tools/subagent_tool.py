@@ -12,164 +12,25 @@ from app.agent_base.convergence import ConvergenceController
 from app.agent_base.host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
 from app.agent_base.core.hooks import AgentRuntime, get_hooks, get_runtime, reset_runtime, set_runtime
 from app.agent_base.host_api.errors import AgentInterrupted
-from app.agent_base.core.llm import BaseAgentsLLM
+from app.agent_base.host_api.agents import ModelPort, ReviewManagerPort, ProgressPort
 from app.agent_base.core.policy import ExecutionBudget
 from app.agent_base.core.subagent_budget import CumulativeTokenBudget
-from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor
+from app.agent_base.agents.react_runtime.tool_round_executor import ToolRoundExecutor, ToolObservation
+from app.agent_base.agents.react_runtime.fc_model import ModelCaller, _invoke_fc_model
+from app.agent_base.host_api.data import JsonObject, JsonValue, ModelMessage, ModelToolCall, ToolSchema
+from app.agent_base.host_api.execution_types import EvidenceSnapshot
+from app.agent_base.host_api.payloads import json_value
 from app.agent_base.evidence import EvidenceLedger
 from app.services.context_manager import ContextBudgetManager
-from app.agent_base.tools.registry import ToolRegistry
-from app.core.capabilities import CapabilityPolicy
 from app.agent_base.tools.async_tool import AsyncTool
-from app.agent_base.tools.my_tools.foundation_tools import (
-    RunTaskTool,
-    create_foundation_tools,
-)
-from app.agent_base.tools.my_tools.skill_loader import SkillTool, build_skills_section
-from app.agent_base.adapters.skills import (SkillCatalog, capture_skill_catalog)
-from app.agent_base.host_api.contexts import SkillContext
+from app.agent_base.adapters.skills import SkillCatalog
+from .subagent_toolkits import TOOLKIT_NAMES, build_subagent_toolkits
+from app.runtime.command import CommandExecutor
 from app.runtime import build_command_executor, workspace_root_for
-from app.runtime import TaskKind
 
 logger = logging.getLogger(__name__)
 
-SUBAGENT_SYSTEM = (
-    "You are a coding subagent. Complete the given task, then return a concise "
-    "final summary of what you did and found. Do not spawn more agents."
-)
-
-STRATEGY_SUBAGENT_SYSTEM = (
-    "You are a read-only strategy advisor for a development task. Do not modify "
-    "files and do not propose unverified implementation details. Inspect only the "
-    "minimum evidence needed, then return a concise plan with: canonical source, "
-    "target scope, ordered steps, acceptance criteria, and risks. Do not spawn more agents."
-)
-
-VERIFICATION_SUBAGENT_SYSTEM = (
-    "You are a source-safe verification subagent. Inspect the relevant files, then "
-    "run only the minimum fixed project verification task needed: test, build, "
-    "lint, typecheck, or validate. Do not modify source files, run arbitrary programs, "
-    "use shell commands, or spawn more agents. Return concise evidence and any "
-    "failure diagnosis."
-)
-
-# ── 子代理工具包（toolkit）──────────────────────────────────────
-# 主 agent 按任务类型选工具包，框架展开成受限工具集。安全不变量由本表强制，
-# 不依赖主 agent 自觉：
-#   * 任何工具包都不含 spawn_subagent / submit_uml_review（防递归 / 防审核绕过）
-#   * 子代理工具集是主 agent 允许集的子集（无提权）
-TOOLKIT_NAMES = ("standard", "read_only", "kg_analysis", "strategy", "verification")
 SUBAGENT_TRACE_SPAN = "child_agent"
-
-
-class VerificationRunTaskTool(RunTaskTool):
-    """Run project-declared, non-formatting checks inside a subagent.
-
-    The resolver and broker remain the source of truth for supported project
-    tasks.  Verification only applies its semantic safety policy and does not
-    maintain a second language/task allowlist.
-    """
-
-    # Compatibility fallback/schema hint only. Resolved project tasks do not
-    # need to be added here; the resolver handles those dynamically.
-    TASKS = {
-        name: RunTaskTool.TASKS[name]
-        for name in ("test", "build", "lint", "typecheck", "validate")
-    }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.description = (
-            "Run one project-declared verification task without source editing. "
-            "The task must resolve from the project's build metadata; formatting, "
-            "arbitrary programs, and shell commands are not available in this "
-            "toolkit. Build/test caches or generated artifacts may be produced."
-        )
-
-    async def _execute_result(self, params: dict):
-        task = str(params.get("task", "")).lower().strip()
-        if not task:
-            return "Error: task must be a non-empty string"
-        if task == "format":
-            return (
-                "Error: formatting tasks are not available in the verification toolkit."
-            )
-        # Classify resolved tasks by their contract rather than by a language
-        # or task-name list.  A custom task declared by any supported project
-        # adapter is valid unless it resolves to the formatting kind.
-        resolved_cwd, cwd_error = self._resolve_cwd(params.get("cwd"))
-        if not cwd_error and resolved_cwd:
-            resolution = self._task_resolver.resolve(
-                task, resolved_cwd, target=params.get("target"),
-                profile=params.get("profile"),
-            )
-            if resolution.resolved and resolution.task.kind is TaskKind.FORMAT:
-                return (
-                    "Error: formatting tasks are not available in the verification toolkit."
-                )
-        return await super()._execute_result(params)
-
-    def to_openai_schema(self) -> dict:
-        # Keep the legacy built-in enum as a compatibility hint for clients
-        # that cache this schema.  Runtime validation above still accepts any
-        # project-declared task resolved by TaskResolver; the enum is not the
-        # execution policy.
-        schema = super().to_openai_schema()
-        schema["function"]["parameters"]["properties"]["task"]["enum"] = list(self.TASKS)
-        return schema
-
-
-def _build_toolkit_tools(
-    kind: str,
-    source_dir: str, test_dir: str, design_dir: str,
-    db_path: str, project_file: str,
-    review_manager, progress, command_executor, workspace_root,
-    skill_catalog: SkillCatalog | None = None,
-) -> list:
-    """按工具包名构建工具列表（不含 spawn_subagent / submit_uml_review）。"""
-    foundation = create_foundation_tools(
-        source_dir, test_dir, design_dir,
-        review_manager=review_manager, progress=progress,
-        command_executor=command_executor,
-        workspace_root=workspace_root,
-    )
-    by_name = {tool.name: tool for tool in foundation}
-    if skill_catalog is None:
-        skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
-    skill_tools = [SkillTool(catalog=skill_catalog)] if skill_catalog.entries else []
-    if kind == "standard":
-        return [*foundation, *skill_tools]
-
-    # Read-only toolkits intentionally expose only the foundation inspection
-    # contract.  Directory listing and text search are needed to make a
-    # bounded analysis useful without granting execution or write access.
-    # KG toolkit names remain for compatibility, but graph tools are disabled
-    # for DevAgent to avoid broad exploration and repeated reads.
-    inspection_tools = [
-        by_name["list_files"],
-        by_name["read_file"],
-        by_name["search_text"],
-        by_name["read_tool_output"],
-    ]
-    if kind == "read_only":
-        return inspection_tools
-    if kind in {"kg_analysis", "strategy"}:
-        return [*inspection_tools, *skill_tools]
-    if kind == "verification":
-        return [
-            *inspection_tools,
-            *skill_tools,
-            VerificationRunTaskTool(
-                source_dir=source_dir,
-                test_dir=test_dir,
-                design_dir=design_dir,
-                review_manager=review_manager,
-                progress=progress,
-                command_executor=command_executor,
-                workspace_root=workspace_root,
-            ),
-        ]
-    raise ValueError(f"unknown toolkit: {kind}")
 
 
 class SpawnSubagentTool(AsyncTool):
@@ -183,7 +44,7 @@ class SpawnSubagentTool(AsyncTool):
 
     def __init__(
         self,
-        llm: BaseAgentsLLM,
+        llm: ModelPort,
         source_dir: str = "",
         test_dir: str = "",
         design_dir: str = "",
@@ -195,16 +56,16 @@ class SpawnSubagentTool(AsyncTool):
         max_run_seconds: float | None = None,
         token_finalization_reserve_tokens: int | None = None,
         llm_timeout_seconds: float | None = None,
-        review_manager=None,
-        progress=None,
-        command_executor=None,
+        review_manager: ReviewManagerPort | None = None,
+        progress: ProgressPort | None = None,
+        command_executor: CommandExecutor | None = None,
         workspace_root: str = "",
         toolkits: tuple[str, ...] = TOOLKIT_NAMES,
         single_use: bool = False,
         max_cumulative_tokens: int | None = 131072,
         child_run_name: str = "subagent",
         skill_catalog: SkillCatalog | None = None,
-    ):
+    ) -> None:
         super().__init__(
             name="spawn_subagent",
             description=(
@@ -250,7 +111,7 @@ class SpawnSubagentTool(AsyncTool):
         self.context_budget = context_budget or ContextBudgetManager.from_settings(settings)
         self.last_token_usage = 0
         self.last_context_report: ContextReport = {}
-        self.last_evidence_summary: list[dict] = []
+        self.last_evidence_summary: list[EvidenceSnapshot] = []
         self.final_summary_max_tokens = settings.agent_final_summary_max_tokens
         self.toolkits = tuple(toolkits)
         self.single_use = single_use
@@ -262,49 +123,16 @@ class SpawnSubagentTool(AsyncTool):
             if max_cumulative_tokens is not None else None
         )
         self.child_run_name = child_run_name
-        unknown_toolkits = set(self.toolkits) - set(TOOLKIT_NAMES)
-        if not self.toolkits or unknown_toolkits:
-            raise ValueError(f"unknown or empty subagent toolkits: {sorted(unknown_toolkits)}")
-
-        # Each toolkit has its own restricted registry.  Review and execution
-        # policy are inherited through the shared foundation tool constructors.
-        # db_path/project_file are retained in _build_toolkit_tools' signature
-        # for compatibility with callers that construct custom toolkits.
-        db_path = ""
-        if skill_catalog is None:
-            skill_catalog = capture_skill_catalog(context=SkillContext(workspace_root=workspace_root))
-        skills = build_skills_section(catalog=skill_catalog)
-        self.sub_registries: dict[str, ToolRegistry] = {}
-        self.system_prompts: dict[str, str] = {}
-        for kind in self.toolkits:
-            registry = ToolRegistry(policy=CapabilityPolicy(
-                workspace_roots=[workspace_root, source_dir, test_dir, design_dir],
-            ))
-            for t in _build_toolkit_tools(
-                kind, source_dir, test_dir, design_dir,
-                db_path, project_file, review_manager, progress,
-                command_executor, workspace_root, skill_catalog,
-            ):
-                registry.register_tool(t)
-            self.sub_registries[kind] = registry
-            if kind == "strategy":
-                prompt = STRATEGY_SUBAGENT_SYSTEM
-            elif kind == "verification":
-                prompt = VERIFICATION_SUBAGENT_SYSTEM
-            else:
-                prompt = SUBAGENT_SYSTEM
-            if kind != "read_only" and skills:
-                prompt = f"{prompt}\n\n{skills}"
-            prompt += (
-                "\n.architectcoder is an internal project state directory managed "
-                "by the host, not source code, tests, or design content. Exclude "
-                "it from exploration and do not read, edit, or delete its contents. "
-                "Task configuration is resolved by the host through run_task."
-            )
-            self.system_prompts[kind] = prompt
+        assembled = build_subagent_toolkits(
+            self.toolkits, source_dir=source_dir, test_dir=test_dir, design_dir=design_dir,
+            review_manager=review_manager, progress=progress, command_executor=command_executor,
+            workspace_root=workspace_root, skill_catalog=skill_catalog,
+        )
+        self.sub_registries = assembled.registries
+        self.system_prompts = assembled.prompts
 
     @staticmethod
-    def _normalise_tool_calls(raw_tool_calls, step: int) -> tuple[list[dict], bool]:
+    def _normalise_tool_calls(raw_tool_calls: object, step: int) -> tuple[list[ModelToolCall], bool]:
         """Normalize provider output before it is put back into the prompt.
 
         Providers and test doubles occasionally return a single call, non-string
@@ -317,7 +145,7 @@ class SpawnSubagentTool(AsyncTool):
         if raw_tool_calls is None:
             return [], False
         candidates = raw_tool_calls if isinstance(raw_tool_calls, list) else [raw_tool_calls]
-        normalized: list[dict] = []
+        normalized: list[ModelToolCall] = []
         malformed = False
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, dict):
@@ -330,7 +158,7 @@ class SpawnSubagentTool(AsyncTool):
             arguments = function.get("arguments", "{}")
             if not isinstance(arguments, str):
                 try:
-                    arguments = json.dumps(arguments, ensure_ascii=False, default=str)
+                    arguments = json.dumps(json_value(arguments), ensure_ascii=False)
                 except (TypeError, ValueError):
                     malformed = True
                     continue
@@ -351,9 +179,9 @@ class SpawnSubagentTool(AsyncTool):
         return normalized, malformed and not normalized
 
     @staticmethod
-    def _tool_messages(tool_results: list[dict]) -> list[dict]:
+    def _tool_messages(tool_results: list[ToolObservation]) -> list[ModelMessage]:
         """Convert executor results to provider-valid ``role=tool`` messages."""
-        messages: list[dict] = []
+        messages: list[ModelMessage] = []
         for result in tool_results:
             if not isinstance(result, dict):
                 raise ValueError("subagent tool result must be an object")
@@ -373,7 +201,7 @@ class SpawnSubagentTool(AsyncTool):
     def _safe_failure_summary(
         self,
         reason: str,
-        evidence_summary: list[dict],
+        evidence_summary: list[EvidenceSnapshot],
         budget: ExecutionBudget | None = None,
         error: Exception | None = None,
     ) -> str:
@@ -418,49 +246,14 @@ class SpawnSubagentTool(AsyncTool):
             + (f"\nVerified evidence gathered before stopping:\n{evidence_text}" if evidence_text else "")
         )
 
-    async def _execute(self, params: dict) -> str:
+    async def _execute(self, params: JsonObject) -> str:
         from ...core.operations import operation_scope
         parent_run_id = get_runtime().run_id
         child_run_id = f"{parent_run_id}/{self.child_run_name}" if parent_run_id else self.child_run_name
         with operation_scope("subagent", run_id=child_run_id, stage=HookEvent.RUN_START.value):
             return await self._execute_impl(params)
 
-    async def _call_model(self, messages, active_tools, finalization_mode, request_context, runtime):
-        from ...core.operations import operation_scope
-        from app.agent_base.core.observability import trace_span
-        with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
-            response = None
-            try:
-                before = await get_hooks().atrigger(HookEvent.MODEL_BEFORE, HookContext(
-                    HookEvent.MODEL_BEFORE, "spawn_subagent", run_id=runtime.run_id,
-                    runtime=runtime, messages=messages,
-                ))
-                if isinstance(before, HookDecision) and before.action in {HookAction.STOP, "stop"}:
-                    operation.status = "blocked"
-                    return None
-                with trace_span(SUBAGENT_TRACE_SPAN):
-                    response = await asyncio.wait_for(self.llm.ainvoke_with_tools(
-                        messages=messages, tools=active_tools,
-                        tool_choice="none" if finalization_mode else "auto",
-                        temperature=0.3, trace_context=request_context,
-                        **({"max_tokens": request_context["output_token_limit"]}
-                           if "output_token_limit" in request_context else {}),
-                    ), timeout=self.llm_timeout_seconds)
-                return response
-            except (asyncio.CancelledError, AgentInterrupted):
-                operation.status = "cancelled"
-                raise
-            except Exception:
-                operation.status = "failed"
-                raise
-            finally:
-                await get_hooks().atrigger(HookEvent.MODEL_AFTER, HookContext(
-                    HookEvent.MODEL_AFTER, "spawn_subagent", run_id=runtime.run_id,
-                    runtime=runtime, messages=messages, llm_response=response,
-                    payload={"status": operation.status, "observers_only": operation.status != "completed"},
-                ))
-
-    async def _execute_impl(self, params: dict) -> str:
+    async def _execute_impl(self, params: JsonObject) -> str:
         description = params.get("description", "")
         if not isinstance(description, str) or not description.strip():
             return "Error: description is required"
@@ -492,9 +285,8 @@ class SpawnSubagentTool(AsyncTool):
         )
         child_runtime.execution_budget = budget
         child_runtime.convergence_controller = ConvergenceController()
-        runtime_token = set_runtime(child_runtime)
         evidence_ledger = EvidenceLedger(max_records=max(self.max_tool_calls, 128))
-        evidence_summary: list[dict] = []
+        evidence_summary: list[EvidenceSnapshot] = []
         current_history: list[str] = []
         executor = ToolRoundExecutor(
             registry,
@@ -508,7 +300,7 @@ class SpawnSubagentTool(AsyncTool):
             self.system_prompts[toolkit], [], description, tools=sub_tools,
         )
         messages = built.messages
-        current_user_index = built.current_user_index
+        current_user_index: int | None = built.current_user_index
         self.last_token_usage = 0
         self.last_evidence_summary = evidence_summary
         self.last_context_report = built.to_dict()
@@ -539,7 +331,7 @@ class SpawnSubagentTool(AsyncTool):
             if self.max_cumulative_tokens is not None else None
         )
 
-        async def publish(stage, **data):
+        async def publish(stage: HookEvent, **data: JsonValue) -> None:
             await get_hooks().aemit(stage, HookContext(stage, "spawn_subagent",
                 run_id=child_runtime.run_id, runtime=child_runtime,
                 payload={"step": step, **data}))
@@ -567,6 +359,7 @@ class SpawnSubagentTool(AsyncTool):
             terminal_status = "failed"
             return self._safe_failure_summary(reason, evidence_summary, budget, error)
 
+        runtime_token = set_runtime(child_runtime)
         try:
             await get_hooks().atrigger(
                 HookEvent.RUN_START,
@@ -710,11 +503,15 @@ class SpawnSubagentTool(AsyncTool):
                         "token_budget_stop_reason": "context_hard_limit",
                     })
                     return stopped_message("context hard limit")
-                try:
-                    response = await self._call_model(messages, active_tools, finalization_mode, request_context, child_runtime)
-                except asyncio.TimeoutError:
-                    await publish(HookEvent.ERROR, error_type="TimeoutError", source="model")
+                invocation = await _invoke_fc_model(
+                    ModelCaller(self.name, self.llm), messages=messages, tool_specs=active_tools,
+                    finalization_mode=finalization_mode, request_context=request_context,
+                    runtime=child_runtime, temperature=0.3, timeout_seconds=self.llm_timeout_seconds,
+                    trace_span_name=SUBAGENT_TRACE_SPAN,
+                )
+                if invocation.failure_kind == "timeout":
                     return safe_failure("LLM call timed out")
+                response = invocation.response
                 if response is None:
                     self.last_token_usage = budget.total_tokens
                     return budget_message("before the next model call")
@@ -799,8 +596,8 @@ class SpawnSubagentTool(AsyncTool):
                         runtime=child_runtime,
                         phase="tool_batch_complete",
                         payload={
-                            "details": round_result.details,
-                            "actions": round_result.actions,
+                            "details": json_value(round_result.details),
+                            "actions": json_value(round_result.actions),
                             "step": step,
                         },
                     ),
@@ -850,7 +647,7 @@ class SpawnSubagentTool(AsyncTool):
             finally:
                 reset_runtime(runtime_token)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {

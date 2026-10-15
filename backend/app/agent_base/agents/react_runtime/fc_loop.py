@@ -347,7 +347,6 @@ async def _run_fc_loop_impl(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -380,7 +379,6 @@ async def _run_fc_loop_impl(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -395,7 +393,6 @@ async def _run_fc_loop_impl(
                     total_tokens=total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -489,8 +486,7 @@ async def _run_fc_loop_impl(
                             agent._record_turn(input_text, content)
                             _turn_recorded = True
                         yield await agent._final_progress(total_tokens=total_tokens,
-                            step=step, thought=content,
-                            is_final=True, final_answer=content,
+                            step=step, thought=content, final_answer=content,
                         )
                         return
                     # Planning mode is opt-in and only closes after its
@@ -515,8 +511,7 @@ async def _run_fc_loop_impl(
                         agent._record_turn(input_text, content)
                         _turn_recorded = True
                     yield await agent._final_progress(total_tokens=total_tokens,
-                        step=step, thought=content,
-                        is_final=True, final_answer=content,
+                        step=step, thought=content, final_answer=content,
                     )
                     return
 
@@ -535,8 +530,7 @@ async def _run_fc_loop_impl(
                     })
                     agent._record_turn(input_text, final_answer)
                     yield await agent._final_progress(total_tokens=total_tokens,
-                        step=step, thought=final_answer,
-                        is_final=True, final_answer=final_answer,
+                        step=step, thought=final_answer, final_answer=final_answer,
                     )
                     return
                 if step == 1:
@@ -648,7 +642,7 @@ async def _run_fc_loop_impl(
                 _turn_recorded = True
                 yield await agent._final_progress(total_tokens=total_tokens,
                     step=step, actions=actions, tool_calls_detail=details,
-                    thought=final_answer, is_final=True, final_answer=final_answer,
+                    thought=final_answer, final_answer=final_answer,
                 )
                 return
 

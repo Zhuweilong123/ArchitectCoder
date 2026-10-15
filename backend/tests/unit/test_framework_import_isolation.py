@@ -17,7 +17,9 @@ sys.meta_path.insert(0, AbsentPlugins())
 from app.agent_base.host_api.lifecycle import HookEvent
 from app.agent_base.host_api.execution import ExecutionRequest
 from app.agent_base.host_api.services import get_provider_services
-from app.agent_base import ToolRegistry, ReActAgent, BaseAgentsLLM
+from app.agent_base import PlanAndSolveAgent, ReActAgent
+assert "app.agent_base.core.llm" not in sys.modules
+from app.agent_base import ToolRegistry, BaseAgentsLLM
 assert get_provider_services() is not None
 assert not any(name.startswith("extensions") for name in sys.modules)
 '''

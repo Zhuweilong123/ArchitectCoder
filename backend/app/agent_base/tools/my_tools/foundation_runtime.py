@@ -13,6 +13,8 @@ Usage::
 
 from __future__ import annotations
 
+from app.agent_base.host_api.data import ToolSchema
+
 import asyncio
 import glob as _glob
 import hashlib
@@ -369,7 +371,7 @@ class ReadFileTool(WorkspaceRecoveryMixin, AsyncTool):
     def _display_candidate(self, candidate: Path) -> str:
         return self._paths.display(candidate)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -596,7 +598,7 @@ class BaseListFilesTool(WorkspaceRecoveryMixin, AsyncTool):
             retryable=bool(errors), execution_evidence={"file_query": metadata, "scan_errors": errors},
         )
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -867,7 +869,7 @@ class ShellTool(WorkspaceRecoveryMixin, AsyncTool):
             out = f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
         return command_result(command, cwd, proc.returncode, out or "(no output)")
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
