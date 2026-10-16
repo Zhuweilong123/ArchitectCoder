@@ -1,4 +1,6 @@
 """Tool 系统单元测试（无需 LLM）。"""
+import pytest
+from pydantic import ValidationError
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.registry import ToolRegistry
 
@@ -20,6 +22,14 @@ def test_tool_parameter_defaults():
     assert p.type == "string"
     assert p.required is True
     assert p.default is None
+
+
+def test_tool_parameter_defaults_are_json_values():
+    value = {"modes": ["read", "write"], "limit": 3}
+    parameter = ToolParameter(name="config", type="object", description="config", default=value)
+    assert parameter.model_dump()["default"] == value
+    with pytest.raises(ValidationError):
+        ToolParameter(name="config", type="object", description="config", default=object())
 
 
 def test_tool_openai_schema():

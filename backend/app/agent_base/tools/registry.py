@@ -7,25 +7,24 @@ the registry remains focused on discovery and compatibility APIs.
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
-from typing import Any, Optional
 
 from app.agent_base.execution.tool_executor import ToolExecutor
 from app.core.capabilities import CapabilityPolicy
 
-from shared.llm_types import JsonObject, ToolSchema
+from shared.llm_types import JsonObject, JsonValue, ToolSchema
 from .base import Tool
+from .contracts import RegisteredFunction, ToolFunction, ToolOutputBindable
 from .result import ToolResult
 
 
 class ToolRegistry:
     """Register tools/functions and expose their model schemas."""
 
-    def __init__(self, policy: CapabilityPolicy | None = None):
+    def __init__(self, policy: CapabilityPolicy | None = None) -> None:
         from app.runtime.tool_outputs import ToolOutputStore
         self.output_store = ToolOutputStore()
         self._tools: dict[str, Tool] = {}
-        self._functions: dict[str, dict[str, Any]] = {}
+        self._functions: dict[str, RegisteredFunction] = {}
         self.executor = ToolExecutor(
             self._tools,
             self._functions,
@@ -41,13 +40,12 @@ class ToolRegistry:
         self.policy.set_allowed_tools(names)
 
     def register_tool(self, tool: Tool) -> None:
-        bind = getattr(tool, "bind_output_store", None)
-        if callable(bind):
-            bind(self.output_store)
+        if isinstance(tool, ToolOutputBindable):
+            tool.bind_output_store(self.output_store)
         if tool.name in self._tools:
             print(f"Warning: tool '{tool.name}' already exists and will be replaced")
         self._tools[tool.name] = tool
-        for alias in getattr(tool, "aliases", ()):
+        for alias in tool.aliases:
             if alias == tool.name:
                 continue
             if alias in self._tools:
@@ -58,20 +56,17 @@ class ToolRegistry:
         self,
         name: str,
         description: str,
-        func: Callable[[str], Any],
+        func: ToolFunction,
     ) -> None:
         if name in self._functions:
             print(f"Warning: function tool '{name}' already exists and will be replaced")
-        self._functions[name] = {
-            "description": description,
-            "func": func,
-        }
+        self._functions[name] = RegisteredFunction(description, func)
 
     def unregister(self, name: str) -> bool:
         if name in self._tools:
             tool = self._tools.pop(name)
             if name == tool.name:
-                for alias in getattr(tool, "aliases", ()):
+                for alias in tool.aliases:
                     if self._tools.get(alias) is tool:
                         del self._tools[alias]
             return True
@@ -80,7 +75,7 @@ class ToolRegistry:
             return True
         return False
 
-    def get_tool(self, name: str) -> Optional[Tool]:
+    def get_tool(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
     def get_tools_description(self) -> str:
@@ -90,16 +85,16 @@ class ToolRegistry:
             if name == tool.name
         ]
         descriptions.extend(
-            f"- {name}: {info['description']}"
+            f"- {name}: {info.description}"
             for name, info in self._functions.items()
         )
         return "\n".join(descriptions) if descriptions else "暂无可用工具"
 
     @staticmethod
-    def _compact_openai_spec(schema: dict) -> dict:
+    def _compact_openai_spec(schema: ToolSchema) -> ToolSchema:
         """Reduce repeated schema prose while preserving call shape."""
         compact = copy.deepcopy(schema)
-        function = compact.get("function", {})
+        function = compact["function"]
         description = str(function.get("description") or "")
         if len(description) > 240:
             function["description"] = (
@@ -107,7 +102,7 @@ class ToolRegistry:
             )
         parameters = function.get("parameters")
 
-        def strip_parameter_descriptions(value: Any) -> None:
+        def strip_parameter_descriptions(value: JsonValue) -> None:
             if isinstance(value, dict):
                 value.pop("description", None)
                 for child in value.values():
@@ -120,12 +115,12 @@ class ToolRegistry:
         return compact
 
     def get_openai_specs(self, compact: bool = False) -> list[ToolSchema]:
-        specs = []
+        specs: list[ToolSchema] = []
         for name, tool in self._tools.items():
             if name != tool.name:
                 continue
             schema = tool.to_openai_schema()
-            params = schema.get("function", {}).get("parameters", {})
+            params = schema["function"]["parameters"]
             if params.get("type") == "object":
                 params.setdefault("additionalProperties", False)
             specs.append(self._compact_openai_spec(schema) if compact else schema)
@@ -135,13 +130,13 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": info["description"],
+                    "description": info.description,
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "input": {
                                 "type": "string",
-                                "description": info["description"],
+                                "description": info.description,
                             },
                         },
                         "required": ["input"],
