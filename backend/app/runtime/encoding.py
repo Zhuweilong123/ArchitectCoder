@@ -17,6 +17,9 @@ def decode_process_output(data: bytes | str | None) -> str:
         return data.decode("utf-8-sig", errors="replace")
     if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
         return data.decode("utf-16", errors="replace")
+    if len(data) % 2 == 0 and b"\x00" in data:
+        # Some Windows command-line programs emit UTF-16LE without a BOM.
+        return data.decode("utf-16le", errors="replace")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:

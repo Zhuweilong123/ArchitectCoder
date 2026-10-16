@@ -8,6 +8,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
+from typing import Awaitable, Callable, ParamSpec, TypeVar
+from app.agent_base.host_api.configuration import PluginConfiguration
+P = ParamSpec("P")
+R = TypeVar("R")
 from pathlib import Path
 from weakref import WeakValueDictionary
 
@@ -16,7 +20,7 @@ from weakref import WeakValueDictionary
 class PluginSnapshot:
     manager: object
     registry: object
-    settings: object
+    settings: PluginConfiguration
     plan: object = None
 
 
@@ -25,7 +29,7 @@ _active: PluginSnapshot | None = None
 _known = WeakValueDictionary()
 
 
-def current_snapshot():
+def current_snapshot() -> PluginSnapshot | None:
     return _bound.get() or _active
 
 
@@ -51,9 +55,9 @@ def plugin_scope(snapshot=None):
         _bound.reset(token)
 
 
-def pin_plugins(function):
+def pin_plugins(function: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     @wraps(function)
-    async def wrapped(*args, **kwargs):
+    async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
         with plugin_scope():
             return await function(*args, **kwargs)
     return wrapped

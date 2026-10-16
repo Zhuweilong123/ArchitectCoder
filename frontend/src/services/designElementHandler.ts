@@ -6,8 +6,14 @@
  */
 
 import { useDiagramStore } from '../stores/diagramStore';
+import { normalizeDiagram, normalizeStreamElement } from '../utils/diagramNormalization';
+import type { DiagramSpec, DiagramSnapshots, ConsistencyIssue, StreamElementMap } from '../types/designEvents';
+import type { Project, UmlDiagram } from '../types/uml';
+import type { UiState } from '../stores/uiStore';
+import type { DiagramState } from '../stores/diagramStore';
+import { layoutReviewDiagram } from '../utils/reviewLayout';
 
-export function parseDesignElement(data: string): any | null {
+export function parseDesignElement(data: string): unknown {
   try {
     return JSON.parse(data);
   } catch {
@@ -22,7 +28,7 @@ export function activateDiagramForDiffKey(key: string): void {
   const name = colonIndex > 0 ? key.substring(colonIndex + 1) : '';
   const store = useDiagramStore.getState();
   const index = store.project.diagrams.findIndex(
-    (diagram: any) => (diagram.diagram_type || 'class') === dtype
+    (diagram) => (diagram.diagram_type || 'class') === dtype
       && (!name || (diagram.name || '') === name),
   );
   if (index >= 0 && index !== store.project.active_diagram_index) {
@@ -46,8 +52,8 @@ export function handleDesignElement(
   idMap?: Map<string, string>,
   clearedDiagrams?: Set<string>,
 ): void {
-  const obj = parseDesignElement(event.data);
-  if (!obj) return;
+  const element = normalizeStreamElement(event.type, parseDesignElement(event.data));
+  if (!element) return;
 
   if (!idMap) idMap = new Map<string, string>();
 
@@ -122,7 +128,7 @@ export function handleDesignElement(
     currentType = type;
   };
 
-  const handlers: Record<string, (o: any) => void> = {
+  const handlers: { [Kind in keyof StreamElementMap]: (o: StreamElementMap[Kind]) => void } = {
     diagram_create: (o) => {
       const dtype = o.type || 'class';
       const dname = o.name || '';
@@ -137,7 +143,7 @@ export function handleDesignElement(
       const diagramName = o.diagram_name;
       clearDiagramOnFirstElement('class', diagramName);
       switchTo('class', diagramName);
-      store.addClass({ x: o.x ?? o.position?.x ?? 100, y: o.y ?? o.position?.y ?? 100 });
+      store.addClass({ x: o.position.x, y: o.position.y });
       const c = lastOf(findDiagram('class', diagramName)?.classes || []);
       if (c) {
         idMap.set(o.id, c.id);
@@ -191,6 +197,9 @@ export function handleDesignElement(
         store.updateMessage(m.id, {
           label: o.label || 'message()', type: o.type || 'sync',
           order: o.order ?? 1, note: o.note || '',
+          ...(typeof o.y === 'number' ? { y: o.y } : {}),
+          ...(o.source_refs ? { source_refs: o.source_refs } : {}),
+          ...(o.reply_to ? { reply_to: mapId(o.reply_to) } : {}),
         });
       }
     },
@@ -206,7 +215,13 @@ export function handleDesignElement(
           type: o.type || 'loop', label: o.label || '',
           x: o.x ?? 80, width: o.width ?? 280,
           y_start: o.y_start ?? 200, y_end: o.y_end ?? 320,
-        } as any);
+          lifeline_ids: (o.lifeline_ids || []).map(mapId),
+          parent_fragment_id: mapId(o.parent_fragment_id || ''),
+          parent_operand_id: o.parent_operand_id || '',
+          operands: (o.operands || []).map((operand) => ({
+            ...operand, message_ids: (operand.message_ids || []).map(mapId),
+          })),
+        });
       }
     },
     component: (o) => {
@@ -232,7 +247,7 @@ export function handleDesignElement(
       const cr = lastOf(findDiagram('component', diagramName)?.comp_relations || []);
       if (cr) {
         idMap.set(o.id, cr.id);
-        store.updateCompRelation(cr.id, { type: o.type || 'dependency' } as any);
+        store.updateCompRelation(cr.id, { type: o.type || 'dependency' });
       }
     },
     diagram_update: (o) => {
@@ -241,9 +256,35 @@ export function handleDesignElement(
     },
   };
 
-  const h = handlers[event.type];
-  if (h) {
-    h(obj);
+  function apply<Kind extends keyof StreamElementMap>(type: Kind, data: StreamElementMap[Kind]) {
+    handlers[type](data);
+  }
+  apply(element.type, element.data);
+  {
+    const diagramName = 'diagram_name' in element.data ? element.data.diagram_name : '';
+    // A referenced parent/message can arrive later in a streamed diagram.
+    // Resolve its original ID once available without deriving new membership.
+    if (['lifeline', 'message', 'fragment'].includes(event.type)) {
+      const diagram = findDiagram('sequence', diagramName);
+      (diagram?.messages || []).forEach((message) => {
+        if (message.reply_to && mapId(message.reply_to) !== message.reply_to) {
+          store.updateMessage(message.id, { reply_to: mapId(message.reply_to) });
+        }
+      });
+      (diagram?.fragments || []).forEach((fragment) => {
+        const updates = {
+          lifeline_ids: (fragment.lifeline_ids || []).map(mapId),
+          parent_fragment_id: mapId(fragment.parent_fragment_id || ''),
+          operands: (fragment.operands || []).map((operand) => ({
+            ...operand, message_ids: operand.message_ids.map(mapId),
+          })),
+        };
+        if (JSON.stringify([fragment.lifeline_ids || [], fragment.parent_fragment_id || '', fragment.operands || []])
+          !== JSON.stringify([updates.lifeline_ids, updates.parent_fragment_id, updates.operands])) {
+          store.updateFragment(fragment.id, updates);
+        }
+      });
+    }
   }
 }
 
@@ -252,28 +293,29 @@ export function handleDesignElement(
  * 从 AgentChat.tsx 的设计更新逻辑提取。
  */
 export function processDesignUpdated(
-  diagrams: Array<{ type: string; name: string; component_id: string; data: any }>,
-  consistencyReport: any[],
-  uiStore: any,
-  diagramStore: any,
-  originalsSnapshot?: Record<string, any>,
-  changedDiagrams?: Array<{ type: string; name: string; component_id: string; data: any }>,
+  diagrams: DiagramSpec[],
+  consistencyReport: ConsistencyIssue[],
+  uiStore: Pick<UiState, 'setGlobalOptimizationResult' | 'setRightPanelTab' | 'setRightPanelVisible'>,
+  diagramStore: Pick<DiagramState, 'project' | 'addDiagramsFromSpec' | 'setActiveDiagram'>,
+  originalsSnapshot?: DiagramSnapshots,
+  changedDiagrams?: DiagramSpec[],
 ): void {
-  const originals: Record<string, any> = {};
-  const optimizeds: Record<string, any> = {};
+  const originals: DiagramSnapshots = {};
+  const optimizeds: DiagramSnapshots = {};
   const diffs: Record<string, string> = {};
+  const arrangedByKey = new Map<string, UmlDiagram>();
 
-  const canonicalize = (value: any): any => {
+  const canonicalize = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonicalize);
     if (value && typeof value === 'object') {
       return Object.keys(value).sort().reduce((result, key) => {
-        result[key] = canonicalize(value[key]);
+        result[key] = canonicalize((value as Record<string, unknown>)[key]);
         return result;
-      }, {} as Record<string, any>);
+      }, {} as Record<string, unknown>);
     }
     return value;
   };
-  const sameDiagram = (before: any, after: any): boolean => (
+  const sameDiagram = (before: UmlDiagram, after: Partial<UmlDiagram>): boolean => (
     JSON.stringify(canonicalize(before)) === JSON.stringify(canonicalize(after))
   );
 
@@ -298,19 +340,27 @@ export function processDesignUpdated(
   for (const spec of candidates) {
     const dtype = spec.type || 'class';
     const dkey = `${dtype}:${spec.name || ''}`;
-    const opt = spec.data ? { ...spec.data } : {};
+    const rawOpt = spec.data ? { ...spec.data } : {};
     // diff 优先使用流式前的原始快照（流式阶段已清空旧图），
     // 快照不存在时回退到 store 当前值（非流式路径或空项目）
     const existing = originalsSnapshot?.[dkey]
       || diagramStore.project.diagrams.find(
-        (d: any) => (d.diagram_type || 'class') === dtype && d.name === spec.name
+        (d) => (d.diagram_type || 'class') === dtype && d.name === spec.name
       );
     const orig = existing && Object.keys(existing).length > 1  // >1 排除仅含 name/type 的默认空图
       ? { ...existing }
       : null;
 
     // Legacy callers may still pass the full snapshot; filter unchanged items.
-    if (orig && sameDiagram(orig, opt)) continue;
+    if (orig && sameDiagram(orig, rawOpt)) continue;
+
+    // Select changes before layout so untouched diagrams do not become review
+    // tabs merely because their geometry differs from the automatic layout.
+    const opt = layoutReviewDiagram(normalizeDiagram({
+      ...rawOpt, diagram_type: dtype, name: spec.name || rawOpt.name || '',
+      component_id: spec.component_id || rawOpt.component_id || '',
+    }));
+    arrangedByKey.set(dkey, opt);
 
     // 空工程时原始版也指向优化版，diff 文案标注为新建设计
     originals[dkey] = orig || opt;
@@ -328,16 +378,16 @@ export function processDesignUpdated(
     type: d.type || 'class',
     name: d.name || '',
     component_id: d.component_id || '',
-    data: d.data || {},
+    data: arrangedByKey.get(`${d.type || 'class'}:${d.name || ''}`) || d.data || {},
   }));
   diagramStore.addDiagramsFromSpec(specs);
 
   // addDiagramsFromSpec selects the last diagram for historical reasons.
   // Review should instead focus the first diagram that actually changed.
-  const firstChanged = candidates[0];
+  const firstChanged = candidates.find((spec) => arrangedByKey.has(`${spec.type || 'class'}:${spec.name || ''}`));
   if (firstChanged) {
     const changedIndex = diagramStore.project.diagrams.findIndex(
-      (d: any) => (d.diagram_type || 'class') === (firstChanged.type || 'class')
+      (d) => (d.diagram_type || 'class') === (firstChanged.type || 'class')
         && (d.name || '') === (firstChanged.name || ''),
     );
     if (changedIndex >= 0 && typeof diagramStore.setActiveDiagram === 'function') {
@@ -358,7 +408,7 @@ export function processDesignUpdated(
  * 只恢复审核结果中已存在的图；Agent 本轮新建的图（originals 里没有对应
  * 原始版本）无法"恢复"，保留现状——删除新图属于破坏性操作，交给用户手动处理。
  */
-export function restoreOriginalsToCanvas(originals: Record<string, any>): any | null {
+export function restoreOriginalsToCanvas(originals: DiagramSnapshots): Project | null {
   const project = useDiagramStore.getState().project;
   if (!project || !Array.isArray(project.diagrams) || !originals) return null;
 
@@ -370,7 +420,7 @@ export function restoreOriginalsToCanvas(originals: Record<string, any>): any | 
     const dtype = colonIdx > 0 ? key.substring(0, colonIdx) : key;
     const dname = colonIdx > 0 ? key.substring(colonIdx + 1) : '';
     const idx = diagrams.findIndex(
-      (d: any) => (d.diagram_type || 'class') === dtype && (d.name || '') === dname,
+      (d) => (d.diagram_type || 'class') === dtype && (d.name || '') === dname,
     );
     if (idx >= 0) {
       diagrams[idx] = { ...diagrams[idx], ...orig };

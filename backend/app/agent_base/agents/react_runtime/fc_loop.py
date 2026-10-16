@@ -4,115 +4,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncIterator
+from typing import AsyncGenerator, TYPE_CHECKING, Unpack
 
 from ...convergence import ConvergenceController
-from ...core.exceptions import AgentInterrupted
+from ...host_api.errors import AgentInterrupted
+from ...host_api.errors import AgentAwaitingReview
 from ...core.hooks import (
-    HookAction,
-    HookContext,
-    HookDecision,
-    HookEvent,
     get_hooks,
     get_runtime,
     todo_plan_complete,
 )
 from ...core.policy import ExecutionBudget
 from ...evidence import EvidenceLedger
-from app.services.context_manager import HistoryCompaction
+from ...host_api.context import ModelRequestContext
+from ...host_api.lifecycle import HookAction, HookContext, HookDecision, HookEvent
+from ...host_api.data import JsonValue
+from ...host_api.payloads import json_value
 from .react_parser import remove_textual_tool_markup
-from .react_types import ReActProgress
+from .react_types import NativeRunOptions, ReActProgress
+from .fc_model import _invoke_fc_model
 from .tool_round_executor import ToolRoundExecutor
 from .failure_recovery import FailureRecoveryController
+
+if TYPE_CHECKING:
+    from ..react_agent import ReActAgent
 
 logger = logging.getLogger(__name__)
 
 
-async def _invoke_fc_model(agent, **kwargs):
-    from ...core.operations import operation_scope
-    runtime = kwargs["runtime"]
-    with operation_scope("model", run_id=runtime.run_id, stage=HookEvent.MODEL_BEFORE.value) as operation:
-        response = None
-        status = "failed"
-        try:
-            result = await _invoke_fc_model_impl(agent, **kwargs)
-            response = result[0]
-            status = "completed" if response is not None else "blocked" if result[1] == "hook_stop" else "failed"
-            operation.status = status
-            return result
-        except (asyncio.CancelledError, AgentInterrupted):
-            status = "cancelled"
-            raise
-        finally:
-            await get_hooks().atrigger(HookEvent.MODEL_AFTER, HookContext(
-                HookEvent.MODEL_AFTER, agent.name, run_id=runtime.run_id, runtime=runtime,
-                messages=kwargs["messages"], llm_response=response,
-                payload={"status": status, "observers_only": status != "completed"},
-            ))
-
-
-async def _invoke_fc_model_impl(
-    agent,
-    *,
-    messages: list[dict[str, Any]],
-    tool_specs: list[dict[str, Any]],
-    finalization_mode: bool,
-    request_context: dict[str, Any],
-    runtime: Any,
-    temperature: float,
-    timeout_seconds: float,
-) -> tuple[Any | None, str, str]:
-    """Invoke the model inside its hook and tracing boundary.
-
-    Returns ``(response, failure_kind, reason)``. A missing response is an
-    intentional terminal condition, either stopped by a hook or timed out.
-    """
-    before_decision = await get_hooks().atrigger(
-        HookEvent.MODEL_BEFORE,
-        HookContext(
-            event=HookEvent.MODEL_BEFORE,
-            agent_name=agent.name,
-            run_id=runtime.run_id,
-            runtime=runtime,
-            messages=messages,
-            payload={"current_user_index": request_context.get("current_user_index", -1)},
-        ),
-    )
-    if (
-        isinstance(before_decision, HookDecision)
-        and before_decision.action == HookAction.STOP
-    ):
-        return None, "hook_stop", before_decision.reason
-
-    from app.agent_base.core.observability import trace_span
-
-    with trace_span(agent.name):
-        try:
-            response = await asyncio.wait_for(
-                agent.llm.ainvoke_with_tools(
-                    messages=messages,
-                    tools=tool_specs,
-                    tool_choice="none" if finalization_mode else "auto",
-                    temperature=temperature,
-                    trace_context=request_context,
-                ),
-                timeout=timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            await get_hooks().aemit(HookEvent.ERROR, HookContext(
-                event=HookEvent.ERROR, agent_name=agent.name, run_id=runtime.run_id,
-                runtime=runtime, payload={"error_type": "TimeoutError", "source": "llm"},
-            ))
-            return None, "timeout", "llm_timeout"
-    return response, "", ""
-
-
-async def run_fc_loop(agent, *args, **kwargs):
+async def run_fc_loop(
+    agent: ReActAgent, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     from ...core.plugin_runtime import plugin_scope
     from ...core.extension_context import extension_scope, current_extension_context
     session = getattr(agent, "extension_context", None)
     with plugin_scope(), extension_scope(current_extension_context() or (session.fork() if session else None)):
-        stream = _run_fc_loop_scoped(agent, *args, **kwargs)
+        stream = _run_fc_loop_scoped(agent, input_text, context=context, **kwargs)
         try:
             async for progress in stream:
                 yield progress
@@ -120,11 +47,13 @@ async def run_fc_loop(agent, *args, **kwargs):
             await stream.aclose()
 
 
-async def _run_fc_loop_scoped(agent, *args, **kwargs):
+async def _run_fc_loop_scoped(
+    agent: ReActAgent, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     from ...core.operations import operation_scope
     with operation_scope("run", run_id=get_runtime().run_id, stage=HookEvent.RUN_START.value) as operation:
         get_runtime().run_operation_id = operation.operation_id
-        stream = _run_fc_loop_impl(agent, *args, **kwargs)
+        stream = _run_fc_loop_impl(agent, input_text, context=context, **kwargs)
         try:
             async for progress in stream:
                 yield progress
@@ -134,11 +63,11 @@ async def _run_fc_loop_scoped(agent, *args, **kwargs):
 
 
 async def _run_fc_loop_impl(
-    agent,
+    agent: ReActAgent,
     input_text: str,
     context: str = "",
-    **kwargs,
-) -> AsyncIterator[ReActProgress]:
+    **kwargs: Unpack[NativeRunOptions],
+) -> AsyncGenerator[ReActProgress, None]:
     """原生 Function Calling 驱动的流式主循环。
 
     每轮 yield :class:`ReActProgress` — 包含步骤号、工具调用详情、
@@ -163,26 +92,23 @@ async def _run_fc_loop_impl(
     )
     # Session-level semantic compression runs between turns. Do not compact
     # user/assistant conversation inside an active task execution.
-    compacted = HistoryCompaction(
-        messages=list(agent._history),
-        summary=agent._history_summary,
-    )
+    history = agent.export_conversation()
     built = agent.context_budget.build_messages(
         agent._build_fc_system_prompt(),
-        compacted.messages,
+        history.messages,
         input_text,
         context=context,
-        history_summary=agent._history_summary,
+        history_summary=history.summary,
         tools=full_tool_specs,
     )
     messages = built.messages
-    current_user_index = built.current_user_index
+    current_user_index: int | None = built.current_user_index
     agent.last_context_report = built.to_dict()
     agent.last_context_report["token_budget_stop_reason"] = "model_answer"
     agent._run_verifications = {}
     agent.last_context_report.update({
-        "compacted_messages": compacted.dropped_messages,
-        "compacted_tokens": compacted.dropped_tokens,
+        "compacted_messages": 0,
+        "compacted_tokens": 0,
         "convergence_policy": {
             "budget_threshold_tokens": agent.max_total_tokens,
             "evidence_max_records": agent.evidence_max_records,
@@ -199,13 +125,6 @@ async def _run_fc_loop_impl(
             "compaction_target_tokens": agent.context_budget.budget.max_history_tokens,
         },
     })
-    if compacted.dropped_messages and agent.on_context_compacted:
-        agent.on_context_compacted({
-            "summary": compacted.summary,
-            "dropped_messages": compacted.dropped_messages,
-            "dropped_tokens": compacted.dropped_tokens,
-        })
-
     agent.current_history = []
     no_tool_call_streak = 0
     _turn_recorded = False
@@ -258,8 +177,8 @@ async def _run_fc_loop_impl(
     runtime.lifecycle_status = "running"
     runtime.lifecycle_finalized = False
     agent.last_context_report["plugin_plan_id"] = runtime.plugin_plan_id
-    async def publish(stage, **payload):
-        return await get_hooks().aemit(stage, HookContext(
+    async def publish(stage: HookEvent, **payload: JsonValue) -> None:
+        await get_hooks().aemit(stage, HookContext(
             event=stage, agent_name=agent.name, run_id=runtime.run_id,
             runtime=runtime, payload=payload,
         ))
@@ -382,16 +301,19 @@ async def _run_fc_loop_impl(
                     "triggered_at_tool_calls": tool_call_count,
                     "token_budget_used": budget.request_tokens,
                 }
-            messages, dropped = agent.context_budget.fit_messages(
+            fitted = agent.context_budget.fit_messages(
                 messages,
                 tools=active_tool_specs,
                 current_user_index=current_user_index,
             )
+            messages = fitted.messages
+            current_user_index = fitted.current_user_index
+            dropped = fitted.dropped_messages
             if dropped:
                 agent.last_context_report["loop_dropped_messages"] = (
                     agent.last_context_report.get("loop_dropped_messages", 0) + dropped
                 )
-            request_context = {
+            request_context: ModelRequestContext = {
                 "current_user_index": current_user_index,
                 "scope": "single_llm_request",
                 "estimated_context_tokens": agent.context_budget.estimate_request_tokens(
@@ -425,7 +347,6 @@ async def _run_fc_loop_impl(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -458,7 +379,6 @@ async def _run_fc_loop_impl(
                     total_tokens=budget.total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -473,7 +393,6 @@ async def _run_fc_loop_impl(
                     total_tokens=total_tokens,
                     step=step,
                     thought=final_answer,
-                    is_final=True,
                     final_answer=final_answer,
                 )
                 return
@@ -567,8 +486,7 @@ async def _run_fc_loop_impl(
                             agent._record_turn(input_text, content)
                             _turn_recorded = True
                         yield await agent._final_progress(total_tokens=total_tokens,
-                            step=step, thought=content,
-                            is_final=True, final_answer=content,
+                            step=step, thought=content, final_answer=content,
                         )
                         return
                     # Planning mode is opt-in and only closes after its
@@ -593,8 +511,7 @@ async def _run_fc_loop_impl(
                         agent._record_turn(input_text, content)
                         _turn_recorded = True
                     yield await agent._final_progress(total_tokens=total_tokens,
-                        step=step, thought=content,
-                        is_final=True, final_answer=content,
+                        step=step, thought=content, final_answer=content,
                     )
                     return
 
@@ -613,8 +530,7 @@ async def _run_fc_loop_impl(
                     })
                     agent._record_turn(input_text, final_answer)
                     yield await agent._final_progress(total_tokens=total_tokens,
-                        step=step, thought=final_answer,
-                        is_final=True, final_answer=final_answer,
+                        step=step, thought=final_answer, final_answer=final_answer,
                     )
                     return
                 if step == 1:
@@ -668,8 +584,8 @@ async def _run_fc_loop_impl(
                     runtime=runtime,
                     phase="tool_batch_complete",
                     payload={
-                        "details": details,
-                        "actions": actions,
+                        "details": json_value(details),
+                        "actions": json_value(actions),
                         "step": step,
                     },
                 ),
@@ -726,7 +642,7 @@ async def _run_fc_loop_impl(
                 _turn_recorded = True
                 yield await agent._final_progress(total_tokens=total_tokens,
                     step=step, actions=actions, tool_calls_detail=details,
-                    thought=final_answer, is_final=True, final_answer=final_answer,
+                    thought=final_answer, final_answer=final_answer,
                 )
                 return
 
@@ -738,6 +654,9 @@ async def _run_fc_loop_impl(
                 is_final=False,
             )
 
+    except AgentAwaitingReview:
+        runtime.lifecycle_status = "waiting_approval"
+        raise
     except (AgentInterrupted, asyncio.CancelledError):
         runtime.lifecycle_status = "cancelled"
         await publish(HookEvent.CANCEL, step=runtime.lifecycle_step)

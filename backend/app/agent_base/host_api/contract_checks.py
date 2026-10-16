@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Literal
+from .data import JsonObject
 
 
 CheckStatus = Literal["pass", "warn", "block", "inconclusive", "not_applicable"]
@@ -18,7 +19,7 @@ class ContractViolation:
     design_entity_id: str = ""
     source_entity_id: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JsonObject:
         return asdict(self)
 
 
@@ -32,7 +33,7 @@ class ContractCheckResult:
     snapshot_status: str = ""
     graph_status: str = "not_requested"
     message: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
     @property
     def requires_confirmation(self) -> bool:
@@ -42,8 +43,9 @@ class ContractCheckResult:
     def can_commit(self) -> bool:
         return self.status in {"pass", "warn"}
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JsonObject:
         value = asdict(self)
+        value["changed_paths"] = list(self.changed_paths)
         value["violations"] = [item.to_dict() for item in self.violations]
         value["requires_confirmation"] = self.requires_confirmation
         value["can_commit"] = self.can_commit

@@ -1,4 +1,5 @@
 """BaseAgents 异常体系"""
+from .agents import ReviewRequestPort
 
 
 class BaseAgentsException(Exception):
@@ -24,6 +25,14 @@ class AgentError(BaseAgentsException):
 class AgentInterrupted(AgentError):
     """Agent 循环被中断（hook 抛出的停止信号，传播到编排层）。"""
     pass
+
+
+class AgentAwaitingReview(AgentInterrupted):
+    """Hand a pending human decision to the durable execution coordinator."""
+
+    def __init__(self, request: ReviewRequestPort) -> None:
+        super().__init__("Waiting for human review")
+        self.request = request
 
 
 class ToolError(BaseAgentsException):

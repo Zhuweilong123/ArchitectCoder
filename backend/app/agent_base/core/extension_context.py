@@ -4,24 +4,42 @@ The host binds providers at assembly and publishes data through lifecycle hooks.
 Handlers access their provider without receiving an Agent or tool registry.
 """
 from __future__ import annotations
+from app.agent_base.host_api.execution_types import TaskResultPayload
+from typing import Unpack
 
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from app.agent_base.host_api.configuration import PluginConfiguration
+from typing import Awaitable, Callable, ParamSpec, TypedDict, Any, Mapping, TypeVar, cast
 from functools import wraps
 import inspect
-from app.agent_base.host_api.services import HostServices, host_services_scope
+from app.agent_base.host_api.services import host_services_scope
+
+
+ProviderT = TypeVar("ProviderT")
+P = ParamSpec("P")
+R = TypeVar("R")
+
+class ExtensionMetadata(TypedDict, total=False):
+    execution_settings: PluginConfiguration
+    project_id: str
+    workspace: dict[str, object]
+    plugin_options: dict[str, dict[str, object]]
+    required_execution_bindings: dict[str, list[str]]
+    run_id: str
+    task_status: str
+
 
 
 @dataclass
 class ExtensionContext:
     providers: dict[str, Any] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: ExtensionMetadata = field(default_factory=lambda: ExtensionMetadata())
     _states: dict[str, dict] = field(default_factory=dict, repr=False)
     _contributions: list = field(default_factory=list, repr=False)
     _registry: Any = field(default=None, repr=False)
-    host_services: HostServices | None = field(default=None, repr=False)
+    host_services: object | None = field(default=None, repr=False)
 
     def bind(self, name, provider, *, settings=None, options=None):
         """Bind a capability and its declared handlers for standalone use too."""
@@ -38,7 +56,21 @@ class ExtensionContext:
         self.metadata.setdefault("plugin_options", {})[name] = dict(options or {})
         self._registry = None
 
-    def state(self, name):
+    @property
+    def project_id(self) -> str:
+        return str(self.metadata.get("project_id") or "")
+
+    def provider(self, name: str, contract: type[ProviderT]) -> ProviderT | None:
+        """Read a scoped binding through the consuming plugin's public contract."""
+        return cast(ProviderT | None, self.providers.get(name))
+
+    def provider_options(self, name: str) -> Mapping[str, object]:
+        """Return detached options; consumers cannot mutate request bindings."""
+        from copy import deepcopy
+        from types import MappingProxyType
+        return MappingProxyType(deepcopy(self.metadata.get("plugin_options", {}).get(name, {})))
+
+    def state(self, name: str) -> dict[str, object]:
         return self._states.setdefault(name, {})
 
     def fork(self):
@@ -70,7 +102,7 @@ class ExtensionContext:
 _context: ContextVar[ExtensionContext | None] = ContextVar("extension_context", default=None)
 
 
-def current_extension_context():
+def current_extension_context() -> ExtensionContext | None:
     return _context.get()
 
 
@@ -85,11 +117,11 @@ def extension_scope(context=None):
         _context.reset(token)
 
 
-def extension_request(function):
+def extension_request(function: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     """Pin request state through execution and later authoritative completion."""
     signature = inspect.signature(function)
     @wraps(function)
-    async def wrapped(*args, **kwargs):
+    async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
         bound = signature.bind(*args, **kwargs)
         agent = bound.arguments["agent"]
         base = getattr(agent, "extension_context", None)
@@ -115,7 +147,7 @@ def extension_request(function):
     return wrapped
 
 
-async def publish_task_result(agent, *, run_id="", **payload):
+async def publish_task_result(agent: object, *, run_id: str = "", **payload: Unpack[TaskResultPayload]) -> None:
     """Publish the post-check/review outcome without selecting any consumer."""
     from .hooks import HookContext, HookEvent, get_hooks
     session = getattr(agent, "extension_runs", {}).get(run_id) or current_extension_context()

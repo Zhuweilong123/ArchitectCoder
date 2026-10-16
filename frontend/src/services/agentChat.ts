@@ -7,6 +7,8 @@
  * Toolbar 和 AgentChat 共享同一连接 — 通过 connectAgentChat / sendAgentMessage 操作。
  */
 
+import type { ReviewDiagramPayload } from '../types/designEvents';
+
 export interface AgentTodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -79,9 +81,9 @@ export interface AgentUmlReviewEvent {
   event: 'uml_review';
   review_id: number;
   title: string;
-  changed_diagrams?: any[];
-  diagrams: any[];                 // 更新后的图对象列表
-  original_diagrams: any[] | null; // 修改前的图对象列表（DiffViewer 对比用）
+  changed_diagrams?: ReviewDiagramPayload[];
+  diagrams: ReviewDiagramPayload[];                 // 更新后的图对象列表
+  original_diagrams: ReviewDiagramPayload[] | null; // 修改前的图对象列表（DiffViewer 对比用）
   auto?: boolean;                  // true = 框架兜底补推（Agent 漏调 submit_uml_review）
 }
 
@@ -101,11 +103,14 @@ export interface AgentReviewTimeoutEvent {
 
 export interface AgentReviewExpiredEvent {
   event: 'review_expired';
+  reason?: string;
   review_id: number;               // 后端找不到该待审核请求（连接中断/会话回收/已超时）
 }
 
 export interface AgentDoneEvent {
   event: 'done';
+  event_seq?: number;
+  event_epoch?: string;
   result: string;
   history?: string[];
   checkpoint?: {
@@ -125,6 +130,7 @@ export interface AgentStoppedEvent {
 export interface AgentErrorEvent {
   event: 'error';
   message: string;
+  running?: boolean;
 }
 
 export interface AgentDesignElementEvent {
@@ -134,6 +140,9 @@ export interface AgentDesignElementEvent {
 }
 
 export type AgentEvent =
+  | { event: 'progress_snapshot'; run_id: string; steps: AgentProgressEvent[]; terminal_result_id?: string }
+  | { event: 'session_sync'; running: boolean; stopping: boolean; replay_truncated?: boolean; pending_review_ids?: number[] }
+  | { event: 'run_started'; run_id: string; status: string }
   | AgentProgressEvent
   | AgentChatChunkEvent
   | AgentReviewEvent
@@ -286,7 +295,7 @@ export function sendAgentMessage(message: string, opts?: {
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify(payload));
     if (!opts?.skipNotify) {
-      _notifyListeners({ event: 'user_message' as any, message });
+      _notifyListeners({ event: 'user_message', message });
     }
     return true;
   }
@@ -340,10 +349,17 @@ function _cleanupPendingReview(reviewId: number) {
 
 // 断线时暂存的 review_response，重连 onopen 后补发
 let _pendingReviewPayloads: Array<{ review_id: number; payload: string }> = [];
+let _pendingStop = false;
+const _eventCursors = new Map<string, { sequence: number; epoch: string }>();
 
 export function sendStopMessage() {
+  _pendingStop = true;
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify({ type: 'stop' }));
+    _pendingStop = false;
+  } else {
+    _reconnectAttempts = 0;
+    _ensureConnection();
   }
 }
 
@@ -365,7 +381,12 @@ export function sendReviewResponse(
     feedback: decision ? response : undefined,
   });
   if (_ws && _ws.readyState === WebSocket.OPEN) {
-    _ws.send(payload);
+    try {
+      _ws.send(payload);
+    } catch (error) {
+      console.warn('[AgentChat] review_response send failed:', error);
+      return 'failed';
+    }
     console.log('[AgentChat] review_response sent:', reviewId, decision || '(no decision)');
     _cleanupPendingReview(reviewId);
     return 'sent';
@@ -373,20 +394,33 @@ export function sendReviewResponse(
   // 连接断开/未建立：重连 + 排队补发（HMR 模块重载、网络抖动场景下
   // 后端 session 仍在，Agent 可能还阻塞在审核 future 上等这个回复）
   _reconnectAttempts = 0; // 用户主动回复审核：给一次全新的重试预算
-  _ensureConnection();
+  try {
+    _ensureConnection();
+  } catch (error) {
+    console.warn('[AgentChat] review reconnect failed:', error);
+    return 'failed';
+  }
   if (_ws && _ws.readyState === WebSocket.CONNECTING) {
+    discardReviewResponse(reviewId);
     _pendingReviewPayloads.push({ review_id: reviewId, payload });
     console.log('[AgentChat] review_response queued for reconnect:', reviewId);
     return 'queued';
   }
   console.warn('[AgentChat] review_response NOT sent — ws state:', _ws ? _ws.readyState : 'null');
-  if (_pendingUmlReviewId === reviewId) {
-    _pendingUmlReviewId = null; // 死掉的审核不再保留标记，避免后续界面重复尝试发送
-  }
   return 'failed';
 }
 
+export function discardReviewResponse(reviewId: number): void {
+  _pendingReviewPayloads = _pendingReviewPayloads.filter(item => item.review_id !== reviewId);
+}
+
+function _failQueuedReviews(): void {
+  const pending = _pendingReviewPayloads.splice(0);
+  for (const item of pending) _notifyListeners({ event: 'review_delivery_failed', review_id: item.review_id });
+}
+
 export function disconnectAgentChat() {
+  _pendingStop = false;
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);
     _reconnectTimer = null;
@@ -447,12 +481,24 @@ function _stopHeartbeat(): void {
 
 function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const params = new URLSearchParams({ session_id: _getSessionId() });
-  if (token) params.set('token', token);
+  const sessionId = _getSessionId();
+  const params = new URLSearchParams({ session_id: sessionId });
+  const cursor = _eventCursors.get(sessionId);
+  if (cursor) {
+    params.set('event_cursor', String(cursor.sequence));
+    params.set('event_epoch', cursor.epoch);
+  }
   const wsUrl = `${protocol}//${window.location.host}/api/agent/ws/chat?${params.toString()}`;
-  const ws = new WebSocket(wsUrl);
+  const protocols = ['architectcoder'];
+  if (token) {
+    const encoded = btoa(Array.from(new TextEncoder().encode(token), b => String.fromCharCode(b)).join(''))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    protocols.push(`auth.${encoded}`);
+  }
+  const ws = new WebSocket(wsUrl, protocols);
 
   ws.onmessage = (e) => {
+    if (_ws !== ws) return;
     try {
       const data = JSON.parse(e.data);
       // 心跳响应不进业务事件流
@@ -461,7 +507,12 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
         return;
       }
       // 路由给当前注册的回调（连接可被 AgentChat 重新绑定）
-      if (_onEvent) _onEvent(data as AgentEvent);
+      if (typeof data.event_seq === 'number' && typeof data.event_epoch === 'string') {
+        const previous = _eventCursors.get(sessionId);
+        if (previous && previous.epoch === data.event_epoch && previous.sequence >= data.event_seq) return;
+        if (_onEvent) _onEvent(data as AgentEvent);
+        _eventCursors.set(sessionId, { sequence: data.event_seq, epoch: data.event_epoch });
+      } else if (_onEvent) _onEvent(data as AgentEvent);
     } catch {
       console.error('[AgentChat] Failed to parse WS message:', e.data);
     }
@@ -473,21 +524,35 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     _reconnectAttempts = 0; // 连接成功，重置退避
     _lastPongAt = Date.now();
     _startHeartbeat(ws);
+    _notifyListeners({ event: 'ws_connected' });
+    if (_pendingStop) {
+      ws.send(JSON.stringify({ type: 'stop' }));
+      _pendingStop = false;
+    }
     // 发送连接建立前暂存的消息
     const pending = _pendingMessages.splice(0);
     for (const pm of pending) {
       if (_ws && _ws.readyState === WebSocket.OPEN) {
         _ws.send(JSON.stringify(pm.opts));
         if (!pm.skipNotify) {
-          _notifyListeners({ event: 'user_message' as any, message: pm.message });
+          _notifyListeners({ event: 'user_message', message: pm.message });
         }
       }
     }
     // 补发断线期间排队的审核回复
-    const queuedReviews = _pendingReviewPayloads.splice(0);
+    const queuedReviews = [..._pendingReviewPayloads];
     for (const qr of queuedReviews) {
+      if (!_pendingReviewPayloads.some(item => item.review_id === qr.review_id && item.payload === qr.payload)) continue;
       if (_ws && _ws.readyState === WebSocket.OPEN) {
-        _ws.send(qr.payload);
+        try {
+          _ws.send(qr.payload);
+        } catch (error) {
+          console.warn('[AgentChat] queued review_response send failed:', error);
+          discardReviewResponse(qr.review_id);
+          _notifyListeners({ event: 'review_delivery_failed', review_id: qr.review_id });
+          continue;
+        }
+        discardReviewResponse(qr.review_id);
         console.log('[AgentChat] queued review_response sent after reconnect:', qr.review_id);
         _cleanupPendingReview(qr.review_id);
       }
@@ -505,28 +570,19 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
     if (_ws !== ws) return;
     _ws = null;
     _stopHeartbeat();
-    // 排队待补发的审核回复随连接关闭而失效，通知界面
-    const undelivered = _pendingReviewPayloads.splice(0);
-    for (const u of undelivered) {
-      if (_pendingUmlReviewId === u.review_id) {
-        _pendingUmlReviewId = null;
-      }
-      _notifyListeners({ event: 'review_delivery_failed', review_id: u.review_id });
-    }
-    // 连接关闭后阻塞中的审核会被后端取消，清除待审核标记并通知界面收起审核卡
-    if (_pendingUmlReviewId !== null) {
-      const staleId = _pendingUmlReviewId;
-      _pendingUmlReviewId = null;
-      _notifyListeners({ event: 'review_resolved', review_id: staleId });
-    }
-    // 非主动断开（网络抖动/后端重启）→ 通知界面解除"正在执行"状态
+    // Transient failures retain queued replies; auth rejection or retry exhaustion releases them.
     if (!_intentionalClose) {
-      _notifyListeners({ event: 'ws_closed' });
+      _notifyListeners({ event: 'ws_closed', message: e.code === 1008
+        ? 'AI 助手连接被拒绝，请检查访问凭证和服务端允许的站点来源。自动重连已停止。'
+        : undefined });
       // 自动重连（指数退避，最多约 30s 一次）。面板常驻挂载，_onEvent 始终有效，
       // 重连后事件能正常到达界面；后端 session 按 session_id 复用。
       // 达到重试上限后停止后台自动重连，避免后端不可达时无限刷屏；
       // 用户下次发消息仍会通过 _ensureConnection 重新建连。
-      if (_onEvent && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      if (e.code === 1008) {
+        _failQueuedReviews();
+        console.warn('[AgentChat] Authentication rejected; automatic reconnect stopped');
+      } else if (_onEvent && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.min(1000 * 2 ** _reconnectAttempts, 30000);
         _reconnectAttempts += 1;
         console.log(`[AgentChat] reconnecting in ${delay}ms (attempt ${_reconnectAttempts})`);
@@ -534,7 +590,8 @@ function createRawWs(onEvent: AgentEventCallback, token?: string): WebSocket {
           _reconnectTimer = null;
           _ensureConnection();
         }, delay);
-      } else if (_onEvent) {
+      } else {
+        _failQueuedReviews();
         console.warn('[AgentChat] reconnect attempts exhausted, waiting for next user message');
       }
     }

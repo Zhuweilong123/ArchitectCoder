@@ -57,7 +57,7 @@ class TraceCasePublishRequest(BaseModel):
 
 from .paths import evaluation_root
 from app.agent_base.host_api.environment import configuration as get_settings
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_provider_services
 
 from .models import EVAL_TRACE_TOOL_NAMES, EvalCase, EvalTurn, ProjectManifest
 from .paths import cases_dir, fixtures_dir, projects_dir
@@ -462,7 +462,7 @@ class TraceCaseFactory:
         path.unlink(missing_ok=True)
         return {"draft_id": draft_id, "deleted": True}
     async def create(self, request: TraceCaseDraftRequest) -> dict[str, Any]:
-        provider = get_host_services().resolve_provider("trace")
+        provider = get_provider_services().resolve_provider("trace")
         if provider is None:
             raise ValueError("Trace provider is unavailable")
         data = provider.query().read_trace(request.session_id)

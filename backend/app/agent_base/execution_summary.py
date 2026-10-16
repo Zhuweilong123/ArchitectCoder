@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from .host_api.execution_types import ToolCallDetail, RunCheckpoint, ToolExecutionEvidence
+from .host_api.payloads import json_object_list, tool_call_signature
 
 
 def _excerpt(value: object, limit: int = 220) -> str:
@@ -13,8 +16,8 @@ def _excerpt(value: object, limit: int = 220) -> str:
 
 
 def build_task_execution_summary(
-    tool_calls: list[dict],
-    checkpoint: dict,
+    tool_calls: Sequence[ToolCallDetail],
+    checkpoint: RunCheckpoint,
     status: str,
 ) -> str:
     """Summarize every call in order, bounding individual output excerpts only.
@@ -28,6 +31,10 @@ def build_task_execution_summary(
     execution: list[str] = []
     last_file_operations: dict[str, str] = {}
     failed_attempts: list[str] = []
+    signatures = [tool_call_signature(call.get("name") or "", call.get("arguments", {})) for call in calls]
+    calls_by_signature: dict[tuple[str, str], list[int]] = {}
+    for position, signature in enumerate(signatures, 1):
+        calls_by_signature.setdefault(signature, []).append(position)
 
     for index, item in enumerate(calls, 1):
         name = str(item.get("name") or "tool")
@@ -51,8 +58,7 @@ def build_task_execution_summary(
         observation = _excerpt(item.get("observation"), 240)
         effects = evidence.get("effects") if isinstance(evidence, dict) else None
         effects = effects if isinstance(effects, dict) else {}
-        structured = item.get("execution_evidence") or effects.get("execution_evidence") or {}
-        structured = structured if isinstance(structured, dict) else {}
+        structured: ToolExecutionEvidence = item.get("execution_evidence") or effects.get("execution_evidence") or {}
         query = structured.get("file_query")
         query_fact = ""
         if isinstance(query, dict):
@@ -85,15 +91,15 @@ def build_task_execution_summary(
         execution.append(f"- [{index}] {name} {verdict}" + (f": {detail}" if detail else ""))
         if not succeeded:
             retries = []
-            attempt = structured.get("call_attempt") or {}
-            for later_index, later in enumerate(calls[index:], index + 1):
-                if (later.get("name") != item.get("name")
-                        or later.get("arguments", {}) != item.get("arguments", {})):
+            attempt = structured.get("call_attempt")
+            for later_index in calls_by_signature[signatures[index - 1]]:
+                if later_index <= index:
                     continue
+                later = calls[later_index - 1]
                 later_effects = (later.get("evidence") or {}).get("effects") or {}
                 later_structured = later.get("execution_evidence") or later_effects.get("execution_evidence") or {}
-                later_attempt = later_structured.get("call_attempt") or {}
-                if (attempt.get("step") is not None and later_attempt.get("step") is not None
+                later_attempt = later_structured.get("call_attempt")
+                if (attempt is not None and later_attempt is not None
                         and later_attempt["step"] <= attempt["step"]):
                     continue
                 retries.append(later_index)
@@ -139,15 +145,12 @@ def build_task_execution_summary(
     contract_check = checkpoint.get("contract_check")
     if isinstance(contract_check, dict):
         contract_status = str(contract_check.get("status") or "unknown")
-        violations = [
-            item for item in (contract_check.get("violations") or [])
-            if isinstance(item, dict)
-        ]
+        violations = json_object_list(contract_check.get("violations"))
         counts_by_severity: dict[str, int] = {}
         counts_by_code: dict[str, int] = {}
-        for item in violations:
-            severity = str(item.get("severity") or "unknown")
-            code = str(item.get("code") or "unknown")
+        for violation in violations:
+            severity = str(violation.get("severity") or "unknown")
+            code = str(violation.get("code") or "unknown")
             counts_by_severity[severity] = counts_by_severity.get(severity, 0) + 1
             counts_by_code[code] = counts_by_code.get(code, 0) + 1
 
@@ -173,11 +176,11 @@ def build_task_execution_summary(
             lines.append("- Contract decision: " + decision_message)
         if violations:
             lines.append("- Contract feedback:")
-            for item in violations[:24]:
-                severity = str(item.get("severity") or "unknown")
-                code = str(item.get("code") or "unknown")
-                message = _excerpt(item.get("message"), 200)
-                path = _excerpt(item.get("path"), 160)
+            for violation in violations[:24]:
+                severity = str(violation.get("severity") or "unknown")
+                code = str(violation.get("code") or "unknown")
+                message = _excerpt(violation.get("message"), 200)
+                path = _excerpt(violation.get("path"), 160)
                 location = f" [{path}]" if path else ""
                 lines.append(
                     f"- {severity} [{code}]: {message}{location}"

@@ -68,7 +68,7 @@ def test_concurrent_plugin_calls_inherit_phase_scope_and_parent_without_phase_br
 
 @pytest.mark.parametrize("outcome", ["success", "timeout", "error", "cancel", "blocked"])
 def test_model_after_records_every_attempt_once(recording, outcome):
-    from app.agent_base.agents.react_runtime.fc_loop import _invoke_fc_model
+    from app.agent_base.agents.react_runtime.fc_model import _invoke_fc_model
     registry, events = recording
     seen = []
     async def model(**kwargs):
@@ -95,6 +95,55 @@ def test_model_after_records_every_attempt_once(recording, outcome):
     operation_events = [row for row in events if row["event_type"] == "operation"]
     assert [row["status"] for row in operation_events] == ["running", status]
     assert operation_events[-1]["stage"] == "model_after"
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout", "error", "cancel", "blocked"])
+def test_child_model_uses_shared_lifecycle_and_restores_parent(recording, tmp_path, outcome):
+    from app.agent_base.tools.my_tools.subagent_tool import SpawnSubagentTool
+
+    registry, events = recording
+    seen, calls = [], []
+
+    async def model(**kwargs):
+        calls.append(kwargs)
+        from app.agent_base.core.observability import current_trace_spans
+        assert "child_agent" in current_trace_spans()
+        if outcome == "timeout":
+            raise asyncio.TimeoutError()
+        if outcome == "error":
+            raise ValueError("child provider failed")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+        return {"content": "child done", "tool_calls": None}
+
+    if outcome == "blocked":
+        registry.register(HookEvent.MODEL_BEFORE, lambda ctx: HookDecision("stop"), mode="control")
+    registry.register(HookEvent.MODEL_AFTER, lambda ctx: seen.append(ctx.payload["status"]), mode="observer")
+    tool = SpawnSubagentTool(SimpleNamespace(ainvoke_with_tools=model), source_dir=str(tmp_path),
+                             toolkits=("read_only",))
+
+    async def run():
+        parent = hooks.get_runtime()
+        try:
+            if outcome == "cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await tool._execute({"description": "inspect"})
+            else:
+                result = await tool._execute({"description": "inspect"})
+                assert result
+        finally:
+            assert hooks.get_runtime() is parent
+
+    asyncio.run(run())
+    expected = {"success": "completed", "timeout": "failed", "error": "failed",
+                "cancel": "cancelled", "blocked": "blocked"}[outcome]
+    assert seen == [expected]
+    assert len(calls) == (0 if outcome == "blocked" else 1)
+    if calls:
+        assert calls[0]["max_tokens"] == tool.last_context_report["last_request_context"]["output_token_limit"]
+        assert calls[0]["trace_context"]["timeout_max_attempts"] == 1
+    model_events = [row for row in events if row["event_type"] == "operation" and row.get("operation_kind") == "model"]
+    assert [row["status"] for row in model_events] == ["running", expected]
 
 
 def test_stream_close_after_final_output_preserves_completed_run(recording):

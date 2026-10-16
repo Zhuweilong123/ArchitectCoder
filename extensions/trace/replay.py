@@ -261,6 +261,7 @@ class MockToolRegistry:
         self._specs = _step_level_tool_specs(events)
         self._cursor = 0
         self._graceful = graceful
+        self._allowed_tools: set[str] | None = None
 
     @property
     def cursor(self) -> int:
@@ -279,7 +280,13 @@ class MockToolRegistry:
     def list_tools(self) -> list[str]:
         return []
 
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        self._allowed_tools = set(names) if names is not None else None
+
     async def aexecute_tool_with_params(self, name: str, parameters: dict) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return f"Error: Tool '{name}' is not enabled"
+
         if self._cursor >= len(self._results):
             if self._graceful:
                 # rerun 模式：真 LLM 偏离原始轨迹（多调了工具），mock 无结果可用。
@@ -324,6 +331,7 @@ class HybridToolRegistry:
         self._real_policy = real_policy
         self._specs = _step_level_tool_specs(events)
         self._graceful = graceful
+        self._allowed_tools: set[str] | None = None
         self._by_tool: dict[str, list[str]] = {}
         for r in _pick(events, "tool_result"):
             self._by_tool.setdefault(r.get("tool_name", ""), []).append(
@@ -349,7 +357,13 @@ class HybridToolRegistry:
     def list_tools(self) -> list[str]:
         return [s.get("function", {}).get("name", "") for s in self._specs]
 
+    def set_allowed_tools(self, names: list[str] | None) -> None:
+        self._allowed_tools = set(names) if names is not None else None
+
     async def aexecute_tool_with_params(self, name: str, parameters: dict) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return f"Error: Tool '{name}' is not enabled"
+
         self._calls += 1
         if name in self._real_policy:
             return await self._real.aexecute_tool_with_params(name, parameters)
@@ -382,7 +396,7 @@ def _build_live_registry(
     full：foundation 工具全部真实执行（写盘/跑命令有副作用，风险自负）；
          shell 不传 review_manager → 敏感命令 fail-closed、高危直接拒（安全阀）。
     """
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_agent_services
 
     if tool_policy not in ("readonly", "full"):
         tool_policy = "readonly"
@@ -393,15 +407,15 @@ def _build_live_registry(
             "apply_changes", "run_program", "run_task", "shell",
         }
 
-    real = get_host_services().foundation_registry(source_dir, test_dir, real_policy)
+    real = get_agent_services().foundation_registry(source_dir, test_dir, real_policy)
 
     return HybridToolRegistry(events, real, real_policy, graceful=True)
 
 
 def _build_rerun_llm():
     """构建真实 LLM（rerun 模式）。"""
-    from app.agent_base.host_api.services import get_host_services
-    return get_host_services().create_model(temperature=0.3)
+    from app.agent_base.host_api.services import get_agent_services
+    return get_agent_services().create_model(temperature=0.3)
 
 
 async def replay_agent_session(
@@ -430,7 +444,7 @@ async def replay_agent_session(
         llm_calls / llm_total / tool_calls / tool_total / mode / all_matched
     """
     from extensions.trace.trace_reader import read_trace
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_agent_services, get_observation_services
 
     if mode not in ("mock", "rerun", "live"):
         raise ValueError(f"未知回放模式: {mode}（可选 mock / rerun / live）")
@@ -494,27 +508,22 @@ async def replay_agent_session(
     else:
         registry = MockToolRegistry(events, graceful=(mode == "rerun"))
 
-    # max_steps 给足记录中的最大 step，避免回放过早截断
-    max_step = max(
-        (int(e.get("step")) for e in events
-         if e.get("event_type") in ("agent_step", "tool_call", "tool_result")
-         and isinstance(e.get("step"), int)),
-        default=5,
-    )
+    # Budget by recorded tool calls; ReActAgent has no max_steps constructor option.
+    max_tool_calls = max(5, len(_pick(events, 'tool_call')))
 
-    agent = get_host_services().create_loop_agent(
+    agent = get_agent_services().create_loop_agent(
         name="replay",
         llm=llm,
         tool_registry=registry,
         system_prompt=original_system_prompt or None,
-        max_steps=max(max_step, 5),
+        max_tool_calls=max_tool_calls,
     )
 
-    from app.agent_base.host_api.services import get_host_services
+    from app.agent_base.host_api.services import get_observation_services
 
     # 回放期间屏蔽 trace 写入：rerun 模式真调 LLM，若全局 trace 钩子仍指向
     # 某会话，会把回放自身的调用写进该会话 trace，污染后续回放。压入 no-op 隔离。
-    with get_host_services().suppress_tracing():
+    with get_observation_services().suppress_tracing():
         results = []
         for idx, t in enumerate(turns):
             steps: list[dict] = []
@@ -533,8 +542,8 @@ async def replay_agent_session(
                     if progress.is_final:
                         answer = progress.final_answer
                 if not answer:
-                    # 达到 max_steps 仍未收敛：与 arun() 的兜底口径一致
-                    answer = f"抱歉，在 {agent.max_steps} 步内未能完成任务。"
+                    # 未产生最终回答时返回明确状态，不读取已移除的 max_steps 属性。
+                    answer = "回放未产生最终回答。"
                 error = None
             except ReplayExhausted as exc:
                 answer = ""

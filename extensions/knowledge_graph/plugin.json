@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "knowledge_graph",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "slot": "knowledge_graph",
   "provider": "extensions.knowledge_graph:create",
   "enabled_by_default": true,
@@ -63,6 +63,11 @@
     },
     "create_tools": {
       "stage": "initialize",
+      "required": false,
+      "async": false
+    },
+    "preindex_project": {
+      "stage": "prepare",
       "required": false,
       "async": false
     }

@@ -27,6 +27,14 @@ export interface SeqMessage {
   order: number;
   y: number;            // persisted Y position — survives diagram switches
   note: string;         // functional comment / 功能备注
+  source_refs?: SeqSourceRef[];
+  reply_to?: string;
+}
+
+export interface SeqSourceRef { scope_id: string; line: number; kind: string }
+export interface SeqSourceScope {
+  id: string; path: string; symbol: string; lifeline_id: string;
+  entry_message_id?: string; coverage: string;
 }
 
 // UML 2.5.1 Combined Fragment
@@ -38,6 +46,15 @@ export const FRAGMENT_LABELS: Record<FragmentType, string> = {
   par: 'par', critical: 'critical', neg: 'neg',
 };
 
+export interface SeqOperand {
+  id: string;
+  guard: string;
+  message_ids: string[];
+  y_start: number;
+  y_end: number;
+  source_guard?: SeqSourceRef | null;
+}
+
 export interface SeqFragment {
   id: string;
   type: FragmentType;
@@ -46,6 +63,10 @@ export interface SeqFragment {
   width: number;
   y_start: number;
   y_end: number;
+  operands?: SeqOperand[];
+  lifeline_ids?: string[];
+  parent_fragment_id?: string;
+  parent_operand_id?: string;
 }
 
 export function createDefaultFragment(y: number): SeqFragment {

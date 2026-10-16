@@ -3,8 +3,9 @@
 import logging
 import os
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
 from app.models.uml import UmlDiagram, Project, ExportRequest
@@ -19,20 +20,20 @@ from backend.config.paths import runtime_root
 from app.core.auth import require_auth
 from app.core.security import (
     safe_path,
-    resolve_path,
     sanitize_path_segment,
     validate_agent_workspace_path,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/files", tags=["files"])
+router = APIRouter(prefix="/api/files", tags=["files"], dependencies=[Depends(require_auth)])
 
 
 def _resolve_open_path(filepath: str, *, safe: bool, mask_access_error: bool = False) -> str:
     """Resolve an open request while preserving each endpoint's error response."""
     try:
-        return (safe_path if safe else resolve_path)(filepath)
+        # ``safe`` is retained for old clients, but never widens server policy.
+        return safe_path(filepath)
     except HTTPException as exc:
         if mask_access_error:
             raise HTTPException(status_code=403, detail="Access denied") from exc
@@ -50,20 +51,20 @@ async def list_files():
 @router.post("/save", dependencies=[Depends(require_auth)])
 async def save_file(diagram: UmlDiagram, filename: str = ""):
     """Save a UML diagram to a .uml file. Optional custom filename."""
-    filepath = None
-    if filename:
-        # Sanitize filename — strip path and dangerous chars
-        safe_name = sanitize_path_segment(filename.replace(".uml", ""))
-        if safe_name:
-            safe_name += ".uml"
-            filepath = os.path.join(get_settings().project_dir, safe_name)
+    # Display names must not become absolute or traversal paths.
+    safe_name = sanitize_path_segment((filename or diagram.name).replace(".uml", "")) or "Untitled"
+    if not filename:
+        safe_name += "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = safe_path(os.path.join(get_settings().project_dir, safe_name + ".uml"))
+    if not filepath.lower().endswith(".uml"):
+        raise HTTPException(status_code=403, detail="Invalid diagram target")
     filepath = save_diagram(diagram, filepath)
     return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath)}
 
 
 @router.get("/open")
 async def open_file(filepath: str, safe: bool = True):
-    """Open a saved UML diagram file. Pass safe=false to allow any path on disk."""
+    """Open a saved UML diagram within the configured workspace roots."""
     resolved = _resolve_open_path(filepath, safe=safe)
     if not resolved.endswith(".uml"):
         raise HTTPException(status_code=400, detail="Only .uml files can be opened")
@@ -87,45 +88,18 @@ async def export_to_markdown(req: ExportRequest):
     return md
 
 
-@router.post("/upload/excel", dependencies=[Depends(require_auth)])
-async def upload_excel(file: UploadFile = File(...)):
-    """Upload an Excel test case file — parsed in memory, temp file cleaned up."""
-    import pandas as pd
-    import tempfile
-    content = await file.read()
-
-    # Sanitize filename — strip path components to prevent traversal
-    raw_name = file.filename or "testCase.xlsx"
-    safe_name = os.path.basename(raw_name)
-    if not safe_name or safe_name.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-
-    # Save to temp file, parse, then clean up
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=True) as tmp:
-        tmp.write(content)
-        tmp.flush()
-        xls = pd.ExcelFile(tmp.name)
-        sheets = {}
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
-            sheets[sheet_name] = df.fillna("").to_dict(orient="records")
-
-    return {"filename": file.filename, "sheets": sheets, "sheet_names": xls.sheet_names}
-
-
 # ── Directory browsing ──────────────────────────────────
 
 @router.get("/browse")
 async def browse_directory(path: str = "", safe: bool = True):
     """Browse a directory. Returns subdirectories and .uml files.
 
-    Set safe=false to allow browsing any path on disk (pipeline directory selection).
+    The legacy safe flag cannot expand the server-configured workspace roots.
     """
-    settings = get_settings()
-    path_resolver = safe_path if safe else resolve_path
+    path_resolver = safe_path
 
     if not path:
-        base = os.path.abspath(settings.project_dir)
+        base = safe_path("")
     else:
         try:
             base = path_resolver(path)
@@ -135,7 +109,7 @@ async def browse_directory(path: str = "", safe: bool = True):
             raise HTTPException(status_code=400, detail="Invalid path")
 
     if not os.path.exists(base) or not os.path.isdir(base):
-        base = os.path.abspath(settings.project_dir)
+        base = safe_path("")
 
     try:
         items = os.listdir(base)
@@ -146,6 +120,11 @@ async def browse_directory(path: str = "", safe: bool = True):
     files = []
     for name in sorted(items):
         full = os.path.join(base, name)
+        try:
+            safe_path(full)
+        except HTTPException:
+            # Do not advertise links that escape the allowed roots.
+            continue
         if os.path.isdir(full) and not name.startswith("."):
             dirs.append({"name": name, "path": full.replace("\\", "/")})
         elif name.endswith(".uml") or name.endswith(".umlproj"):
@@ -158,21 +137,15 @@ async def browse_directory(path: str = "", safe: bool = True):
                 "type": "project" if name.endswith(".umlproj") else "diagram",
             })
 
-    # Parent navigation: always allowed when unrestricted; checked when restricted
+    # Parent navigation is subject to the same policy, including safe=false.
     parent = ""
-    if safe:
-        project_root = os.path.abspath(os.path.join(settings.project_dir, ".."))
-        if base != project_root and base != os.path.abspath(settings.project_dir):
-            parent_dir = os.path.dirname(base)
-            try:
-                safe_path(parent_dir)
-                parent = parent_dir.replace("\\", "/")
-            except HTTPException:
-                parent = ""
-    else:
-        parent_dir = os.path.dirname(base)
-        if parent_dir != base:
+    parent_dir = os.path.dirname(base)
+    if parent_dir != base:
+        try:
+            safe_path(parent_dir)
             parent = parent_dir.replace("\\", "/")
+        except HTTPException:
+            pass
 
     return {
         "current": base.replace("\\", "/"),
@@ -197,34 +170,28 @@ async def validate_workspace_path(path: str, kind: str = "directory"):
     }
 
 
-# ── Unified review log ──────────────────────────────────
+# ── UML review log ──────────────────────────────────
 
 class ReviewRequest(BaseModel):
-    action: str  # "accept", "reject", "case_review", etc.
+    action: Literal["accept", "reject"]
     comment: str = ""
     requirements: str = ""
     original_name: str = ""
     optimized_name: str = ""
     timestamp: str = ""
-    # Case review fields (optional)
-    filename: str = ""
-    sheet: str = ""
-    case_id: str = ""
-    details: str = ""
 
 
 @router.post("/save-review", dependencies=[Depends(require_auth)])
 async def save_review(req: ReviewRequest):
-    """Save review record to dev_review.txt (unified UML + case review log)."""
+    """Save a UML review record to dev_review.txt."""
     settings = get_settings()
     review_file = str(runtime_root(settings) / "dev_review.txt")
     review_file = os.path.abspath(review_file)
 
     ts = req.timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if req.action in ("accept", "reject"):
-        action_label = "接受" if req.action == "accept" else "拒绝"
-        entry = f"""============================================================
+    action_label = "接受" if req.action == "accept" else "拒绝"
+    entry = f"""============================================================
 [{ts}] UML评审结果: {action_label}
 优化需求: {req.requirements if req.requirements else '(无)'}
 原始版本: {req.original_name}
@@ -232,21 +199,6 @@ async def save_review(req: ReviewRequest):
 评审意见: {req.comment if req.comment else '(无)'}
 ============================================================
 """
-    else:
-        # Case review operation log
-        entry = f"[{ts}] {req.action}"
-        if req.filename:
-            entry += f" | File: {req.filename}"
-        if req.sheet:
-            entry += f" | Sheet: {req.sheet}"
-        if req.case_id:
-            entry += f" | Case: {req.case_id}"
-        if req.comment:
-            entry += f"\n  Comment: {req.comment}"
-        if req.details:
-            entry += f"\n  Details: {req.details}"
-        entry += "\n"
-
     with open(review_file, "a", encoding="utf-8") as f:
         f.write(entry)
 
@@ -268,23 +220,25 @@ async def save_project_endpoint(
     If filename looks like a full path (contains : or /), use it directly after
     path-safety validation. Otherwise create a new project directory.
 
-    Pass ``safe=false`` to allow saving outside the project root
-    (e.g. overwriting an external file that was opened with safe=false).
+    External files require WORKSPACE_ROOTS; safe=false cannot bypass policy.
     """
-    path_resolver = safe_path if safe else resolve_path
+    path_resolver = safe_path
     filepath = None
     if filename:
         if ':' in filename or '/' in filename or '\\' in filename:
             # Full path — validate and use directly
             try:
-                path_resolver(filename)
-                filepath = filename
+                filepath = path_resolver(filename)
+                if not filepath.lower().endswith(".umlproj"):
+                    raise HTTPException(status_code=400, detail="Only .umlproj files can be saved")
+            except HTTPException:
+                raise
             except Exception:
                 raise HTTPException(status_code=403, detail="Invalid file path")
         else:
             safe_name = sanitize_path_segment(filename.replace(".umlproj", ""))
             if safe_name:
-                filepath = str(ProjectRepository().new_project_path(safe_name))
+                filepath = safe_path(str(ProjectRepository().new_project_path(safe_name)))
     try:
         result = save_project_with_result(
             project,
@@ -315,8 +269,10 @@ async def save_project_endpoint(
 @router.get("/open-project")
 async def open_project(filepath: str, safe: bool = True):
     """Open a .umlproj (or legacy .uml) file as a Project.
-    Pass safe=false to allow any path on disk."""
+    External projects must be within configured workspace roots."""
     resolved = _resolve_open_path(filepath, safe=safe, mask_access_error=True)
+    if not resolved.lower().endswith((".umlproj", ".uml")):
+        raise HTTPException(status_code=400, detail="Only .umlproj or .uml files can be opened")
     if not os.path.exists(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:

@@ -1,6 +1,11 @@
+import { normalizeTraceDetail, normalizeTraceReplay } from '../utils/traceNormalization';
+import type { TraceDetail, TraceReplayResult, TraceReplayMode } from '../types/trace';
+export type { TraceDetail, TraceReplayResult, TraceReplayMode, TraceReplayStep, TraceReplayTurn, TraceReplayStepToolCall } from '../types/trace';
 /** API service – communicates with the FastAPI backend. */
 
 import axios from 'axios';
+import type { JsonObject } from '../types/json';
+import type { CheckerConfig, CheckerResult, EvalProjectManifest, TraceSummary } from '../types/evaluation';
 import type { UmlDiagram, Project } from '../types/uml';
 import type { PluginExecutionPlan, PluginLoadReport, PluginRefreshResult } from '../types/plugins';
 
@@ -40,7 +45,9 @@ export async function refreshPlugins(): Promise<PluginRefreshResult> {
 export async function listDiagrams(): Promise<Array<{
   name: string; path: string; size: number; modified: string;
 }>> {
-  const { data } = await api.get('/files/list');
+  const { data } = await api.get<{ files: Array<{
+  name: string; path: string; size: number; modified: string;
+}> }>('/files/list');
   return data.files;
 }
 
@@ -48,42 +55,20 @@ export async function saveDiagram(diagram: UmlDiagram, filename?: string): Promi
   success: boolean; filepath: string; filename: string;
 }> {
   const params = filename ? `?filename=${encodeURIComponent(filename)}` : '';
-  const { data } = await api.post(`/files/save${params}`, diagram);
+  const { data } = await api.post<{
+  success: boolean; filepath: string; filename: string;
+}>(`/files/save${params}`, diagram);
   return data;
 }
 
 export async function openDiagram(filepath: string, safe = true): Promise<UmlDiagram> {
-  const { data } = await api.get('/files/open', { params: { filepath, safe } });
+  const { data } = await api.get<{ diagram: UmlDiagram }>('/files/open', { params: { filepath, safe } });
   return data.diagram;
 }
 
 export async function exportMarkdown(diagram: UmlDiagram): Promise<string> {
-  const { data } = await api.post('/files/export/markdown', { diagram });
+  const { data } = await api.post<string>('/files/export/markdown', { diagram });
   return data;
-}
-
-export async function uploadExcel(file: File): Promise<{
-  filename: string; sheets: Record<string, unknown[]>; sheet_names: string[];
-}> {
-  const form = new FormData();
-  form.append('file', file);
-  const { data } = await api.post('/files/upload/excel', form);
-  return data;
-}
-
-// ─── LLM ────────────────────────────────────────────────
-
-export async function getSupportedLanguages(): Promise<string[]> {
-  const { data } = await api.get('/llm/languages');
-  return data.languages;
-}
-
-export async function llmChat(prompt: string, systemPrompt?: string): Promise<string> {
-  const { data } = await api.post('/llm/chat', {
-    prompt,
-    system_prompt: systemPrompt,
-  });
-  return data.content;
 }
 
 // ─── Browse directories ────────────────────────────────
@@ -102,7 +87,7 @@ export async function browseDirectory(path?: string, safe = true): Promise<Brows
   if (path) params.set('path', path);
   if (!safe) params.set('safe', 'false');
   const qs = params.toString();
-  const { data } = await api.get(`/files/browse${qs ? '?' + qs : ''}`);
+  const { data } = await api.get<BrowseResult>(`/files/browse${qs ? '?' + qs : ''}`);
   return data;
 }
 
@@ -110,71 +95,23 @@ export async function validateWorkspacePath(
   path: string,
   kind: 'directory' | 'file' = 'directory',
 ): Promise<{ valid: boolean; path: string; error?: string | null }> {
-  const { data } = await api.get('/files/validate-workspace', {
+  const { data } = await api.get<{ valid: boolean; path: string; error?: string | null }>('/files/validate-workspace', {
     params: { path, kind },
   });
   return data;
 }
 
-// ─── Review ────────────────────────────────────────────
-
-// ─── TestHub ──────────────────────────────────────────
-
-export async function listTestFiles(dir?: string): Promise<{
-  files: Array<{ name: string; path: string; size: number; modified: string }>;
-  testhub_dir: string;
-}> {
-  const { data } = await api.get('/testhub/list', { params: dir ? { dir } : {} });
-  return data;
-}
-
-export async function loadTestFile(filename: string, dir?: string): Promise<{
-  filename: string;
-  sheets: Record<string, { headers: string[]; rows: Record<string, string>[] }>;
-  sheet_names: string[];
-  filepath: string;
-}> {
-  const params: Record<string, string> = { filename };
-  if (dir) params.dir = dir;
-  const { data } = await api.get('/testhub/load', { params });
-  return data;
-}
-
-export async function saveTestFile(req: {
-  filename: string;
-  sheets: Record<string, { headers: string[]; rows: Record<string, string>[] }>;
-}): Promise<{ success: boolean; filename: string }> {
-  const { data } = await api.post('/testhub/save', req);
-  return data;
-}
-
-export async function saveTestReview(req: {
-  action: string;
-  comment: string;
-  filename: string;
-  sheet: string;
-  case_id: string;
-  details: string;
-}): Promise<{ success: boolean; file: string }> {
-  const { data } = await api.post('/testhub/save-review', req);
-  return data;
-}
-
-// ─── Unified Review ─────────────────────────────────────
+// ─── UML Review ─────────────────────────────────────
 
 export async function saveReview(review: {
-  action: string;
+  action: 'accept' | 'reject';
   comment: string;
   requirements: string;
   original_name: string;
   optimized_name: string;
   timestamp: string;
-  filename?: string;
-  sheet?: string;
-  case_id?: string;
-  details?: string;
 }): Promise<{ success: boolean; file: string }> {
-  const { data } = await api.post('/files/save-review', review);
+  const { data } = await api.post<{ success: boolean; file: string }>('/files/save-review', review);
   return data;
 }
 
@@ -191,19 +128,23 @@ export async function saveProject(
   if (project.revision !== undefined) {
     params.set('expected_revision', String(project.revision));
   }
-  const { data } = await api.post(`/files/save-project?${params.toString()}`, project);
+  const { data } = await api.post<{
+  success: boolean; filepath: string; filename: string; revision: number;
+}>(`/files/save-project?${params.toString()}`, project);
   return data;
 }
 
 export async function openProject(filepath: string, safe = true): Promise<Project> {
-  const { data } = await api.get('/files/open-project', { params: { filepath, safe } });
+  const { data } = await api.get<{ project: Project }>('/files/open-project', { params: { filepath, safe } });
   return data.project;
 }
 
 export async function listProjects(): Promise<Array<{
   name: string; path: string; size: number; modified: string;
 }>> {
-  const { data } = await api.get('/files/list-projects');
+  const { data } = await api.get<{ projects: Array<{
+  name: string; path: string; size: number; modified: string;
+}> }>('/files/list-projects');
   return data.projects;
 }
 
@@ -223,10 +164,6 @@ export interface TraceMeta {
   trace_type?: 'chat' | 'evaluation';
 }
 
-export interface TraceDetail {
-  session_id: string;
-  events: Array<Record<string, any>>;
-}
 
 export interface TraceCaseProject {
   id: string;
@@ -238,9 +175,9 @@ export interface TraceCaseProject {
 
 export interface TraceCaseTurn {
   prompt: string;
-  checkers: Array<Record<string, any>>;
-  hard_checkers: Array<Record<string, any>>;
-  metadata: Record<string, any>;
+  checkers: CheckerConfig[];
+  hard_checkers: CheckerConfig[];
+  metadata: JsonObject;
 }
 
 export interface TraceCaseDraft {
@@ -250,9 +187,9 @@ export interface TraceCaseDraft {
   created_at: string;
   session_id: string;
   trace_sha256: string;
-  trace_summary: Record<string, any>;
+  trace_summary: TraceSummary;
   workspace: Record<string, string>;
-  candidate_checkers: Array<Record<string, any>>;
+  candidate_checkers: CheckerConfig[];
   warnings: string[];
   case: {
     id: string;
@@ -260,9 +197,9 @@ export interface TraceCaseDraft {
     prompt: string;
     turns?: TraceCaseTurn[];
     project_id: string;
-    checkers: Array<Record<string, any>>;
-    hard_checkers: Array<Record<string, any>>;
-    metadata: Record<string, any>;
+    checkers: CheckerConfig[];
+    hard_checkers: CheckerConfig[];
+    metadata: JsonObject;
   };
   validation?: EvalResult | null;
   capture?: {
@@ -271,29 +208,29 @@ export interface TraceCaseDraft {
     fixture: string;
     sha256: string;
     file_count: number;
-    manifest: Record<string, any>;
+    manifest: EvalProjectManifest;
     origin?: string;
     baseline_confirmed?: boolean;
   } | null;
 }
 
 export async function listTraceCaseProjects(): Promise<TraceCaseProject[]> {
-  const { data } = await api.get('/evals/trace-cases/projects');
+  const { data } = await api.get<{ projects: TraceCaseProject[] }>('/evals/trace-cases/projects');
   return data.projects;
 }
 
 export async function listTraceCaseDrafts(): Promise<TraceCaseDraft[]> {
-  const { data } = await api.get('/evals/trace-cases/drafts');
+  const { data } = await api.get<{ drafts: TraceCaseDraft[] }>('/evals/trace-cases/drafts');
   return data.drafts;
 }
 
 export async function getTraceCaseDraft(draftId: string): Promise<TraceCaseDraft> {
-  const { data } = await api.get(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`);
+  const { data } = await api.get<TraceCaseDraft>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`);
   return data;
 }
 
 export async function deleteTraceCaseDraft(draftId: string): Promise<{ draft_id: string; deleted: boolean }> {
-  const { data } = await api.delete(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, { timeout: 15000 });
+  const { data } = await api.delete<{ draft_id: string; deleted: boolean }>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, { timeout: 15000 });
   return data;
 }
 export async function createTraceCaseDraft(req: {
@@ -304,7 +241,7 @@ export async function createTraceCaseDraft(req: {
   suite?: string;
   include_trace_policy?: boolean;
 }): Promise<TraceCaseDraft> {
-  const { data } = await api.post('/evals/trace-cases/drafts', req, { timeout: 15000 });
+  const { data } = await api.post<TraceCaseDraft>('/evals/trace-cases/drafts', req, { timeout: 15000 });
   return data;
 }
 
@@ -313,7 +250,7 @@ export interface TraceCaseFixturePreview {
   project_id: string;
   version: string;
   root: string;
-  manifest: Record<string, any>;
+  manifest: EvalProjectManifest;
   files: Array<{ path: string; size: number }>;
   file_count: number;
   total_bytes: number;
@@ -326,7 +263,7 @@ export async function previewTraceCaseFixture(draftId: string, req: {
   project_id?: string;
   version?: string;
 } = {}): Promise<TraceCaseFixturePreview> {
-  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/fixture-preview`, req, { timeout: 30000 });
+  const { data } = await api.post<TraceCaseFixturePreview>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/fixture-preview`, req, { timeout: 30000 });
   return data;
 }
 
@@ -334,22 +271,22 @@ export async function captureTraceCaseFixture(draftId: string, req: {
   project_id?: string;
   version?: string;
 } = {}): Promise<TraceCaseDraft> {
-  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/capture-fixture`, req, { timeout: 30000 });
+  const { data } = await api.post<TraceCaseDraft>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/capture-fixture`, req, { timeout: 30000 });
   return data;
 }
 export async function reviewTraceCaseDraft(draftId: string, req: {
   name?: string;
   project_id?: string;
-  checkers?: Array<Record<string, any>>;
-  hard_checkers?: Array<Record<string, any>>;
+  checkers?: CheckerConfig[];
+  hard_checkers?: CheckerConfig[];
   turns?: TraceCaseTurn[];
   fixture_state_confirmed?: boolean;
 }): Promise<TraceCaseDraft> {
-  const { data } = await api.put(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, req, { timeout: 15000 });
+  const { data } = await api.put<TraceCaseDraft>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}`, req, { timeout: 15000 });
   return data;
 }
 export async function validateTraceCaseDraft(draftId: string): Promise<TraceCaseDraft> {
-  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/validate`, null, { timeout: 3600000 });
+  const { data } = await api.post<TraceCaseDraft>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/validate`, null, { timeout: 3600000 });
   return data;
 }
 
@@ -358,20 +295,20 @@ export async function publishTraceCaseDraft(draftId: string, req: {
   name?: string;
   suite?: string;
 } = {}): Promise<{ draft_id: string; case_id: string; path: string; case: EvalCaseInfo }> {
-  const { data } = await api.post(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/publish`, req, { timeout: 15000 });
+  const { data } = await api.post<{ draft_id: string; case_id: string; path: string; case: EvalCaseInfo }>(`/evals/trace-cases/drafts/${encodeURIComponent(draftId)}/publish`, req, { timeout: 15000 });
   return data;
 }
 export async function listTraces(signal?: AbortSignal): Promise<TraceMeta[]> {
-  const { data } = await api.get('/trace/list', { signal });
+  const { data } = await api.get<{ traces: TraceMeta[] }>('/trace/list', { signal });
   return data.traces;
 }
 
 export async function getTrace(sessionId: string, traceType?: TraceMeta['trace_type'], signal?: AbortSignal): Promise<TraceDetail> {
-  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}`, {
+  const { data } = await api.get<unknown>(`/trace/${encodeURIComponent(sessionId)}`, {
     params: traceType ? { trace_type: traceType } : undefined,
     signal,
   });
-  return data;
+  return normalizeTraceDetail(data);
 }
 
 export interface TraceHistoryEntry {
@@ -381,7 +318,7 @@ export interface TraceHistoryEntry {
 }
 
 export async function getTraceHistory(sessionId: string): Promise<TraceHistoryEntry[]> {
-  const { data } = await api.get(`/trace/${encodeURIComponent(sessionId)}/history`);
+  const { data } = await api.get<{ history: TraceHistoryEntry[] }>(`/trace/${encodeURIComponent(sessionId)}/history`);
   return data.history;
 }
 
@@ -395,9 +332,9 @@ export interface EvalCaseInfo {
   name: string;
   prompt: string;
   project_id: string;
-  checkers: Array<Record<string, any>>;
-  hard_checkers: Array<Record<string, any>>;
-  metadata: Record<string, any>;
+  checkers: CheckerConfig[];
+  hard_checkers: CheckerConfig[];
+  metadata: JsonObject;
 }
 
 export interface EvalSummary {
@@ -480,7 +417,7 @@ export interface EvalResult {
   prompt_prefix_requests?: number;
   trace_id?: string;
   trace_path?: string;
-  checker_results: Array<Record<string, any>>;
+  checker_results: CheckerResult[];
   error: string;
   failure_category?: 'none' | 'agent_failure' | 'tool_failure' | 'environment_failure' | 'checker_failure' | 'timeout' | 'budget_exceeded';
 }
@@ -544,24 +481,26 @@ export interface EvalPerformanceRun {
 }
 
 export async function listEvalCases(): Promise<EvalCaseInfo[]> {
-  const { data } = await api.get('/evals/cases');
+  const { data } = await api.get<{ cases: EvalCaseInfo[] }>('/evals/cases');
   return data.cases;
 }
 
 export async function getEvalBaseline(): Promise<EvalBaseline> {
-  const { data } = await api.get('/evals/baseline');
+  const { data } = await api.get<EvalBaseline>('/evals/baseline');
   return data;
 }
 
 export async function getEvalRepository(): Promise<EvalRepositoryInfo> {
-  const { data } = await api.get('/evals/repository');
+  const { data } = await api.get<EvalRepositoryInfo>('/evals/repository');
   return data;
 }
 
 export async function archiveEvalBaseline(note = ''): Promise<{
   archive_id: string; created_at: string; path: string; batch_id: string;
 }> {
-  const { data } = await api.post('/evals/baseline/archive', { note }, { timeout: 15000 });
+  const { data } = await api.post<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}>('/evals/baseline/archive', { note }, { timeout: 15000 });
   return data;
 }
 
@@ -571,17 +510,17 @@ export async function startEvalBatch(req: {
   version: string;
   label?: string;
 }): Promise<EvalBatch> {
-  const { data } = await api.post('/evals/runs', req, { timeout: 15000 });
+  const { data } = await api.post<EvalBatch>('/evals/runs', req, { timeout: 15000 });
   return data;
 }
 
 export async function getEvalBatch(batchId: string): Promise<EvalBatch> {
-  const { data } = await api.get(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
+  const { data } = await api.get<EvalBatch>(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
   return data;
 }
 
 export async function deleteEvalBatch(batchId: string): Promise<{ batch_id: string }> {
-  const { data } = await api.delete(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
+  const { data } = await api.delete<{ batch_id: string }>(`/evals/runs/${encodeURIComponent(batchId)}`, { timeout: 15000 });
   return data;
 }
 
@@ -590,93 +529,58 @@ export async function mergeEvalBatches(req: {
   version?: string;
   label?: string;
 }): Promise<EvalBatch> {
-  const { data } = await api.post('/evals/runs/merge', req, { timeout: 15000 });
+  const { data } = await api.post<EvalBatch>('/evals/runs/merge', req, { timeout: 15000 });
   return data;
 }
 
 export async function listEvalTrends(limit = 20): Promise<EvalTrend[]> {
-  const { data } = await api.get('/evals/trends', { params: { limit } });
+  const { data } = await api.get<{ trends: EvalTrend[] }>('/evals/trends', { params: { limit } });
   return data.trends;
 }
 
 export async function archiveEvalBatch(batchId: string, note = ''): Promise<{
   archive_id: string; created_at: string; path: string; batch_id: string;
 }> {
-  const { data } = await api.post('/evals/archives', { batch_id: batchId, note }, { timeout: 15000 });
+  const { data } = await api.post<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}>('/evals/archives', { batch_id: batchId, note }, { timeout: 15000 });
   return data;
 }
 
 export async function listEvalArchives(limit = 20): Promise<EvalArchive[]> {
-  const { data } = await api.get('/evals/archives', { params: { limit } });
+  const { data } = await api.get<{ archives: EvalArchive[] }>('/evals/archives', { params: { limit } });
   return data.archives;
 }
 
 export async function listEvalPerformanceResults(limit = 20): Promise<EvalPerformanceRun[]> {
-  const { data } = await api.get('/evals/performance', { params: { limit } });
+  const { data } = await api.get<{ results: EvalPerformanceRun[] }>('/evals/performance', { params: { limit } });
   return data.results;
 }
 
 export async function getEvalPerformanceResult(resultId: string): Promise<EvalPerformanceRun> {
-  const { data } = await api.get('/evals/performance/detail', { params: { result_id: resultId } });
+  const { data } = await api.get<EvalPerformanceRun>('/evals/performance/detail', { params: { result_id: resultId } });
   return data;
 }
 
 export async function deleteEvalPerformanceResult(resultId: string): Promise<{ result_id: string; path: string }> {
-  const { data } = await api.delete('/evals/performance', { params: { result_id: resultId }, timeout: 15000 });
+  const { data } = await api.delete<{ result_id: string; path: string }>('/evals/performance', { params: { result_id: resultId }, timeout: 15000 });
   return data;
 }
 
 export async function archiveEvalPerformanceResult(resultId: string, version = '', note = ''): Promise<{
   archive_id: string; created_at: string; path: string; batch_id: string;
 }> {
-  const { data } = await api.post('/evals/performance/archive', { result_id: resultId, version, note }, { timeout: 15000 });
+  const { data } = await api.post<{
+  archive_id: string; created_at: string; path: string; batch_id: string;
+}>('/evals/performance/archive', { result_id: resultId, version, note }, { timeout: 15000 });
   return data;
 }
-
-export interface TraceReplayStepToolCall {
-  name: string;
-  arguments: Record<string, any> | string;
-  observation: string;
-}
-
-export interface TraceReplayStep {
-  step: number;
-  thought: string;
-  actions: string[];
-  tool_calls: TraceReplayStepToolCall[];
-  is_final: boolean;
-}
-
-export interface TraceReplayTurn {
-  user_message: string;
-  final_answer: string;
-  recorded_answer: string | null;
-  matches: boolean;
-  error?: string | null;
-  steps?: TraceReplayStep[];
-  recorded_steps?: TraceReplayStep[];
-}
-
-export interface TraceReplayResult {
-  session_id: string;
-  mode: string;
-  turns: TraceReplayTurn[];
-  executed_turns: number;
-  total_turns: number;
-  llm_calls: number | null;
-  llm_total: number;
-  tool_calls: number;
-  tool_total: number;
-  all_matched: boolean;
-}
-
-export type TraceReplayMode = 'mock' | 'rerun' | 'live';
 
 export async function replayTrace(
   sessionId: string, mode: TraceReplayMode = 'mock', turn?: number,
   tool_policy?: 'readonly' | 'full',
 ): Promise<TraceReplayResult> {
-  const { data } = await api.post(
+  const { data } = await api.post<unknown>(
     `/trace/${encodeURIComponent(sessionId)}/replay`, null,
     {
       params: {
@@ -686,5 +590,5 @@ export async function replayTrace(
       },
     },
   );
-  return data;
+  return normalizeTraceReplay(data);
 }

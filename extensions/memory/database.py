@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import MemoryEntry, MemoryType, RecallResult, _utc_now
-from .tokenizer import tokenize_for_fts
+from shared.tokenization import tokenize_for_fts
 
 logger = logging.getLogger(__name__)
 

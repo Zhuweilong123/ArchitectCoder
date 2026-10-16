@@ -1,6 +1,6 @@
 """Bind contract policy and declare the required transaction check."""
-from types import SimpleNamespace
-from app.agent_base.host_api.services import get_host_services
+from .plugin_api import ContractBinding
+from app.agent_base.host_api.services import get_assembly_services
 from app.agent_base.host_api.contexts import ContractGateDecision
 from app.agent_base.host_api.contract_checks import ContractCheckResult
 
@@ -21,16 +21,16 @@ class UnavailableGate:
 
 class UnavailableAnalyzer:
     async def analyze(self, context):
-        return context.message or "设计契约校验阻止提交，变更已回滚。"
+        return context.message or "设计契约校验未通过，请查看门禁报告。"
 
 
 def bind(context):
     request = context.invocation
-    host = get_host_services()
-    settings = host.extension_context().metadata["execution_settings"]
+    host = get_assembly_services()
+    settings = host.configuration()
     provider = host.resolve_provider("design_contract", settings=settings,
         language_runner=request.inputs.get("language_runner"))
     gate = provider if callable(getattr(provider, "evaluate", None)) else UnavailableGate()
     analyzer = provider if callable(getattr(provider, "analyze", None)) else UnavailableAnalyzer()
-    request.bind("design_contract", SimpleNamespace(gate=gate, analyzer=analyzer))
+    request.bind("design_contract", ContractBinding(gate=gate, analyzer=analyzer))
     request.required_bindings.setdefault("execution.check", []).append("design_contract.execution.check")

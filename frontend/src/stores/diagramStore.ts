@@ -1,6 +1,7 @@
 /** Diagram store — manages Project state with multiple diagrams. */
 
 import { create } from 'zustand';
+import type { DiagramSpec } from '../types/designEvents';
 import type { UmlDiagram, UmlClass, UmlRelation, Position, Size, Project, GridSettings } from '../types/uml';
 import { createDefaultDiagram, createDefaultClass, createDefaultRelation, createDefaultProject, RelationType } from '../types/uml';
 import type { SeqLifeline, SeqMessage, SeqFragment, MessageType } from '../types/sequence';
@@ -8,6 +9,7 @@ import { createDefaultLifeline, createDefaultMessage, createDefaultFragment } fr
 import type { CompNode, CompRelation } from '../types/component';
 import { createDefaultComponent, createDefaultCompRelation } from '../types/component';
 import { normalizeDiagram, normalizeProject } from '../utils/diagramNormalization';
+import { fitStructuredFragments, pruneFragmentReferences } from '../utils/sequenceFragments';
 import {
   arrangeSequenceLayout,
   SEQUENCE_MESSAGE_GAP,
@@ -76,6 +78,8 @@ function _expandFragmentForMessage(
   previousY?: number,
 ): SeqFragment[] {
   return fragments.map((fragment) => {
+    // Dragging into a rectangle must never assign a structured branch.
+    if (fragment.operands?.length) return fragment;
     const wasInside = typeof previousY === 'number'
       && previousY >= fragment.y_start && previousY <= fragment.y_end;
     const isNear = messageY >= fragment.y_start - 20 && messageY <= fragment.y_end + 45;
@@ -84,27 +88,6 @@ function _expandFragmentForMessage(
       ...fragment,
       y_start: Math.max(80, Math.min(fragment.y_start, messageY - 24)),
       y_end: Math.max(fragment.y_end, messageY + 36),
-    };
-  });
-}
-
-/** Fit fragments to the messages currently inside them while preserving empty fragments. */
-function _fitSequenceFragments(
-  fragments: SeqFragment[],
-  messages: SeqMessage[],
-): SeqFragment[] {
-  return fragments.map((fragment) => {
-    const contained = messages
-      .map((message) => ({ message, y: sequenceMessageY(message) }))
-      .filter(({ y }) => y >= fragment.y_start && y <= fragment.y_end);
-    if (contained.length === 0) return fragment;
-
-    const minY = Math.min(...contained.map(({ y }) => y));
-    const maxY = Math.max(...contained.map(({ y }) => y));
-    return {
-      ...fragment,
-      y_start: Math.max(80, minY - 28),
-      y_end: Math.max(minY + 72, maxY + 36),
     };
   });
 }
@@ -191,7 +174,7 @@ export interface DiagramState {
   newProject: (name?: string) => void;
   setActiveDiagram: (index: number) => void;
   addDiagram: (type?: string, name?: string, componentId?: string) => void;
-  addDiagramsFromSpec: (specs: Array<{type: string; name: string; component_id: string; data: Record<string, unknown>}>) => void;
+  addDiagramsFromSpec: (specs: DiagramSpec[]) => void;
   removeDiagram: (index: number) => void;
 
   // ── Active-diagram actions ──────────────────────
@@ -235,7 +218,6 @@ export interface DiagramState {
   removeMessage: (id: string) => void;
   updateMessage: (id: string, updates: Partial<SeqMessage>) => void;
   arrangeSequence: () => void;
-  fitSequenceFragments: () => void;
 
   // ── Fragment operations (UML 2.5.1) ───────────
   addFragment: (y?: number) => void;
@@ -310,7 +292,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   selectedCompRelationId: null,
   isModified: false,
   currentFilepath: _initialFilepath,
-  currentWorkspacePath: null,
+  currentWorkspacePath: (() => {
+    const root = localStorage.getItem('projectRoot');
+    return root && root !== 'project' ? root : null;
+  })(),
   currentWorkspaceSafe: true,
   undoStack: [],
   redoStack: [],
@@ -787,13 +772,13 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
 
   removeLifeline: (id) => {
     get().pushSnapshot('remove_lifeline');
-    const project = _updateActiveDiagram(get().project, (d) => ({
-      ...d,
-      lifelines: (d.lifelines || []).filter((l) => l.id !== id),
-      messages: (d.messages || []).filter(
-        (m) => m.from_lifeline !== id && m.to_lifeline !== id
-      ),
-    }));
+    const project = _updateActiveDiagram(get().project, (d) => {
+      const lifelines = (d.lifelines || []).filter((l) => l.id !== id);
+      const messages = (d.messages || []).filter((m) => m.from_lifeline !== id && m.to_lifeline !== id);
+      return { ...d, lifelines, messages,
+        fragments: pruneFragmentReferences(d.fragments || [], new Set(messages.map((m) => m.id)), new Set(lifelines.map((l) => l.id))),
+      };
+    });
     console.debug('[Store] removeLifeline:', id);
     set({
       project,
@@ -856,6 +841,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
       messages: (d.messages || []).filter((m) => m.id !== id),
+      fragments: pruneFragmentReferences(d.fragments || [], new Set((d.messages || []).filter((m) => m.id !== id).map((m) => m.id))),
     }));
     console.debug('[Store] removeMessage:', id);
     set({
@@ -888,7 +874,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const messages = [...nextMessages]
         .sort((a, b) => a.y - b.y || a.order - b.order || a.id.localeCompare(b.id))
         .map((message, index) => ({ ...message, order: index + 1 }));
-      return { ...d, messages, fragments };
+      return { ...d, messages, fragments: fitStructuredFragments(fragments || [], messages) };
     });
     set({ project, isModified: true });
   },
@@ -914,21 +900,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     get().triggerRecenter();
   },
 
-  fitSequenceFragments: () => {
-    const state = get();
-    const diagram = _activeDiagram(state.project);
-    if (!(diagram.fragments || []).length || !(diagram.messages || []).length) return;
-    get().pushSnapshot('fit_sequence_fragments');
-    const project = _updateActiveDiagram(state.project, (activeDiagram) => ({
-      ...activeDiagram,
-      fragments: _fitSequenceFragments(
-        activeDiagram.fragments || [],
-        activeDiagram.messages || [],
-      ),
-    }));
-    set({ project, isModified: true });
-  },
-
   // ── Fragment operations (UML 2.5.1) ─────────────────────
   addFragment: (y) => {
     const frag = createDefaultFragment(y || 150);
@@ -945,7 +916,20 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     get().pushSnapshot('remove_fragment');
     const project = _updateActiveDiagram(get().project, (d) => ({
       ...d,
-      fragments: (d.fragments || []).filter((f) => f.id !== id),
+      // Removing a parent removes its nested frames; messages stay intact.
+      fragments: (() => {
+        const removed = new Set([id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          (d.fragments || []).forEach((f) => {
+            if (f.parent_fragment_id && removed.has(f.parent_fragment_id) && !removed.has(f.id)) {
+              removed.add(f.id); changed = true;
+            }
+          });
+        }
+        return (d.fragments || []).filter((f) => !removed.has(f.id));
+      })(),
     }));
     set({ project, isModified: true });
   },
@@ -956,7 +940,17 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const project = _updateActiveDiagram(state.project, (d) => ({
       ...d,
       fragments: (d.fragments || []).map((f) =>
-        f.id === id ? { ...f, ...updates } : f
+        f.id === id ? { ...f, ...updates,
+          // Moving/resizing a frame keeps operand bands in the same relative positions.
+          ...(updates.operands === undefined && f.operands?.length && (updates.y_start !== undefined || updates.y_end !== undefined) ? {
+            operands: f.operands.map((o) => {
+              const start = updates.y_start ?? f.y_start;
+              const end = updates.y_end ?? f.y_end;
+              const scale = (end - start) / Math.max(1, f.y_end - f.y_start);
+              return { ...o, y_start: start + (o.y_start - f.y_start) * scale, y_end: start + (o.y_end - f.y_start) * scale };
+            }),
+          } : {}),
+        } : f
       ),
     }));
     set({ project, isModified: true });

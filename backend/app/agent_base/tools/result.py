@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import shlex
-from dataclasses import asdict, dataclass, field
-from typing import Any
+from dataclasses import dataclass, field
+from copy import deepcopy
+from ..host_api.data import JsonValue
+from ..host_api.payloads import json_value, parse_tool_execution_evidence
+from ..host_api.execution_types import (FileChangeEvidence, CommandEvidencePayload, ToolEffects,
+    ToolExecutionEvidence, ToolResultPayload, VerificationEvidence as VerificationPayload)
 
 
 @dataclass(frozen=True)
@@ -15,12 +19,19 @@ class FileChange:
     before_hash: str = ""
     after_hash: str = ""
 
+    def to_dict(self) -> FileChangeEvidence:
+        return {"path": self.path, "operation": self.operation,
+                "before_hash": self.before_hash, "after_hash": self.after_hash}
+
 
 @dataclass(frozen=True)
 class CommandEvidence:
     command: str
     cwd: str
     exit_code: int
+
+    def to_dict(self) -> CommandEvidencePayload:
+        return {"command": self.command, "cwd": self.cwd, "exit_code": self.exit_code}
 
 
 @dataclass(frozen=True)
@@ -29,6 +40,9 @@ class VerificationEvidence:
     scope: str
     passed: bool
     exit_code: int | None = None
+
+    def to_dict(self) -> VerificationPayload:
+        return {"kind": self.kind, "scope": self.scope, "passed": self.passed, "exit_code": self.exit_code}
 
 
 def command_result(command: str, cwd: str | None, exit_code: int, output: str,
@@ -63,38 +77,43 @@ def command_result(command: str, cwd: str | None, exit_code: int, output: str,
 @dataclass
 class ToolResult:
     status: str = "success"  # success | error | blocked
-    data: Any = ""
+    data: JsonValue = ""
     error_code: str = ""
     retryable: bool = False
     changes: list[FileChange] = field(default_factory=list)
     execution: CommandEvidence | None = None
     verification: VerificationEvidence | None = None
-    execution_evidence: dict[str, Any] | None = None
+    execution_evidence: ToolExecutionEvidence | None = None
 
-    def effects(self) -> dict:
+    def __post_init__(self) -> None:
+        self.data = json_value(self.data)
+        if self.execution_evidence is not None:
+            self.execution_evidence = parse_tool_execution_evidence(self.execution_evidence)
+
+    def effects(self) -> ToolEffects:
         return {
-            "changes": [asdict(change) for change in self.changes],
-            "execution": asdict(self.execution) if self.execution else None,
-            "verification": asdict(self.verification) if self.verification else None,
-            "execution_evidence": self.execution_evidence,
+            "changes": [change.to_dict() for change in self.changes],
+            "execution": self.execution.to_dict() if self.execution else None,
+            "verification": self.verification.to_dict() if self.verification else None,
+            "execution_evidence": deepcopy(self.execution_evidence),
         }
 
     @classmethod
-    def from_value(cls, value: Any) -> "ToolResult":
+    def from_value(cls, value: object) -> "ToolResult":
         """Normalize legacy text tools at the execution boundary only."""
         if isinstance(value, cls):
             return value
         if str(value).lstrip().lower().startswith(("error:", "conflict:", "鉂?")):
-            return cls.error(value, "TOOL_REPORTED_ERROR")
-        return cls.success(value)
+            return cls.error(json_value(value), "TOOL_REPORTED_ERROR")
+        return cls.success(json_value(value))
 
     @property
     def text(self) -> str:
         if isinstance(self.data, str):
             return self.data
-        return json.dumps(self.data, ensure_ascii=False, default=str)
+        return json.dumps(self.data, ensure_ascii=False)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> ToolResultPayload:
         return {
             "status": self.status,
             "data": self.data,
@@ -104,9 +123,9 @@ class ToolResult:
         }
 
     @classmethod
-    def success(cls, data: Any = "") -> "ToolResult":
+    def success(cls, data: JsonValue = "") -> "ToolResult":
         return cls(status="success", data=data)
 
     @classmethod
-    def error(cls, message: Any, code: str = "TOOL_ERROR", retryable: bool = False) -> "ToolResult":
+    def error(cls, message: JsonValue, code: str = "TOOL_ERROR", retryable: bool = False) -> "ToolResult":
         return cls(status="error", data=message, error_code=code, retryable=retryable)

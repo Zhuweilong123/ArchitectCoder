@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+from typing import cast
+from collections.abc import Callable, Iterable
 import json
 import os
 import html
@@ -13,7 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.agent_base.host_api.lifecycle import Contribution
-from .hooks import HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
+from .hooks import Hook, HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
 from .plugin_dispatch import SERVICE_STAGES, service_contributions
 
 # Only these existing boundaries consume mutations/control decisions.
@@ -29,7 +31,7 @@ for stage in SERVICE_STAGES:
     PHASE_MODES[stage] |= {"service"}
 
 
-def resolve_contribution(item):
+def resolve_contribution(item: Contribution) -> Hook:
     module, separator, attribute = item.handler.partition(":")
     if not separator or not module or not attribute:
         raise ValueError("handler must use module:callable syntax")
@@ -37,7 +39,7 @@ def resolve_contribution(item):
     if not callable(handler):
         raise ValueError("lifecycle handlers must be callables")
     inspect.signature(handler).bind(object())
-    return handler
+    return cast(Hook, handler)
 
 
 def core_contributions():
@@ -180,7 +182,7 @@ def declared_contributions(spec, manager, settings=None, module=None):
     return declared
 
 
-def validate_contributions(declared):
+def validate_contributions(declared: Iterable[Contribution]) -> None:
     for item in declared:
         if not isinstance(item, Contribution) or not isinstance(item.stage, HookEvent):
             raise ValueError("invalid contribution declaration or stage")

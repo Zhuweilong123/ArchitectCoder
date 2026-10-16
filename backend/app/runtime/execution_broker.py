@@ -2,8 +2,7 @@
 
 The broker consumes a resolved :class:`TaskSpec` and returns structured
 evidence.  It deliberately does not contain language names or a task map.  A
-restricted local implementation is provided for the migration period; WSL
-and container workers can implement the same protocol later.
+restricted local implementation and container workers share the same protocol.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Protocol
 
-from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, WslBashExecutor
+from app.runtime.command import CommandExecutor, ExecutionEnvironmentError
 from app.runtime.encoding import decode_process_output
 from app.runtime.process_output import (
     DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
@@ -28,7 +27,7 @@ from app.runtime.task_contracts import (
     NetworkPolicy,
     TaskSpec,
 )
-from app.runtime.sandbox_worker import ContainerWorker, SandboxWorker, WslWorker
+from app.runtime.sandbox_worker import ContainerWorker, SandboxWorker
 
 
 _VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){0,3}")
@@ -65,7 +64,7 @@ class LocalExecutionBroker:
     This is intentionally a migration backend, not a claim of OS-level
     isolation.  It enforces the task contract, delegates host-specific command
     validation to ``CommandExecutor``, and exposes the seam used by a future
-    container/WSL worker.
+    container worker.
     """
 
     def __init__(
@@ -460,9 +459,6 @@ def build_execution_broker(
 
     ``local`` preserves the migration behavior.  ``container`` owns its
     Docker executor and therefore cannot accidentally execute on the host.
-    ``wsl`` is exposed for capability probing, but the default WSL worker does
-    not claim isolation and will fail closed until deployment supplies those
-    guarantees.
     """
     mode = str(getattr(settings, "agent_execution_worker", "local") or "local").lower()
     output_cap = getattr(settings, "agent_command_output_limit_bytes", DEFAULT_OUTPUT_LIMIT_BYTES)
@@ -477,22 +473,6 @@ def build_execution_broker(
                 settings, "agent_container_preflight_timeout_seconds", 10.0,
             ),
             require_digest=getattr(settings, "agent_container_require_digest", False),
-        )
-        return WorkerExecutionBroker(
-            worker.executor, roots, worker=worker, stop_check=stop_check,
-            output_cap=output_cap,
-            toolchain_version_policy=getattr(settings, "agent_toolchain_version_policy", "observe"),
-            toolchain_version_match_mode=getattr(settings, "agent_toolchain_version_match_mode", "compatible"),
-        )
-    if mode == "wsl":
-        worker = WslWorker(
-            WslBashExecutor(
-                distribution=getattr(settings, "agent_wsl_distribution", ""),
-                executable=getattr(settings, "agent_wsl_executable", "wsl.exe"),
-                preflight_timeout_seconds=getattr(
-                    settings, "agent_wsl_preflight_timeout_seconds", 20.0,
-                ),
-            ),
         )
         return WorkerExecutionBroker(
             worker.executor, roots, worker=worker, stop_check=stop_check,

@@ -11,6 +11,7 @@ from app.agent_base.host_api.environment import project_storage
 from .builder import GraphBuilder
 from .database import KnowledgeGraphDB
 from .retriever import GraphRetriever
+from .plugin_api import GraphPreindexRequest, GraphPreindexResult
 
 
 class _LocalKnowledgeGraphContext:
@@ -81,6 +82,20 @@ class LocalKnowledgeGraphProvider:
         builder = GraphBuilder(db_path=path)
         try:
             return builder.rebuild_project(project, project_id, filepath=filepath)
+        finally:
+            builder.close()
+
+    def preindex_project(self, request: GraphPreindexRequest) -> GraphPreindexResult:
+        """Build an isolated fixture index without using a deployment-wide database."""
+        storage = project_storage(request.project_file, workspace_root=request.workspace_root)
+        if storage is None:
+            raise ValueError("could not create project-owned graph storage")
+        builder = GraphBuilder(db_path=str(storage.state_dir / "knowledge_graph.db"))
+        try:
+            design = builder.rebuild_project(request.project, request.project_id, filepath=request.project_file)
+            source = builder.rebuild_code_layer(request.project_id, request.source_dir)
+            return GraphPreindexResult(design.total_nodes, source.total_nodes,
+                                      design.total_edges, source.total_edges)
         finally:
             builder.close()
 
@@ -204,7 +219,7 @@ class LocalKnowledgeGraphProvider:
     ) -> list[Any]:
         """Create Agent tools while keeping the concrete factory in this extension."""
         from .tools import create_kg_v2_tools
-        from app.agent_base.host_api.services import get_host_services
+        from app.agent_base.host_api.services import get_provider_services
 
         scoped = self if self.db_path or not project_file else LocalKnowledgeGraphProvider(
             settings=self.settings, project_file=project_file,
@@ -213,7 +228,7 @@ class LocalKnowledgeGraphProvider:
             project_file=project_file,
             source_dir=source_dir,
             include_compare=include_compare,
-            provider=get_host_services().schedule_provider(scoped, "knowledge_graph"),
+            provider=get_provider_services().schedule_provider(scoped, "knowledge_graph"),
         )
 
     @staticmethod

@@ -1,11 +1,14 @@
 """Adapt host review management to a transport-independent review capability."""
 import asyncio
+from collections.abc import Awaitable, Callable
+from app.agent_base.host_api.agents import ReviewManagerPort
+from app.agent_base.host_api.data import JsonObject
 
 from app.agent_base.host_api.contexts import ReviewPrompt
 
 
 class ReviewAdapter:
-    def __init__(self, manager, emit):
+    def __init__(self, manager: ReviewManagerPort, emit: Callable[[JsonObject], Awaitable[None]]) -> None:
         self.manager, self.emit = manager, emit
 
     async def ask(self, prompt: ReviewPrompt) -> str:

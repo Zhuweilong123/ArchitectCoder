@@ -9,6 +9,7 @@ from typing import Any
 from app.agent_base.tools.base import Tool
 from app.agent_base.tools.result import ToolResult
 from app.core.capabilities import CapabilityPolicy
+from app.agent_base.host_api.errors import AgentInterrupted
 
 
 class ToolExecutor:
@@ -127,6 +128,8 @@ class ToolExecutor:
                 if inspect.isawaitable(result):
                     result = await result
                 return ToolResult.from_value(result)
+            except AgentInterrupted:
+                raise
             except Exception as exc:
                 return ToolResult.error(
                     f"鉂?宸ュ叿 '{name}' 鎵ц澶辫触: {exc}",

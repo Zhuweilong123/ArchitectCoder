@@ -6,12 +6,16 @@ tools remain available only to compatibility and trace-replay callers.
 
 from __future__ import annotations
 
+from app.agent_base.host_api.data import ToolSchema
+
 import asyncio
 import hashlib
 import json
 import shlex
 from dataclasses import replace
-from typing import Any
+from typing import Any, Unpack
+from app.agent_base.tools.command_options import CommandToolOptions
+from app.runtime.execution_broker import ExecutionBroker
 from pathlib import Path
 
 from app.agent_base.core.hooks import get_runtime
@@ -19,6 +23,7 @@ from app.runtime.command import ExecutionEnvironmentError
 from app.runtime.process_output import collect_process_output
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.agent_base.tools.base import Tool
+from app.agent_base.tools.recovery import WorkspaceRecoveryMixin
 from app.agent_base.tools.result import (
     CommandEvidence,
     ToolResult,
@@ -123,7 +128,7 @@ class ListFilesTool(BaseListFilesTool):
         except WorkspacePathError as exc:
             return [], pattern, f"Error: {exc}"
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         schema = super().to_openai_schema()
         props = schema["function"]["parameters"]["properties"]
         props["path"] = {
@@ -136,7 +141,7 @@ class ListFilesTool(BaseListFilesTool):
         return schema
 
 
-class ApplyChangesTool(Tool):
+class ApplyChangesTool(WorkspaceRecoveryMixin, Tool):
     """Apply a validated batch of semantic workspace changes."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "", change_set=None,
@@ -159,7 +164,7 @@ class ApplyChangesTool(Tool):
     def get_parameters(self) -> list:
         return []
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -626,8 +631,9 @@ def _quote_program(program: str, args: list[str], executor) -> str:
 
 
 class RunProgramTool(ShellTool):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 **kwargs: Unpack[CommandToolOptions]) -> None:
+        super().__init__(source_dir, test_dir, design_dir, **kwargs)
         self.name = "run_program"
         self.description = (
             "Run one allowlisted executable directly with literal argv in the workspace. "
@@ -718,7 +724,7 @@ class RunProgramTool(ShellTool):
             proc.returncode, output or "(no output)", argv=[program, *args],
         )
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function", "function": {
                 "name": self.name, "description": self.description,
@@ -745,8 +751,10 @@ class RunTaskTool(RunProgramTool):
         "validate": ("python", ["-m", "pytest"]),
     }
 
-    def __init__(self, *args, execution_broker=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
+                 *, execution_broker: ExecutionBroker | None = None,
+                 **kwargs: Unpack[CommandToolOptions]) -> None:
+        super().__init__(source_dir, test_dir, design_dir, **kwargs)
         self.name = "run_task"
         self.description = (
             "Run a semantic project task such as test, build, lint, format, typecheck, or validate; "
@@ -756,7 +764,14 @@ class RunTaskTool(RunProgramTool):
             "The runtime may execute required prerequisite tasks automatically and returns "
             "step-level execution evidence. Use profile to select a build variant and "
             "dry_run=true to preview the plan without executing it. "
-            "validate checks UML project files directly for .umlproj/.uml/.json targets. "
+            "For task=validate with a .umlproj/.uml/.json target, the runtime runs "
+            "built-in UML project checks, not model-generated checking code. "
+            "Checks are selected through registered artifact rules and available fact providers. "
+            "The result lists checks performed, coverage, problems and unavailable capabilities. "
+            "Consult the relevant design guide for artifact-specific rules and evidence. "
+            "Fix errors and report partial or unavailable checks before submitting review. "
+            "No errors means only that the listed checks found none, not complete verification. "
+            "This does not replace the separate design-contract commit gate. "
             "A bare target is relative to cwd; absolute paths and workspace/source/test/design "
             "qualified targets share the file-tool resolver. cwd also accepts alias subpaths. "
             "For the full test suite use cwd=\"test\" with no target or target=\".\"."
@@ -1084,9 +1099,19 @@ class RunTaskTool(RunProgramTool):
             return ToolResult.error("Error: UML project must contain a non-empty diagrams list", "PROJECT_STRUCTURE_INVALID", True)
         if not all(isinstance(diagram, dict) for diagram in diagrams):
             return ToolResult.error("Error: UML project diagrams must be objects", "PROJECT_STRUCTURE_INVALID", True)
-        return ToolResult.success(f"Validated UML project: {path} (diagrams={len(diagrams)})")
+        from app.services.design_validation import validate_project_diagrams, format_validation_report
+        from app.agent_base.core.hooks import get_runtime
+        report = validate_project_diagrams(diagrams, workspace_root=str(self._paths.workspace) if self._paths.workspace else "",
+            requirements=get_runtime().policy_metadata.get("validation_requirements", []))
+        details = format_validation_report(report)
+        if report.has_errors:
+            return ToolResult.error("Error: UML project validation failed\n" + details, "PROJECT_VALIDATION_FAILED", True)
+        summary = f"Validated UML project: {path} (diagrams={len(diagrams)})"
+        if details:
+            summary += "\n" + details
+        return ToolResult.success(summary)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function", "function": {
                 "name": self.name, "description": self.description,
@@ -1096,19 +1121,20 @@ class RunTaskTool(RunProgramTool):
                         "task": {
                             "type": "string",
                             "description": (
-                                "Semantic task name such as build/test/lint, or a custom task "
-                                "declared by the project's task manifest."
+                                "Project task such as build/test/lint/validate, or a custom task "
+                                "declared by the project manifest. validate with a UML project "
+                                "file target uses built-in checks; other targets use project task resolution."
                             ),
                         },
-                        "target": {"type": "string"},
-                        "cwd": {"type": "string"},
+                        "target": {"type": "string", "description": "For built-in UML validation, the .umlproj/.uml/.json project file. Otherwise an optional task target or test selector."},
+                        "cwd": {"type": "string", "description": "Execution directory; bare targets resolve relative to it. Use workspace or a configured source/test/design alias, optionally with a subpath."},
                         "profile": {
                             "type": "string",
                             "description": "Optional build profile such as debug, release, asan, or coverage.",
                         },
                         "dry_run": {
                             "type": "boolean",
-                            "description": "If true, return the resolved execution plan without starting processes.",
+                            "description": "If true, preview resolved project tasks without starting processes. Built-in UML file validation still runs its read-only checks.",
                         },
                     },
                     "required": ["task"], "additionalProperties": False,

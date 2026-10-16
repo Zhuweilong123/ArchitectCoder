@@ -1,6 +1,7 @@
 """Machine-readable execution outcomes, independent of response wording."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from .host_api.execution_types import OutcomePayload
 
 
 @dataclass(frozen=True)
@@ -10,8 +11,9 @@ class RunOutcome:
     final_answer: str
     total_tokens: int = 0
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def to_dict(self) -> OutcomePayload:
+        return {"status": self.status, "stop_reason": self.stop_reason,
+                "final_answer": self.final_answer, "total_tokens": self.total_tokens}
 
     @classmethod
     def from_stop(cls, reason: str, answer: str, *, total_tokens: int = 0,

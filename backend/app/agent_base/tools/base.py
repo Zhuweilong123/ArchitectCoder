@@ -1,5 +1,7 @@
 """工具基类 — 所有工具必须继承并实现 ``run`` 和 ``get_parameters``"""
 
+from app.agent_base.host_api.data import ToolSchema
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from pydantic import BaseModel
@@ -54,7 +56,7 @@ class Tool(ABC):
         """获取工具参数定义"""
         ...
 
-    def to_openai_schema(self) -> Dict[str, Any]:
+    def to_openai_schema(self) -> ToolSchema:
         """转换为 OpenAI Function Calling schema"""
         parameters = self.get_parameters()
         properties = {}

@@ -149,7 +149,10 @@ def test_compacted_context_checkpoint_is_restored_from_trace(tmp_path, monkeypat
         "role": "summary",
         "content": "keep the SQLite decision",
     }
-    assert history[-1] == {"role": "assistant", "content": "old answer"}
+    assert history[-1]["role"] == "assistant"
+    assert history[-1]["content"] == "old answer"
+    assert history[-1]["metadata"]["message_id"]
+    assert history[-1]["metadata"]["timestamp"] > 0
     events = [json.loads(line) for line in (tmp_path / "trace_checkpoint-test.jsonl").read_text(encoding="utf-8").splitlines()]
     checkpoint = next(event for event in events if event["event_type"] == "context_compacted")
     assert checkpoint["reason"] == "context_budget"

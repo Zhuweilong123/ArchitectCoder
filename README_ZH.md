@@ -225,7 +225,6 @@ flowchart TD
 
 - **DevAgent 能力基准中心**：在隔离工作区中用生产 Agent 执行版本化用例，查看 Checker 结果、工具与 Token 用量、耗时和 Trace；比较版本并归档结果。
 - **Trace 追踪与回放**：查看模型与工具调用记录，对比回放步骤；`mock` 使用记录数据且不调用模型，`rerun`、`live` 按各自策略执行模型与工具。
-- **TestHub**：在画布中加载、编辑和保存 Excel 测试用例，保留审核记录；测试代码的编写与更新由 DevAgent 通过工作区流程完成。
 - **知识图谱与记忆**：通过可配置 Provider 提供设计、源码、测试索引和项目级记忆检索。
 - **可扩展运行时**：通过插件契约替换编排、记忆、Trace、评测、知识图谱及设计契约实现；阶段与 slot 的关系见[插件上手演示](#插件上手演示)。
 
@@ -366,8 +365,10 @@ python -m pytest test -q
 
 - **模型**：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID`。
 - **工作区**：仓库外项目通过 `WORKSPACE_ROOTS` 加入允许的根目录，并重启后端；将快启案例复制到仓库外时同样适用。
-- **执行环境**：默认使用原生命令环境，需要 WSL 时显式设置 `AGENT_COMMAND_ENVIRONMENT=wsl`。
+- **执行环境**：默认使用原生命令环境，需要 WSL 时通过 Windows `shell` 工具显式调用 `wsl.exe`，无需专用环境配置。
 - **Provider**：通过 `AGENT_*_ENABLED` 和 `AGENT_*_PROVIDER` 控制可选能力；示例配置关闭知识图谱和编排，可按需启用。
 - **API 鉴权**：设置 `INTERNAL_API_TOKEN` 后，在 `frontend/.env.local` 配置相同的 `VITE_API_TOKEN`。
+
+本地默认只监听 `127.0.0.1`；外部文件访问始终受 `WORKSPACE_ROOTS` 限制，`safe=false` 不会扩大权限。生产部署使用严格模式和显式站点来源，详见 [生产部署与安全验证](docs/production-deployment.md)。
 
 详细配置与策略见[当前架构](docs/current-architecture.md)及[命令执行说明](docs/runtime-command-execution.md)。

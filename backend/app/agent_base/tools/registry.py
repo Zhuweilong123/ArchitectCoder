@@ -13,6 +13,7 @@ from typing import Any, Optional
 from app.agent_base.execution.tool_executor import ToolExecutor
 from app.core.capabilities import CapabilityPolicy
 
+from shared.llm_types import JsonObject, ToolSchema
 from .base import Tool
 from .result import ToolResult
 
@@ -118,7 +119,7 @@ class ToolRegistry:
         strip_parameter_descriptions(parameters)
         return compact
 
-    def get_openai_specs(self, compact: bool = False) -> list[dict]:
+    def get_openai_specs(self, compact: bool = False) -> list[ToolSchema]:
         specs = []
         for name, tool in self._tools.items():
             if name != tool.name:
@@ -151,7 +152,7 @@ class ToolRegistry:
             specs.append(self._compact_openai_spec(schema) if compact else schema)
         return specs
 
-    def get_openai_specs_for(self, names: list[str], compact: bool = False) -> list[dict]:
+    def get_openai_specs_for(self, names: list[str], compact: bool = False) -> list[ToolSchema]:
         all_specs = {
             spec["function"]["name"]: spec
             for spec in self.get_openai_specs(compact=compact)
@@ -172,16 +173,16 @@ class ToolRegistry:
     def execute_tool(self, name: str, input_data: str) -> str:
         return self.executor.execute_tool(name, input_data)
 
-    def execute_tool_with_params(self, name: str, parameters: dict[str, Any]) -> str:
+    def execute_tool_with_params(self, name: str, parameters: JsonObject) -> str:
         return self.executor.execute_tool_with_params(name, parameters)
 
     async def aexecute_tool_with_params(
-        self, name: str, parameters: dict[str, Any],
+        self, name: str, parameters: JsonObject,
     ) -> str:
         return await self.executor.aexecute_tool_with_params(name, parameters)
 
     async def aexecute_tool_result_with_params(
-        self, name: str, parameters: dict[str, Any],
+        self, name: str, parameters: JsonObject,
     ) -> ToolResult:
         return await self.executor.aexecute_tool_result_with_params(name, parameters)
 

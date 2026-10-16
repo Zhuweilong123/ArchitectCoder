@@ -13,7 +13,7 @@ import {
   FileMarkdownOutlined, SettingOutlined,
   ZoomInOutlined, ZoomOutOutlined, ExpandOutlined,
   AppstoreOutlined, EyeInvisibleOutlined,
-  DownOutlined, TableOutlined,
+  DownOutlined,
   ProjectOutlined, MessageOutlined, CloseOutlined, HistoryOutlined, LineChartOutlined,
   ExportOutlined, ApartmentOutlined,
 } from '@ant-design/icons';
@@ -181,7 +181,6 @@ const Toolbar: React.FC = () => {
     selectedLanguage,
     setSelectedLanguage,
     fileDialogVisible, setFileDialogVisible,
-    showTestCaseInCanvas, toggleTestCaseInCanvas,
     agentChatVisible, setAgentChatVisible,
     projectRoot, designDir, sourceDir, testDir, interfaceLanguage, canvasTheme, setCanvasTheme,
     setProjectRoot, setDesignDir, setSourceDir, setTestDir, setTraceVisible, setEvaluationVisible, setPluginArchitectureVisible,
@@ -276,7 +275,7 @@ const Toolbar: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: projectFile || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
     });
     setGlobalOptimizing(false);
     message.info('全局优化请求已发送到 AI 开发助手');
@@ -397,8 +396,8 @@ const Toolbar: React.FC = () => {
       || currentWorkspacePath
       || (currentFilepath ? pathDirName(currentFilepath) : '');
     // The unified design picker may target an explicitly configured external
-    // directory, so files opened from it must use the same unrestricted flag
-    // as the directory browse request.
+    // directory. Keep the legacy flag aligned with directory browsing;
+    // the backend always enforces its configured workspace roots.
     browseUnsafe.current = true;
     void handleOpen(designPath || undefined, true);
   };
@@ -438,10 +437,8 @@ const Toolbar: React.FC = () => {
       normalizedRoot
       && (normalizedFolder === normalizedRoot || normalizedFolder.startsWith(`${normalizedRoot}/`)),
     );
-    if (projectRoot && !staysInWorkspaceRoot) {
-      setProjectRoot('');
-    }
-    setCurrentWorkspacePath(staysInWorkspaceRoot ? projectRoot : null, staysInWorkspaceRoot);
+    // Selecting design artifacts does not select a different workspace root.
+    setCurrentWorkspacePath(projectRoot || currentWorkspacePath, staysInWorkspaceRoot);
     currentFileSafe.current = safe;
     setCurrentFilepath(null);
 
@@ -489,7 +486,7 @@ const Toolbar: React.FC = () => {
         if (review.status !== 'pending' && review.reviewId !== null) review.clear();
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
-        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
+        setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success(`项目已打开: ${proj.name} (${proj.diagrams.length} 张图)`);
@@ -514,7 +511,7 @@ const Toolbar: React.FC = () => {
         setProject(proj);
         setCurrentFilepath(path);
         setDesignDir(pathDirName(path));
-        setCurrentWorkspacePath(projectRoot || pathDirName(path), safe);
+        setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(path), safe);
         currentFileSafe.current = safe;
         setFileDialogVisible(false);
         if (notify) message.success('文件已打开');
@@ -576,8 +573,7 @@ const Toolbar: React.FC = () => {
       if (designFiles.length === 1) {
         const designFile = designFiles[0];
         await handleOpenFile(designFile.path, designFile.type === 'project' || designFile.name.toLowerCase().endsWith('.umlproj'));
-        // Opening the design file sets its own folder as workspace. Keep the
-        // project root as the workspace so subsequent saves use project scope.
+        // Keep the explicitly selected root after loading its design project.
         setProjectRoot(root);
         setCurrentWorkspacePath(root, false);
         currentFileSafe.current = false;
@@ -628,7 +624,7 @@ const Toolbar: React.FC = () => {
       const result = await saveProject(proj, targetPath, targetSafe);
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
-      setCurrentWorkspacePath(pathDirName(result.filepath), targetSafe);
+      setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(result.filepath), targetSafe);
       message.success(`项目已保存: ${result.filename}`);
     } catch (error) {
       showProjectSaveError(error);
@@ -670,7 +666,7 @@ const Toolbar: React.FC = () => {
       );
       markSaved(result.revision);
       setCurrentFilepath(result.filepath);
-      setCurrentWorkspacePath(pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
+      setCurrentWorkspacePath(projectRoot || currentWorkspacePath || pathDirName(result.filepath), currentWorkspacePath ? currentWorkspaceSafe : true);
       setSaveAsVisible(false);
       message.success(`项目已保存: ${result.filename}`);
     } catch (error) {
@@ -940,7 +936,7 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         {/* Diagram dropdowns — grouped by type */}
-        <div className={showTestCaseInCanvas ? 'toolbar-mode-controls is-hidden' : 'toolbar-mode-controls'}>
+        <div className="toolbar-mode-controls">
         <DiagramTypeControls
           project={project}
           copy={copy}
@@ -1092,7 +1088,7 @@ const Toolbar: React.FC = () => {
       </div>
 
       <div className="toolbar-right">
-        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
+        <div className="toolbar-design-controls">
         <Tooltip title={copy('grid')}>
           <Button
             icon={gridSettings.grid_visible ? <AppstoreOutlined /> : <EyeInvisibleOutlined />}
@@ -1112,17 +1108,7 @@ const Toolbar: React.FC = () => {
         <Divider type="vertical" />
 
         </div>
-        <Tooltip title={showTestCaseInCanvas ? (interfaceLanguage === 'en' ? 'Return to UML canvas' : '返回 UML 画布') : copy('testCases')}>
-          <Button
-            icon={<TableOutlined />}
-            type={showTestCaseInCanvas ? 'primary' : 'default'}
-            onClick={toggleTestCaseInCanvas}
-          >
-            {copy('testCases')}
-          </Button>
-        </Tooltip>
-
-        <div className={showTestCaseInCanvas ? 'toolbar-design-controls is-hidden' : 'toolbar-design-controls'}>
+        <div className="toolbar-design-controls">
         <Tooltip title={copy('zoomOut')}>
           <Button icon={<ZoomOutOutlined />} onClick={handleZoomOut} />
         </Tooltip>

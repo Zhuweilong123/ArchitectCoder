@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
+from app.agent_base.host_api.contexts import ContractGatePort, ContractFailureAnalyzerPort
+
+
+@dataclass(frozen=True)
+class ContractBinding:
+    gate: ContractGatePort
+    analyzer: ContractFailureAnalyzerPort
 
 
 @dataclass(frozen=True)

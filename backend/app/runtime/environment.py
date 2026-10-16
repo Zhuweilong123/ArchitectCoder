@@ -89,9 +89,7 @@ def build_environment_context(
     profile = getattr(executor, "profile", None)
     mode = str(getattr(profile, "name", "native"))
 
-    if mode in {"linux-wsl", "wsl"}:
-        execution_os, shell, path_style = "linux", "bash", "posix"
-    elif mode in {"linux-native", "native-posix", "native_linux"}:
+    if mode in {"linux-native", "native-posix", "native_linux"}:
         execution_os, shell, path_style = "linux", "bash", "posix"
     elif mode in {"windows-powershell", "powershell"}:
         execution_os, shell, path_style = "windows", "powershell", "windows"

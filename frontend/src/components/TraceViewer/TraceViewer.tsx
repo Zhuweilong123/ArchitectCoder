@@ -1,3 +1,4 @@
+import { buildTurns, type LlmItem, type ToolItem, type SubagentItem, type BackgroundItem, type Turn, type Item } from './traceTimeline';
 /**
  * TraceViewer — 会话 trace 可视化回放抽屉。
  *
@@ -29,32 +30,11 @@ const { Text } = Typography;
 type TraceLanguage = 'en' | 'zh';
 const tx = (language: TraceLanguage, zh: string, en: string) => language === 'en' ? en : zh;
 
-type TraceEvent = Record<string, any>;
+import type { TraceEvent, TraceModelMessage, TraceToolSchema } from '../../types/trace';
+import type { JsonObject } from '../../types/json';
+import { normalizeTraceReplay, traceJsonObject } from '../../utils/traceNormalization';
+import { apiErrorMessage } from '../../services/apiErrors';
 
-interface LlmItem { kind: 'llm'; request: TraceEvent; response?: TraceEvent; }
-interface ToolItem { kind: 'tool'; call: TraceEvent; result?: TraceEvent; subagent?: SubagentItem; }
-interface StepItem { kind: 'step'; event: TraceEvent; }
-interface DoneItem { kind: 'done'; event: TraceEvent; }
-interface ErrorItem { kind: 'error'; event: TraceEvent; }
-interface SummaryItem { kind: 'summary'; event: TraceEvent; }
-interface ReviewItem { kind: 'review'; event: TraceEvent; }
-interface LifecycleItem { kind: 'lifecycle'; event: TraceEvent; }
-interface SubagentItem {
-  kind: 'subagent';
-  spanPath: string;
-  items: Item[];
-}
-interface BackgroundItem {
-  kind: 'background';
-  taskId: string;
-  owner: string;
-  event: TraceEvent;
-  items: Item[];
-}
-
-type Item = BackgroundItem | LlmItem | ToolItem | StepItem | DoneItem | ErrorItem | SummaryItem | ReviewItem | LifecycleItem | SubagentItem;
-
-interface Turn { id: number; userMessage: string; projectFile: string; items: Item[]; }
 type TraceScope = 'chat' | 'evaluation';
 
 // ── 工具函数 ──────────────────────────────────────────
@@ -64,7 +44,7 @@ function truncate(s: string, n = 4000, language: TraceLanguage = 'zh'): string {
   return s.length > n ? s.slice(0, n) + ` … (+${s.length - n} ${tx(language, '字符', 'characters')})` : s;
 }
 
-function pretty(v: any): string {
+function pretty(v: unknown): string {
   if (v === undefined || v === null) return '';
   try {
     return JSON.stringify(v, null, 2);
@@ -131,7 +111,7 @@ const REPLAY_CACHE_PREFIX = 'traceReplay:v3:';
 function readReplayCache(key: string): TraceReplayResult | null {
   try {
     const raw = localStorage.getItem(REPLAY_CACHE_PREFIX + key);
-    return raw ? (JSON.parse(raw) as TraceReplayResult) : null;
+    return raw ? normalizeTraceReplay(JSON.parse(raw)) : null;
   } catch {
     return null;
   }
@@ -147,160 +127,7 @@ function writeReplayCache(key: string, result: TraceReplayResult): void {
 
 // ── 事件流 → 轮次树 ───────────────────────────────────
 
-function buildTurns(events: TraceEvent[]): Turn[] {
-  const turns: Turn[] = [];
-  let cur: Turn = { id: 0, userMessage: '', projectFile: '', items: [] };
-  turns.push(cur);
-  const llmBySpan = new Map<string, LlmItem>();
-  const toolBySpan = new Map<string, ToolItem>();
-  const turnByRun = new Map<string, Turn>();
-  const backgrounds = new Map<string, BackgroundItem>();
-  const recordedBackgrounds = new Set(events.map((event) => event.background_task_id).filter(Boolean));
-  const backgroundFor = (taskId: string, owner: string, runId: string) => {
-    let item = backgrounds.get(taskId);
-    if (!item) {
-      item = { kind: 'background', taskId, owner, event: { status: 'pending' }, items: [] };
-      backgrounds.set(taskId, item);
-      (turnByRun.get(runId) || cur).items.push(item);
-    }
-    return item;
-  };
-
-  for (const ev of events) {
-    if (ev.event_type === 'background_scheduled') {
-      const data = ev.payload || ev;
-      // Legacy scheduling events refer to a separate file, not an attached task.
-      if (recordedBackgrounds.has(data.task_id)) {
-        backgroundFor(data.task_id, data.owner || '', data.source_run_id || ev.run_id || '');
-      }
-      continue;
-    }
-    const background = ev.background_task_id
-      ? backgroundFor(ev.background_task_id, ev.background_owner || '', ev.run_id || '') : undefined;
-    if (background && ['background_started', 'background_result'].includes(ev.event_type)) {
-      background.event = ev;
-      continue;
-    }
-    const items = background ? background.items : cur.items;
-    switch (ev.event_type) {
-      case 'user_message':
-        cur = { id: turns.length, userMessage: ev.message || '', projectFile: ev.project_file || '', items: [] };
-        turns.push(cur);
-        if (ev.run_id) turnByRun.set(ev.run_id, cur);
-        break;
-      case 'llm_request': {
-        const item: LlmItem = { kind: 'llm', request: ev };
-        llmBySpan.set(ev.span_id, item);
-        items.push(item);
-        break;
-      }
-      case 'llm_response': {
-        const item = llmBySpan.get(ev.span_id);
-        if (item) item.response = ev;
-        else items.push({ kind: 'llm', request: ev, response: ev });
-        break;
-      }
-      case 'tool_call': {
-        const item: ToolItem = { kind: 'tool', call: ev };
-        toolBySpan.set(ev.span_id, item);
-        items.push(item);
-        break;
-      }
-      case 'tool_result': {
-        const item = toolBySpan.get(ev.span_id);
-        if (item) item.result = ev;
-        else items.push({ kind: 'tool', call: ev, result: ev });
-        break;
-      }
-      case 'agent_step':
-        items.push({ kind: 'step', event: ev });
-        break;
-      case 'done':
-        items.push({ kind: 'done', event: ev });
-        break;
-      case 'error':
-        items.push({ kind: 'error', event: ev });
-        break;
-      case 'task_summary':
-        items.push({ kind: 'summary', event: ev });
-        break;
-      case 'review_request':
-      case 'review_response':
-        items.push({ kind: 'review', event: ev });
-        break;
-      case 'contract_check':
-      case 'candidate_artifact':
-      case 'candidate_rollback':
-      case 'candidate_restore':
-      case 'changes_committed':
-      case 'contract_graph_sync':
-        items.push({ kind: 'lifecycle', event: ev });
-        break;
-      default:
-        // session_start / session_end / review_* / kg_inject：暂不在时间轴单独渲染
-        break;
-    }
-  }
-  return turns
-    .filter((t) => t.items.length > 0 || t.userMessage)
-    .map((turn) => ({ ...turn, items: groupSubagentItems(turn.items) }));
-}
-
-function eventSpanPath(item: Item): string {
-  if (item.kind === 'llm') return String(item.request.span_path || '');
-  if (item.kind === 'tool') return String(item.call.span_path || '');
-  return '';
-}
-
-function isSubagentEvent(item: Item): boolean {
-  const path = eventSpanPath(item);
-  return path.split('/').some((segment) => segment.toLowerCase().includes('subagent') || segment.toLowerCase() === 'child_agent');
-}
-
-function groupSubagentItems(items: Item[]): Item[] {
-  const grouped: Item[] = [];
-  const pending: SubagentItem[] = [];
-  let activeChildItems: Item[] = [];
-  let lastSpawnTool: ToolItem | undefined;
-
-  const flushChildItems = () => {
-    if (activeChildItems.length === 0) return;
-    const subagent: SubagentItem = {
-      kind: 'subagent',
-      spanPath: eventSpanPath(activeChildItems[0]) || 'subagent',
-      items: activeChildItems,
-    };
-    // Depending on when the trace sink flushes events, the parent tool_call can
-    // be recorded either before or after the nested child LLM events.
-    if (lastSpawnTool && !lastSpawnTool.subagent) lastSpawnTool.subagent = subagent;
-    else pending.push(subagent);
-    activeChildItems = [];
-  };
-
-  for (const item of items) {
-    if (isSubagentEvent(item)) {
-      activeChildItems.push(item);
-      continue;
-    }
-    flushChildItems();
-    if (item.kind === 'tool' && ['spawn_subagent', 'route_architecture'].includes(item.call.tool_name)) {
-      lastSpawnTool = item;
-      const waiting = pending.shift();
-      if (waiting) item.subagent = waiting;
-    }
-    grouped.push(item);
-  }
-  flushChildItems();
-
-  // Keep unmatched child spans visible instead of dropping them. This also
-  // supports older traces that do not contain the parent tool_call event.
-  for (const orphan of pending) grouped.push(orphan);
-  return grouped;
-}
-
-// ── 渲染子组件 ────────────────────────────────────────
-
-function renderMessages(systemPrompt?: string, messages?: any[], language: TraceLanguage = 'zh'): React.ReactNode {
+function renderMessages(systemPrompt?: string, messages?: TraceModelMessage[], language: TraceLanguage = 'zh'): React.ReactNode {
   const msgs: Array<{ role: string; content: string }> = [];
   if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
   for (const m of messages || []) {
@@ -309,7 +136,7 @@ function renderMessages(systemPrompt?: string, messages?: any[], language: Trace
     if (role === 'tool') role = tx(language, 'tool（模型收到的返回，可能已截断）', 'tool (truncated response received by the model)');
     let content = m.content;
     if (Array.isArray(content)) {
-      content = content.map((p: any) => (typeof p === 'string' ? p : p?.text || p?.type || '')).join('\n');
+      content = content.map((p) => (typeof p === 'string' ? p : p?.text || p?.type || '')).join('\n');
     }
     if (m.tool_calls) {
       content = (content ? content + '\n' : '') + '[tool_calls]\n' + pretty(m.tool_calls);
@@ -335,7 +162,7 @@ function renderMessages(systemPrompt?: string, messages?: any[], language: Trace
   );
 }
 
-function renderToolSchema(tools: any[], language: TraceLanguage = 'zh'): React.ReactNode {
+function renderToolSchema(tools: TraceToolSchema[], language: TraceLanguage = 'zh'): React.ReactNode {
   return (
     <div>
       <div className="trace-msgs">
@@ -573,11 +400,10 @@ function renderTaskSummary(ev: TraceEvent, language: TraceLanguage = 'zh'): Reac
 function renderReview(ev: TraceEvent, language: TraceLanguage = 'zh'): React.ReactNode {
   const isResponse = ev.event_type === 'review_response';
   const rawResponse = String(ev.response || '');
-  let parsedResponse: Record<string, any> | null = null;
+  let parsedResponse: JsonObject | null = null;
   if (isResponse) {
     try {
-      const parsed = JSON.parse(rawResponse);
-      if (parsed && typeof parsed === 'object') parsedResponse = parsed;
+      parsedResponse = traceJsonObject(JSON.parse(rawResponse)) || null;
     } catch {
       // Older traces may contain plain-text review responses.
     }
@@ -714,7 +540,7 @@ function renderWordDiff(recorded: string, final: string): React.ReactNode {
   );
 }
 
-function formatArgs(args: Record<string, any> | string): string {
+function formatArgs(args: JsonObject | string): string {
   if (typeof args === 'string') return args;
   try {
     return JSON.stringify(args);
@@ -1158,8 +984,8 @@ const TraceViewer: React.FC = () => {
       setReplayFromCache(false);
       setReplayResult(result);
       fillTurnResults(result);
-    } catch (e: any) {
-      message.error(`${tx(interfaceLanguage, '回放失败', 'Replay failed')}: ${e?.response?.data?.detail || String(e)}`);
+    } catch (e: unknown) {
+      message.error(`${tx(interfaceLanguage, '回放失败', 'Replay failed')}: ${apiErrorMessage(e)}`);
     } finally {
       setReplaying(false);
     }
@@ -1175,8 +1001,8 @@ const TraceViewer: React.FC = () => {
       setReplayResult(result);
       const last = result.turns[result.turns.length - 1];
       if (last) setTurnResults((prev) => ({ ...prev, [n - 1]: last }));
-    } catch (e: any) {
-      message.error(`${tx(interfaceLanguage, '单步执行失败', 'Step execution failed')}: ${e?.response?.data?.detail || String(e)}`);
+    } catch (e: unknown) {
+      message.error(`${tx(interfaceLanguage, '单步执行失败', 'Step execution failed')}: ${apiErrorMessage(e)}`);
     } finally {
       setSingleStepTurn(null);
     }

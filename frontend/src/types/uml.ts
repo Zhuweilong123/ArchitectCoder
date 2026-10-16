@@ -92,6 +92,7 @@ export interface UmlDiagram {
   lifelines?: SeqLifeline[];
   messages?: SeqMessage[];
   fragments?: import('./sequence').SeqFragment[];
+  source_scopes?: import('./sequence').SeqSourceScope[];
   // Component diagram
   components?: CompNode[];
   comp_relations?: CompRelation[];

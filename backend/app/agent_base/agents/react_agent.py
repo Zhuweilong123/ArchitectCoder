@@ -1,6 +1,6 @@
 """ReActAgent — Reasoning + Acting 范式
 
-支持两种运行模式:
+支持原生 Function Calling:
 
 1. **原生 Function Calling** (推荐, 默认) — ``await agent.arun(input)``
    利用 LLM 内置的工具调用能力，结构化 JSON 参数，支持多工具并行。
@@ -14,24 +14,30 @@ Usage::
 
     # 流式获取每轮进度（用于前端实时展示）
     async for progress in agent.arun_stream("帮我优化这段代码"):
-        print(f"Round {progress['step']}: {progress['actions']}")
+        print(f"Round {progress.step}: {progress.actions}")
 
 """
 
 import logging
 from contextlib import aclosing
-from typing import Optional, List, AsyncIterator
+from typing import Optional, List, AsyncGenerator, Unpack
 
 from ..core.agent import Agent
-from ..core.llm import BaseAgentsLLM
+from ..host_api.agents import ModelPort, ConversationSnapshot, HistoryEntry
+from copy import deepcopy
+from ..host_api.data import ConversationMessage, WorkspaceSnapshot
+from ..host_api.context import ContextReport
+from ..host_api.execution_types import RunCheckpoint, CompactionReport, EvidenceSnapshot, ToolCallDetail
+from collections.abc import Callable
 from ..core.message import Message
 from backend.config import AgentConfig
-from ..core.hooks import get_runtime, todo_plan_complete, get_hooks, HookEvent, HookContext
-from ..tools.registry import ToolRegistry
+from ..core.hooks import get_runtime, todo_plan_complete, get_hooks
+from ..host_api.lifecycle import HookEvent, HookContext
+from ..tools.contracts import NativeToolRegistryPort
 from ..outcome import RunOutcome
 from ..core.policy import ExecutionBudget
 from app.services.context_manager import ContextBudgetManager
-from .react_runtime.react_types import ReActProgress
+from .react_runtime.react_types import NativeRunOptions, ReActProgress
 from .react_runtime.fc_loop import run_fc_loop
 
 logger = logging.getLogger(__name__)
@@ -49,7 +55,7 @@ Never fabricate answers. If the tool results are insufficient, continue using ot
 """
 
 # ── Function Calling system prompt ───────────────────────
-class ReActAgent(Agent):
+class ReActAgent(Agent[ModelPort]):
     """ReAct (Reasoning + Acting) Agent
 
     核心循环:
@@ -63,11 +69,11 @@ class ReActAgent(Agent):
     def __init__(
         self,
         name: str,
-        llm: BaseAgentsLLM,
-        tool_registry: ToolRegistry,
+        llm: ModelPort,
+        tool_registry: NativeToolRegistryPort,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
-        max_tool_calls: int = 100,
+        max_tool_calls: int = 0,
         max_run_seconds: float = 0.0,
         max_total_tokens: int = 200000,
         emergency_max_total_tokens: int | None = None,
@@ -77,15 +83,16 @@ class ReActAgent(Agent):
         convergence_repeat_action_threshold: int = 3,
         evidence_max_records: int = 128,
         final_summary_max_tokens: int = 3000,
-        llm_timeout_seconds: float = 120.0,
+        llm_timeout_seconds: float = 300.0,
         context_budget: ContextBudgetManager | None = None,
         execution_budget: ExecutionBudget | None = None,
-    ):
+        llm_timeout_retries: int = 3,
+    ) -> None:
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
         self.current_history: List[str] = []
         self.execution_budget = execution_budget
-        self.max_tool_calls = max(1, max_tool_calls)
+        self.max_tool_calls = max(0, max_tool_calls)
         self.max_run_seconds = max(0.0, max_run_seconds)
         self.max_total_tokens = max(1, max_total_tokens)
         self.emergency_max_total_tokens = (
@@ -110,21 +117,25 @@ class ReActAgent(Agent):
         self.evidence_max_records = max(self.max_tool_calls, evidence_max_records)
         self.final_summary_max_tokens = max(1, final_summary_max_tokens)
         self.llm_timeout_seconds = max(1.0, llm_timeout_seconds)
+        self.llm_timeout_retries = max(0, int(llm_timeout_retries))
         self.context_budget = context_budget or ContextBudgetManager()
         self._history_summary = ""
-        self.last_context_report: dict = {}
-        self.last_evidence_summary: list[dict] = []
+        self.last_context_report: ContextReport = {}
+        self.last_evidence_summary: list[EvidenceSnapshot] = []
+        self._run_verifications: dict[tuple[str, str], bool] = {}
         # Structured hand-off for a follow-up status query. The transport
         # updates this at run boundaries so status requests do not re-explore
         # the workspace.
-        self.last_run_checkpoint: dict = {}
-        self.on_context_compacted = None
+        self.last_run_checkpoint: RunCheckpoint = {}
+        self.workspace_manifest: WorkspaceSnapshot = {}
+        self.candidate_recovery_applied = False
+        self.on_context_compacted: Callable[[CompactionReport], None] | None = None
         logger.info(
             "✅ %s 初始化完成，开放循环模式，FC模式: %s",
             name, "启用",
         )
 
-    def restore_history(self, messages: list[dict]) -> None:
+    def restore_history(self, messages: list[ConversationMessage]) -> None:
         """从 [{role, content}] 恢复对话历史（结论级：仅 user/assistant）。
 
         用于「恢复历史会话」——agent 据此在继续对话时记住之前的结论。
@@ -144,6 +155,22 @@ class ReActAgent(Agent):
                 and (m.get("metadata") or {}).get("kind") == "task_execution"
             )
         ]
+
+    def clear_history(self) -> None:
+        """Clear both retained turns and their conversation checkpoint."""
+        super().clear_history()
+        self._history_summary = ""
+
+    def export_conversation(self) -> ConversationSnapshot:
+        """Return a detached snapshot; consumers never access mutable Agent history."""
+        return ConversationSnapshot(tuple(HistoryEntry(
+            message.role, message.content, message.timestamp, deepcopy(message.metadata)
+        ) for message in self._history), self._history_summary)
+
+    def restore_conversation(self, snapshot: ConversationSnapshot) -> None:
+        self._history = [Message(entry.content, entry.role, timestamp=entry.timestamp,
+                                 metadata=deepcopy(entry.metadata)) for entry in snapshot.messages]
+        self._history_summary = snapshot.summary
 
     def append_task_summary(self, summary: str) -> None:
         """Keep a bounded internal checkpoint for the next turn.
@@ -169,7 +196,7 @@ class ReActAgent(Agent):
     # Public API
     # ═══════════════════════════════════════════════════════
 
-    async def arun(self, input_text: str, context: str = "", **kwargs) -> str:
+    async def arun(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> str:
         """异步运行 ReAct 循环（推荐入口）。
 
         使用原生 Function Calling 执行开放式 ReAct 循环。
@@ -179,7 +206,7 @@ class ReActAgent(Agent):
         """
         return await self._arun_with_fc(input_text, context=context, **kwargs)
 
-    async def arun_stream(self, input_text: str, context: str = "", **kwargs) -> AsyncIterator[ReActProgress]:
+    async def arun_stream(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> AsyncGenerator[ReActProgress, None]:
         """流式运行 ReAct 循环 — 每轮 yield :class:`ReActProgress`。
 
         用于前端实时展示、编排层监控等需要逐轮获取进度的场景。
@@ -189,9 +216,6 @@ class ReActAgent(Agent):
             async for progress in stream:
                 yield progress
 
-    def run(self, input_text: str, **kwargs) -> str:
-        """同步入口不支持；请使用异步 Function Calling 入口。"""
-        raise RuntimeError("ReActAgent requires async arun() or arun_stream(); textual ReAct is no longer supported")
     # ═══════════════════════════════════════════════════════
     # Function Calling 核心
     # ═══════════════════════════════════════════════════════
@@ -201,7 +225,7 @@ class ReActAgent(Agent):
         base = self.system_prompt or FC_SYSTEM_PROMPT
         return base
 
-    async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs) -> str:
+    async def _arun_with_fc(self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]) -> str:
         """一次性 FC 循环 — 收集流式输出，返回最终答案。"""
         final_answer = ""
         async with aclosing(self._arun_with_fc_stream(input_text, context=context, **kwargs)) as stream:
@@ -212,7 +236,11 @@ class ReActAgent(Agent):
             final_answer = "抱歉，执行循环未产生最终答案。"
         return final_answer
 
-    async def _final_progress(self, *, total_tokens: int, **kwargs) -> ReActProgress:
+    async def _final_progress(
+        self, *, total_tokens: int, step: int, final_answer: str,
+        thought: str = "", actions: list[str] | None = None,
+        tool_calls_detail: list[ToolCallDetail] | None = None,
+    ) -> ReActProgress:
         runtime = get_runtime()
         if runtime.lifecycle_round_open:
             runtime.lifecycle_round_open = False
@@ -227,13 +255,13 @@ class ReActAgent(Agent):
         self.last_context_report["token_usage_total_observed"] = total_tokens
         outcome = RunOutcome.from_stop(
             self.last_context_report.get("token_budget_stop_reason", "model_answer"),
-            kwargs.get("final_answer", ""),
+            final_answer,
             total_tokens=total_tokens,
             plan_complete=todo_plan_complete(get_runtime()) and all(
                 todo.get("status") == "completed" for todo in get_runtime().todos
             ),
             verification_failed=any(
-                not passed for passed in getattr(self, "_run_verifications", {}).values()
+                not passed for passed in self._run_verifications.values()
             ),
         )
         runtime.lifecycle_status = outcome.status
@@ -242,11 +270,14 @@ class ReActAgent(Agent):
             event=HookEvent.FINALIZE, agent_name=self.name, runtime=runtime,
             run_id=runtime.run_id, payload={"status": outcome.status, "stop_reason": outcome.stop_reason},
         ))
-        return ReActProgress(**kwargs, outcome=outcome)
+        return ReActProgress(
+            step=step, actions=actions, tool_calls_detail=tool_calls_detail,
+            thought=thought, is_final=True, final_answer=final_answer, outcome=outcome,
+        )
 
     async def _arun_with_fc_stream(
-        self, input_text: str, context: str = "", **kwargs
-    ) -> AsyncIterator[ReActProgress]:
+        self, input_text: str, context: str = "", **kwargs: Unpack[NativeRunOptions]
+    ) -> AsyncGenerator[ReActProgress, None]:
         # Each forwarding generator owns its child. Closing the public stream
         # must unwind run scopes in this task, before asyncgen GC takes over.
         async with aclosing(run_fc_loop(self, input_text, context=context, **kwargs)) as stream:

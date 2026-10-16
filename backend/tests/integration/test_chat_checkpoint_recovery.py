@@ -38,6 +38,64 @@ class _WebSocket:
         self.sent.append(payload)
 
 
+@pytest.mark.parametrize("action", ["accept", "reject", "repush", "stop", "cancel"])
+@pytest.mark.parametrize("agent_lost", [False, True])
+def test_durable_review_restores_across_session_recreation(tmp_path, monkeypatch, action, agent_lost):
+    from app.services.run_state import RunStore, RunStatus
+    from app.services.candidate_artifact import CandidateArtifactStore
+    from app.services.change_set import ChangeSet
+    from app.services.pending_review import suspend_review
+    project = tmp_path / "candidate.txt"
+    project.write_text("before", encoding="utf-8")
+    changes = ChangeSet()
+    changes.record(str(project), True, "before", "after")
+    project.write_text("after", encoding="utf-8")
+    store = RunStore(tmp_path / "runs.db")
+    run = store.claim(store.create(kind="agent_chat", session_id="checkpoint-recovery-test").run_id, "old-owner")
+    manager = ReviewManager(session_id="checkpoint-recovery-test")
+    request = manager.submit("uml_diff", title="Original candidate", metadata={
+        "diagrams": [{"name": "after"}], "original_diagrams": [{"name": "before"}]})
+    artifacts = CandidateArtifactStore(root=tmp_path / "artifacts")
+    checkpoint = suspend_review(request, {"run_id": run.run_id, "project_file": str(project),
+        "workspace_root": str(tmp_path), "request_summary": "Original task"}, changes, artifacts)
+    store.transition(run.run_id, RunStatus.WAITING_APPROVAL, owner_id="old-owner", metadata_patch={"checkpoint": checkpoint})
+    starts = []
+    agent = SimpleNamespace(llm=None, last_run_checkpoint={}, tool_registry=SimpleNamespace(get_tool=lambda name: None),
+                            append_task_summary=lambda summary: None)
+    recreated = ReviewManager(session_id="checkpoint-recovery-test")
+    session = SimpleNamespace(agent=None if agent_lost else agent, review_mgr=recreated, progress=None, prompt_builder=None,
+                              trace_log=_TraceLog(), run_owner=None, touch=lambda: None)
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _: session)
+    monkeypatch.setattr(chat_session, "get_run_store", lambda: store)
+    monkeypatch.setattr("app.services.pending_review.CandidateArtifactStore", lambda: artifacts)
+    monkeypatch.setattr(chat_session, "_record_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **kwargs: SimpleNamespace())
+    async def create(*args, **kwargs):
+        return agent, ReviewManager(session_id="checkpoint-recovery-test"), None
+    monkeypatch.setattr(chat_session, "create_dev_agent", create)
+    async def start(**kwargs):
+        starts.append(kwargs)
+    monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+    if action in {"accept", "reject"}:
+        payload = {"type": "review_response", "review_id": request.id, "decision": action, "feedback": "comment"}
+    elif action == "repush":
+        payload = {"type": "chat", "message": "再给我推送一下审核"}
+    elif action == "cancel":
+        payload = {"type": "chat", "message": "取消审核"}
+    else:
+        payload = {"type": "stop"}
+    websocket = _WebSocket([json.dumps(payload)])
+    asyncio.run(chat_session.ChatSessionCoordinator(websocket).run())
+    assert any(event.get("event") == "uml_review" and event["title"] == "Original candidate" for event in websocket.sent)
+    assert project.read_text() == ("after" if action == "accept" else "before")
+    assert len(starts) == (1 if action in {"accept", "reject"} else 0)
+    if starts:
+        assert starts[0]["parent_run_id"] == run.run_id
+        assert starts[0]["resume_checkpoint"]["review_status"] == ("accepted" if action == "accept" else "rejected")
+    else:
+        assert store.get(run.run_id).status == ("canceled" if action == "cancel" else "waiting_approval")
+
+
 @pytest.mark.parametrize("decision", ["accept", "reject"])
 @pytest.mark.parametrize("wire_format", ["feedback", "legacy_comment", "json_response", "empty_feedback", "no_comment"])
 def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_design_accept(
@@ -160,6 +218,133 @@ def test_chat_followup_resumes_checkpoint_and_restores_candidate_only_after_desi
 
 async def _async_noop(*_args, **_kwargs):
     return None
+
+
+def test_workspace_switch_rebuilds_tools_and_preserves_conversation(tmp_path, monkeypatch):
+    from app.core.capabilities import CapabilityPolicy
+    from app.runtime.workspace import WorkspaceManifest
+    from app.services.chat_connection import ChatConnection
+
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    for root in (old_root, new_root):
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "main.py").write_text("pass\n", encoding="utf-8")
+    old_manifest = WorkspaceManifest.from_paths(workspace_root=str(old_root))
+    from app.agent_base.host_api.agents import ConversationSnapshot, HistoryEntry
+    original_history = ConversationSnapshot((HistoryEntry("user", "previous question", None, {}),), "previous context")
+    agent = SimpleNamespace(
+        llm=None, last_run_checkpoint={}, workspace_manifest=old_manifest.to_dict(),
+        export_conversation=lambda: original_history,
+        tool_registry=SimpleNamespace(get_tool=lambda _: None),
+    )
+    connection = ChatConnection()
+    connection.paths = (str(old_root / "src"), "", "", str(old_root), "")
+    session = SimpleNamespace(
+        agent=agent, review_mgr=None, progress=None, prompt_builder=None,
+        trace_log=_TraceLog(), run_owner=None, touch=lambda: None, chat_connection=connection,
+    )
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _: session)
+    monkeypatch.setattr(chat_session, "_latest_resumable_run", lambda _: None)
+    monkeypatch.setattr(chat_session, "validate_agent_workspace_path", lambda value, **_: (value, None))
+    monkeypatch.setattr(chat_session, "_compress_session_context", _async_noop)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **_: SimpleNamespace())
+    created, started = [], []
+
+    async def create(llm, source, tests, project, message, **kwargs):
+        manifest = WorkspaceManifest.from_paths(
+            source_dir=source, test_dir=tests, project_file=project,
+            workspace_root=kwargs["workspace_root"], design_dir=kwargs["design_dir"],
+        )
+        replacement = SimpleNamespace(
+            llm=llm, last_run_checkpoint={}, workspace_manifest=manifest.to_dict(),
+            conversation=ConversationSnapshot(),
+            tool_registry=SimpleNamespace(get_tool=lambda _: None),
+            policy=CapabilityPolicy(workspace_roots=list(manifest.workspace_roots)),
+        )
+        replacement.restore_conversation = lambda snapshot: setattr(replacement, "conversation", snapshot)
+        replacement.export_conversation = lambda: replacement.conversation
+        created.append(replacement)
+        return replacement, ReviewManager(session_id="checkpoint-recovery-test"), None
+
+    async def start(**kwargs):
+        started.append(kwargs)
+
+    monkeypatch.setattr(chat_session, "create_dev_agent", create)
+    monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+    payload = {"type": "chat", "message": "inspect new workspace", "workspace_root": str(new_root)}
+    asyncio.run(chat_session.ChatSessionCoordinator(_WebSocket([
+        json.dumps(payload), json.dumps({**payload, "message": "continue"}),
+    ])).run())
+
+    assert len(created) == 1  # Same normalized workspace continues to reuse the Agent.
+    assert len(started) == 2
+    replacement = session.agent
+    assert replacement.export_conversation() == original_history
+    assert replacement.workspace_manifest["source_root"] == str((new_root / "src").resolve())
+    assert replacement.policy.check("read_file", {"path": str(new_root / "src" / "main.py")}) is None
+    assert replacement.policy.check("read_file", {"path": str(old_root / "src" / "main.py")})
+
+
+def test_explicit_empty_scopes_clear_previous_workspace_paths(monkeypatch):
+    monkeypatch.setattr(chat_session, "validate_agent_workspace_path", lambda value, **_: (value, None))
+    paths, error = chat_session._resolve_workspace_paths(
+        {"source_dir": "", "test_dir": "", "project_file": "", "design_dir": ""},
+        {"source_dir": "checkpoint-source"}, source_dir="old-source", test_dir="old-test",
+        project_file="old-project", workspace_root="root", design_dir="old-design",
+    )
+    assert error == ""
+    assert paths == ("", "", "", "root", "")
+
+
+def test_disconnect_reconnect_preserves_run_and_stop_reaches_original_task(tmp_path, monkeypatch):
+    trace = _TraceLog()
+    trace.error = lambda **_kwargs: None
+    agent = SimpleNamespace(llm=None, last_run_checkpoint={},
+                            tool_registry=SimpleNamespace(get_tool=lambda _name: None))
+    session = SimpleNamespace(agent=agent, review_mgr=None, progress=None,
+                              prompt_builder=None, trace_log=trace,
+                              run_owner=None, touch=lambda: None)
+    monkeypatch.setattr(chat_session, "get_or_create", lambda _id: session)
+    monkeypatch.setattr(chat_session, "_latest_resumable_run", lambda _id: None)
+    monkeypatch.setattr(chat_session, "_resolve_workspace_paths", lambda *_a, **_kw: (("", "", "", str(tmp_path), ""), ""))
+    monkeypatch.setattr(chat_session, "_compress_session_context", _async_noop)
+    monkeypatch.setattr(chat_session.BaseAgentsLLM, "from_settings", lambda **_kw: SimpleNamespace())
+    starts, stopped = [], []
+
+    async def scenario():
+        ready = asyncio.Event()
+
+        async def start(**kwargs):
+            starts.append(kwargs)
+
+            async def execute():
+                ready.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    stopped.append(kwargs["stop_check"]())
+                    raise
+
+            return asyncio.create_task(execute())
+
+        monkeypatch.setattr(chat_session, "_start_agent_chat_run", start)
+        first = _WebSocket([json.dumps({"type": "chat", "message": "repair"})])
+        await chat_session.ChatSessionCoordinator(first).run()
+        await ready.wait()
+        task = session.chat_connection.task
+        assert not task.done()
+        second = _WebSocket([
+            json.dumps({"type": "chat", "message": "duplicate"}),
+            json.dumps({"type": "stop"}),
+        ])
+        await chat_session.ChatSessionCoordinator(second).run()
+        assert len(starts) == 1
+        assert stopped == [True]
+        assert task.cancelled()
+        assert any(e.get("event") == "session_sync" and e["running"] for e in second.sent)
+        assert any(e.get("event") == "stopped" for e in second.sent)
+
+    asyncio.run(scenario())
 
 
 def test_online_coordinator_background_stays_in_session_after_disconnect(tmp_path, monkeypatch):

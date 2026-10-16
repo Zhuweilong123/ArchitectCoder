@@ -29,3 +29,13 @@
 只实现 `collect` 的旧 provider 仍可独立收集事实。作为生产审核 provider 使用时必须同时实现 `evaluate`；能力缺失返回 `inconclusive` 并阻止有变更的候选提交，不静默回退到另一套契约策略。缺失 `analyze` 时返回事实说明，不调用模型。服务端或本次任务显式禁用契约时仍按原禁用逻辑处理。
 
 修改记忆召回、提取、生命周期、归档和注入策略，只需要修改 `extensions/memory/`。只有新增宿主能力或修改跨插件上下文时，才需要修改 `host_api/`、`adapters/` 或组合入口。新领域请求和结果应先放入对应插件的 `plugin_api.py`，并在插件清单声明接口；阶段名称保持通用，不向核心枚举添加领域别名。
+
+## 按能力使用宿主服务
+
+内置插件使用 `host_api/services.py` 中的窄协议：环境、Provider、运行时、观察、校验和 Agent 服务各有自己的 `get_*_services()` 入口；装配、执行和生命周期使用对应的组合协议。它们共享同一个请求绑定，保持后台任务继承和配置快照语义。
+
+所有插件按所需能力选择窄协议，不提供公开聚合接口。底层宿主实例由模块内部解析，请求作用域与后台任务继承机制统一管理。插件通过 `configuration()` 获取当前请求配置，通过 `ExtensionContextPort.provider(name, Contract)`、`provider_options(name)` 和 `project_id` 读取绑定和项目身份；选项是脱离原数据的只读映射。插件私有状态继续使用 `state(name)`，不要直接依赖宿主的 `metadata` / `providers` 字典。常用配置由 `PluginConfiguration` 描述，执行数据与回调由 `ExecutionData` / `ExecutionCapabilities` 描述。
+
+公共中英文分词实现在 `shared/tokenization.py`，memory 与 knowledge_graph 都依赖它；`extensions.memory.tokenizer` 仅保留公开函数的兼容导出。公共算法不应依赖某个插件的初始化和存储实现。
+
+知识图谱插件 1.1.0 新增可选同步能力 `preindex_project(GraphPreindexRequest) -> GraphPreindexResult`，在清单的 prepare 阶段声明。评测通过当前配置选中的 Provider 准备 fixture 图谱，不选择数据库文件名或导入 GraphBuilder。内置 Provider 将预索引数据写入 fixture 的项目状态目录，避免部署级数据库被评测改写。自定义 Provider 未实现此能力时，普通图谱功能保持原契约；明确要求预索引的评测报错，不回退到内置存储。

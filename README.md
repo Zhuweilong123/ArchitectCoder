@@ -225,7 +225,6 @@ On GitHub, download the **raw HTML file** and open it in a browser. No installat
 
 - **DevAgent Capability Benchmark Center**: run versioned cases in isolated workspaces using the production Agent; inspect checker results, tool/token usage, duration, and linked traces. Compare builds and archive results.
 - **Trace Viewer & Replay**: inspect recorded model/tool events and compare replayed steps. `mock` replay uses recorded data without model calls; `rerun` and `live` modes have different model/tool execution policies.
-- **TestHub**: load, edit, and save Excel test cases in the canvas, with review records. Ask DevAgent to write or update test code through the workspace workflow.
 - **Knowledge graph and memory**: configurable providers for design/code/test indexing and project-scoped recall.
 - **Extensible runtime**: replace orchestration, memory, Trace, evaluation, knowledge graph, and design-contract implementations through plugin contracts. See the [plugin walkthrough](#plugin-walkthrough) for the stage and slot model.
 
@@ -366,8 +365,10 @@ Configuration lives in `backend/.env`; definitions are in `backend/config/`. Sta
 
 - **Model**: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_ID`.
 - **Workspace**: add external project roots through `WORKSPACE_ROOTS` and restart the backend. This also applies when copying the quickstart outside the repository.
-- **Execution**: native command execution is the default; select WSL explicitly with `AGENT_COMMAND_ENVIRONMENT=wsl` when needed.
+- **Execution**: native command execution is the default; invoke WSL through the Windows `shell` tool with `wsl.exe` when needed.
 - **Providers**: `AGENT_*_ENABLED` and `AGENT_*_PROVIDER` control optional capabilities. Knowledge graph and orchestration are disabled in the example configuration; enable them when needed.
 - **API authentication**: if `INTERNAL_API_TOKEN` is set, configure the same value as `VITE_API_TOKEN` in `frontend/.env.local`.
+
+Local launch binds to `127.0.0.1` by default. External file access always requires configured `WORKSPACE_ROOTS`; `safe=false` never expands permissions. See [production deployment and security verification](docs/production-deployment.md) for strict mode and explicit browser origins.
 
 See [current architecture](docs/current-architecture.md) and [command execution](docs/runtime-command-execution.md) for detailed configuration and policy.

@@ -13,6 +13,8 @@ Usage::
 
 from __future__ import annotations
 
+from app.agent_base.host_api.data import ToolSchema
+
 import asyncio
 import glob as _glob
 import hashlib
@@ -25,12 +27,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.runtime.command import CommandExecutor, ExecutionEnvironmentError, HostShellExecutor
+from app.runtime.encoding import decode_process_output as _decode_output
 from app.runtime.workspace_paths import WorkspacePathError, WorkspacePathResolver
 from app.runtime.process_output import (
     DEFAULT_OUTPUT_LIMIT_BYTES, collect_process_output, normalize_output_limit,
 )
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.tools.async_tool import AsyncTool
+from app.agent_base.tools.recovery import WorkspaceRecoveryMixin
 from app.agent_base.tools.result import ToolResult, command_result
 from app.agent_base.tools.my_tools.file_search_tools import GrepFileTool
 from app.agent_base.tools.my_tools.file_inventory import file_metrics
@@ -93,19 +97,6 @@ _REVIEW_LIST_LOWER = [p.lower() for p in REVIEW_LIST]
 SHELL_TIMEOUT = 120  # 秒
 SHELL_OUTPUT_CAP = DEFAULT_OUTPUT_LIMIT_BYTES  # 采集时的字节硬上限；模型输出由运行时分页
 SHELL_REVIEW_TIMEOUT = 300  # 敏感命令人工审核等待上限（秒）
-
-
-def _decode_output(data: bytes) -> str:
-    """解码子进程输出：优先 UTF-8，失败回退 GBK。
-
-    中文 Windows 上 cmd.exe 的错误信息是 GBK（cp936），而 Python 子进程
-    （PYTHONUTF8=1）输出 UTF-8。不能用 locale.getpreferredencoding()——它在
-    PYTHONUTF8=1 下会返回 utf-8，导致 GBK fallback 失效。
-    """
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("gbk", errors="replace")
 
 
 def safe_path(path: str, roots: list[str], require_exist: bool = False) -> Path:
@@ -187,7 +178,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
             pass
 
 
-class ReadFileTool(AsyncTool):
+class ReadFileTool(WorkspaceRecoveryMixin, AsyncTool):
     """读文件，按行返回，支持 offset/limit 切片。"""
 
     _MAX_PATH_SUGGESTIONS = 5
@@ -380,7 +371,7 @@ class ReadFileTool(AsyncTool):
     def _display_candidate(self, candidate: Path) -> str:
         return self._paths.display(candidate)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -400,7 +391,7 @@ class ReadFileTool(AsyncTool):
         }
 
 
-class BaseListFilesTool(AsyncTool):
+class BaseListFilesTool(WorkspaceRecoveryMixin, AsyncTool):
     """Shared glob listing and file metrics for workspace tools."""
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
@@ -607,7 +598,7 @@ class BaseListFilesTool(AsyncTool):
             retryable=bool(errors), execution_evidence={"file_query": metadata, "scan_errors": errors},
         )
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {
@@ -630,8 +621,12 @@ class BaseListFilesTool(AsyncTool):
         }
 
 
-class ShellTool(AsyncTool):
+class ShellTool(WorkspaceRecoveryMixin, AsyncTool):
     """在 workspace 内跑 shell 命令（高危直接拒绝 + 敏感人工审核 + 超时守卫）。"""
+
+    @property
+    def recovery_working_directory(self) -> str:
+        return self._cwd
 
     def __init__(self, source_dir: str = "", test_dir: str = "", design_dir: str = "",
                  review_manager=None, progress=None,
@@ -731,9 +726,8 @@ class ShellTool(AsyncTool):
     def _validate_shell_command(command: str) -> str | None:
         """限制 shell=True 的逃逸面。
 
-        The production command contract is POSIX bash.  The host adapter owns
-        WSL/native process launch; this validator only enforces the stable
-        agent-facing command subset.
+        The host executor owns native process launch and shell syntax; this
+        fallback validates a simple POSIX command when no host validator exists.
         """
         if len(command) > 4000:
             return "command is too long (maximum 4000 characters)"
@@ -875,7 +869,7 @@ class ShellTool(AsyncTool):
             out = f"Error: command exited with code {proc.returncode}: {out or '(no output)'}"
         return command_result(command, cwd, proc.returncode, out or "(no output)")
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         return {
             "type": "function",
             "function": {

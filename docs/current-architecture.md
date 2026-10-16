@@ -4,7 +4,7 @@
 >
 > 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-10-07
+> 文档同步：2026-10-15
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -46,6 +46,9 @@ WebSocket / Evaluation / future HTTP or CLI
 |---|---|---|
 | Agent 组合 | `backend/app/agent_base/assembly.py` | 统一创建 LLM、工具、运行时、记忆和提示词 |
 | Agent 循环 | `backend/app/agent_base/agents/react_agent.py` | 推理、工具调用、预算和收敛控制 |
+| Agent 公共状态 | `backend/app/agent_base/core/agent.py` | 通用模型类型参数、配置和独立历史副本；执行入口由具体 Agent 定义 |
+| 子 Agent 工具装配 | `backend/app/agent_base/tools/my_tools/subagent_toolkits.py` | 工具包范围、验证任务限制、注册表和提示词；执行循环由 `subagent_tool.py` 负责 |
+| 模型调用边界 | `backend/app/agent_base/agents/react_runtime/fc_model.py` | 主 Agent 与子 Agent 共用模型前后事件、超时、取消和请求参数传递 |
 | 单次执行 | `backend/app/services/agent_execution.py` | 生命周期、checkpoint、审批、证据和结果 |
 | 会话/传输 | `backend/app/services/chat_session.py`、`agent_chat_ws.py` | 会话状态与 WebSocket 适配分离 |
 | 文件与变更 | `backend/app/agent_base/tools/my_tools/foundation_tools.py`、`backend/app/agent_base/tools/my_tools/foundation_runtime.py`、`backend/app/services/change_set.py` | Foundation 能力契约、工作区边界、原子变更和 SHA 校验 |
@@ -72,6 +75,22 @@ WebSocket / Evaluation / future HTTP or CLI
 | Canvas 公共运行时 | `frontend/src/components/Canvas/core/createCanvasGraph.ts`、`canvasCommon.ts`、`canvasEventAdapter.ts`、`useCanvasGraphViewport.ts` | Graph 创建、网格/视口同步和通用事件适配 |
 | 前端请求边界 | `frontend/src/services/api.ts`、`evaluationCenterApi.ts` | Toolbar 工程文件直接使用通用 API；评测资源和 Trace Case 批量请求由 EvaluationCenter 服务管理 |
 
+公共基类 `Agent[ModelT]` 不规定同步执行能力。`ReActAgent` 依赖异步 `ModelPort`，
+入口为 `arun` / `arun_stream`，原先始终抛异常的 `run` 已移除；`PlanAndSolveAgent`
+依赖 `SyncModelPort`，保留同步 `run`。模型协议位于 `host_api/agents.py`，具体客户端
+由装配层注入，Agent 实现不导入 `BaseAgentsLLM`。
+
+同步规划入口只接受 `TextGenerationOptions` 中的生成参数（temperature、max_tokens、
+json_mode），自定义提示词只包含 planner / executor。模型规划输出须通过非空字符串
+列表校验后才能执行；system prompt 同时传给规划与执行请求。最终 ReAct 进度使用明确
+参数构造，并由收尾函数统一标记终态。公共历史读写隔离可变数据，清空 ReAct 历史也会
+清除压缩摘要。
+
+子 Agent 通过 `ModelCaller` 提供调用身份、模型协议与重试策略，保持单次超时即停止、
+`child_agent` Trace 范围和累计预算的输出限制。工具包构造使用明确的审核、进度、命令执行
+协议；证据、工具调用、工具结果和 schema 均使用结构化契约。子任务准备完成后才切换
+运行时上下文，执行退出时恢复父任务上下文，避免准备失败污染后续请求。
+
 ## 3. 当前基础工具契约
 
 生产 Agent 的基础工具是：
@@ -82,10 +101,10 @@ WebSocket / Evaluation / future HTTP or CLI
 | `apply_changes` | 文件创建、修改、删除、移动和复制 |
 | `run_task` | `test`、`build`、`lint`、`format`、`typecheck`、`validate` 等标准任务 |
 | `run_program` | 允许列表中的可执行文件 + 字面量参数 |
-| `shell` | 最后的单条原生命令；禁止管道、串联、重定向、替换和嵌套 Shell |
+| `shell` | 最后的单条宿主命令；Windows 可显式调用 WSL，禁止外层管道、串联、重定向和替换 |
 
 执行路由固定为：`run_task` → `run_program` → `shell`。Windows 默认使用
-原生 PowerShell；WSL Bash 只有在显式配置时启用。命令适配器和宿主策略位于
+原生 PowerShell；需要 WSL 时通过 shell 显式调用 wsl.exe，无专用配置或适配器。命令适配器和宿主策略位于
 `backend/app/runtime/command.py`，工具描述和路由规则位于 `assembly.py`。
 
 ## 4. 可选扩展
@@ -114,9 +133,9 @@ extensions.skills:create
 
 Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 服务贡献完成。前者准备共享目录快照，后者绑定 provider、提供工具并声明必需的执行检查。`assembly.py` 统一派发请求、注册返回的工具并构造 Agent，不再显式加载或绑定 memory、skills、design_contract、orchestration provider。独立目录插件经扫描即可进入真实生产装配，新增同类能力不需要修改宿主装配入口；普通 initialize 广播不会执行装配服务。
 
-配置、项目身份、状态目录、运行目录、工作区路径解析和进程输出解码通过 `host_api/environment.py` / HostServices 提供。依赖解析沿用当前请求的配置和扫描目录，后台任务继承相同绑定。宿主管理项目状态目录，插件选择数据库文件名；评测插件管理运行目录内的评测布局。版本化用例与 fixture 保留在 `backend/evals`，UML Project 仍是宿主业务数据协议。API/CLI 接入层可以使用宿主 loader adapter，领域模块禁止直接导入 backend.config、app.runtime、宿主 services/core/agent 实现或插件宿主加载器，边界由 AST 回归测试验证。
+配置、项目身份、状态目录、运行目录、工作区路径解析和进程输出解码通过 `host_api/environment.py` 和按能力划分的服务协议 提供。依赖解析沿用当前请求的配置和扫描目录，后台任务继承相同绑定。宿主管理项目状态目录，插件选择数据库文件名；评测插件管理运行目录内的评测布局。版本化用例与 fixture 保留在 `backend/evals`，UML Project 仍是宿主业务数据协议。API/CLI 接入层可以使用宿主 loader adapter，领域模块禁止直接导入 backend.config、app.runtime、宿主 services/core/agent 实现或插件宿主加载器，边界由 AST 回归测试验证。
 
-插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过 `HostServices`、公开运行状态协议和 `ExtensionContext` 获取。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
+插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过按能力划分的服务协议、公开运行状态协议和 `ExtensionContextPort` 获取。插件只使用按能力划分的公开接口，底层宿主实例解析保留在模块内部。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
 
 统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。
 
@@ -146,6 +165,11 @@ extensions/<plugin>/               plugin.json、provider、存储和领域算�
 
 - 上下文预算由 `backend/app/services/context_manager.py` 管理；它只负责本次请求的
   prompt 预算、历史压缩和恢复，不直接实现长期记忆。
+- 上下文契约集中在 `backend/app/agent_base/host_api/context.py`：历史消息、预算配置、
+  请求报告和裁剪结果都有明确字段。`fit_messages` 返回 `MessageFit`，主循环和子任务
+  必须沿用其中更新后的 `current_user_index`，不能通过消息内容重新寻找当前任务。
+  历史选择和裁剪按完整工具调用及结果分组；返回消息是独立快照，硬上限估算包含
+  消息序列化开销和工具 schema。固定字段本身超过预算时仍由调用方硬上限检查拒绝请求。
 - 会话级压缩由 `backend/app/services/session_compression.py` 的
   `SessionContextCompressor` 负责，在会话层调用模型生成带来源引用的摘要；失败时保留
   原始历史，不把语义压缩逻辑塞进 ReAct 回合循环。

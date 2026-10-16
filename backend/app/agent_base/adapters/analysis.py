@@ -1,6 +1,7 @@
 """Host model/history adaptation for a generic read-only analysis request."""
 import asyncio
 import logging
+from app.agent_base.agents.react_agent import ReActAgent
 
 from app.agent_base.core.message import Message
 from app.agent_base.host_api.contexts import AnalysisRequest
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class ReadOnlyAnalysisAdapter:
-    def __init__(self, agent):
+    def __init__(self, agent: ReActAgent) -> None:
         self.agent = agent
 
     async def invoke(self, request: AnalysisRequest) -> str:

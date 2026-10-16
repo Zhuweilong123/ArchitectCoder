@@ -1,26 +1,30 @@
 """Contract decisions and projections owned by the plugin, not the run loop."""
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_execution_services
 from app.agent_base.host_api.contexts import ContractGateContext, ContractFailureAnalysisContext
 from copy import deepcopy
+from .plugin_api import ContractBinding
 
 
 def _binding():
-    session = get_host_services().extension_context()
-    return session, session.providers.get("design_contract") if session else None
+    session = get_execution_services().extension_context()
+    return session, session.provider("design_contract", ContractBinding) if session else None
 
 
 def _gate_context(request, session):
-    settings = session.metadata["execution_settings"]
+    settings = get_execution_services().configuration()
     requested = request.data.get("design_contract_enabled")
     enabled = bool(getattr(settings, "agent_design_contract_enabled", True))
     if enabled and not getattr(settings, "strict_production", False) and requested is not None:
         enabled = bool(requested)
     request.checkpoint["contract_enabled"] = enabled
+    requirements = deepcopy(get_execution_services().runtime().policy_metadata.get("validation_requirements", []))
+    request.checkpoint["validation_requirements"] = requirements
     return ContractGateContext(
         workspace_manifest=deepcopy(request.data["workspace_manifest"]),
         changed_paths=tuple(deepcopy(request.data["changed_paths"])),
         emit=request.capabilities["emit"], request_review=request.capabilities.get("request_review"),
-        run_id=request.run_id, settings=settings, contract_enabled=enabled)
+        run_id=request.run_id, settings=settings, contract_enabled=enabled,
+        validation_requirements=tuple(requirements))
 
 
 async def check(context):
@@ -42,7 +46,7 @@ async def check(context):
         record("contract_check", phase="pre_commit", **value)
     if not decision.allowed:
         request.allowed = False
-        request.message = decision.message or "设计契约校验阻止提交，变更已回滚。"
+        request.message = decision.message or "设计契约校验未通过，请查看门禁报告。"
         request.stop_reason = "contract_check_failed"
         request.recovery_event = {"event": "contract_recovery_available", "action": "修复设计契约并继续"}
 

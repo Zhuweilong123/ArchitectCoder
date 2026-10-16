@@ -8,7 +8,7 @@ Follows memory_system/database.py pattern:
   - Natural key upsert for idempotent builds
   - FTS5 content-sync mode (auto-sync via triggers)
 
-Reuses memory_system.tokenizer.tokenize_for_fts() for query tokenization.
+Uses the shared tokenizer for query tokenization.
 """
 
 from __future__ import annotations
@@ -26,14 +26,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # ── FTS5 query builder ────────────────────────────────────────
-# 复用 memory_system tokenizer, 仅在可用时导入
-
-try:
-    from extensions.memory.tokenizer import tokenize_for_fts as _tokenize_for_fts
-except ImportError:
-    def _tokenize_for_fts(text: str) -> str:
-        """Fallback: 直接用原始文本做 FTS 查询."""
-        return text
+from shared.tokenization import tokenize_for_fts as _tokenize_for_fts
 
 
 def _build_fts_query(pattern: str) -> str:

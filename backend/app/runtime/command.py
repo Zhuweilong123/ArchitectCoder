@@ -2,7 +2,7 @@
 
 The Agent receives a runtime-generated environment description and invokes a
 stable tool contract.  This module owns host-specific process and shell
-launching; WSL is optional and never selected by ``auto`` on Windows.
+launching. External environments are invoked explicitly through the host shell.
 """
 
 from __future__ import annotations
@@ -221,12 +221,39 @@ class PowerShellExecutionProfile:
             "Run one simple native PowerShell command as a last resort in the configured workspace. "
             f"{self.cwd_note} Use cwd='source', 'test', 'design', or 'workspace'. "
             "Use PowerShell syntax, including safe read-only expressions such as "
-            "(Get-Content file).Count; do not invoke cmd.exe, bash, sh, wsl.exe, or nested shells. "
-            "For file edits, prefer the structured file tools. Do not chain commands, use pipes, "
+            "(Get-Content file).Count. Invoke WSL explicitly through shell using wsl.exe; "
+            "select its distribution with -d and pass Linux setup/commands as one single-quoted "
+            "bash -lc argument. Linux paths and ROS setup are supplied by the caller, not mapped by runtime. "
+            "Do not invoke cmd.exe or other nested host shells. "
+            "For file edits, prefer the structured file tools. Do not chain host commands, use host pipes, "
             "redirection, command substitution, or inline interpreter code. High-risk commands are "
             "denied; sensitive commands require approval. Use run_task for project tasks and "
             "run_program for direct executable argv."
         )
+
+
+def _unquoted_powershell_text(command: str) -> str | None:
+    """Mask quoted argv while retaining host command operators for validation."""
+    result: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote:
+            result.append(" ")
+            if char == quote:
+                if index + 1 < len(command) and command[index + 1] == quote:
+                    result.append(" ")
+                    index += 1
+                else:
+                    quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+            result.append(" ")
+        else:
+            result.append(char)
+        index += 1
+    return None if quote else "".join(result)
 
 
 class NativePowerShellExecutor:
@@ -249,16 +276,28 @@ class NativePowerShellExecutor:
     def validate_command(self, command: str) -> str | None:
         if len(command) > 4000:
             return "command is too long (maximum 4000 characters)"
-        if any(token in command for token in ("\n", "\r", ";", "&&", "||", "|", ">", "<", "`", "$" + "(")):
+        wsl_command = bool(re.match(r"^\s*wsl(?:\.exe)?(?:\s|$)", command, re.IGNORECASE))
+        surface = command
+        if wsl_command:
+            # Quoted argv belongs to the invoked program. Operators inside a
+            # quoted Linux command are not operators of the host PowerShell.
+            surface = _unquoted_powershell_text(command)
+            if surface is None:
+                return "command has an unterminated quoted argument"
+        if any(token in command for token in ("\n", "\r", "`", "$" + "(")) or any(
+            token in surface for token in ((";", "&&", "||", "|", ">", "<") + (("&",) if wsl_command else ()))
+        ):
             return (
                 "shell accepts one simple command only; chaining, pipes, redirection, "
                 "command substitution, and inline scripts are not allowed. "
                 "Use run_task for project tasks or run_program with literal argv."
             )
-        lowered = command.lower()
+        lowered = surface.lower()
         if any(token in lowered for token in (
-            "cmd.exe", "powershell -command", "pwsh -command", "wsl.exe", "bash -c", "sh -c",
+            "cmd.exe", "powershell -command", "pwsh -command",
         )):
+            return "nested shell invocation is not allowed"
+        if not wsl_command and any(token in lowered for token in ("bash -c", "sh -c")):
             return "nested shell invocation is not allowed"
         if " -command " in lowered or lowered.startswith(("-command ", "-c ")):
             return "nested PowerShell invocation is not allowed"
@@ -274,9 +313,9 @@ class NativePowerShellExecutor:
             executable = remainder.split(None, 1)[0].strip("'\"").lower()
         allowed = {
             "get-childitem", "gci", "dir", "get-content", "gc", "select-string", "sls",
-            "test-path", "get-date", "pwd", "write-output", "echo", "python", "python.exe", "py",
+            "test-path", "get-date", "get-command", "pwd", "write-output", "echo", "python", "python.exe", "py",
             "pytest", "git", "node", "node.exe", "npm", "npx", "pnpm", "yarn", "ruff",
-            "mypy", "cargo", "go", "dotnet", "java", "mvn", "gradle",
+            "mypy", "cargo", "go", "dotnet", "java", "mvn", "gradle", "wsl", "wsl.exe",
         }
         if executable not in allowed:
             return f"executable '{executable}' is not allowed"
@@ -366,7 +405,6 @@ class NativePowerShellExecutor:
             process.kill()
 
 
-_WINDOWS_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 _SAFE_READONLY_EXPRESSION = re.compile(
     r"^\s*\(\s*(Get-Content|gc)\s+.+?\s*\)\s*\.\s*(Count|Length)\s*$",
     re.IGNORECASE,
@@ -409,172 +447,6 @@ def _validate_resolved_program(
     return None
 
 
-def windows_path_to_wsl(path: str) -> str:
-    """Map a Windows workspace path to its deterministic /mnt mount path."""
-    normalized = str(path or "").strip()
-    if normalized.startswith("/mnt/"):
-        return normalized
-    match = _WINDOWS_PATH.match(normalized)
-    if not match:
-        raise ExecutionEnvironmentError(
-            f"WSL requires an absolute drive path for cwd, got: {path!r}"
-        )
-    drive, remainder = match.groups()
-    return f"/mnt/{drive.lower()}/{remainder.replace(chr(92), '/') }"
-
-
-def _decode_wsl_output(data: bytes) -> str:
-    """Decode WSL diagnostics from either UTF-8 or Windows UTF-16LE."""
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return data.decode("utf-16", errors="replace")
-    if b"\x00" in data:
-        return data.decode("utf-16le", errors="replace")
-    return decode_process_output(data)
-
-
-class WslBashExecutor:
-    """Launch POSIX commands in one configured WSL distribution."""
-
-    profile = LinuxExecutionProfile(
-        name="linux-wsl",
-        cwd_note=(
-            "This is a WSL Linux environment. The host working directory is mapped "
-            "for you; never write /mnt paths or Windows drive paths in the command."
-        ),
-    )
-
-    def __init__(
-        self,
-        *,
-        distribution: str = "",
-        executable: str = "wsl.exe",
-        preflight_timeout_seconds: float = 20.0,
-    ) -> None:
-        self.distribution = distribution.strip()
-        self.executable = executable.strip() or "wsl.exe"
-        self.preflight_timeout_seconds = max(0.1, float(preflight_timeout_seconds))
-        self._preflight_done = False
-
-    def validate_command(self, command: str) -> str | None:
-        if _WINDOWS_PATH.search(command):
-            return (
-                "Windows paths are not valid inside WSL commands; use the cwd parameter "
-                "or a workspace-relative POSIX path"
-            )
-        return None
-
-    def validate_resolved_program(self, program: str, args: list[str]) -> str | None:
-        # The command is resolved inside WSL, never against the Windows PATH.
-        return _validate_resolved_program(program, args, resolve_on_host=False)
-
-    def normalize_resolved_program(
-        self, program: str, args: list[str], cwd: str,
-    ) -> tuple[str, list[str]]:
-        """Translate a Windows Gradle wrapper selected by host discovery."""
-        if program.lower() == "gradlew.bat" and (Path(cwd) / "gradlew").is_file():
-            return "./gradlew", args
-        return program, args
-
-    def probe_toolchain(self, program: str, cwd: str, *, timeout: float = 10.0):
-        return _probe_version_process(
-            lambda: self.start_program(program, ["--version"], cwd),
-            self.terminate,
-            timeout,
-        )
-
-    def _prefix(self, *, cwd: str | None = None) -> list[str]:
-        command = [self.executable]
-        if self.distribution:
-            command.extend(["--distribution", self.distribution])
-        if cwd:
-            command.extend(["--cd", windows_path_to_wsl(cwd)])
-        return command
-
-    def _ensure_available(self) -> None:
-        if self._preflight_done:
-            return
-        if not shutil.which(self.executable):
-            raise ExecutionEnvironmentError(f"WSL launcher is unavailable: {self.executable}")
-        try:
-            result = subprocess.run(
-                [*self._prefix(), "--exec", "bash", "-lc", "printf agent_wsl_ready"],
-                capture_output=True,
-                timeout=self.preflight_timeout_seconds,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            # Do not permanently poison this executor after a transient WSL
-            # cold-start timeout.  The next tool call must be able to retry.
-            raise ExecutionEnvironmentError(
-                f"WSL preflight failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        if result.returncode != 0 or b"agent_wsl_ready" not in result.stdout:
-            detail = _decode_wsl_output(result.stderr or result.stdout).strip()
-            summary = detail or f"exit code {result.returncode}"
-            raise ExecutionEnvironmentError(f"WSL preflight failed: {summary}")
-        self._preflight_done = True
-
-    def preflight(self) -> None:
-        self._ensure_available()
-
-    def start(self, command: str, cwd: str | None) -> subprocess.Popen:
-        self.preflight()
-        if not cwd:
-            raise ExecutionEnvironmentError("WSL command execution requires a workspace cwd")
-        return subprocess.Popen(
-            [*self._prefix(cwd=cwd), "--exec", "bash", "-lc", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-        )
-
-    def terminate(self, process: subprocess.Popen) -> None:
-        if process.poll() is not None:
-            return
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    capture_output=True, timeout=5, check=False,
-                )
-            else:
-                process.terminate()
-        except (OSError, subprocess.SubprocessError):
-            process.kill()
-
-    def start_program(self, program: str, args: list[str], cwd: str | None) -> subprocess.Popen:
-        self.preflight()
-        if not cwd:
-            raise ExecutionEnvironmentError("WSL program execution requires a workspace cwd")
-        mapped_args = []
-        for value in args:
-            path, separator, selector = value.partition("::")
-            mapped = windows_path_to_wsl(path) if _WINDOWS_PATH.match(path) else path
-            mapped_args.append(mapped + separator + selector)
-        return subprocess.Popen(
-            [*self._prefix(cwd=cwd), "--exec", program, *mapped_args],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-        )
-
-
-def resolve_linux_command_environment(
-    mode: str, *, host_os: str | None = None, platform_name: str | None = None,
-) -> str:
-    """Resolve an explicit or host-derived Linux command environment."""
-    host_os = host_os or os.name
-    platform_name = platform_name or sys.platform
-    if mode == "auto":
-        if host_os == "nt":
-            return "wsl"
-        if platform_name.startswith("linux"):
-            return "native_linux"
-        raise ExecutionEnvironmentError(
-            "automatic Linux command execution supports Windows (WSL) and Linux hosts only"
-        )
-    return mode
-
-
 def resolve_command_environment(
     mode: str, *, host_os: str | None = None, platform_name: str | None = None,
 ) -> str:
@@ -592,20 +464,6 @@ def resolve_command_environment(
     return mode
 
 
-def build_linux_command_executor(settings) -> CommandExecutor:
-    """Build the configured production command host without task classification."""
-    mode = resolve_linux_command_environment(settings.agent_command_environment)
-    if mode == "wsl":
-        return WslBashExecutor(
-            distribution=settings.agent_wsl_distribution,
-            executable=settings.agent_wsl_executable,
-            preflight_timeout_seconds=settings.agent_wsl_preflight_timeout_seconds,
-        )
-    if mode == "native_linux":
-        return NativeLinuxBashExecutor()
-    raise ExecutionEnvironmentError(f"unsupported command environment: {mode}")
-
-
 def build_command_executor(settings) -> CommandExecutor:
     """Build the production executor selected by the host Runtime."""
     mode = resolve_command_environment(settings.agent_command_environment)
@@ -613,10 +471,4 @@ def build_command_executor(settings) -> CommandExecutor:
         return NativePowerShellExecutor()
     if mode == "native_posix":
         return NativeLinuxBashExecutor()
-    if mode == "wsl":
-        return WslBashExecutor(
-            distribution=settings.agent_wsl_distribution,
-            executable=settings.agent_wsl_executable,
-            preflight_timeout_seconds=settings.agent_wsl_preflight_timeout_seconds,
-        )
     raise ExecutionEnvironmentError(f"unsupported command environment: {mode}")

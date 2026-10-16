@@ -11,7 +11,7 @@ from .manager import MemoryManager
 from .models import MemoryConfig, MemoryEntry, MemoryType, RecallResult, RetrieveMode
 from .policy import MemoryRecallPolicy, MemoryWriteDecision, MemoryWritePolicy
 from .provider import create
-from .tokenizer import is_jieba_available, tokenize, tokenize_for_fts, tokenize_for_index
+from shared.tokenization import is_jieba_available, tokenize, tokenize_for_fts, tokenize_for_index
 
 __all__ = [
     "create", "MemoryManager", "MemoryDatabase", "LifecycleManager",

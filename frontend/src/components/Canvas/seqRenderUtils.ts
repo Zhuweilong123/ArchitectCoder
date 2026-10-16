@@ -46,10 +46,11 @@ export function getMessageVisual(type: MessageType, theme: CanvasTheme) {
     color,
     dash: type === 'return' ? '6,3' : '',
     marker: type === 'simple' ? null : {
-      name: type === 'async' ? 'classic' : 'block',
+      name: 'block',
+      open: type === 'async',
       width: 10,
       height: 6,
-      fill: color,
+      fill: type === 'async' ? 'none' : color,
       stroke: color,
     },
   };

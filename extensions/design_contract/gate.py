@@ -22,10 +22,10 @@ class DefaultContractGate:
         self._collector = collector
 
     async def evaluate(self, context: ContractGateContext) -> ContractGateDecision:
-        if not context.changed_paths:
+        if not context.changed_paths and not context.validation_requirements:
             return ContractGateDecision(allowed=True)
 
-        if not context.contract_enabled:
+        if not context.contract_enabled and not context.validation_requirements:
             changed = tuple(
                 str(item.get("path", "")) if isinstance(item, dict) else str(item)
                 for item in context.changed_paths
@@ -60,6 +60,8 @@ class DefaultContractGate:
             language_runner=self._language_runner,
             contract_provider=self._collector,
             index_graph=False,
+            validation_requirements=context.validation_requirements,
+            requirements_only=not context.contract_enabled,
         )
         payload = result.to_dict()
         payload["run_id"] = context.run_id
@@ -130,6 +132,7 @@ class DefaultContractGate:
             language_runner=self._language_runner,
             contract_provider=self._collector,
             index_graph=True,
+            validation_requirements=context.validation_requirements,
         )
 
 

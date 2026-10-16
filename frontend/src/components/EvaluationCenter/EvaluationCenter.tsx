@@ -1,3 +1,6 @@
+import { apiErrorMessage, apiErrorStatus } from '../../services/apiErrors';
+import type { CheckerConfig } from '../../types/evaluation';
+import type { JsonValue } from '../../types/json';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Card, Checkbox, Col, Collapse, Divider, Empty, Input, List, Modal, Popconfirm, Progress,
@@ -61,19 +64,19 @@ type EvaluationTab = 'overview' | 'performance' | 'comparison' | 'runs' | 'archi
 
 interface CheckerEditorProps {
   title: string;
-  value: Array<Record<string, any>>;
-  onChange: (value: Array<Record<string, any>>) => void;
+  value: CheckerConfig[];
+  onChange: (value: CheckerConfig[]) => void;
   disabled?: boolean;
 }
 
 const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange, disabled = false }) => {
   const interfaceLanguage = useUiStore((state) => state.interfaceLanguage);
   const definitions = getCheckerDefinitions(interfaceLanguage);
-  const updateChecker = (index: number, patch: Record<string, any>) => {
+  const updateChecker = (index: number, patch: Partial<CheckerConfig>) => {
     onChange(value.map((checker, current) => current === index ? { ...checker, ...patch } : checker));
   };
   const updateField = (index: number, field: CheckerFieldSpec, rawValue: string) => {
-    let parsed: any = rawValue;
+    let parsed: JsonValue | undefined = rawValue;
     if (field.kind === 'list') parsed = rawValue.split(',').map((item) => item.trim()).filter(Boolean);
     if (field.kind === 'number') parsed = rawValue === '' ? undefined : Number(rawValue);
     if (field.kind === 'json' && rawValue.trim()) {
@@ -163,8 +166,8 @@ const EvaluationCenter: React.FC = () => {
   const [traceCaseName, setTraceCaseName] = useState('');
   const [traceCaseReviewName, setTraceCaseReviewName] = useState('');
   const [traceCaseReviewProjectId, setTraceCaseReviewProjectId] = useState('');
-  const [traceCaseCheckers, setTraceCaseCheckers] = useState<Array<Record<string, any>>>([]);
-  const [traceCaseHardCheckers, setTraceCaseHardCheckers] = useState<Array<Record<string, any>>>([]);
+  const [traceCaseCheckers, setTraceCaseCheckers] = useState<CheckerConfig[]>([]);
+  const [traceCaseHardCheckers, setTraceCaseHardCheckers] = useState<CheckerConfig[]>([]);
   const [traceCaseDraft, setTraceCaseDraft] = useState<TraceCaseDraft | null>(null);
   const [traceCaseFixturePreview, setTraceCaseFixturePreview] = useState<TraceCaseFixturePreview | null>(null);
   const [traceCaseTurns, setTraceCaseTurns] = useState<TraceCaseTurn[]>([]);
@@ -176,7 +179,7 @@ const EvaluationCenter: React.FC = () => {
   const traceCaseNeedsBaseline = Boolean(traceCaseDraft?.capture && traceCaseReviewProjectId === traceCaseDraft.capture.project_id);
   const traceCaseReadOnly = traceCaseDraft?.status === 'published';
   const traceCaseSourceTurns: TraceCaseTurn[] = traceCaseDraft
-    ? (traceCaseDraft.trace_summary.turn_details?.map((turn: any, index: number) => ({
+    ? (traceCaseDraft.trace_summary.turn_details?.map((turn, index: number) => ({
       prompt: turn.prompt, checkers: [], hard_checkers: [], metadata: { source_turn_index: turn.source_turn_index || index + 1 },
     })) || draftTurns(traceCaseDraft)) : [];
   const leaveTraceCase = (action: () => void) => {
@@ -340,8 +343,8 @@ const EvaluationCenter: React.FC = () => {
         setBatch(null);
       }
       setBaseline(overview.baseline);
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '评测数据加载失败', 'Failed to load evaluation data')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '评测数据加载失败', 'Failed to load evaluation data')}: ${apiErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -352,8 +355,8 @@ const EvaluationCenter: React.FC = () => {
     setPerformanceLoading(true);
     try {
       setPerformanceRuns(await listEvalPerformanceResults());
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '性能结果加载失败', 'Failed to load performance results')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '性能结果加载失败', 'Failed to load performance results')}: ${apiErrorMessage(error)}`);
     } finally {
       setPerformanceLoading(false);
     }
@@ -366,15 +369,15 @@ const EvaluationCenter: React.FC = () => {
       const detail = await getEvalPerformanceResult(run.result_id);
       setSelectedPerformance(detail);
       setPerformanceVersion(detail.version);
-    } catch (error: any) {
-      if (error?.response?.status === 404) {
+    } catch (error: unknown) {
+      if (apiErrorStatus(error) === 404) {
         setSelectedPerformance(null);
         setComparisonIds((current) => current.filter((id) => id !== run.result_id));
         setPerformanceRuns(await listEvalPerformanceResults());
         message.info(tx(interfaceLanguage, '该性能结果已被删除，列表已刷新', 'This performance result was deleted; the list has been refreshed'));
         return;
       }
-      message.error(`${tx(interfaceLanguage, '性能结果详情加载失败', 'Failed to load performance details')}: ${error?.response?.data?.detail || error.message || error}`);
+      message.error(`${tx(interfaceLanguage, '性能结果详情加载失败', 'Failed to load performance details')}: ${apiErrorMessage(error)}`);
     } finally {
       setPerformanceLoading(false);
     }
@@ -403,8 +406,8 @@ const EvaluationCenter: React.FC = () => {
       await refresh();
       setSelectedPerformance({ ...selectedPerformance, version, archived: true });
       message.success(tx(interfaceLanguage, '性能评测已归档', 'Performance evaluation archived'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '性能评测归档失败', 'Failed to archive performance evaluation')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '性能评测归档失败', 'Failed to archive performance evaluation')}: ${apiErrorMessage(error)}`);
     } finally {
       setPerformanceArchiving(false);
     }
@@ -420,8 +423,8 @@ const EvaluationCenter: React.FC = () => {
       }
       await refresh();
       message.success(tx(interfaceLanguage, '性能结果本地数据已删除', 'Local performance result deleted'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '删除性能结果失败', 'Failed to delete performance result')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '删除性能结果失败', 'Failed to delete performance result')}: ${apiErrorMessage(error)}`);
     } finally {
       setDeletingPerformanceId(null);
     }
@@ -442,8 +445,8 @@ const EvaluationCenter: React.FC = () => {
       }
       await refresh();
       message.success(tx(interfaceLanguage, '运行批次本地数据已删除', 'Local run deleted'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '删除运行批次失败', 'Failed to delete run')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '删除运行批次失败', 'Failed to delete run')}: ${apiErrorMessage(error)}`);
     } finally {
       setDeletingRunId(null);
     }
@@ -466,8 +469,8 @@ const EvaluationCenter: React.FC = () => {
       setTraceCaseDrafts((current) => current.filter((item) => item.draft_id !== draft.draft_id));
       if (traceCaseDraft?.draft_id === draft.draft_id) { setTraceCaseDraft(null); setTraceCaseFixturePreview(null); }
       message.success(tx(interfaceLanguage, '评测用例草稿已删除', 'Evaluation case draft deleted'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '删除草稿失败', 'Failed to delete draft')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '删除草稿失败', 'Failed to delete draft')}: ${apiErrorMessage(error)}`);
     }
   };
   const openTraceCaseFactory = async (requestedSessionId = "") => {
@@ -488,8 +491,8 @@ const EvaluationCenter: React.FC = () => {
           : traces[0]?.session_id || '';
       setTraceCaseSessionId(preferredSessionId);
       setTraceCaseProjectId((current) => projects.some((project) => project.id === current) ? current : '');
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, 'Trace 用例能力加载失败', 'Failed to load Trace case resources')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, 'Trace 用例能力加载失败', 'Failed to load Trace case resources')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseLoading(false);
     }
@@ -520,8 +523,8 @@ const EvaluationCenter: React.FC = () => {
       restoreTraceCaseDraft(draft);
       setTraceCaseDrafts((current) => [draft, ...current.filter((item) => item.draft_id !== draft.draft_id)]);
       message.success(tx(interfaceLanguage, 'Trace 已转换为评测用例草稿', 'Trace converted to an evaluation case draft'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, 'Trace 转换失败', 'Failed to convert Trace')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, 'Trace 转换失败', 'Failed to convert Trace')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseActionLoading(false);
     }
@@ -533,8 +536,8 @@ const EvaluationCenter: React.FC = () => {
     try {
       const preview = await previewTraceCaseFixture(traceCaseDraft.draft_id);
       setTraceCaseFixturePreview(preview);
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, 'fixture 预览失败', 'Failed to preview fixture')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, 'fixture 预览失败', 'Failed to preview fixture')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseActionLoading(false);
     }
@@ -549,13 +552,13 @@ const EvaluationCenter: React.FC = () => {
       restoreTraceCaseDraft(draft);
       setTraceCaseDrafts((current) => current.map((item) => item.draft_id === draft.draft_id ? draft : item));
       message.success(`${tx(interfaceLanguage, '工作区已捕获为 fixture', 'Workspace captured as fixture')} (${draft.capture?.file_count || 0} ${tx(interfaceLanguage, '个文件', 'files')})`);
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, 'fixture 捕获失败', 'Failed to capture fixture')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, 'fixture 捕获失败', 'Failed to capture fixture')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseActionLoading(false);
     }
   };
-  const addTraceCaseCandidate = (candidate: Record<string, any>, target: 'diagnostic' | 'hard') => {
+  const addTraceCaseCandidate = (candidate: CheckerConfig, target: 'diagnostic' | 'hard') => {
     const sourceIndex = Number(candidate._evidence?.turn_index || 0);
     const key = target === 'hard' ? 'hard_checkers' : 'checkers';
     if (sourceIndex) {
@@ -589,8 +592,8 @@ const EvaluationCenter: React.FC = () => {
     try {
       await persistTraceCaseReview();
       message.success(tx(interfaceLanguage, '草稿审核内容已保存，请重新执行隔离试运行', 'Draft review saved; run the isolated validation again'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '保存审核内容失败', 'Failed to save review')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '保存审核内容失败', 'Failed to save review')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseActionLoading(false);
     }
@@ -606,8 +609,8 @@ const EvaluationCenter: React.FC = () => {
       message[draft.status === 'validated' ? 'success' : 'error'](
         draft.status === 'validated' ? tx(interfaceLanguage, '隔离试运行通过，可以发布', 'Isolated validation passed; ready to publish') : tx(interfaceLanguage, '隔离试运行未通过，请检查结果', 'Isolated validation failed; check the results'),
       );
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '隔离试运行失败', 'Isolated validation failed')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '隔离试运行失败', 'Isolated validation failed')}: ${apiErrorMessage(error)}`);
     } finally {
       setTraceCaseActionLoading(false);
     }
@@ -622,8 +625,8 @@ const EvaluationCenter: React.FC = () => {
       setTraceCaseDraft({ ...traceCaseDraft, status: 'published' });
       setTraceCaseDrafts((current) => current.map((item) => item.draft_id === traceCaseDraft.draft_id ? { ...item, status: 'published' } : item));
       message.success(tx(interfaceLanguage, '评测用例已发布到本地目录', 'Evaluation case published to the local catalog'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '发布评测用例失败', 'Failed to publish evaluation case')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '发布评测用例失败', 'Failed to publish evaluation case')}: ${apiErrorMessage(error)}`);
       // Publication may invalidate an old validation when its fixture changed.
       try {
         const latest = await getTraceCaseDraft(traceCaseDraft.draft_id);
@@ -652,8 +655,8 @@ const EvaluationCenter: React.FC = () => {
         await refresh();
         message.success(`${tx(interfaceLanguage, '评测批次完成', 'Evaluation run complete')}: ${next.summary.passed}/${next.summary.completed} ${tx(interfaceLanguage, '通过', 'passed')}`);
       }
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '评测状态查询失败', 'Failed to query evaluation status')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '评测状态查询失败', 'Failed to query evaluation status')}: ${apiErrorMessage(error)}`);
     }
   };
 
@@ -677,8 +680,8 @@ const EvaluationCenter: React.FC = () => {
       window.localStorage.setItem(ACTIVE_BATCH_STORAGE_KEY, next.batch_id);
       setActiveTab('overview');
       pollBatch(next.batch_id);
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '启动评测失败', 'Failed to start evaluation')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '启动评测失败', 'Failed to start evaluation')}: ${apiErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -696,8 +699,8 @@ const EvaluationCenter: React.FC = () => {
       else if (baseline) await archiveEvalBaseline(`${baseline.version} DevAgent ${tx(interfaceLanguage, '基线归档', 'baseline archive')}`);
       await refresh();
       message.success(tx(interfaceLanguage, '评测结果已归档', 'Evaluation results archived'));
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '归档失败', 'Archiving failed')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '归档失败', 'Archiving failed')}: ${apiErrorMessage(error)}`);
     } finally {
       setArchiving(false);
     }
@@ -849,7 +852,7 @@ const EvaluationCenter: React.FC = () => {
       {selectedCase.error ? <Alert type="error" showIcon message={selectedCase.error} /> : null}
       <div className="evaluation-checker-list">{(selectedCase.checker_results || []).length === 0 ? <Text type="secondary">{tx(interfaceLanguage, '没有 checker 诊断信息', 'No checker diagnostics')}</Text> : (
         <List size="small" dataSource={selectedCase.checker_results} renderItem={(checker, index) => (
-          <List.Item><Text>{String(checker.name || checker.checker || `checker-${index + 1}`)}</Text><Text type={checker.passed === false ? 'danger' : 'secondary'}>{checker.message || checker.detail || (checker.passed === false ? tx(interfaceLanguage, '未通过', 'Failed') : tx(interfaceLanguage, '通过', 'Passed'))}</Text></List.Item>
+          <List.Item><Text>{String(checker.checker || `checker-${index + 1}`)}</Text><Text type={checker.passed === false ? 'danger' : 'secondary'}>{checker.message || (checker.passed === false ? tx(interfaceLanguage, '未通过', 'Failed') : tx(interfaceLanguage, '通过', 'Passed'))}</Text></List.Item>
         )} />
       )}</div>
       {traceSessionFromResult(selectedCase) ? <Button icon={<EyeOutlined />} onClick={() => openTrace(selectedCase)}>{tx(interfaceLanguage, '打开 Trace', 'Open Trace')}</Button> : null}
@@ -993,15 +996,15 @@ const EvaluationCenter: React.FC = () => {
     setSelectedCaseId(null);
     try {
       setSelectedTrendBatch(await getEvalBatch(item.batch_id));
-    } catch (error: any) {
-      if (error?.response?.status === 404) {
+    } catch (error: unknown) {
+      if (apiErrorStatus(error) === 404) {
         setSelectedTrendBatch(null);
         setSelectedRunIds((current) => current.filter((id) => id !== item.batch_id));
         setTrends((current) => current.filter((trend) => trend.batch_id !== item.batch_id));
         message.info(tx(interfaceLanguage, '该运行批次已被删除，列表已刷新', 'This run was deleted; the list has been refreshed'));
         return;
       }
-      message.error(`${tx(interfaceLanguage, '历史批次详情加载失败', 'Failed to load run details')}: ${error?.response?.data?.detail || error.message || error}`);
+      message.error(`${tx(interfaceLanguage, '历史批次详情加载失败', 'Failed to load run details')}: ${apiErrorMessage(error)}`);
     } finally {
       setTrendLoading(false);
     }
@@ -1021,8 +1024,8 @@ const EvaluationCenter: React.FC = () => {
       message.success(`${selectedRuns.length > 1 ? tx(interfaceLanguage, '已合并', 'Merged') : tx(interfaceLanguage, '已转换', 'Converted')} ${merged.results.length} ${tx(interfaceLanguage, '个用例，并登记为性能结果', 'cases and registered as a performance result')}`);
       await refresh();
       setActiveTab('performance');
-    } catch (error: any) {
-      message.error(`${tx(interfaceLanguage, '批次合并失败', 'Failed to merge runs')}: ${error?.response?.data?.detail || error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`${tx(interfaceLanguage, '批次合并失败', 'Failed to merge runs')}: ${apiErrorMessage(error)}`);
     } finally {
       setMergingRuns(false);
     }
@@ -1237,9 +1240,9 @@ const EvaluationCenter: React.FC = () => {
                       onChange={(checkers) => setTraceCaseTurns((current) => current.map((item, i) => i === index ? { ...item, checkers } : item))} />
                     <Collapse items={[{ key: 'evidence', label: tx(interfaceLanguage, '查看原始回复与失败证据', 'Source answer and failure evidence'), children: <>
                       <Text type="secondary">{tx(interfaceLanguage, '原始回复仅用于审核，不会自动成为正确答案。', 'The source answer is evidence for review; it is not a gold answer.')}</Text>
-                      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.answer || tx(interfaceLanguage, '无完整回复记录', 'No complete answer recorded')}</Typography.Paragraph>
-                      <Text>{tx(interfaceLanguage, '工具错误', 'Tool errors')}: {traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.tool_errors || 0}</Text>
-                      {traceCaseDraft.trace_summary.turn_details?.find((detail: any) => detail.source_turn_index === turn.metadata.source_turn_index)?.failures?.map((failure: any, failureIndex: number) => <Alert key={failureIndex} type="error" message={failure.tool_name} description={failure.error} style={{ marginTop: 8 }} />)}
+                      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{traceCaseDraft.trace_summary.turn_details?.find((detail) => detail.source_turn_index === turn.metadata.source_turn_index)?.answer || tx(interfaceLanguage, '无完整回复记录', 'No complete answer recorded')}</Typography.Paragraph>
+                      <Text>{tx(interfaceLanguage, '工具错误', 'Tool errors')}: {traceCaseDraft.trace_summary.turn_details?.find((detail) => detail.source_turn_index === turn.metadata.source_turn_index)?.tool_errors || 0}</Text>
+                      {traceCaseDraft.trace_summary.turn_details?.find((detail) => detail.source_turn_index === turn.metadata.source_turn_index)?.failures?.map((failure, failureIndex: number) => <Alert key={failureIndex} type="error" message={failure.tool_name} description={failure.error} style={{ marginTop: 8 }} />)}
                     </> }]} />
                   </Space>,
                 }))} />

@@ -2,7 +2,9 @@
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
+from collections.abc import Iterable
+from .data import JsonObject
 
 class RunStatus(str, Enum):
     QUEUED = "queued"
@@ -51,16 +53,16 @@ class RunRecord:
     heartbeat_at: float | None
     lease_expires_at: float | None
     error: str
-    metadata: dict[str, Any]
+    metadata: JsonObject
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JsonObject:
         return asdict(self)
 
 
 class RunStorePort(Protocol):
     db_path: Path
-    def create(self, **kwargs) -> RunRecord: ...
+    def create(self, *, kind: str, session_id: str = "", metadata: JsonObject | None = None, run_id: str | None = None, idempotency_key: str = "") -> RunRecord: ...
     def get(self, run_id: str) -> RunRecord | None: ...
-    def claim(self, run_id: str, owner_id: str, **kwargs) -> RunRecord: ...
-    def heartbeat(self, run_id: str, owner_id: str, **kwargs) -> RunRecord: ...
-    def transition(self, run_id: str, status: RunStatus, **kwargs) -> RunRecord: ...
+    def claim(self, run_id: str, owner_id: str, *, lease_seconds: float = 60.0) -> RunRecord: ...
+    def heartbeat(self, run_id: str, owner_id: str, *, lease_seconds: float = 60.0) -> RunRecord: ...
+    def transition(self, run_id: str, status: str | RunStatus, *, expected: Iterable[str | RunStatus] | None = None, owner_id: str = "", error: str = "", metadata_patch: JsonObject | None = None) -> RunRecord: ...

@@ -1,11 +1,17 @@
 """消息系统"""
 
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Literal, TypedDict, Unpack
+from ..host_api.data import JsonObject, ModelMessage
 from datetime import datetime
 from pydantic import BaseModel
 
 # 定义消息角色的类型
 MessageRole = Literal["user", "assistant", "system", "tool", "summary"]
+
+
+class MessageOptions(TypedDict, total=False):
+    timestamp: datetime | None
+    metadata: JsonObject | None
 
 
 class Message(BaseModel):
@@ -14,9 +20,9 @@ class Message(BaseModel):
     content: str
     role: MessageRole
     timestamp: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[JsonObject] = None
 
-    def __init__(self, content: str, role: MessageRole, **kwargs):
+    def __init__(self, content: str, role: MessageRole, **kwargs: Unpack[MessageOptions]) -> None:
         super().__init__(
             content=content,
             role=role,
@@ -24,7 +30,7 @@ class Message(BaseModel):
             metadata=kwargs.get("metadata", {}),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> ModelMessage:
         """转换为 OpenAI API 兼容格式"""
         return {
             "role": self.role,

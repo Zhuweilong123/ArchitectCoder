@@ -10,9 +10,10 @@ from app.agent_base.agents.react_agent import ReActProgress
 from app.agent_base.adapters.analysis import ReadOnlyAnalysisAdapter
 from app.agent_base.host_api.contract_checks import ContractCheckResult, ContractViolation
 from app.agent_base.host_api.contexts import ContractFailureAnalysisContext
-from extensions.design_contract.analysis import (ModelContractFailureAnalyzer)
+from extensions.design_contract.analysis import (ModelContractFailureAnalyzer, build_contract_failure_report)
 from app.agent_base.host_api.orchestration import OrchestrationPreparation
 from app.agent_base.tools.registry import ToolRegistry
+from app.agent_base.host_api.agents import ConversationSnapshot
 
 
 def test_checkpoint_outcome_is_normalized_after_post_model_failure():
@@ -47,6 +48,7 @@ class _FakeAgent:
         self.last_run_checkpoint = {}
         self.last_context_report = {}
         self.change_set = None
+        self.workspace_manifest = {}
         self.task_summaries = []
 
     async def arun_stream(self, user_message, *, context, **kwargs):
@@ -55,6 +57,9 @@ class _FakeAgent:
         self.received_kwargs = kwargs
         yield ReActProgress(step=1, is_final=True, final_answer="hello")
 
+    def export_conversation(self):
+        return ConversationSnapshot()
+
     def append_task_summary(self, summary):
         self.task_summaries.append(summary)
 
@@ -62,6 +67,44 @@ class _FakeAgent:
 class _FakeOrchestrator:
     async def prepare(self, request):
         return OrchestrationPreparation()
+
+
+def test_execution_hands_review_to_durable_wait_without_committing(tmp_path, monkeypatch):
+    from app.agent_base.host_api.errors import AgentAwaitingReview
+    from app.agent_base.tools.review import ReviewManager
+    from app.services.change_set import ChangeSet
+    from app.services.candidate_artifact import CandidateArtifactStore
+    from app.services.run_state import RunStore
+    path = tmp_path / "design.umlproj"
+    before = '{"name":"before","revision":1,"diagrams":[]}'
+    after = '{"name":"after","revision":1,"diagrams":[]}'
+    path.write_text(before, encoding="utf-8")
+    manager = ReviewManager(session_id="review-host")
+    request = manager.submit("uml_diff", metadata={"original_diagrams": [], "diagrams": []})
+    class AwaitingAgent(_FakeAgent):
+        async def arun_stream(self, *args, **kwargs):
+            self.change_set.record(str(path), True, before, after)
+            path.write_text(after, encoding="utf-8")
+            raise AgentAwaitingReview(request)
+            yield  # async generator contract
+    agent = AwaitingAgent()
+    agent.change_set = ChangeSet()
+    store = RunStore(tmp_path / "runs.db")
+    run = store.claim(store.create(kind="agent_chat", session_id="review-host").run_id, "owner")
+    monkeypatch.setattr(agent_execution, "get_run_store", lambda: store)
+    artifacts = CandidateArtifactStore(root=tmp_path / "candidates")
+    monkeypatch.setattr("app.services.pending_review.CandidateArtifactStore", lambda: artifacts)
+    sent, mapping = [], {}
+    async def send(event):
+        sent.append(event)
+        return True
+    asyncio.run(agent_execution.handle_agent_execution(agent, manager, "edit", send, lambda: False,
+        project_file=str(path), workspace_root=str(tmp_path),
+        run_id=run.run_id, run_owner="owner", session_id="review-host", fallback_review_runs=mapping))
+    assert path.read_text() == before
+    assert store.get(run.run_id).status == "waiting_approval"
+    assert sent[-1]["checkpoint"]["pending_review"]["id"] == request.id
+    assert mapping[request.id] == run.run_id
 
 
 class _AnalysisAgent:
@@ -147,6 +190,42 @@ def test_contract_failure_analysis_injects_report_for_fallback_adapter():
     assert agent.history[-1].role == "summary"
     assert "status: block" in agent.history[-1].content
     assert "missing_implementation" in agent.history[-1].content
+
+
+def test_failure_report_preserves_errors_after_legacy_warnings():
+    warnings = tuple(ContractViolation(code="SEQ_LEGACY_OPERANDS", severity="warning", message="legacy")
+                     for _ in range(21))
+    errors = tuple(ContractViolation(code="VALIDATION_REQUIREMENT_UNMET", severity="error", message=f"target-{i}")
+                   for i in range(5))
+    result = ContractCheckResult(check_id="mixed", status="block", project_id="demo",
+                                 violations=warnings + errors)
+    report = build_contract_failure_report(result, rollback_completed=None)
+    assert "rollback: not_required" in report
+    assert "violation_counts: errors=5; other=21" in report
+    for i in range(5):
+        assert f"target-{i}" in report
+    assert report.index("severity=error") < report.index("severity=warning")
+    assert "omitted severity=warning; code=SEQ_LEGACY_OPERANDS; count=6" in report
+
+
+def test_failure_report_counts_omitted_errors():
+    result = ContractCheckResult(check_id="many", status="block", project_id="demo",
+        violations=tuple(ContractViolation(code="MISSING", severity="error", message=str(i)) for i in range(25)))
+    report = build_contract_failure_report(result, rollback_completed=False)
+    assert "rollback: not_completed" in report
+    assert "omitted severity=error; code=MISSING; count=5" in report
+
+
+def test_failure_analysis_does_not_assume_rollback_without_changes():
+    requests = []
+    async def invoke(request):
+        requests.append(request)
+        return "未执行修改，验收要求未完成。"
+    result = ContractCheckResult(check_id="unchanged", status="block", project_id="demo")
+    asyncio.run(ModelContractFailureAnalyzer().analyze(ContractFailureAnalysisContext(
+        result=result, invoke=invoke, rollback_completed=None)))
+    assert "rollback: not_required" in requests[0].evidence
+    assert "has already been rolled back" not in requests[0].prompt
 
 
 def test_contract_failure_analysis_preserves_tool_schema_prefix_and_uses_normal_profile():

@@ -124,6 +124,8 @@ def export_markdown(diagram: UmlDiagram) -> str:
             lines.extend(["", "## Combined Fragments", "", "| Type | Guard / Label |", "|---|---|"])
             for fragment in diagram.fragments:
                 lines.append(f"| `{fragment.type}` | {cell(fragment.label)} |")
+                for operand in fragment.operands:
+                    lines.append(f"| ↳ operand `{cell(operand.id)}` | {cell(operand.guard)}; messages: {cell(', '.join(operand.message_ids))} |")
 
     elif diagram_type == "component":
         component_names = {component.id: component.name for component in diagram.components}

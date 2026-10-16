@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, Collection, List, Mapping
 
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.core.hooks import get_runtime
@@ -18,7 +18,8 @@ class TodoWriteTool(Tool):
     本工具共享；更新时同时清零 ``rounds_since_todo`` 计数。
     """
 
-    def __init__(self):
+    def __init__(self, requirement_catalog: Callable[[], Mapping[str, Collection[str]]] | None = None):
+        self.requirement_catalog = requirement_catalog
         super().__init__(
             name="todo_write",
             description=(
@@ -26,6 +27,10 @@ class TodoWriteTool(Tool):
                 "Use for multi-step tasks to track progress with 3-5 concise todos. "
                 "todos is a list of {content, status}; complex planning tasks additionally require "
                 "{kind, acceptance} for every item, including one verification item."
+                " Declare validation_requirements for artifact checks required by the task, using registered "
+                "rule_id and exact diagram_name. Valid requirements accumulate; unknown targets are rejected. "
+                "Adding a valid target for a rule also removes inherited nonexistent targets for that rule. "
+                "Existing valid targets remain required; missing coverage prevents review and completion."
             ),
         )
 
@@ -41,6 +46,12 @@ class TodoWriteTool(Tool):
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "validation_requirements": {
+                            "type": "array", "items": {"type": "object", "properties": {
+                                "rule_id": {"type": "string"}, "diagram_name": {"type": "string"}},
+                                "required": ["rule_id", "diagram_name"], "additionalProperties": False},
+                            "description": "Required registered checks for named diagrams; omitting this field retains existing requirements.",
+                        },
                         "todos": {
                             "type": "array",
                             "items": {
@@ -76,6 +87,13 @@ class TodoWriteTool(Tool):
             return "Error: todos must be a list"
 
         runtime = get_runtime()
+        from app.agent_base.host_api.validation import normalize_requirements
+        from dataclasses import asdict
+        try:
+            requirements = normalize_requirements(parameters.get("validation_requirements", []))
+            existing = normalize_requirements(runtime.policy_metadata.get("validation_requirements", []))
+        except ValueError as exc:
+            return f"Error: {exc}"
         requires_contract = runtime.requires_acceptance_todos
         requires_plan = runtime.requires_todo_plan or requires_contract
         if requires_contract and not 3 <= len(todos) <= 5:
@@ -111,6 +129,28 @@ class TodoWriteTool(Tool):
         if requires_contract and not any(item.get("kind") == "verification" for item in normalized):
             return "Error: acceptance-driven plans require a verification todo"
 
+        corrected = []
+        if requirements and self.requirement_catalog is not None:
+            try:
+                catalog = self.requirement_catalog()
+            except Exception as exc:
+                return f"Error: could not verify validation targets: {exc}"
+            for item in requirements:
+                if item.rule_id not in catalog:
+                    return f"Error: unknown validation rule {item.rule_id!r}"
+                if item.diagram_name not in catalog[item.rule_id]:
+                    return (f"Error: invalid target {item.diagram_name!r} for {item.rule_id}; "
+                            f"available targets: {', '.join(sorted(catalog[item.rule_id]))}")
+            updated_rules = {item.rule_id for item in requirements}
+            corrected = [item for item in existing if item.rule_id in updated_rules
+                         and item.diagram_name not in catalog[item.rule_id]]
+            existing = tuple(item for item in existing if item not in corrected)
+
         runtime.todos = normalized
+        runtime.policy_metadata["validation_requirements"] = [asdict(item) for item in dict.fromkeys((*existing, *requirements))]
+        if corrected:
+            runtime.policy_metadata.setdefault("validation_requirement_corrections", []).extend(asdict(item) for item in corrected)
         runtime.rounds_since_todo = 0
-        return f"Updated {len(normalized)} todos"
+        return f"Updated {len(normalized)} todos" + (
+            "; removed inherited nonexistent targets: " + ", ".join(item.diagram_name for item in corrected)
+            if corrected else "")

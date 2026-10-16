@@ -23,7 +23,7 @@ def test_new_directory_binds_tools_and_policy_without_host_registration(tmp_path
     directory = tmp_path / "auto_policy_demo"
     directory.mkdir()
     (directory / "__init__.py").write_text('''
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_provider_services
 from app.agent_base.tools.base import Tool
 class Probe(Tool):
     def __init__(self):
@@ -35,7 +35,7 @@ class Provider:
     def ping(self): return "bound"
 def create(**kwargs): return Provider()
 def bind(ctx):
-    provider = get_host_services().resolve_provider("auto_policy_demo")
+    provider = get_provider_services().resolve_provider("auto_policy_demo")
     ctx.invocation.bind("auto_policy_demo", provider)
     ctx.invocation.tools.append(Probe())
 def check(ctx):

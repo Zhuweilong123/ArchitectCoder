@@ -1,8 +1,7 @@
 """Capability discovery for isolated task workers.
 
 Workers are intentionally separate from language adapters and task resolvers.
-An available WSL launcher is not automatically an isolated sandbox: its
-network and filesystem capabilities must be reported explicitly.
+Worker network and filesystem capabilities must be reported explicitly.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from typing import Protocol
 from app.runtime.command import (
     ExecutionEnvironmentError,
     LinuxExecutionProfile,
-    WslBashExecutor,
     _probe_version_process,
 )
 from app.runtime.task_contracts import ExecutionPolicy, NetworkPolicy
@@ -70,58 +68,6 @@ class SandboxWorker(Protocol):
     def preflight(self) -> WorkerStatus: ...
 
     def supports(self, policy: ExecutionPolicy) -> bool: ...
-
-
-class WslWorker:
-    """Capability adapter for WSL, conservative by default.
-
-    WSL provides a separate Linux process environment, but this adapter does
-    not claim filesystem or network isolation unless the deployment explicitly
-    configures those guarantees.  The actual process execution remains owned
-    by ``WslBashExecutor``/``ExecutionBroker``.
-    """
-
-    def __init__(
-        self,
-        executor: WslBashExecutor | None = None,
-        *,
-        filesystem_isolated: bool = False,
-        network_isolated: bool = False,
-        resource_limits: bool = False,
-    ) -> None:
-        self.executor = executor or WslBashExecutor()
-        self.capabilities = WorkerCapabilities(
-            worker_id="wsl",
-            filesystem_isolated=filesystem_isolated,
-            network_isolated=network_isolated,
-            resource_limits=resource_limits,
-            process_tree_termination=True,
-        )
-
-    def preflight(self) -> WorkerStatus:
-        try:
-            self.executor.preflight()
-        except (OSError, ExecutionEnvironmentError, RuntimeError) as exc:
-            return WorkerStatus(
-                worker_id=self.capabilities.worker_id,
-                status="unavailable",
-                capabilities=self.capabilities,
-                reason=f"{type(exc).__name__}: {exc}",
-            )
-        return WorkerStatus(
-            worker_id=self.capabilities.worker_id,
-            status="ready",
-            capabilities=self.capabilities,
-        )
-
-    def supports(self, policy: ExecutionPolicy) -> bool:
-        if policy.sandbox not in {"wsl", "linux-wsl"}:
-            return False
-        if policy.network is NetworkPolicy.DENY and not self.capabilities.network_isolated:
-            return False
-        if policy.writable_roots and not self.capabilities.filesystem_isolated:
-            return False
-        return True
 
 
 class DockerCommandExecutor:
@@ -389,5 +335,5 @@ ContainerCommandExecutor = DockerCommandExecutor
 
 __all__ = [
     "ContainerCommandExecutor", "ContainerWorker", "DockerCommandExecutor", "SandboxWorker",
-    "WorkerCapabilities", "WorkerStatus", "WslWorker",
+    "WorkerCapabilities", "WorkerStatus",
 ]

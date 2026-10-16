@@ -65,13 +65,23 @@
       "note": "返回查询到的用户信息或 null"
     },
     {
+      "id": "msg_missing",
+      "from_lifeline": "life_auth",
+      "to_lifeline": "life_client",
+      "label": "return userNotFound",
+      "type": "return",
+      "order": 4,
+      "y": 335,
+      "note": "No user record: end this login interaction before checking the password"
+    },
+    {
       "id": "msg_4",
       "from_lifeline": "life_auth",
       "to_lifeline": "life_auth",
       "label": "validatePassword(hash)",
       "type": "self",
-      "order": 4,
-      "y": 310.0,
+      "order": 5,
+      "y": 400,
       "note": "验证密码哈希是否匹配"
     },
     {
@@ -80,20 +90,83 @@
       "to_lifeline": "life_client",
       "label": "return authToken",
       "type": "return",
-      "order": 5,
-      "y": 350.0,
+      "order": 6,
+      "y": 480,
       "note": "认证成功后返回 JWT Token"
+    },
+    {
+      "id": "msg_invalid",
+      "from_lifeline": "life_auth",
+      "to_lifeline": "life_client",
+      "label": "return invalidCredentials",
+      "type": "return",
+      "order": 7,
+      "y": 600,
+      "note": "Password mismatch: return authentication failure"
     }
   ],
   "fragments": [
     {
+      "id": "frag_missing",
+      "type": "break",
+      "label": "Missing user",
+      "x": 80,
+      "width": 700,
+      "y_start": 295,
+      "y_end": 365,
+      "lifeline_ids": [
+        "life_client",
+        "life_auth",
+        "life_db"
+      ],
+      "parent_fragment_id": "",
+      "parent_operand_id": "",
+      "operands": [
+        {
+          "id": "operand_missing",
+          "guard": "[userRecord is null]",
+          "message_ids": [
+            "msg_missing"
+          ],
+          "y_start": 318,
+          "y_end": 358
+        }
+      ]
+    },
+    {
       "id": "frag_alt",
       "type": "alt",
-      "label": "",
-      "x": 280.0,
-      "width": 420.0,
-      "y_start": 270.0,
-      "y_end": 380.0
+      "label": "Authentication result",
+      "x": 80,
+      "width": 480,
+      "y_start": 440,
+      "y_end": 650,
+      "lifeline_ids": [
+        "life_client",
+        "life_auth"
+      ],
+      "parent_fragment_id": "",
+      "parent_operand_id": "",
+      "operands": [
+        {
+          "id": "operand_valid",
+          "guard": "[password matches]",
+          "message_ids": [
+            "msg_5"
+          ],
+          "y_start": 464,
+          "y_end": 525
+        },
+        {
+          "id": "operand_invalid",
+          "guard": "[else]",
+          "message_ids": [
+            "msg_invalid"
+          ],
+          "y_start": 560,
+          "y_end": 642
+        }
+      ]
     }
   ],
   "components": [],
@@ -109,7 +182,7 @@
 }
 ```
 
-### 7.2 带循环的业务交互（OTA 通知流程）
+### 7.2 带可选处理的业务交互（OTA 通知流程）
 
 ```json
 {
@@ -179,13 +252,23 @@
   ],
   "fragments": [
     {
-      "id": "frag_alt_conflict",
-      "type": "alt",
-      "label": "",
+      "id": "frag_opt_conflict",
+      "type": "opt",
+      "label": "Cancel conflicting schedule",
       "x": 120.0,
       "width": 700.0,
-      "y_start": 230.0,
-      "y_end": 420.0
+      "y_start": 270.0,
+      "y_end": 355.0,
+      "lifeline_ids": ["life_crow"],
+      "parent_fragment_id": "",
+      "parent_operand_id": "",
+      "operands": [{
+        "id": "operand_conflict",
+        "guard": "[crow timing conflicts with OTA]",
+        "message_ids": ["msg_cancel"],
+        "y_start": 290.0,
+        "y_end": 350.0
+      }]
     }
   ],
   "components": [],

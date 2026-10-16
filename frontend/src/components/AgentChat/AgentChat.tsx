@@ -43,6 +43,7 @@ import { createAgentChatEventHandler } from './agentChatEventHandler';
 import { MessageCopyButton } from './MessageCopyButton';
 import { MessageReadButton } from './MessageReadButton';
 import { useChatInputHistory } from './useChatInputHistory';
+import { mergeChatHistory } from './chatHistoryRecovery';
 import './AgentChat.css';
 
 // ── 组件 ──────────────────────────────────────────────
@@ -54,7 +55,7 @@ const AgentChat: React.FC = () => {
     agentChatVisible, setAgentChatVisible,
     agentChatExpanded, setAgentChatExpanded,
     agentChatPosition, setAgentChatPosition,
-    designDir, sourceDir, testDir, interfaceLanguage,
+    projectRoot, designDir, sourceDir, testDir, interfaceLanguage,
   } = useUiStore();
   const copy = (key: TranslationKey) => t(interfaceLanguage, key);
 
@@ -75,6 +76,9 @@ const AgentChat: React.FC = () => {
     canRecallOlder, canRecallNewer, historyPosition, historyCount,
   } = useChatInputHistory(messages, getCurrentSessionId());
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
   const [sessions, setSessions] = useState<TraceMeta[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [designContractEnabled, setDesignContractEnabled] = useState(() => {
@@ -215,12 +219,28 @@ const AgentChat: React.FC = () => {
     return () => observer.disconnect();
   }, [agentChatVisible, handleMessagesScroll]);
 
+  const historyRequestRef = useRef(0);
+  const recoverHistory = useCallback(() => {
+    const sessionId = getCurrentSessionId();
+    const request = ++historyRequestRef.current;
+    void getTraceHistory(sessionId).then(history => {
+      if (request !== historyRequestRef.current || sessionId !== getCurrentSessionId()) return;
+      setMessages(previous => request === historyRequestRef.current
+        && sessionId === getCurrentSessionId()
+        ? mergeChatHistory(sessionId, history, previous) : previous);
+    }).catch(() => { /* A new session has no trace yet; retain the local cache. */ });
+  }, []);
+
   // ── 连接 WebSocket ──
   const connect = useCallback((open = true) => {
     const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
     const ws = connectAgentChat(createAgentChatEventHandler({
       setMessages,
-      setBusy,
+      onSessionSync: recoverHistory,
+      setBusy: (value) => {
+        setBusy(value);
+        if (value === false) setStopping(false);
+      },
       setCurrentSteps,
       setCurrentTodos,
       setTodoPlanningMode,
@@ -233,7 +253,7 @@ const AgentChat: React.FC = () => {
       handleDesignElement: handleDesignElementWrapper,
     }), token, open);
     return ws;
-  }, [handleDesignElementWrapper, settleTodos]);
+  }, [handleDesignElementWrapper, settleTodos, recoverHistory]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -247,7 +267,7 @@ const AgentChat: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
       design_contract_enabled: designContractEnabled,
       skipNotify: true,
     });
@@ -272,7 +292,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [inputValue, busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled, resetInputHistory, scrollToLatest]);
+  }, [inputValue, busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, projectRoot, currentWorkspacePath, designContractEnabled, resetInputHistory, scrollToLatest]);
 
   const handleMessageAction = useCallback((message: string) => {
     const text = message.trim();
@@ -284,7 +304,7 @@ const AgentChat: React.FC = () => {
       source_dir: sourceDir,
       test_dir: testDir,
       project_file: currentFilepath || '',
-      workspace_root: currentWorkspacePath || '',
+      workspace_root: projectRoot || currentWorkspacePath || '',
       design_contract_enabled: designContractEnabled,
       skipNotify: true,
     });
@@ -306,7 +326,7 @@ const AgentChat: React.FC = () => {
     setStrategyAdvised(false);
     setTodoExpanded(false);
     todoSeenInTaskRef.current = false;
-  }, [busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, currentWorkspacePath, designContractEnabled]);
+  }, [busy, sessionsLoading, connect, designDir, sourceDir, testDir, currentFilepath, projectRoot, currentWorkspacePath, designContractEnabled]);
 
   const handleDesignContractToggle = useCallback((checked: boolean) => {
     setDesignContractEnabled(checked);
@@ -317,6 +337,7 @@ const AgentChat: React.FC = () => {
 
   // ── 中断 ──
   const handleStop = useCallback(() => {
+    setStopping(true);
     sendStopMessage();
     // 后端会发 stopped 事件，由回调处理状态更新
   }, []);
@@ -418,24 +439,20 @@ const AgentChat: React.FC = () => {
   }, []);
 
   const handleResumeSession = useCallback(async (targetId: string) => {
-    if (busy || sessionsLoading || targetId === getCurrentSessionId()) return;
+    if (busy || sessionsLoading) return;
     setSessionsLoading(true);
     try {
       const history = await getTraceHistory(targetId);
+      const previousSessionId = getCurrentSessionId();
+      ++historyRequestRef.current;
       switchSession(targetId);
       activateInputSession(targetId);
       scrollToLatest();
       // Task checkpoints are internal recovery context, not user-facing chat
       // messages. Keep them in the trace/backend history for future resume,
       // but do not render them as assistant replies when loading a session.
-      setMessages(history
-        .filter((h) => h.role === 'user' || h.role === 'assistant')
-        .map((h, i) => ({
-        id: `resume_${Date.now()}_${i}`,
-        role: (h.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
-        content: h.content,
-        timestamp: Date.now(),
-        })));
+      setMessages(previous => mergeChatHistory(targetId, history,
+        targetId === previousSessionId ? previous : []));
       liveStepsRef.current = [];
       setCurrentSteps([]);
       liveTodosRef.current = [];
@@ -475,7 +492,7 @@ const AgentChat: React.FC = () => {
           {
             id: `user_${Date.now()}`,
             role: 'user' as const,
-            content: ev.message || '',
+              content: ev.message || '连接断开，正在重连。后台任务继续运行。',
             timestamp: Date.now(),
           },
         ]);
@@ -489,8 +506,7 @@ const AgentChat: React.FC = () => {
         setTodoExpanded(false);
         todoSeenInTaskRef.current = false;
       } else if (ev.event === 'review_delivery_failed') {
-        // 重连补发失败（如后端不可达）：审核置为失效并提示
-        useReviewStore.getState().expire('审核回复未能送达后端');
+        // The shared store restores the matching review to a retryable state.
         setMessages((prev) => [
           ...prev,
           {
@@ -500,15 +516,10 @@ const AgentChat: React.FC = () => {
             timestamp: Date.now(),
           },
         ]);
+      } else if (ev.event === 'ws_connected') {
+        setReconnecting(false);
       } else if (ev.event === 'ws_closed') {
-        useDiagramStore.getState().endBatch();
-        // 非主动断开：后端不会再推送 done/error，解除"正在执行"避免永久卡住；
-        // 挂起的审核随连接中断失效（后端断连时已取消任务）
-        setBusy(false);
-        liveStepsRef.current = [];
-        setCurrentSteps([]);
-        settleTodos('pending');
-        useReviewStore.getState().expire('连接中断，审核随之失效');
+        setReconnecting(true);
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           // 连续断线只保留一条气泡（仅刷新时间戳），避免后端不可达时无限刷屏
@@ -523,7 +534,7 @@ const AgentChat: React.FC = () => {
               id: `ws_closed_${Date.now()}`,
               role: 'system' as const,
               kind: 'disconnect',
-              content: '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
+              content: ev.message || '🔌 与 AI 助手的连接已断开，当前任务已中断。重新发送消息会自动重连。',
               timestamp: Date.now(),
             },
           ];
@@ -868,6 +879,10 @@ const AgentChat: React.FC = () => {
               </div>
             )}
 
+            {review.status === 'submitting' && (
+              <Alert type="info" showIcon message={review.delivery === 'queued'
+                ? '审核回复等待重连补发，尚未发送' : '正在发送审核回复…'} />
+            )}
             {/* 审核请求（与 DiffViewer 联动，状态来自 reviewStore） */}
             {review.status === 'pending' && !review.deferred && (
               <div className="agent-review-card">
@@ -1020,17 +1035,20 @@ const AgentChat: React.FC = () => {
                   </Button>
                 </div>
               )}
+              {reconnecting && <span className="agent-chat-input-hint">{interfaceLanguage === 'zh' ? '正在重连' : 'Reconnecting'}</span>}
               {busy && historyPosition === null && (
                 <span className="agent-chat-input-hint">{copy('draftWhileRunning')}</span>
               )}
-              {busy ? (
+              {busy || review.status === 'pending' ? (
                 <Button
                   danger
                   icon={<StopOutlined />}
                   onClick={handleStop}
+                  loading={stopping}
+                  disabled={stopping}
                   size="small"
                 >
-                  {copy('stop')}
+                  {stopping ? (interfaceLanguage === 'zh' ? '正在停止' : 'Stopping') : copy('stop')}
                 </Button>
               ) : (
                 <Button

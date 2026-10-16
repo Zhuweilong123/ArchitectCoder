@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
+    # Resolved plugin declaration options, populated by the configuration catalog.
+    plugin_configs: dict[str, dict[str, object]] = Field(default_factory=dict, exclude=True)
     # OpenAI-compatible LLM endpoint — credentials MUST come from .env.
     llm_api_key: str = Field(
         ...,
@@ -58,7 +60,7 @@ class Settings(BaseSettings):
         description="Deprecated and ignored; all agents use LLM_MODEL_ID.",
     )
 
-    agent_max_tool_calls: int = 100
+    agent_max_tool_calls: int = 0  # 0 disables the overall tool-call limit.
     agent_max_run_seconds: int = 0  # 0 disables the overall run deadline.
     # One explicit request-context hard limit. Soft convergence and compaction
     # thresholds are ratios of this value so deployments can scale it once.
@@ -78,7 +80,8 @@ class Settings(BaseSettings):
     # compaction never falls back to raw, high-volume tool observations.
     agent_evidence_max_records: int = 128
     agent_final_summary_max_tokens: int = 3000
-    agent_llm_timeout_seconds: int = 120
+    agent_llm_timeout_seconds: int = 300
+    agent_llm_timeout_retries: int = 3  # Retries after the initial timed-out request.
     agent_context_max_history_turns: int = 48
     agent_context_max_summary_tokens: int = 4000
 
@@ -151,22 +154,11 @@ class Settings(BaseSettings):
         self.__dict__.update(effective.__dict__)
         return self
 
-    # Command execution is selected by the runtime.  ``auto`` uses the native
-    # host environment; WSL is an explicit compatibility option for projects
-    # that require Linux on Windows.
-    agent_command_environment: Literal["auto", "native_windows", "native_posix", "native_linux", "wsl"] = "auto"
-    agent_wsl_distribution: str = ""
-    agent_wsl_executable: str = "wsl.exe"
-    # Starting a stopped WSL2 VM can take longer than a typical command.  Keep
-    # this separate from the much longer per-command timeout used by ShellTool.
-    agent_wsl_preflight_timeout_seconds: float = 20.0
+    # Commands use the native host shell; external environments are explicit shell calls.
+    agent_command_environment: Literal["auto", "native_windows", "native_posix", "native_linux"] = "auto"
 
-    # Resolved project tasks use the local broker by default.  ``container``
-    # opts into the Docker worker only when the deployment has pre-pulled an
-    # image containing the project's toolchain.  ``wsl`` remains conservative
-    # and fails closed unless isolation capabilities are explicitly provided
-    # by a future worker implementation.
-    agent_execution_worker: Literal["local", "wsl", "container"] = "local"
+    # Resolved project tasks run locally or in the configured Docker worker.
+    agent_execution_worker: Literal["local", "container"] = "local"
     # Combined stdout/stderr collection limit per command, enforced while reading.
     agent_command_output_limit_bytes: int = 10 * 1024 * 1024
     agent_container_image: str = "ubuntu:24.04"
@@ -205,6 +197,8 @@ class Settings(BaseSettings):
     app_name: str = "ArchitectCoder API"
     app_version: str = "1.0.0"
     debug: bool = True
+    api_host: str = "127.0.0.1"
+    api_port: int = Field(default=8001, ge=1, le=65535)
 
     # File storage
     runtime_dir: str = "../temp"

@@ -165,7 +165,7 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
         captured.update(kwargs)
         return fake_agent, object(), SimpleNamespace()
 
-    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: SimpleNamespace(
+    monkeypatch.setattr("extensions.evals.runner.get_agent_services", lambda: SimpleNamespace(
         create_model=lambda **kwargs: "fake-llm", create_agent=_create_agent,
         create_progress=lambda: SimpleNamespace()))
     case = EvalCase(
@@ -176,13 +176,17 @@ def test_eval_agent_factory_passes_only_user_message_and_production_budget(
         max_total_tokens=1000,
     )
 
-    agent = asyncio.run(dev_agent_factory(tmp_path, case))
+    binding = asyncio.run(dev_agent_factory(tmp_path, case))
+    assert binding.agent is fake_agent
+    assert binding.source_dir == str(tmp_path)
+    assert binding.test_dir == str(tmp_path)
+    assert binding.project_file == str(tmp_path / "evaluation.umlproj")
 
     assert captured["user_message"] == case.prompt
     assert captured["max_tool_calls"] == settings.agent_max_tool_calls
     assert captured["max_run_seconds"] == settings.agent_max_run_seconds
     assert captured["max_total_tokens"] == settings.agent_context_soft_limit_tokens
-    assert not hasattr(agent, "_eval_context")
+    assert not any(name.startswith("_eval_") for name in vars(fake_agent))
 
 
 def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeypatch):
@@ -221,7 +225,8 @@ def test_eval_runner_uses_production_execution_for_react_agent(tmp_path, monkeyp
     monkeypatch.setattr(host, "is_production_agent", lambda agent: isinstance(agent, _ProductionAgent))
     monkeypatch.setattr(host, "execute_agent", _execute)
     monkeypatch.setattr(host, "run_store", lambda: _RunStore())
-    monkeypatch.setattr("extensions.evals.runner.get_host_services", lambda: host)
+    monkeypatch.setattr("extensions.evals.runner.get_agent_services", lambda: host)
+    monkeypatch.setattr("extensions.evals.runner.get_runtime_services", lambda: host)
 
     case = EvalCase(
         id="production-execution-path",
@@ -399,7 +404,12 @@ def test_trace_fixture_matches_foundation_tool_workspace_contract(tmp_path):
     listed, content, validated = asyncio.run(exercise())
     assert listed.splitlines()[1:] == [str((design / "radar_design_0730.umlproj").resolve())]
     assert '"diagrams"' in content
-    assert validated.endswith("radar_design_0730.umlproj (diagrams=6)")
+    # This historical trace fixture uses class-relation "association" as both
+    # a message type and a fragment operator. Keep it as a negative fixture;
+    # syntactically valid JSON must no longer receive a false success verdict.
+    assert validated.startswith("Error: UML project validation failed")
+    assert "SEQ_MESSAGE_TYPE" in validated
+    assert "SEQ_FRAGMENT_TYPE" in validated
 
 
 def test_project_layout_preflight_rejects_legacy_root_entry_file(tmp_path):

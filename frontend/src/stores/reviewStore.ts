@@ -1,31 +1,21 @@
-/**
- * 审核状态共享 store — AgentChat 审核卡与 DiffViewer 的单一事实源。
- *
- * 设计：一处决策，两处呈现。同一次审核在聊天卡和 diff 面板都可见，
- * 任一界面操作后另一界面通过订阅本 store 即时联动：
- *
- *   pending ──accept()──► accepted        （批准：落盘评审 + 回复 agent）
- *           ──reject()──► rejected        （拒绝：回滚画布 + 意见喂回 agent 修订）
- *           ──defer()───► pending(折叠小条)（稍后：不消费审核，保留入口）
- *           ──expire()──► expired         （超时/断线/任务中断 → 终态置灰）
- *
- * agent 修订后重新提交审核 → showReview() 再次进入 pending，两处同时刷新。
- */
-
+/** Shared review decisions and delivery state for chat and the diff panel. */
 import { create } from 'zustand';
 import { message } from 'antd';
-import { sendReviewResponse, setPendingUmlReviewId } from '../services/agentChat';
+import {
+  sendReviewResponse, setPendingUmlReviewId, onAgentMessage, discardReviewResponse,
+} from '../services/agentChat';
 import { saveProject, saveReview } from '../services/api';
 import { restoreOriginalsToCanvas } from '../services/designElementHandler';
 import { useUiStore } from './uiStore';
 import { useDiagramStore } from './diagramStore';
 
-export type ReviewStatus = 'idle' | 'pending' | 'accepted' | 'rejected' | 'expired';
+// accepted/rejected mean the reply was sent, not that the backend committed it.
+export type ReviewStatus = 'idle' | 'pending' | 'submitting' | 'accepted' | 'rejected' | 'expired';
 export type ReviewFrom = 'chat' | 'diff';
 
 interface ShowReviewInput {
   reviewId: number;
-  reviewType: string;            // 'uml_diff' | 'bash_command' | ...
+  reviewType: string;
   title: string;
   content?: string;
   question?: string;
@@ -40,148 +30,164 @@ interface ReviewState {
   content: string;
   question: string;
   status: ReviewStatus;
-  actedFrom: ReviewFrom | null;  // 哪边完成的决策（用于界面展示）
-  deferred: boolean;             // 「稍后」：审核仍 pending，聊天卡折叠为小条
-  expiredReason: string;         // expired 时的说明文案
-
+  delivery: 'sending' | 'queued' | null;
+  actedFrom: ReviewFrom | null;
+  deferred: boolean;
+  expiredReason: string;
   showReview: (r: ShowReviewInput) => void;
-  accept: (from: ReviewFrom, comment?: string) => void;
+  accept: (from: ReviewFrom, comment?: string) => Promise<boolean>;
   reject: (from: ReviewFrom, feedback?: string) => Promise<boolean>;
   defer: () => void;
   undefer: () => void;
-  expire: (reason: string) => void;
+  expire: (reason: string, reviewId?: number) => void;
   clear: () => void;
 }
 
 const INITIAL = {
   reviewId: null as number | null,
-  reviewType: '',
-  autoReview: false,
-  title: '',
-  content: '',
-  question: '',
+  reviewType: '', autoReview: false, title: '', content: '', question: '',
   status: 'idle' as ReviewStatus,
+  delivery: null as ReviewState['delivery'],
   actedFrom: null as ReviewFrom | null,
-  deferred: false,
-  expiredReason: '',
+  deferred: false, expiredReason: '',
 };
 
-export const useReviewStore = create<ReviewState>((set, get) => ({
-  ...INITIAL,
+export const useReviewStore = create<ReviewState>((set, get) => {
+  interface Submission {
+    review: ReviewState & { reviewId: number };
+    decision: 'accept' | 'reject';
+    from: ReviewFrom;
+    log: Parameters<typeof saveReview>[0];
+    originals: ReturnType<typeof useUiStore.getState>['originalDiagrams'];
+    completion?: Promise<void>;
+  }
+  let active: Submission | null = null;
 
-  showReview: ({ reviewId, reviewType, title, content = '', question = '', auto = false }) => {
-    set({
-      reviewId, reviewType, autoReview: auto, title, content, question,
-      status: 'pending', actedFrom: null, deferred: false, expiredReason: '',
-    });
-    // 登记送达跟踪标记（agentChat 内部用于断线清理/补发对账）
-    if (reviewType === 'uml_diff') {
-      setPendingUmlReviewId(reviewId);
+  const cancelSubmission = () => {
+    if (active) discardReviewResponse(active.review.reviewId);
+    active = null;
+  };
+  const isCurrent = (submission: Submission) => active === submission
+    && get().reviewId === submission.review.reviewId;
+
+  const complete = (submission: Submission): Promise<void> => {
+    if (submission.completion) return submission.completion;
+    if (!isCurrent(submission)) return Promise.resolve();
+    submission.completion = (async () => {
+      const { review, decision, originals } = submission;
+      set({ status: decision === 'accept' ? 'accepted' : 'rejected',
+        delivery: null, actedFrom: submission.from, deferred: false });
+      if (review.reviewType !== 'uml_diff') return;
+      if (decision === 'reject' && !review.autoReview) restoreOriginalsToCanvas(originals);
+      useUiStore.getState().setDesignComparisonVisible(false);
+      const reply = decision === 'accept' ? '批准回复已发送' : '拒绝反馈已发送';
+      try {
+        const result = await saveReview(submission.log);
+        if (!result.success) throw new Error('Review log was not saved');
+        if (isCurrent(submission)) message.success(reply + '，评审已保存到 dev_review.txt');
+      } catch (error) {
+        console.warn('[ReviewStore] saveReview failed:', error);
+        if (isCurrent(submission)) message.warning(reply + '，但评审日志保存失败；请勿重复发送审核回复。');
+      }
+    })();
+    return submission.completion;
+  };
+
+  onAgentMessage((event) => {
+    const submission = active;
+    if (!submission || event.review_id !== submission.review.reviewId) return;
+    if (event.event === 'review_resolved') void complete(submission);
+    if (event.event === 'review_delivery_failed' && get().status === 'submitting') {
+      active = null;
+      set({ status: 'pending', delivery: null, actedFrom: null });
+      message.warning('审核回复未能发送，请检查连接后重试。');
     }
-  },
+  });
 
-  accept: (from, comment) => {
-    const s = get();
-    if (s.status !== 'pending' || s.reviewId === null) return;
-    set({ status: 'accepted', actedFrom: from, deferred: false });
-    if (s.reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
-
-    const text = comment || '批准，继续';
-    const result = sendReviewResponse(s.reviewId, text, 'accept');
-
-    if (s.reviewType === 'uml_diff') {
-      const ui = useUiStore.getState();
-      saveReview({
-        action: 'accept',
-        comment: text,
-        requirements: ui.optimizeInstructions || '',
+  const submit = async (decision: 'accept' | 'reject', from: ReviewFrom, feedback?: string) => {
+    const review = get();
+    if (review.status !== 'pending' || review.reviewId === null) return false;
+    const ui = useUiStore.getState();
+    const text = feedback || (decision === 'accept' ? '批准，继续' : '拒绝，请修改');
+    const submission: Submission = {
+      review: { ...review, reviewId: review.reviewId }, decision, from,
+      originals: ui.originalDiagrams,
+      log: { action: decision, comment: text, requirements: ui.optimizeInstructions || '',
         original_name: ui.originalDiagram?.name || '',
-        optimized_name: ui.optimizedDiagram?.name || s.title,
-        timestamp: new Date().toISOString(),
-      }).catch((e) => console.warn('[ReviewStore] saveReview failed:', e));
-    }
-    if (result === 'queued') {
-      message.info('连接已断开，正在重连并补发审核结果…');
-    } else if (result === 'failed') {
-      message.warning('审核回复发送失败，请检查后端连接后重试。');
-    }
-  },
+        optimized_name: ui.optimizedDiagram?.name || review.title, timestamp: new Date().toISOString() },
+    };
+    active = submission;
+    set({ status: 'submitting', delivery: 'sending', deferred: false });
 
-  reject: async (from, feedback) => {
-    const s = get();
-    if (s.status !== 'pending' || s.reviewId === null) return false;
-
-    // Fallback reviews have already ended their run, so keep their existing
-    // persistence path. A live tool review is restored by the backend.
-    if (s.reviewType === 'uml_diff' && s.autoReview) {
-      const restoredProject = restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
+    // Fallback reviews restore the persisted project before notifying the backend.
+    // Live tool reviews are restored by the backend after receiving the reply.
+    if (decision === 'reject' && review.reviewType === 'uml_diff' && review.autoReview) {
+      const restoredProject = restoreOriginalsToCanvas(submission.originals);
       const filepath = useDiagramStore.getState().currentFilepath;
       if (restoredProject && filepath) {
         try {
-          const result = await saveProject(
-            useDiagramStore.getState().getProjectSnapshot(), filepath, false,
-          );
+          const result = await saveProject(useDiagramStore.getState().getProjectSnapshot(), filepath, false);
+          if (!isCurrent(submission)) return false;
           useDiagramStore.getState().markSaved(result.revision);
         } catch (error) {
           console.error('[ReviewStore] failed to persist rejected UML changes:', error);
-          message.error('拒绝优化后恢复项目失败，未通知 Agent 继续执行');
+          if (isCurrent(submission)) {
+            active = null;
+            set({ status: 'pending', delivery: null });
+            message.error('拒绝优化后恢复项目失败，未通知 Agent 继续执行');
+          }
           return false;
         }
       }
     }
-
-    // 拒绝 = 回滚画布到审核前 + 意见喂回 agent 修订（修订后会推新审核）
-    const text = feedback || '拒绝，请修改';
-    const result = sendReviewResponse(s.reviewId, text, 'reject');
-    if (result === 'failed' && !s.autoReview) {
-      message.warning('反馈发送失败，请检查连接后重试');
+    if (!isCurrent(submission)) return false;
+    const result = sendReviewResponse(review.reviewId, text, decision);
+    if (result === 'failed') {
+      active = null;
+      set({ status: 'pending', delivery: null, actedFrom: null });
+      message.warning('审核回复发送失败，请检查后端连接后重试。');
       return false;
     }
-    if (s.reviewType === 'uml_diff' && !s.autoReview) {
-      restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
-    }
-    set({ status: 'rejected', actedFrom: from, deferred: false });
-    if (s.reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
-
-    if (s.reviewType === 'uml_diff') {
-      const ui = useUiStore.getState();
-      saveReview({
-        action: 'reject',
-        comment: text,
-        requirements: ui.optimizeInstructions || '',
-        original_name: ui.originalDiagram?.name || '',
-        optimized_name: ui.optimizedDiagram?.name || s.title,
-        timestamp: new Date().toISOString(),
-      }).catch((e) => console.warn('[ReviewStore] saveReview failed:', e));
-    }
     if (result === 'queued') {
-      message.info('连接已断开，正在重连并补发反馈给 Agent…');
-    } else if (result === 'failed') {
-      message.warning('反馈发送失败；画布已回滚，可重新发起优化。');
+      set({ delivery: 'queued' });
+      message.info('审核回复等待重连补发，尚未发送。');
+      return true;
     }
-    return result !== 'failed';
-  },
+    await complete(submission);
+    return true;
+  };
 
-  defer: () => {
-    if (get().status === 'pending') set({ deferred: true });
-  },
-
-  undefer: () => set({ deferred: false }),
-
-  expire: (reason) => {
-    const s = get();
-    if (s.status !== 'pending') return;
-    set({ status: 'expired', expiredReason: reason, deferred: false });
-    if (get().reviewType === 'uml_diff') useUiStore.getState().setDesignComparisonVisible(false);
-    if (s.reviewType === 'uml_diff') {
-      setPendingUmlReviewId(null);
-    }
-  },
-
-  clear: () => {
-    if (get().reviewType === 'uml_diff') {
-      setPendingUmlReviewId(null);
-    }
-    set({ ...INITIAL });
-  },
-}));
+  return {
+    ...INITIAL,
+    showReview: ({ reviewId, reviewType, title, content = '', question = '', auto = false }) => {
+      // Reconnect may replay the same request while its reply is queued or sent.
+      const current = get();
+      if (current.reviewId === reviewId && ['submitting', 'accepted', 'rejected'].includes(current.status)) return;
+      cancelSubmission();
+      set({ reviewId, reviewType, autoReview: auto, title, content, question,
+        status: 'pending', delivery: null, actedFrom: null, deferred: false, expiredReason: '' });
+      setPendingUmlReviewId(reviewType === 'uml_diff' ? reviewId : null);
+    },
+    accept: (from, comment) => submit('accept', from, comment),
+    reject: (from, feedback) => submit('reject', from, feedback),
+    defer: () => { if (get().status === 'pending') set({ deferred: true }); },
+    undefer: () => set({ deferred: false }),
+    expire: (reason, reviewId) => {
+      const current = get();
+      if (reviewId !== undefined && current.reviewId !== reviewId) return;
+      if (current.status === 'idle' || current.status === 'expired') return;
+      if (reviewId === undefined && current.status !== 'pending' && current.status !== 'submitting') return;
+      cancelSubmission();
+      set({ status: 'expired', delivery: null, expiredReason: reason, deferred: false });
+      if (current.reviewType === 'uml_diff') {
+        useUiStore.getState().setDesignComparisonVisible(false);
+        setPendingUmlReviewId(null);
+      }
+    },
+    clear: () => {
+      cancelSubmission();
+      if (get().reviewType === 'uml_diff') setPendingUmlReviewId(null);
+      set({ ...INITIAL });
+    },
+  };
+});

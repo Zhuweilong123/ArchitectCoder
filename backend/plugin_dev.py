@@ -46,7 +46,7 @@ def scaffold(name, root):
     source = '''"""Starter plugin: synchronous/asynchronous services and a phase observer."""
 
 
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_assembly_services, get_context_services
 from app.agent_base.tools.base import Tool
 
 
@@ -80,7 +80,7 @@ class DescribeTool(Tool):
 
 def bind(context):
     request = context.invocation
-    provider = get_host_services().resolve_provider("PLUGIN_ID")
+    provider = get_assembly_services().resolve_provider("PLUGIN_ID")
     if provider is None:
         raise RuntimeError("PLUGIN_ID provider is unavailable")
     request.bind("PLUGIN_ID", provider)
@@ -91,15 +91,16 @@ def bind(context):
 def check(context):
     # Add domain checks here. A rejection sets allowed=False and message.
     # Preserve previous decisions: never reset allowed=True in this handler.
-    if get_host_services().extension_context().providers.get("PLUGIN_ID") is None:
+    session = get_context_services().extension_context()
+    if session is None or session.provider("PLUGIN_ID", Provider) is None:
         context.invocation.allowed = False
         context.invocation.message = "PLUGIN_ID provider is unavailable"
 
 
 def observe_prepare(context):
     # Observers receive a data snapshot; they do not control execution.
-    from app.agent_base.host_api.services import get_host_services
-    get_host_services().record_event("plugin_example", plugin="PLUGIN_ID", stage=context.event.value,
+    from app.agent_base.host_api.services import get_observation_services
+    get_observation_services().record_event("plugin_example", plugin="PLUGIN_ID", stage=context.event.value,
                    run_id=context.run_id, agent_name=context.agent_name)
 '''.replace("PLUGIN_ID", name)
     fixture = {"config": {"label": name}, "factory_kwargs": {}, "args": [],
@@ -126,7 +127,7 @@ Declare asynchronous methods with `async=true`; keep import-time code free of
 resource creation. The generated assembly.bind contribution binds the provider
 and exposes PLUGIN_ID_describe as a read-only tool. execution.check demonstrates
 a required transaction policy. Ordinary initialize/finalize broadcasts do not
-execute these service contributions. Use get_host_services().plugin_config("PLUGIN_ID")
+execute these service contributions. Use host_api.environment.plugin_config("PLUGIN_ID")
 for plugin-owned configuration; it returns a detached snapshot.
 
 To discover this plugin in the application, add its parent directory to

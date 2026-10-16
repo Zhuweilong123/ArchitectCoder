@@ -233,6 +233,26 @@ def test_spawn_subagent_requires_description(tmp_path):
     assert "description is required" in result
 
 
+def test_child_context_preparation_failure_does_not_replace_parent_runtime(tmp_path, monkeypatch):
+    from app.agent_base.core.hooks import get_runtime
+
+    tool = SpawnSubagentTool(llm=_MockLLM(), source_dir=str(tmp_path), toolkits=("read_only",))
+    def fail_build(*args, **kwargs):
+        raise ValueError("cannot build context")
+    monkeypatch.setattr(tool.context_budget, "build_messages", fail_build)
+
+    async def run():
+        parent = AgentRuntime(run_id="parent")
+        token = set_runtime(parent)
+        try:
+            with pytest.raises(ValueError, match="cannot build context"):
+                await tool._execute({"description": "inspect"})
+            assert get_runtime() is parent
+        finally:
+            reset_runtime(token)
+    asyncio.run(run())
+
+
 # ── toolkit 动态工具包 ──────────────────────────────────────
 
 def _build_spawn(tmp_path):

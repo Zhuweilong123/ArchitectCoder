@@ -2,8 +2,8 @@
 
 def observe(context):
     from app.agent_base.host_api.lifecycle import PUBLIC_STAGES
-    from app.agent_base.host_api.services import get_host_services
-    host = get_host_services()
+    from app.agent_base.host_api.services import get_observation_services
+    host = get_observation_services()
     runtime = context.runtime
     operation = host.current_operation()
     host.record_event("lifecycle_stage" if context.event in PUBLIC_STAGES else "runtime_notification", stage=context.event.value,

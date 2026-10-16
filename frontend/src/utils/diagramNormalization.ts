@@ -146,7 +146,14 @@ function normalizeMessage(value: unknown, index: number, used: Set<string>): Seq
     order: number(item.order, index + 1, 1),
     y: number(item.y, 190 + (index + 1) * 45),
     note: text(item.note),
+    ...(item.reply_to !== undefined ? { reply_to: text(item.reply_to) } : {}),
+    ...(item.source_refs !== undefined ? { source_refs: array(item.source_refs).map(normalizeSourceRef) } : {}),
   };
+}
+
+function normalizeSourceRef(value: unknown) {
+  const item = record(value);
+  return { scope_id: text(item.scope_id), line: number(item.line, 1, 1), kind: text(item.kind, 'call') };
 }
 
 function normalizeFragment(value: unknown, index: number, used: Set<string>): SeqFragment {
@@ -161,6 +168,21 @@ function normalizeFragment(value: unknown, index: number, used: Set<string>): Se
     width: number(item.width, 300, 60),
     y_start: yStart,
     y_end: Math.max(yStart + 60, number(item.y_end, yStart + 120)),
+    // Do not infer branches or membership from the legacy rectangle/label.
+    operands: array(item.operands).map((value) => {
+      const operand = record(value);
+      return {
+        id: text(operand.id),
+        guard: text(operand.guard),
+        message_ids: array(operand.message_ids).map((id) => text(id)),
+        y_start: number(operand.y_start, yStart),
+        y_end: number(operand.y_end, number(item.y_end, yStart + 120)),
+        ...(operand.source_guard ? { source_guard: normalizeSourceRef(operand.source_guard) } : {}),
+      };
+    }),
+    lifeline_ids: array(item.lifeline_ids).map((id) => text(id)),
+    parent_fragment_id: text(item.parent_fragment_id),
+    parent_operand_id: text(item.parent_operand_id),
   };
 }
 
@@ -229,6 +251,11 @@ export function normalizeDiagram(value: unknown): UmlDiagram {
     lifelines,
     messages,
     fragments,
+    ...(item.source_scopes !== undefined ? { source_scopes: array(item.source_scopes).map((value) => {
+      const scope = record(value);
+      return { id: text(scope.id), path: text(scope.path), symbol: text(scope.symbol),
+        lifeline_id: text(scope.lifeline_id), entry_message_id: text(scope.entry_message_id), coverage: text(scope.coverage, 'partial') };
+    }) } : {}),
     components,
     comp_relations: compRelations,
     grid_visible: boolean(item.grid_visible, true),
@@ -268,4 +295,32 @@ export function normalizeProject(value: unknown): Project {
     diagrams: diagrams.map((diagram) => ({ ...diagram, ...gridSettings })),
     active_diagram_index: activeIndex,
   };
+}
+
+
+/** Decode untrusted streamed data once before it reaches graph/store operations. */
+export function normalizeStreamElement(type: string, value: unknown): import('../types/designEvents').DesignStreamElement | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const item = record(value);
+  const diagram_name = text(item.diagram_name);
+  const ids = new Set<string>();
+  switch (type) {
+    case 'diagram_create': return { type, data: { type: text(item.type, 'class'), name: text(item.name), component_id: text(item.component_id) } };
+    case 'diagram_meta': return { type, data: { diagram_name } };
+    case 'class': return { type, data: { ...normalizeClass(item, 0, ids), diagram_name } };
+    case 'relation': return { type, data: { ...normalizeRelation(item, 0, ids), diagram_name } };
+    case 'lifeline': return { type, data: { ...normalizeLifeline(item, 0, ids), diagram_name } };
+    case 'message': {
+      const { y, ...message } = normalizeMessage(item, 0, ids);
+      return { type, data: { ...message, ...(typeof item.y === 'number' ? { y } : {}), diagram_name } };
+    }
+    case 'fragment': return { type, data: { ...normalizeFragment(item, 0, ids), diagram_name } };
+    case 'component': return { type, data: { ...normalizeComponent(item, 0, ids), diagram_name } };
+    case 'comp_rel': return { type, data: { ...normalizeComponentRelation(item, 0, ids), diagram_name } };
+    case 'diagram_update': return { type, data: {
+      type: text(item.type, 'class'), name: text(item.name), component_id: text(item.component_id),
+      data: normalizeDiagram(item.data),
+    } };
+    default: return null;
+  }
 }

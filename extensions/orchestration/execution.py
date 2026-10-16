@@ -1,18 +1,19 @@
 """Orchestration policy attached to the generic execution preparation slot."""
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_execution_services
 from app.agent_base.host_api.orchestration import OrchestrationRequest
+from app.agent_base.host_api.orchestration import OrchestrationPort
 
 
 async def prepare(context):
-    host = get_host_services()
+    host = get_execution_services()
     session = host.extension_context()
-    provider = session.providers.get("orchestration") if session else None
+    provider = session.provider("orchestration", OrchestrationPort) if session else None
     if provider is None:
         return
     request = context.invocation
     data = request.data
     previous = data.get("previous_checkpoint", {})
-    settings = session.metadata["execution_settings"]
+    settings = host.configuration()
     enabled = bool(getattr(settings, "agent_orchestration_enabled", False)
                    and getattr(settings, "agent_knowledge_graph_enabled", False)
                    and previous.get("architecture_scheduling_mode") is not False)

@@ -1,0 +1,4 @@
+-r requirements.txt
+mypy==2.4.0
+# Required by the noise-seed oracle regression tests.
+numpy>=1.26,<3

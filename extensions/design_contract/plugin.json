@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "design_contract",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "slot": "design_contract",
   "provider": "extensions.design_contract:create",
   "enabled_by_default": true,
@@ -10,6 +10,11 @@
     "provider": "agent_design_contract_provider"
   },
   "interfaces": {
+    "source_facts": {
+      "stage": "finalize",
+      "required": false,
+      "async": false
+    },
     "collect": {
       "stage": "finalize",
       "required": true,

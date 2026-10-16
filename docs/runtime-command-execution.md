@@ -1,6 +1,5 @@
 # DevAgent 运行时命令执行契约
 
-> 当前实现基线：`2417bb3`（命令执行边界沿用 `65f8fab`，后续包含跨平台输出编码修复）
 
 本文说明“OS 差异下沉到 runtime 层”的完整机制。Agent、工具和业务服务不拼接
 Windows/Posix 命令，也不自行判断宿主系统；它们只依赖 runtime 提供的稳定契约。
@@ -16,12 +15,12 @@ resolve_command_environment()
               v
 build_command_executor(settings)
               |
-       +------+-------+----------------+
-       |              |                |
-       v              v                v
-NativePowerShell  NativeLinuxBash  WslBashExecutor
-       |              |                |
-       +--------------+----------------+
+       +------+-------+
+       |              |
+       v              v
+NativePowerShell  NativeLinuxBash
+       |              |
+       +--------------+
                       v
              CommandExecutor.profile
                       |
@@ -35,7 +34,7 @@ build_environment_context(executor, cwd, roots, layout)
 run_task / run_program / shell
                       |
                       v
-        profile validation + native process launch
+       native process launch / explicit shell commands
 ```
 
 生产组合入口是 `backend/app/agent_base/assembly.py`：先创建命令执行器，再把同一
@@ -51,18 +50,10 @@ run_task / run_program / shell
 | `agent_command_environment` | `auto` | 生产默认值：Windows → 原生 PowerShell；Linux/macOS → 原生 POSIX |
 |  | `native_windows` | 强制 `NativePowerShellExecutor` |
 |  | `native_posix` / `native_linux` | 强制原生 Bash 执行器；`native_linux` 在统一入口中归一化为 `native_posix` |
-|  | `wsl` | 强制 `WslBashExecutor` |
-| `agent_wsl_distribution` | 字符串 | WSL 发行版，可为空使用默认发行版 |
-| `agent_wsl_executable` | 默认 `wsl.exe` | WSL 启动器 |
-| `agent_wsl_preflight_timeout_seconds` | 默认 `20` | WSL 可用性预检超时 |
 
 `resolve_command_environment()` 只负责把 `auto` 和别名解析成执行目标，不启动进程。
 `build_command_executor()` 是生产路径，按解析结果创建唯一 executor；不满足宿主条件
 时抛出 `ExecutionEnvironmentError`，不会偷偷切换到另一个 Shell。
-
-代码中还保留 `build_linux_command_executor()`，它服务于明确要求“Linux 命令契约”的
-兼容调用方，使用 `resolve_linux_command_environment()`。这条兼容路径的 `auto` 在
-Windows 上仍可选择 WSL，不应与生产 `build_command_executor()` 的默认策略混用。
 
 ## 3. Runtime 环境事实
 
@@ -72,7 +63,7 @@ Windows 上仍可选择 WSL，不应与生产 `build_command_executor()` 的默�
 - `host_os`：后端进程实际运行的宿主系统；
 - `execution_os`：命令最终运行的系统（Windows 或 Linux）；
 - `shell`：`powershell` 或 `bash`；
-- `execution_mode`：`windows-powershell`、`linux-native` 或 `linux-wsl`；
+- `execution_mode`：`windows-powershell` 或 `linux-native`；
 - `cwd`、`workspace_roots`、`workspace_layout`：已解析的工作区路径；
 - `path_style`、`executable_suffix`：Windows 路径/`.exe` 或 POSIX 路径/无后缀；
 - `network_access`、`filesystem_policy`：当前运行策略。
@@ -115,15 +106,20 @@ terminate(process)
 - 使用独立 session 和进程组，终止时发送 POSIX 信号；
 - 使用 POSIX 路径和无 executable 后缀。
 
-### 4.3 Windows 上的 WSL Bash
+### 4.3 通过宿主 shell 调用 WSL
 
-`WslBashExecutor` 是显式选择的 Linux 适配器：
+WSL 不再是独立运行环境或 worker，不提供发行版配置、预检或路径自动映射。
+Windows 的 shell 直接接受 wsl.exe 命令，例如：
 
-- 预检 `wsl.exe`、发行版和 `bash`，失败时返回明确错误；
-- 工作目录通过 `--cd` 传入，Windows `C:\x\y` 映射为 `/mnt/c/x/y`；
-- 命令通过 `wsl.exe --exec bash -lc ...` 执行；
-- 命令正文禁止 Windows 驱动器路径，Agent 应使用 `cwd` 参数或工作区相对路径；
-- WSL 冷启动超时不会永久污染 executor，下一次调用仍可重试。
+```text
+wsl.exe --list --verbose
+wsl.exe -d Ubuntu -- bash -lc 'source /opt/ros/humble/setup.bash && python3 -m pytest --collect-only -q tests'
+```
+
+发行版通过 -d 指定，Linux 路径和环境初始化由调用命令明确提供。
+宿主 PowerShell 的工作目录仍是工作区根。需要指定 Linux 工作目录时，在命令中
+明确传入 --cd；运行时不再转换路径。引号内的 Linux 命令可包含串联操作符，
+外层 PowerShell 的串联、管道、重定向和命令替换仍禁止。
 
 ## 5. 工具层如何消费 runtime
 
@@ -142,7 +138,7 @@ terminate(process)
 
 `backend/app/runtime/filesystem.py` 的 `NativeFileSystem` 使用 Python 原生
 `pathlib`、`os` 和 `shutil`，不生成 Shell 命令，因此同一套文件工具可以跨 Windows、
-Linux 和 WSL 使用：
+Linux 使用：
 
 - `workspace_root_for()` 计算已配置目录的公共绝对根；不同 Windows 驱动器无法求公共路径时安全回退到首个配置路径；
 - `write_bytes()` 使用同目录临时文件、`flush/fsync` 和 `os.replace()` 原子替换；
@@ -156,7 +152,7 @@ PowerShell/Bash，只有执行命令时才进入 `CommandExecutor`。
 
 - Prompt 中的环境事实不能提升权限；所有命令仍须经过 executor 和工具层校验。
 - `run_program` 只接受允许列表中的程序和字面量参数，不接受 Shell 解释器或控制字符。
-- `shell` 只接受一条简单命令，禁止 `;`、`&&`、`||`、管道、重定向、命令替换和嵌套 Shell。
+- `shell` 接受一条宿主命令；Windows 可调用 `wsl.exe`，引号内的 Linux 命令由 WSL 解析。外层串联、管道、重定向和命令替换仍禁止。
 - 高风险操作直接拒绝，敏感操作需要人工审批；没有审核通道时 fail-closed。
 - 预检失败、路径不合法和 executable 不允许都返回结构化错误，不自动更换 OS 或 Shell。
 
@@ -167,7 +163,7 @@ PowerShell/Bash，只有执行命令时才进入 `CommandExecutor`。
 
 | 文件 | 职责 |
 |---|---|
-| `backend/config/settings.py` | 命令环境和 WSL 配置 |
+| `backend/config/settings.py` | 原生命令环境和任务 worker 配置 |
 | `backend/app/runtime/command.py` | profile、executor、环境解析和进程启动 |
 | `backend/app/runtime/environment.py` | Runtime 环境事实和 Prompt 描述 |
 | `backend/app/runtime/filesystem.py` | OS 无关的原生文件操作和工作区根计算 |

@@ -3,6 +3,7 @@ import type { InterfaceLanguage } from '../i18n';
 
 import { create } from 'zustand';
 import type { UmlDiagram } from '../types/uml';
+import type { DiagramSnapshots, ConsistencyIssue } from '../types/designEvents';
 
 export type RightPanelTab = 'properties' | 'diff';
 export type CanvasTheme = 'light' | 'dark' | 'blueprint' | 'eye-care';
@@ -11,7 +12,7 @@ export type Language = 'python' | 'java' | 'typescript' | 'javascript' | 'csharp
 export type { InterfaceLanguage } from '../i18n';
 export type DiffDiagramType = string;  // was: 'class' | 'sequence' | 'component' — now dynamic
 
-interface UiState {
+export interface UiState {
   // Panel visibility
   rightPanelVisible: boolean;
   rightPanelTab: RightPanelTab;
@@ -34,14 +35,12 @@ interface UiState {
   optimizeInstructions: string; // last optimization request content
 
   // Global multi-diagram optimization (pipeline Stage 1)
-  originalDiagrams: Record<string, any>;     // { class: {...}, sequence: {...}, component: {...} }
-  optimizedDiagrams: Record<string, any>;
+  originalDiagrams: DiagramSnapshots;     // { class: {...}, sequence: {...}, component: {...} }
+  optimizedDiagrams: DiagramSnapshots;
   diffContents: Record<string, string>;       // per-type diff text
   activeDiffDiagramType: DiffDiagramType;     // which diagram tab is active in DiffViewer
-  optimizationConsistencyReport: any[];        // cross-validation consistency report
+  optimizationConsistencyReport: ConsistencyIssue[];        // cross-validation consistency report
 
-  showTestCaseInCanvas: boolean; // toggle main canvas to show test cases
-  testCaseData: string; // Excel test case summary for pipeline Stage 5
 
   // Project directories (shared by Agent chat, etc.)
   projectRoot: string;
@@ -82,19 +81,16 @@ interface UiState {
   setOriginalCode: (code: Record<string, string> | null) => void;
   setOptimizedCode: (code: Record<string, string> | null) => void;
   setGlobalOptimizationResult: (
-    originals: Record<string, any>,
-    optimizeds: Record<string, any>,
+    originals: DiagramSnapshots,
+    optimizeds: DiagramSnapshots,
     diffs: Record<string, string>,
-    report: any[],
+    report: ConsistencyIssue[],
     instructions: string,
   ) => void;
   setActiveDiffDiagramType: (type: DiffDiagramType) => void;
   toggleShowingVersion: () => void;
   setShowingOptimized: (v: boolean) => void;
   setDesignComparisonVisible: (visible: boolean) => void;
-  toggleTestCaseInCanvas: () => void;
-  setShowTestCaseInCanvas: (v: boolean) => void;
-  setTestCaseData: (data: string) => void;
 
   setProjectRoot: (dir: string) => void;
   setDesignDir: (dir: string) => void;
@@ -144,8 +140,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   diffContents: {},
   activeDiffDiagramType: 'class',
   optimizationConsistencyReport: [],
-  showTestCaseInCanvas: false,
-  testCaseData: '',
   projectRoot: (() => {
     const stored = localStorage.getItem('projectRoot') || '';
     // `project` was the old implicit default, not a user-selected root.
@@ -248,9 +242,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   toggleShowingVersion: () => set((s) => ({ showingOptimized: !s.showingOptimized })),
   setShowingOptimized: (v) => set({ showingOptimized: v }),
   setDesignComparisonVisible: (visible) => set({ designComparisonVisible: visible }),
-  toggleTestCaseInCanvas: () => set((s) => ({ showTestCaseInCanvas: !s.showTestCaseInCanvas })),
-  setShowTestCaseInCanvas: (v) => set({ showTestCaseInCanvas: v }),
-  setTestCaseData: (data) => set({ testCaseData: data }),
 
   setProjectRoot: (dir) => {
     localStorage.setItem('projectRoot', dir);

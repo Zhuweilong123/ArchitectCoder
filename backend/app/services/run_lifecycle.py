@@ -35,6 +35,16 @@ class RunLifecycle:
         if record is None:
             raise RunConflict("The reviewed run no longer exists")
         checkpoint = dict(record.metadata.get("checkpoint") or {})
+        if checkpoint.get("pending_review"):
+            if accepted:
+                from app.services.pending_review import apply_review_candidate
+                apply_review_candidate(checkpoint)
+            checkpoint["resolved_review"] = checkpoint.pop("pending_review")
+            checkpoint["review_candidate"] = None
+            checkpoint["resume_available"] = True
+            checkpoint["stop_reason"] = "review_accepted" if accepted else "review_rejected"
+            if accepted:
+                checkpoint.pop("review_baseline", None)
         status = checkpoint.pop("post_review_status", "partial") if accepted else "partial"
         checkpoint.update(status=status, review_status="accepted" if accepted else "rejected")
         checkpoint["task_summary"] = build_task_execution_summary(checkpoint.get("tool_calls", []), checkpoint, status)
@@ -66,6 +76,9 @@ class RunLifecycle:
         if record is None:
             raise RunConflict("The reviewed run no longer exists")
         checkpoint = dict(record.metadata.get("checkpoint") or {})
+        if checkpoint.get("pending_review"):
+            # Stopping the model does not consume a pending human decision.
+            return checkpoint
         checkpoint.update(status="paused", resume_available=True,
                           stop_reason="review transport disconnected; send continue to resume")
         self.store.transition(

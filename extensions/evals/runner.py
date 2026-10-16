@@ -13,10 +13,19 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from typing import Protocol
+from app.agent_base.host_api.agents import AgentPort, PromptBuilderPort, ProgressPort, ProgressSnapshotPort, ReviewManagerPort
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+from app.agent_base.host_api.data import JsonObject
+from app.agent_base.host_api.execution_types import RunCheckpoint, ToolCallDetail
+from app.agent_base.host_api.tracing import TraceSink
+from app.agent_base.host_api.payloads import parse_checkpoint, json_object
+from .runtime_types import EvaluationActiveTurn, EvaluationTurnRecord, CheckerRuntime
 
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_agent_services, get_observation_services, get_runtime_services
 from app.agent_base.execution_summary import build_task_execution_summary
 from .paths import evaluation_results_dir, evaluation_root, evaluation_traces_dir
 from app.agent_base.host_api.environment import configuration as get_settings
@@ -34,7 +43,21 @@ from .models import (
 )
 from .projects import load_projects, resolve_fixture
 
-AgentFactory = Callable[[Path, EvalCase], Awaitable[Any]]
+class EvaluationAgentPort(Protocol):
+    """Minimal injected agent used by isolated test harnesses."""
+    def arun_stream(self, input_text: str, context: str = '') -> AsyncIterator[ProgressSnapshotPort]: ...
+
+@dataclass(frozen=True)
+class EvaluationAgentBinding:
+    agent: AgentPort | EvaluationAgentPort
+    review_manager: ReviewManagerPort | None = None
+    prompt_builder: PromptBuilderPort | None = None
+    progress: ProgressPort | None = None
+    source_dir: str = ''
+    test_dir: str = ''
+    project_file: str = ''
+
+AgentFactory = Callable[[Path, EvalCase], Awaitable[EvaluationAgentBinding | EvaluationAgentPort]]
 logger = logging.getLogger(__name__)
 
 EVAL_FIXTURE_LAYOUT_VERSION = "design-src-test-v1"
@@ -182,11 +205,11 @@ def _tag_criteria(
     return results
 
 
-def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str, Any]]:
+def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[ToolCallDetail]:
     """Return production tool calls after a turn's trace offset."""
     if not trace_path:
         return []
-    tools: list[dict[str, Any]] = []
+    tools: list[ToolCallDetail] = []
     try:
         for line in Path(trace_path).read_text(encoding="utf-8").splitlines():
             event = json.loads(line)
@@ -194,7 +217,7 @@ def _trace_tool_details(trace_path: str, start_index: int = 0) -> list[dict[str,
                 continue
             tools.append({
                 "name": str(event.get("tool_name") or ""),
-                "arguments": event.get("arguments") or {},
+                "arguments": json_object(event.get("arguments") or {}),
                 "status": "completed",
             })
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
@@ -251,7 +274,8 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
     """
     if case.metadata.get("capability") == "budget_control":
         return {
-            "max_tool_calls": min(case.max_tool_calls, settings.agent_max_tool_calls),
+            "max_tool_calls": (min(case.max_tool_calls, settings.agent_max_tool_calls)
+                               if settings.agent_max_tool_calls > 0 else case.max_tool_calls),
             "max_run_seconds": (
                 min(case.max_seconds, settings.agent_max_run_seconds)
                 if settings.agent_max_run_seconds > 0 else case.max_seconds
@@ -270,7 +294,7 @@ def _agent_budget(case: EvalCase, settings) -> dict[str, int]:
 
 async def dev_agent_factory(
     workspace: Path, case: EvalCase, *, manifest_override: ProjectManifest | None = None,
-) -> Any:
+) -> EvaluationAgentBinding:
     """Build the production DevAgent inside the isolated evaluation workspace.
 
     The interactive WebSocket path and this factory share the same agent
@@ -280,14 +304,14 @@ async def dev_agent_factory(
     """
     settings = get_settings()
     first_prompt = case.prompts()[0]
-    llm = get_host_services().create_model(temperature=0.3)
+    llm = get_agent_services().create_model(temperature=0.3)
     manifest = manifest_override or (load_projects().get(case.project_id) if case.project_id else None)
     source_dir = workspace / manifest.source_dir if manifest else workspace
     test_dir = workspace / manifest.test_dir if manifest else workspace
     project_file = workspace / manifest.entry_file if manifest and manifest.entry_file else workspace / "evaluation.umlproj"
-    progress = get_host_services().create_progress()
+    progress = get_agent_services().create_progress()
     budget = _agent_budget(case, settings)
-    agent, review_mgr, prompt_builder = await get_host_services().create_agent(
+    agent, review_mgr, prompt_builder = await get_agent_services().create_agent(
         llm,
         source_dir=str(source_dir),
         test_dir=str(test_dir),
@@ -298,14 +322,8 @@ async def dev_agent_factory(
         auto_approve_reviews=True,
         **budget,
     )
-    agent._eval_prompt_builder = prompt_builder
-    agent._eval_source_dir = str(source_dir)
-    agent._eval_test_dir = str(test_dir)
-    agent._eval_project_file = str(project_file)
-    agent._eval_progress = progress
-    agent._eval_review_manager = review_mgr
-    agent._eval_agent_mode = "devagent"
-    return agent
+    return EvaluationAgentBinding(agent=agent, review_manager=review_mgr, prompt_builder=prompt_builder,
+        progress=progress, source_dir=str(source_dir), test_dir=str(test_dir), project_file=str(project_file))
 
 
 class EvalRunner:
@@ -333,7 +351,7 @@ class EvalRunner:
         self,
         case: EvalCase,
         agent_factory: AgentFactory | None = None,
-        result_metadata: dict[str, Any] | None = None,
+        result_metadata: JsonObject | None = None,
         *,
         fixture_override: tuple[Path, ProjectManifest] | None = None,
     ) -> EvalResult:
@@ -389,7 +407,7 @@ class EvalRunner:
         try:
             fixture, manifest = fixture_override or resolve_fixture(case)
             if fixture_override and agent_factory is None:
-                async def factory(workspace: Path, case: EvalCase) -> Any:
+                async def factory(workspace: Path, case: EvalCase) -> EvaluationAgentBinding:
                     return await dev_agent_factory(workspace, case, manifest_override=manifest)
         except ValueError as exc:
             finished = self._finish(
@@ -425,7 +443,7 @@ class EvalRunner:
                 source_dir = workspace / manifest.source_dir if manifest else workspace
                 test_dir = workspace / manifest.test_dir if manifest else workspace
                 first_prompt = case.prompts()[0]
-                trace_session = get_host_services().trace_session(
+                trace_session = get_agent_services().trace_session(
                     session_id=_eval_trace_session_id(run_id), user_message=first_prompt,
                     source_dir=str(source_dir), test_dir=str(test_dir),
                     trace_dir=str(self.trace_dir),
@@ -434,11 +452,15 @@ class EvalRunner:
                 )
                 async with trace_session as tracer:
                     result.trace_id = tracer.trace_id
-                    agent = await factory(workspace, case)
+                    created = await factory(workspace, case)
+                    binding = created if isinstance(created, EvaluationAgentBinding) else EvaluationAgentBinding(agent=created)
+                    agent = binding.agent
+                    review_mgr, progress_relay = binding.review_manager, binding.progress
+                    prompt_builder = binding.prompt_builder
                     failure_phase = "agent"
                     result.model = getattr(getattr(agent, "llm", None), "model", "")
                     result.metadata["agent"] = "devagent"
-                    production_agent = get_host_services().is_production_agent(agent)
+                    production_agent = get_agent_services().is_production_agent(agent)
                     change_set = getattr(agent, "change_set", None)
                     if change_set is not None:
                         change_set.begin()
@@ -448,7 +470,7 @@ class EvalRunner:
                         try:
 
                             task_subject = (case.name or "").strip() or first_prompt
-                            task_binding = get_host_services().bind_task(
+                            task_binding = get_agent_services().bind_task(
                                 scope=f"eval_{case.id}",
                                 run_id=run_id,
                                 owner=f"run:{run_id}",
@@ -473,11 +495,9 @@ class EvalRunner:
                                 run_id,
                                 exc_info=True,
                             )
-                    review_mgr = getattr(agent, "_eval_review_manager", None)
-                    progress_relay = getattr(agent, "_eval_progress", None)
                     turn_hard_checker_results: list[CheckerResult] = []
                     turn_score_checker_results: list[CheckerResult] = []
-                    active_turn: dict[str, Any] = {
+                    active_turn: EvaluationActiveTurn = {
                         "turn": 0,
                         "details": [],
                         "checkpoint": {},
@@ -487,7 +507,7 @@ class EvalRunner:
 
                     def finalize_task(
                         status: str,
-                        checkpoint: dict[str, Any] | None = None,
+                        checkpoint: RunCheckpoint | None = None,
                     ) -> None:
                         nonlocal task_finalized
                         if task_binding is None:
@@ -495,7 +515,7 @@ class EvalRunner:
                         if task_finalized:
                             return
                         try:
-                            effective_checkpoint = dict(
+                            effective_checkpoint = parse_checkpoint(
                                 checkpoint or getattr(
                                     agent, "last_run_checkpoint", {}
                                 ) or {}
@@ -524,7 +544,7 @@ class EvalRunner:
                         nonlocal execution_error, failure_phase
                         prompts = case.prompts()
                         turn_specs = case.turn_specs()
-                        turn_records: list[dict[str, Any]] = []
+                        turn_records: list[EvaluationTurnRecord] = []
                         # Every user request is a production task.  Multi-turn
                         # cases preserve the same Agent/history, but each turn
                         # gets a fresh production task budget.  Totals below
@@ -535,18 +555,17 @@ class EvalRunner:
                         traced_total_tokens = 0
                         review_offset = 0
                         approval_offset = 0
-                        prompt_builder = getattr(agent, "_eval_prompt_builder", None)
-                        production_agent = get_host_services().is_production_agent(agent)
+                        production_agent = get_agent_services().is_production_agent(agent)
                         coordinated_agent = production_agent or hasattr(
                             agent, "tool_registry"
                         )
 
-                        def sync_task_binding(checkpoint: dict[str, Any]) -> None:
+                        def sync_task_binding(checkpoint: RunCheckpoint) -> None:
                             if task_binding is None:
                                 return
                             try:
                                 task_binding.sync(
-                                    todos=list(get_host_services().runtime().todos or []),
+                                    todos=list(get_runtime_services().runtime().todos or []),
                                     checkpoint=checkpoint,
                                 )
                             except Exception:
@@ -558,12 +577,12 @@ class EvalRunner:
 
                         def sync_progress_checkpoint(
                             step: int,
-                            details: list[dict],
+                            details: list[ToolCallDetail],
                         ) -> None:
                             """Persist a bounded checkpoint before a turn can be interrupted."""
                             if task_binding is None:
                                 return
-                            checkpoint = dict(
+                            checkpoint = parse_checkpoint(
                                 getattr(agent, "last_run_checkpoint", {}) or {}
                             )
                             checkpoint.update({
@@ -585,8 +604,8 @@ class EvalRunner:
 
                         def record_tool_details(
                             step: int,
-                            details: list[dict],
-                            collector: list[dict] | None = None,
+                            details: list[ToolCallDetail],
+                            collector: list[ToolCallDetail] | None = None,
                         ) -> None:
                             """Mirror streamed tool details into the evaluation trace."""
                             if collector is not None:
@@ -627,9 +646,9 @@ class EvalRunner:
                             })
                             tracer.user_message(
                                 prompt,
-                                project_file=getattr(agent, "_eval_project_file", ""),
-                                source_dir=getattr(agent, "_eval_source_dir", ""),
-                                test_dir=getattr(agent, "_eval_test_dir", ""),
+                                project_file=binding.project_file,
+                                source_dir=binding.source_dir,
+                                test_dir=binding.test_dir,
                             )
                             tracer.event(
                                 "agent_model", model=getattr(getattr(agent, "llm", None), "model", ""),
@@ -640,7 +659,7 @@ class EvalRunner:
                                 turn_tool_calls = 0
                                 turn_tokens = 0
                                 final_answer = ""
-                                turn_tool_details: list[dict] = active_turn["details"]
+                                turn_tool_details: list[ToolCallDetail] = active_turn["details"]
                                 async for progress in agent.arun_stream(prompt):
                                     details = progress.tool_calls_detail or []
                                     record_tool_details(progress.step, details, turn_tool_details)
@@ -670,7 +689,7 @@ class EvalRunner:
                                     # not be truncated before they are checked.
                                     "answer": final_answer,
                                 })
-                                active_turn["checkpoint"] = dict(
+                                active_turn["checkpoint"] = parse_checkpoint(
                                     getattr(agent, "last_run_checkpoint", {}) or {}
                                 )
                                 sync_task_binding(active_turn["checkpoint"])
@@ -682,9 +701,9 @@ class EvalRunner:
                             context = ""
                             if prompt_builder is not None:
                                 context = await prompt_builder.build_context(
-                                    getattr(agent, "_eval_project_file", ""),
-                                    getattr(agent, "_eval_source_dir", ""),
-                                    getattr(agent, "_eval_test_dir", ""),
+                                    binding.project_file,
+                                    binding.source_dir,
+                                    binding.test_dir,
                                     prompt,
                                 )
                                 tracer.event(
@@ -701,22 +720,22 @@ class EvalRunner:
                             turn_tool_calls = 0
                             turn_tokens = 0
                             final_answer = ""
-                            turn_tool_details: list[dict] = active_turn["details"]
+                            turn_tool_details: list[ToolCallDetail] = active_turn["details"]
                             tool_budget_exceeded = False
                             if production_agent:
                                 # Use the same transport-neutral coordinator as
                                 # the WebSocket path.  The sender is the only
                                 # frontend boundary and is intentionally stubbed
                                 # for an offline evaluation.
-                                sent_events: list[dict] = []
+                                sent_events: list[JsonObject] = []
 
-                                async def _eval_send(payload: dict) -> bool:
+                                async def _eval_send(payload: JsonObject) -> bool:
                                     sent_events.append(payload)
                                     return True
 
                                 turn_run_id = f"{run_id}_turn_{turn_index}"
                                 turn_owner = f"eval:{run_id}:{turn_index}"
-                                eval_run = get_host_services().run_store().create(
+                                eval_run = get_runtime_services().run_store().create(
                                     kind="agent_chat",
                                     session_id=f"eval_{case.id}",
                                     run_id=turn_run_id,
@@ -727,23 +746,23 @@ class EvalRunner:
                                         "message": prompt[:500],
                                     },
                                 )
-                                get_host_services().run_store().claim(eval_run.run_id, turn_owner)
+                                get_runtime_services().run_store().claim(eval_run.run_id, turn_owner)
                                 result.metadata.setdefault("execution_runs", []).append(
                                     turn_run_id
                                 )
                                 before_tool_calls = _trace_event_count(
                                     tracer.path, "tool_call"
                                 )
-                                await get_host_services().execute_agent(
+                                await get_agent_services().execute_agent(
                                     agent,
                                     review_mgr,
                                     prompt,
                                     _eval_send,
                                     lambda: False,
                                     trace_log=tracer,
-                                    project_file=getattr(agent, "_eval_project_file", ""),
-                                    source_dir=getattr(agent, "_eval_source_dir", ""),
-                                    test_dir=getattr(agent, "_eval_test_dir", ""),
+                                    project_file=binding.project_file,
+                                    source_dir=binding.source_dir,
+                                    test_dir=binding.test_dir,
                                     progress=progress_relay,
                                     context=context,
                                     fallback_review_runs={},
@@ -785,7 +804,7 @@ class EvalRunner:
                                 # Keep the lightweight direct path for injected
                                 # test doubles; official evaluations use the
                                 # production coordinator above.
-                                with get_host_services().runtime_scope():
+                                with get_runtime_services().runtime_scope():
                                     stream = agent.arun_stream(prompt, context=context)
                                     async for progress in stream:
                                         details = progress.tool_calls_detail or []
@@ -845,7 +864,7 @@ class EvalRunner:
                                 }
                                 if task_binding is not None:
                                     agent.last_run_checkpoint["task_id"] = task_binding.task_id
-                            active_turn["checkpoint"] = dict(agent.last_run_checkpoint)
+                            active_turn["checkpoint"] = parse_checkpoint(agent.last_run_checkpoint)
                             sync_task_binding(active_turn["checkpoint"])
                             if production_agent and active_turn["checkpoint"].get("task_id"):
                                 result.metadata["task_id"] = active_turn["checkpoint"]["task_id"]
@@ -956,7 +975,7 @@ class EvalRunner:
                             timeout=evaluation_deadline_seconds,
                         )
                     except asyncio.TimeoutError:
-                        timeout_checkpoint = dict(
+                        timeout_checkpoint = parse_checkpoint(
                             active_turn.get("checkpoint") or {}
                         )
                         timeout_checkpoint["status"] = "timed_out"
@@ -1013,7 +1032,7 @@ class EvalRunner:
                 result.status = "timeout"
                 result.error = f"evaluation exceeded {evaluation_deadline_seconds}s"
                 result.failure_category = "timeout"
-                timeout_checkpoint = dict(
+                timeout_checkpoint = parse_checkpoint(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
                 timeout_checkpoint["status"] = "timed_out"
@@ -1041,7 +1060,7 @@ class EvalRunner:
                     if failure_phase == "agent"
                     else "environment_failure"
                 )
-                failed_checkpoint = dict(
+                failed_checkpoint = parse_checkpoint(
                     active_turn.get("checkpoint") if "active_turn" in locals() else {}
                 )
                 failed_checkpoint["status"] = "failed"
@@ -1077,7 +1096,7 @@ class EvalRunner:
         ) = _trace_prompt_prefix_reuse(result.trace_path)
         result.duration_ms = round((time.monotonic() - started) * 1000, 1)
         self._append_result(result)
-        get_host_services().record_run(f"eval_{result.status}")
+        get_observation_services().record_run(f"eval_{result.status}")
         return result
 
     @staticmethod
@@ -1149,7 +1168,7 @@ class EvalRunner:
         return baseline_hashes
 
     @staticmethod
-    def _record_auto_approval_result(result: EvalResult, review_manager: Any) -> None:
+    def _record_auto_approval_result(result: EvalResult, review_manager: ReviewManagerPort | None) -> None:
         """Add the required auto-approval gate from captured review events."""
         approval_events = (
             review_manager.approval_events if review_manager is not None else []
@@ -1176,8 +1195,8 @@ class EvalRunner:
 
     @staticmethod
     def _write_turn_summary(
-        tracer: Any,
-        active_turn: dict[str, Any],
+        tracer: TraceSink,
+        active_turn: EvaluationActiveTurn,
         status: str,
         *,
         stop_reason: str = "",
@@ -1185,7 +1204,7 @@ class EvalRunner:
         """Write exactly one summary event for an active evaluation turn."""
         if not active_turn["turn"] or active_turn["summary_written"]:
             return
-        checkpoint = dict(active_turn.get("checkpoint") or {})
+        checkpoint = parse_checkpoint(active_turn.get("checkpoint") or {})
         if stop_reason:
             checkpoint["stop_reason"] = stop_reason
             active_turn["checkpoint"] = checkpoint
@@ -1202,13 +1221,13 @@ class EvalRunner:
 
     @staticmethod
     async def _run_checkers(
-        configs: list[dict[str, Any]],
+        configs: list[JsonObject],
         *,
         workspace: Path,
         baseline_hashes: dict[str, str | None],
         answer: str,
         trace_path: str,
-        runtime: dict[str, Any],
+        runtime: CheckerRuntime,
     ) -> list[CheckerResult]:
         """Build and run one criteria group with a consistent checker context."""
         return list(await asyncio.gather(*(
@@ -1366,7 +1385,7 @@ class EvalRunner:
         with self.results_path.open("a", encoding="utf-8") as handle:
             handle.write(result.model_dump_json() + "\n")
 
-    def list_results(self, limit: int = 100) -> list[dict]:
+    def list_results(self, limit: int = 100) -> list[JsonObject]:
         if not self.results_path.is_file():
             return []
         lines = self.results_path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 1000)):]

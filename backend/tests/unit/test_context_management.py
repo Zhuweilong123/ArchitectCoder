@@ -5,7 +5,102 @@ from app.services.context_manager import (
     ContextBudgetManager,
     HistoryCompactor,
     estimate_tokens,
+    truncate_text,
 )
+
+
+def test_duplicate_user_text_keeps_the_new_task_anchor():
+    manager = ContextBudgetManager()
+    built = manager.build_messages("system", [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "previous answer"},
+    ], "continue")
+
+    assert built.current_user_index == len(built.messages) - 1
+    assert built.messages[built.current_user_index]["content"] == "continue"
+
+
+def test_repeated_fitting_preserves_shifted_task_anchor():
+    base = [{"role": "system", "content": "s"}, {"role": "user", "content": "current"}]
+    counter = ContextBudgetManager(token_counter=len)
+    manager = ContextBudgetManager(ContextBudget(
+        max_context_tokens=counter.estimate_request_tokens(base),
+    ), token_counter=len)
+    first = manager.fit_messages([
+        base[0], {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"}, base[1],
+    ], current_user_index=3)
+    assert first.current_user_index == 1
+    assert first.dropped_messages == 2
+    second = manager.fit_messages(first.messages + [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call", "type": "function", "function": {"name": "echo", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call", "content": "result"},
+    ], current_user_index=first.current_user_index)
+    assert second.messages == base
+    assert second.current_user_index == 1
+    assert second.dropped_messages == 2
+
+
+def test_hard_limit_truncation_counts_serialization_and_reports_it():
+    manager = ContextBudgetManager(ContextBudget(
+        max_context_tokens=130, max_current_task_tokens=5000,
+    ), token_counter=len)
+    built = manager.build_messages("s", [], '\\"\n中文' * 100)
+
+    assert built.truncated_current_task
+    assert built.estimated_tokens <= 130
+    assert built.messages[built.current_user_index]["content"]
+
+
+def test_truncation_honors_tiny_budgets_with_non_character_counter():
+    text = "abcdefghij" * 100
+    for budget in range(1, 80):
+        result = truncate_text(text, budget, lambda value: len(value) * 2)
+        assert len(result) * 2 <= budget
+
+
+def test_history_compaction_retains_complete_multi_tool_group():
+    group = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": name, "type": "function", "function": {"name": "echo", "arguments": "{}"}}
+            for name in ("a", "b")
+        ]},
+        {"role": "tool", "tool_call_id": "a", "content": "one"},
+        {"role": "tool", "tool_call_id": "b", "content": "two"},
+    ]
+    compacted = HistoryCompactor().compact(
+        [{"role": "user", "content": "old"}] + group, max_turns=1,
+    )
+    assert compacted.messages == group
+    assert compacted.dropped_messages == 1
+
+    manager = ContextBudgetManager(ContextBudget(max_history_tokens=100), token_counter=len)
+    built = manager.build_messages("s", group + [
+        {"role": "assistant", "content": "done"},
+    ], "next")
+    assert [message["role"] for message in built.messages] == ["system", "assistant", "user"]
+    assert built.dropped_messages == 3
+
+
+def test_context_results_do_not_share_nested_tool_calls_with_input():
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "echo", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "a", "content": "result"},
+    ]
+    manager = ContextBudgetManager()
+    results = [
+        manager.fit_messages(messages).messages,
+        manager.compact_tool_history(messages).messages,
+        manager.prepare_history(messages).messages,
+        manager.build_messages("s", messages, "next").messages[1:-1],
+    ]
+    for result in results:
+        result[0]["tool_calls"][0]["function"]["arguments"] = '{"changed": true}'
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
 
 
 def test_default_context_uses_one_hard_limit_and_ratio_thresholds():
@@ -154,7 +249,8 @@ def test_fit_messages_drops_function_call_and_results_as_one_group():
         },
         {"role": "tool", "tool_call_id": "call-1", "content": "large observation"},
     ]
-    fitted, dropped = manager.fit_messages(messages, current_user_index=1)
+    result = manager.fit_messages(messages, current_user_index=1)
+    fitted, dropped = result.messages, result.dropped_messages
 
     assert dropped == 2
     assert not any(message.get("role") in {"assistant", "tool"} for message in fitted)

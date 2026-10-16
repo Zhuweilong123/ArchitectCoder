@@ -14,10 +14,12 @@ Usage::
 import re
 import json
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, TypedDict, Unpack
 
 from ..core.agent import Agent
-from ..core.llm import BaseAgentsLLM
+from ..host_api.agents import SyncModelPort
+from ..host_api.data import ModelMessage
+from shared.llm_types import TextGenerationOptions
 from ..core.message import Message
 from backend.config import AgentConfig
 
@@ -27,12 +29,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_PLANNER_PROMPT = """
 You are a top-tier AI planning expert. Your task is to decompose the user's complex question into an action plan made of multiple simple steps.
 Make sure each step in the plan is an independent, executable sub-task, and arrange them strictly in logical order.
-Your output must be a Python list where each element is a string describing a sub-task.
+Your output must be a JSON array where each element is a non-empty string describing a sub-task.
 
 Question: {question}
 
 Output your plan strictly in this format:
-```python
+```json
 ["step 1", "step 2", "step 3", ...]
 ```
 """
@@ -58,7 +60,46 @@ Output only the answer for the "current step":
 """
 
 
-class PlanAndSolveAgent(Agent):
+class PlanPrompts(TypedDict, total=False):
+    planner: str
+    executor: str
+
+
+def parse_plan(response: str) -> list[str]:
+    """Validate structured plans before execution; retain plain-text line fallback."""
+    code_match = re.search(r"```(?:json|python)?\s*(.*?)\s*```", response, re.DOTALL)
+    bracket_match = re.search(r"\[.*\]", response, re.DOTALL)
+    structured: str | None = None
+    if code_match:
+        structured = code_match.group(1)
+    elif response.strip().startswith(("[", "{")):
+        structured = response.strip()
+    elif bracket_match:
+        structured = bracket_match.group(0)
+    if structured is not None:
+        try:
+            value: object = json.loads(structured)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(value, list) or not value:
+            return []
+        steps: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                return []
+            steps.append(item.strip())
+        return steps
+    # An object or malformed array is not an executable prose plan.
+    if response.strip().startswith(("[", "{", "```")):
+        return []
+    lines = [
+        re.sub(r"^\d+[\.\)]\s*", "", line.strip()).strip().strip('"').strip("'")
+        for line in response.splitlines() if line.strip()
+    ]
+    return [line for line in lines if line]
+
+
+class PlanAndSolveAgent(Agent[SyncModelPort]):
     """Plan-and-Solve Agent
 
     执行流程:
@@ -73,17 +114,17 @@ class PlanAndSolveAgent(Agent):
     def __init__(
         self,
         name: str,
-        llm: BaseAgentsLLM,
+        llm: SyncModelPort,
         system_prompt: Optional[str] = None,
         config: Optional[AgentConfig] = None,
-        custom_prompts: Optional[Dict[str, str]] = None,
-    ):
+        custom_prompts: PlanPrompts | None = None,
+    ) -> None:
         super().__init__(name, llm, system_prompt, config)
         self.planner_prompt = (custom_prompts or {}).get("planner", DEFAULT_PLANNER_PROMPT)
         self.executor_prompt = (custom_prompts or {}).get("executor", DEFAULT_EXECUTOR_PROMPT)
         logger.info("✅ %s 初始化完成", name)
 
-    def run(self, input_text: str, **kwargs) -> str:
+    def run(self, input_text: str, **kwargs: Unpack[TextGenerationOptions]) -> str:
         """执行 规划 → 逐步执行 流程"""
         logger.info("🤖 %s 开始处理: %s", self.name, input_text[:80])
 
@@ -101,7 +142,8 @@ class PlanAndSolveAgent(Agent):
 
         # Phase 2: 逐步执行
         plan_str = "\n".join(f"{i}. {s}" for i, s in enumerate(plan, 1))
-        history_parts: List[str] = []
+        history_parts: list[str] = []
+        final_answer = ""
 
         for idx, step in enumerate(plan):
             history_str = "\n".join(history_parts) if history_parts else "（尚无已完成步骤）"
@@ -112,51 +154,27 @@ class PlanAndSolveAgent(Agent):
                 history=history_str,
                 current_step=step,
             )
-            messages = [{"role": "user", "content": executor_input}]
-            step_result = self.llm.invoke(messages, **kwargs)
+            step_result = self.llm.invoke(self._messages(executor_input), **kwargs)
+            final_answer = step_result
 
             history_parts.append(f"步骤 {idx + 1} ({step}): {step_result}")
             logger.info("✅ 步骤 %d/%d 完成 (%d 字符)", idx + 1, len(plan), len(step_result))
 
         # 汇总
-        final_answer = history_parts[-1].split(": ", 1)[-1] if history_parts else ""
         self.add_message(Message(input_text, "user"))
         self.add_message(Message(final_answer, "assistant"))
         logger.info("🏁 %s 完成", self.name)
         return final_answer
 
-    def _plan(self, question: str, **kwargs) -> List[str]:
+    def _messages(self, content: str) -> list[ModelMessage]:
+        messages: list[ModelMessage] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": content})
+        return messages
+
+    def _plan(self, question: str, **kwargs: Unpack[TextGenerationOptions]) -> list[str]:
         """生成执行计划"""
         prompt = self.planner_prompt.format(question=question)
-        messages = [{"role": "user", "content": prompt}]
-        response = self.llm.invoke(messages, **kwargs)
-
-        # 尝试从 ```python ... ``` 代码块中提取
-        code_match = re.search(r"```(?:python)?\s*(\[.*?\])\s*```", response, re.DOTALL)
-        if code_match:
-            try:
-                plan = json.loads(code_match.group(1))
-                if isinstance(plan, list) and len(plan) > 0:
-                    return plan
-            except json.JSONDecodeError:
-                pass
-
-        # 尝试直接解析为 JSON 列表
-        bracket_match = re.search(r"\[.*\]", response, re.DOTALL)
-        if bracket_match:
-            try:
-                plan = json.loads(bracket_match.group(0))
-                if isinstance(plan, list) and len(plan) > 0:
-                    return plan
-            except json.JSONDecodeError:
-                pass
-
-        # 回退：按行解析
-        lines = response.strip().split("\n")
-        steps = [
-            re.sub(r"^\d+[\.\)]\s*", "", line).strip().strip('"').strip("'")
-            for line in lines
-            if line.strip() and not line.strip().startswith("```")
-        ]
-        steps = [s for s in steps if s]
-        return steps if steps else []
+        response = self.llm.invoke(self._messages(prompt), **kwargs)
+        return parse_plan(response)

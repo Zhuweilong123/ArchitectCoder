@@ -18,6 +18,8 @@ Cross-reference:
 
 from __future__ import annotations
 
+from shared.tokenization import tokenize_for_fts
+
 import ast
 import difflib
 import json
@@ -149,14 +151,12 @@ def _build_content_text(node_type: NodeType, name: str,
 
     elif node_type == NodeType.FRAGMENT:
         parts.append(properties.get("fragment_type", ""))
+        for operand in properties.get("operands", []):
+            parts.append(operand.get("guard", ""))
+            parts.extend(operand.get("message_ids", []))
     raw_text = " ".join(set(p for p in parts if p))
 
-    # ── jieba 预分词 ──
-    try:
-        from extensions.memory.tokenizer import tokenize_for_fts
-        return tokenize_for_fts(raw_text)
-    except ImportError:
-        return raw_text
+    return tokenize_for_fts(raw_text)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -578,6 +578,7 @@ class GraphBuilder:
                 "version": getattr(diagram, "version", "1.0"),
                 "project_file": filepath,
                 "diagram_index": diagram_index,
+                "source_scopes": [scope.model_dump() for scope in getattr(diagram, "source_scopes", [])],
             },
         )
         diag_node.content_text = _build_content_text(
@@ -1154,6 +1155,8 @@ class GraphBuilder:
                         "type": getattr(msg, "type", "sync"),
                         "order": msg_order,
                         "note": getattr(msg, "note", ""),
+                        "reply_to": getattr(msg, "reply_to", ""),
+                        "source_refs": [ref.model_dump() for ref in getattr(msg, "source_refs", [])],
                     },
                 ))
 
@@ -1180,6 +1183,10 @@ class GraphBuilder:
                     "width": getattr(frag, "width", 0),
                     "y_start": getattr(frag, "y_start", 0),
                     "y_end": getattr(frag, "y_end", 0),
+                    "lifeline_ids": list(getattr(frag, "lifeline_ids", [])),
+                    "parent_fragment_id": getattr(frag, "parent_fragment_id", ""),
+                    "parent_operand_id": getattr(frag, "parent_operand_id", ""),
+                    "operands": [operand.model_dump() for operand in getattr(frag, "operands", [])],
                 },
             )
             frag_node.content_text = _build_content_text(

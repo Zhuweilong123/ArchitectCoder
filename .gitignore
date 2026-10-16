@@ -20,6 +20,9 @@ Thumbs.db
 
 # Env
 backend/.env
+backend/.env.production
+frontend/.env.local
+frontend/.env.production.local
 
 # Logs
 *.log

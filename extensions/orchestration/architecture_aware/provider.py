@@ -11,7 +11,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from app.agent_base.host_api.errors import AgentInterrupted
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_observation_services, get_provider_services
 from app.agent_base.host_api.environment import project_id as project_id_for
 from app.agent_base.host_api.orchestration import OrchestrationPreparation, OrchestrationRequest
 from extensions.orchestration.plugin_api import (ExplorationDemand, ExplorationEvidence, ExplorationFinding, ExplorationReport)
@@ -398,7 +398,7 @@ class ArchitectureAwareOrchestrator:
                 "events": list(getattr(schedule, "events", ()) or ()),
             },
         }
-        get_host_services().emit_event("architecture_cost_audit", audit)
+        get_observation_services().emit_event("architecture_cost_audit", audit)
 
     def _exploration_budget(
         self, impact: ImpactSlice, decision: PartitionDecision,
@@ -472,7 +472,7 @@ class ArchitectureAwareOrchestrator:
             design_dir=self.design_dir,
         )
         try:
-            provider = get_host_services().resolve_provider("knowledge_graph", settings=self.settings, project_file=self.project_file)
+            provider = get_provider_services().resolve_provider("knowledge_graph", settings=self.settings, project_file=self.project_file)
             project_id = project_id_for(self.project_file)
             async with asyncio.timeout(30):
                 impact = await collect_impact(provider, project_id, demand.search_queries)
@@ -639,4 +639,4 @@ class ArchitectureAwareOrchestrator:
     def create_tools(self, **_kwargs):
         from .tool import ArchitectureRouteTool
 
-        return [ArchitectureRouteTool(get_host_services().schedule_provider(self, "orchestration"))]
+        return [ArchitectureRouteTool(get_provider_services().schedule_provider(self, "orchestration"))]

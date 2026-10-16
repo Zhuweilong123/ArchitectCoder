@@ -106,6 +106,34 @@ class SeqLifeline(BaseModel):
     activations: list[float] = Field(default_factory=list)  # y-offsets of activation bars
 
 
+class SeqSourceRef(BaseModel):
+    model_config = {"extra": "ignore"}
+    scope_id: str
+    line: int = Field(ge=1)
+    kind: str = "call"  # call | condition | return
+
+
+class SeqSourceScope(BaseModel):
+    model_config = {"extra": "ignore"}
+    id: str
+    path: str  # workspace-relative source file
+    symbol: str  # qualified function, e.g. Planner._plan
+    lifeline_id: str
+    entry_message_id: str = ""
+    coverage: str = "partial"  # partial | returns (all returns in this function)
+
+
+class SeqOperand(BaseModel):
+    """One guarded region of a combined fragment; membership is explicit."""
+    model_config = {"extra": "ignore"}
+    id: str
+    guard: str = ""
+    message_ids: list[str] = Field(default_factory=list)
+    y_start: float
+    y_end: float
+    source_guard: Optional[SeqSourceRef] = None
+
+
 class SeqFragment(BaseModel):
     """UML 2.5.1 Combined Fragment: loop, alt, opt, break, par, etc."""
     model_config = {"extra": "ignore"}
@@ -116,6 +144,11 @@ class SeqFragment(BaseModel):
     width: float = 280    # fragment width
     y_start: float = 0   # top Y position
     y_end: float = 100    # bottom Y position
+    # Empty operands identify a legacy visual frame, not inferred branches.
+    operands: list[SeqOperand] = Field(default_factory=list)
+    lifeline_ids: list[str] = Field(default_factory=list)
+    parent_fragment_id: str = ""
+    parent_operand_id: str = ""
 
 
 class SeqMessage(BaseModel):
@@ -128,6 +161,8 @@ class SeqMessage(BaseModel):
     order: int = 0         # vertical sequence number
     y: float = 0           # persisted Y position
     note: str = ""         # functional comment
+    source_refs: list[SeqSourceRef] = Field(default_factory=list)
+    reply_to: str = ""  # explicit request message, not inferred from labels
 
 
 # ---------- Component Diagram models ----------
@@ -171,6 +206,7 @@ class UmlDiagram(BaseModel):
     lifelines: list[SeqLifeline] = Field(default_factory=list)
     messages: list[SeqMessage] = Field(default_factory=list)
     fragments: list[SeqFragment] = Field(default_factory=list)
+    source_scopes: list[SeqSourceScope] = Field(default_factory=list)
     # --- Component diagram fields ---
     components: list[CompNode] = Field(default_factory=list)
     comp_relations: list[CompRelation] = Field(default_factory=list)
@@ -247,20 +283,6 @@ def create_default_project(name: str = "Untitled") -> Project:
     project = Project(name=name, diagrams=[], active_diagram_index=0)
     logger.info(f"[Project] Created new empty project '{name}'")
     return project
-
-
-# ---------- LLM ----------
-
-class LlmRequest(BaseModel):
-    prompt: str
-    system_prompt: Optional[str] = None
-    temperature: float = 0.7
-    max_tokens: int = 4096
-
-
-class LlmResponse(BaseModel):
-    content: str
-    usage: dict = Field(default_factory=dict)
 
 
 # ---------- Markdown Export ----------

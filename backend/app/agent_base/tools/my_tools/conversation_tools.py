@@ -22,6 +22,9 @@ Usage::
 from __future__ import annotations
 
 import os
+from app.agent_base.host_api.agents import ProgressPort
+from app.agent_base.host_api.data import JsonObject
+from collections.abc import Awaitable
 from typing import Callable
 
 from app.agent_base.core.llm import BaseAgentsLLM
@@ -41,15 +44,15 @@ class ProgressRelay:
     推送到前端。编排层在对话 Agent 运行前注入转发器实例。
     """
 
-    def __init__(self):
-        self._events: list[dict] = []
-        self._on_progress: Callable[[dict], None] | None = None
+    def __init__(self) -> None:
+        self._events: list[JsonObject] = []
+        self._on_progress: Callable[[JsonObject], None | Awaitable[None]] | None = None
 
-    def on_progress(self, callback: Callable[[dict], None]):
+    def on_progress(self, callback: Callable[[JsonObject], None | Awaitable[None]]) -> None:
         """注册进度回调。"""
         self._on_progress = callback
 
-    def emit(self, event: dict):
+    def emit(self, event: JsonObject) -> None:
         """发送进度事件。"""
         self._events.append(event)
         if self._on_progress:
@@ -63,11 +66,11 @@ class ProgressRelay:
                 except RuntimeError:
                     pass  # 无事件循环时忽略
 
-    def clear(self):
+    def clear(self) -> None:
         self._events.clear()
 
     @property
-    def events(self) -> list[dict]:
+    def events(self) -> list[JsonObject]:
         return self._events
 
 

@@ -2,7 +2,9 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
   sendReviewResponse, type AgentEvent, type AgentProgressEvent, type AgentTodoItem,
 } from '../../services/agentChat';
-import { processDesignUpdated } from '../../services/designElementHandler';
+import type { UmlDiagram } from '../../types/uml';
+import { normalizeDiagram } from '../../utils/diagramNormalization';
+import { processDesignUpdated, restoreOriginalsToCanvas } from '../../services/designElementHandler';
 import { useDiagramStore } from '../../stores/diagramStore';
 import { useReviewStore } from '../../stores/reviewStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -14,6 +16,7 @@ type StateSetter<T> = Dispatch<SetStateAction<T>>;
 
 export interface AgentChatEventHandlerOptions {
   setMessages: StateSetter<ChatMessage[]>;
+  onSessionSync?: () => void;
   setBusy: StateSetter<boolean>;
   setCurrentSteps: StateSetter<AgentProgressEvent[]>;
   setCurrentTodos: StateSetter<AgentTodoItem[]>;
@@ -36,6 +39,7 @@ const appendSystemMessage = (
 
 export function createAgentChatEventHandler({
   setMessages,
+  onSessionSync,
   setBusy,
   setCurrentSteps,
   setCurrentTodos,
@@ -50,6 +54,41 @@ export function createAgentChatEventHandler({
 }: AgentChatEventHandlerOptions): (event: AgentEvent) => void {
   return (event: AgentEvent) => {
     switch (event.event) {
+      case 'progress_snapshot': {
+        liveStepsRef.current = [...event.steps].sort((first, second) => first.step - second.step);
+        setCurrentSteps([...liveStepsRef.current]);
+        if (event.terminal_result_id) {
+          setMessages(previous => previous.map(message => message.id === event.terminal_result_id
+            ? { ...message, steps: [...liveStepsRef.current] } : message));
+        }
+        const latest = liveStepsRef.current[liveStepsRef.current.length - 1];
+        if (latest && Array.isArray(latest.todos)) {
+          liveTodosRef.current = latest.todos;
+          setCurrentTodos(latest.todos);
+          setTodoPlanningMode(Boolean(latest.planning_mode));
+          setStrategyAdvised(Boolean(latest.strategy_advised));
+        }
+        break;
+      }
+      case 'run_started':
+        setBusy(true);
+        break;
+      case 'session_sync':
+        onSessionSync?.();
+        setBusy(event.running);
+        if (event.pending_review_ids) {
+          const review = useReviewStore.getState();
+          if (review.status === 'pending' && review.reviewId !== null
+            && !event.pending_review_ids.includes(review.reviewId)) review.clear();
+        }
+        if (event.replay_truncated) {
+          appendSystemMessage(setMessages, {
+            id: `replay_gap_${Date.now()}`,
+            content: '部分历史事件已过期，可在 trace 中查看完整记录。当前任务状态已同步。',
+            timestamp: Date.now(),
+          });
+        }
+        break;
       case 'chat_chunk': {
         setMessages((prev) => {
           const lastIdx = prev.length - 1;
@@ -159,9 +198,9 @@ export function createAgentChatEventHandler({
         const changedDiagrams = event.changed_diagrams === undefined
           ? undefined
           : normalizeReviewDiagrams(event.changed_diagrams);
-        const snapshot: Record<string, any> = {};
+        const snapshot: Record<string, UmlDiagram> = {};
         for (const spec of normalizeReviewDiagrams(event.original_diagrams)) {
-          snapshot[`${spec.type}:${spec.name || ''}`] = spec.data;
+          snapshot[`${spec.type}:${spec.name || ''}`] = normalizeDiagram(spec.data);
         }
         processDesignUpdated(
           diagrams, [], useUiStore.getState(), useDiagramStore.getState(), snapshot,
@@ -198,8 +237,10 @@ export function createAgentChatEventHandler({
       }
 
       case 'review_timeout': {
+        const activeReview = useReviewStore.getState();
+        if (activeReview.reviewId !== null && activeReview.reviewId !== event.review_id) break;
         useReviewStore.getState().expire(
-          `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`,
+          `审核超时（${Math.round(event.timeout)}s 未响应），Agent 已继续执行`, event.review_id,
         );
         appendSystemMessage(setMessages, {
           id: `review_timeout_${Date.now()}`,
@@ -210,19 +251,27 @@ export function createAgentChatEventHandler({
       }
 
       case 'review_expired': {
+        const activeReview = useReviewStore.getState();
+        if (activeReview.reviewId !== null && activeReview.reviewId !== event.review_id) break;
+        const canceled = event.reason === 'user_canceled_review';
+        if (canceled && useReviewStore.getState().reviewId === event.review_id) {
+          restoreOriginalsToCanvas(useUiStore.getState().originalDiagrams);
+        }
         useDiagramStore.getState().endBatch();
-        useReviewStore.getState().expire('连接中断期间后端已取消该任务');
+        useReviewStore.getState().expire(canceled ? '已取消审核，候选未应用' : '审核请求已失效', event.review_id);
         setBusy(false);
         settleTodos('pending');
         appendSystemMessage(setMessages, {
           id: `review_expired_${Date.now()}`,
-          content: '⚠️ 审核已失效（连接中断期间后端已取消该任务）。请重新发起请求。',
+          content: canceled ? '已取消审核，候选未应用。' : '⚠️ 审核请求已失效，请重新发起请求。',
           timestamp: Date.now(),
         });
         break;
       }
 
       case 'done': {
+        const resultId = event.event_epoch && event.event_seq
+          ? `agent_result_${event.event_epoch}_${event.event_seq}` : `agent_${Date.now()}`;
         useDiagramStore.getState().endBatch();
         setBusy(false);
         const review = useReviewStore.getState();
@@ -244,13 +293,21 @@ export function createAgentChatEventHandler({
           ? { label: '修复设计契约并继续', message: '修复设计契约并继续' }
           : undefined;
         setMessages((prev) => {
+          if (prev.some(message => message.id === resultId)) return prev;
+          const latestReply = [...prev].reverse().find(message => message.role !== 'system');
+          if (latestReply?.role === 'agent' && latestReply.id.startsWith('trace_')
+            && latestReply.content === event.result) {
+            return prev.map(message => message === latestReply
+              ? { ...message, id: resultId, action: recoveryAction,
+                  steps: finalSteps.length ? finalSteps : message.steps } : message);
+          }
           const hasStream = prev.some((message) => message.id.startsWith('stream_'));
           if (hasStream) {
             return prev.map((message) =>
               message.id.startsWith('stream_')
                 ? {
                     ...message,
-                    id: message.id.replace('stream_', 'agent_'),
+                    id: resultId,
                     content: event.result || message.content,
                     action: recoveryAction,
                     steps: finalSteps.length ? finalSteps : undefined,
@@ -261,7 +318,7 @@ export function createAgentChatEventHandler({
           return [
             ...prev,
             {
-              id: `agent_${Date.now()}`,
+              id: resultId,
               role: 'agent' as const,
               content: event.result || '(空回复)',
               action: recoveryAction,
@@ -298,6 +355,14 @@ export function createAgentChatEventHandler({
       }
 
       case 'error': {
+        if (event.running) {
+          appendSystemMessage(setMessages, {
+            id: `command_error_${Date.now()}`,
+            content: event.message,
+            timestamp: Date.now(),
+          });
+          break;
+        }
         useDiagramStore.getState().endBatch();
         setBusy(false);
         settleTodos('pending');

@@ -7,6 +7,8 @@ application's tool assembly layer.
 
 from __future__ import annotations
 
+from app.agent_base.host_api.data import ToolSchema
+
 from .base import Tool
 from .result import ToolResult
 
@@ -29,7 +31,7 @@ class AsyncTool(Tool):
     async def _execute_result(self, parameters: dict):
         return await self._execute(parameters)
 
-    def to_openai_schema(self) -> dict:
+    def to_openai_schema(self) -> ToolSchema:
         raise NotImplementedError
 
 

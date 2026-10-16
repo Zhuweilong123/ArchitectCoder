@@ -8,12 +8,33 @@ from app.agent_base.adapters.host_services import ApplicationHostServices
 from app.agent_base.core.extension_context import ExtensionContext, extension_scope
 from app.agent_base.core.hooks import get_runtime
 from app.agent_base.core.observability import emit_trace, get_trace_hook, push_trace_hook, pop_trace_hook
-from app.agent_base.host_api.services import get_host_services, host_services_scope
+from app.agent_base.host_api.services import get_observation_services, host_services_scope
 from extensions.memory.provider import SQLiteMemoryProvider
 
 
+def test_aggregate_service_entrypoints_are_not_public():
+    from app.agent_base.host_api import services
+    assert not hasattr(services, "get_host_services")
+    assert not hasattr(services, "HostServices")
+
+
+def test_native_loop_factory_rejects_incomplete_registry_before_running():
+    host = ApplicationHostServices()
+    with pytest.raises(TypeError, match="Loop registry must implement"):
+        host.create_loop_agent(name="test", llm=SimpleNamespace(), tool_registry=SimpleNamespace())
+
+
+def test_native_loop_factory_accepts_the_structured_registry():
+    from app.agent_base.tools.registry import ToolRegistry
+    registry = ToolRegistry()
+    agent = ApplicationHostServices().create_loop_agent(
+        name="test", llm=SimpleNamespace(), tool_registry=registry,
+    )
+    assert agent.tool_registry is registry
+
+
 def test_concurrent_plugins_and_background_children_keep_injected_capabilities():
-    default = get_host_services()
+    default = get_observation_services()
     events = []
 
     async def run():
@@ -23,7 +44,7 @@ def test_concurrent_plugins_and_background_children_keep_injected_capabilities()
                 async def child():
                     await asyncio.sleep(0)
                     SQLiteMemoryProvider._trace("child", request=name)
-                    assert get_host_services() is host
+                    assert get_observation_services() is host
                 task = asyncio.create_task(child())
                 await asyncio.sleep(0)
                 SQLiteMemoryProvider._trace("foreground", request=name)
@@ -31,23 +52,23 @@ def test_concurrent_plugins_and_background_children_keep_injected_capabilities()
         await asyncio.gather(request("first"), request("second"))
 
     asyncio.run(run())
-    assert get_host_services() is default
+    assert get_observation_services() is default
     assert {(name, event) for name, event, _ in events} == {
         (name, event) for name in ("first", "second") for event in ("foreground", "child")}
     assert all(payload["request"] == name for name, _, payload in events)
 
 
 def test_extension_request_fork_preserves_services_and_restores_on_error():
-    default = get_host_services()
+    default = get_observation_services()
     injected = SimpleNamespace()
     context = ExtensionContext(host_services=injected)
     fork = context.fork()
     assert fork.host_services is injected
     with pytest.raises(ValueError):
         with extension_scope(fork):
-            assert get_host_services() is injected
+            assert get_observation_services() is injected
             raise ValueError("request failed")
-    assert get_host_services() is default
+    assert get_observation_services() is default
 
 
 def test_host_runtime_scope_and_trace_suppression_restore_parent_bindings():

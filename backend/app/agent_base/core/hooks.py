@@ -31,7 +31,7 @@ import inspect
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from app.agent_base.host_api.lifecycle import (
     HookEvent, PUBLIC_STAGES, NOTIFICATIONS, HookAction, HookDecision, HookContext,
@@ -39,6 +39,8 @@ from app.agent_base.host_api.lifecycle import (
 from .exceptions import AgentInterrupted
 from .policy import ExecutionBudget
 from ..convergence import ConvergenceController
+from ..host_api.data import TodoItem
+from ..host_api.execution_types import RuntimePolicyMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class AgentRuntime:
     """
 
     stop_check: Callable[[], bool] = field(default_factory=lambda: (lambda: False))
-    todos: list = field(default_factory=list)
+    todos: list[TodoItem] = field(default_factory=list)
     rounds_since_todo: int = 0
     # Complex cross-artifact tasks opt into an explicit acceptance contract.
     # Keep this per-run: ordinary repairs should retain the lightweight path.
@@ -63,7 +65,7 @@ class AgentRuntime:
     execution_budget: Optional[ExecutionBudget] = None
     convergence_controller: Optional[ConvergenceController] = None
     control_decision: Optional[HookDecision] = None
-    policy_metadata: dict[str, Any] = field(default_factory=dict)
+    policy_metadata: RuntimePolicyMetadata = field(default_factory=dict)
     plugin_plan_id: str = ""
     run_operation_id: str = ""
     lifecycle_round_open: bool = False
@@ -109,7 +111,7 @@ def reset_runtime(token) -> None:
 
 
 HookResult = Optional[str | HookDecision]
-Hook = Callable[[HookContext], HookResult]
+Hook = Callable[[HookContext], HookResult | Awaitable[HookResult]]
 
 
 class HookRegistry:
@@ -165,7 +167,7 @@ class HookRegistry:
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
                     self.unregister(stage, handler)
 
-    def has_contribution(self, identifier, *, interface_id=None):
+    def has_contribution(self, identifier: str, *, interface_id: str | None = None) -> bool:
         return any(meta.get("id") == identifier and (interface_id is None or
                    (meta.get("mode") == "service" and meta.get("interface_id") == interface_id))
                    for meta in self._metadata.values())
@@ -548,6 +550,8 @@ class RunPolicyHook:
                 message = (
                     "The run time limit was reached; finalize with the verified evidence already gathered."
                     if reason == "time_limit" else
+                    "The configured tool-call limit was reached; finalize with the verified evidence already gathered."
+                    if reason == "tool_call_limit" else
                     "The per-request emergency token ceiling was reached; finalize with the verified evidence already gathered."
                 )
                 decision = HookDecision(

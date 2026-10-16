@@ -1,7 +1,47 @@
 """Plugin assembly requests containing values and declared host capabilities."""
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, TypedDict
+from typing import Protocol, TypedDict
+from subprocess import CompletedProcess
+from collections.abc import Sequence
+from .agents import ModelPort, EnvironmentPromptPort
+from .contexts import SkillContext
+from .data import JsonObject, ToolSchema
 
+
+class CatalogEntryPort(Protocol):
+    @property
+    def skill_id(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def version(self) -> str: ...
+
+class CatalogSnapshotPort(Protocol):
+    @property
+    def entries(self) -> Sequence[CatalogEntryPort]: ...
+
+class CatalogCapture(Protocol):
+    def __call__(self, provider: object | None = None, *, context: SkillContext | None = None) -> CatalogSnapshotPort: ...
+
+class LanguageRunner(Protocol):
+    def __call__(self, argv: list[str] | tuple[str, ...], *, cwd: str, capture_output: bool = True,
+                 timeout: float = 60.0, check: bool = False) -> CompletedProcess[bytes]: ...
+
+class ExplorerPort(Protocol):
+    last_token_usage: int
+    last_evidence_summary: list[JsonObject]
+    async def _execute(self, params: JsonObject) -> str: ...
+
+class ExplorerFactory(Protocol):
+    def __call__(self, *, llm: ModelPort, source_dir: str, test_dir: str, design_dir: str,
+        workspace_root: str, project_file: str, toolkits: tuple[str, ...], single_use: bool,
+        max_cumulative_tokens: int, max_run_seconds: float, llm_timeout_seconds: float,
+        max_tool_calls: int, child_run_name: str) -> ExplorerPort: ...
+
+class AssemblyValues(TypedDict, total=False):
+    skill_catalog: CatalogSnapshotPort
 
 class AssemblyInputs(TypedDict, total=False):
     """Host-supplied inputs; optional capabilities may be absent or None."""
@@ -10,20 +50,20 @@ class AssemblyInputs(TypedDict, total=False):
     source_dir: str
     test_dir: str
     design_dir: str
-    llm: Any
-    environment_context: Any
-    explorer_factory: Callable
-    language_runner: Callable | None
-    capture_catalog: Callable
+    llm: ModelPort
+    environment_context: EnvironmentPromptPort
+    explorer_factory: ExplorerFactory
+    language_runner: LanguageRunner | None
+    capture_catalog: CatalogCapture
 
 
 class ProviderBinder(Protocol):
-    def __call__(self, name: str, provider: Any, *, options: dict | None = None) -> None: ...
+    def __call__(self, name: str, provider: object, *, options: JsonObject | None = None) -> None: ...
 
 
 class AssemblyTool(Protocol):
     name: str
-    def to_openai_schema(self) -> dict: ...
+    def to_openai_schema(self) -> ToolSchema: ...
 
 
 class AssemblySlots:
@@ -37,7 +77,7 @@ class AssemblyRequest:
     bind: ProviderBinder
     tools: list[AssemblyTool] = field(default_factory=list)
     required_bindings: dict[str, list[str]] = field(default_factory=dict)
-    values: dict[str, Any] = field(default_factory=dict)
+    values: AssemblyValues = field(default_factory=lambda: AssemblyValues())
     interface_id: str = AssemblySlots.BIND
 
     def validate(self) -> None:

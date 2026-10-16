@@ -19,6 +19,7 @@ import threading
 import hashlib
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
+from app.agent_base.host_api.data import JsonObject, TodoItem
 from typing import Any, Optional
 
 from app.agent_base.tools.base import Tool, ToolParameter
@@ -168,8 +169,8 @@ class TaskStore:
         task_id: str,
         run_id: str,
         *,
-        todos: list[dict] | None = None,
-        checkpoint: dict[str, Any] | None = None,
+        todos: list[TodoItem] | None = None,
+        checkpoint: JsonObject | None = None,
     ) -> Task:
         """Atomically persist the latest Todo/checkpoint snapshot."""
         with self._lock:
@@ -194,7 +195,7 @@ class TaskStore:
         run_id: str,
         result_status: str,
         *,
-        checkpoint: dict[str, Any] | None = None,
+        checkpoint: JsonObject | None = None,
     ) -> Task:
         """Persist a terminal result while keeping failure reasons distinct."""
         if result_status not in VALID_EXECUTION_STATUS:
@@ -642,8 +643,8 @@ class TaskExecutionBinding:
     def sync(
         self,
         *,
-        todos: list[dict] | None = None,
-        checkpoint: dict[str, Any] | None = None,
+        todos: list[TodoItem] | None = None,
+        checkpoint: JsonObject | None = None,
     ) -> None:
         self.store.update_execution(
             self.task_id,
@@ -656,7 +657,7 @@ class TaskExecutionBinding:
         self,
         result_status: str,
         *,
-        checkpoint: dict[str, Any] | None = None,
+        checkpoint: JsonObject | None = None,
     ) -> None:
         self.store.finalize_execution(
             self.task_id,

@@ -7,7 +7,7 @@ be adopted without changing the contract collector.
 
 from __future__ import annotations
 
-from app.agent_base.host_api.services import get_host_services
+from app.agent_base.host_api.services import get_provider_services
 
 from typing import Any
 
@@ -26,7 +26,7 @@ class KnowledgeGraphContractAdapter:
         """Return neutral graph facts, never making graph availability fatal."""
         provider = self.provider
         if provider is None:
-            provider = get_host_services().resolve_provider("knowledge_graph",
+            provider = get_provider_services().resolve_provider("knowledge_graph",
                 settings=self.settings, project_file=project_file,
                 workspace_root=workspace_root,
             )

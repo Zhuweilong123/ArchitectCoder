@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 
+
+_HOST_IS_WINDOWS = os.name == "nt"
 
 _PATH_KEYS = frozenset({"path", "project_file"})
 _PROTECTED_PATTERNS = (".git", ".git/*", ".env", ".env.*", ".ssh", ".ssh/*")
@@ -54,8 +57,11 @@ class CapabilityPolicy:
                 return "args must be a list of strings"
             # Preserve literal argv boundaries, particularly absolute paths
             # containing spaces returned by inventory/search tools.
+            # Classify using the policy's host syntax, not the interpreter's
+            # platform: Windows slash options are POSIX absolute paths.
+            host_path = PureWindowsPath if _HOST_IS_WINDOWS else PurePosixPath
             for value in [program, *args]:
-                error = self._check_path(value) if Path(value).is_absolute() else self._check_command(value)
+                error = self._check_path(value) if host_path(value).is_absolute() else self._check_command(value)
                 if error:
                     return error
             return None
@@ -116,6 +122,10 @@ class CapabilityPolicy:
         if any(part == ".." for part in re.split(r"[\\/\s]+", command)):
             return "path traversal is not allowed in shell commands"
         for raw_path in _ABSOLUTE_PATH.findall(command):
+            # POSIX paths and slash-style options are not absolute host paths
+            # on Windows. Guest command arguments are interpreted by their tool.
+            if _HOST_IS_WINDOWS and raw_path.startswith("/"):
+                continue
             path = Path(raw_path.rstrip(".,;"))
             try:
                 resolved = path.resolve()
