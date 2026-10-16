@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 
 
@@ -57,8 +57,11 @@ class CapabilityPolicy:
                 return "args must be a list of strings"
             # Preserve literal argv boundaries, particularly absolute paths
             # containing spaces returned by inventory/search tools.
+            # Classify using the policy's host syntax, not the interpreter's
+            # platform: Windows slash options are POSIX absolute paths.
+            host_path = PureWindowsPath if _HOST_IS_WINDOWS else PurePosixPath
             for value in [program, *args]:
-                error = self._check_path(value) if Path(value).is_absolute() else self._check_command(value)
+                error = self._check_path(value) if host_path(value).is_absolute() else self._check_command(value)
                 if error:
                     return error
             return None
