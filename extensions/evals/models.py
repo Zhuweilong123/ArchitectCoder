@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.agent_base.host_api.data import JsonObject
 
 
 EVAL_CASE_SCHEMA_VERSION = "1.0"
@@ -70,7 +72,7 @@ CHECKER_REQUIRED_FIELDS = {
 }
 
 
-def validate_answer_groups(groups: Any, texts: Any = None) -> None:
+def validate_answer_groups(groups: object, texts: object = None) -> None:
     """Reject empty alternatives and ambiguous group IDs before evaluation."""
     if not isinstance(groups, list) or not groups:
         raise ValueError("answer_contains_groups requires non-empty groups")
@@ -93,7 +95,7 @@ def validate_answer_groups(groups: Any, texts: Any = None) -> None:
         raise ValueError("answer group texts must be a list of non-empty strings")
 
 
-def _validate_checker_contract(configs: list[dict[str, Any]], scope: str) -> None:
+def _validate_checker_contract(configs: list[JsonObject], scope: str) -> None:
     for index, config in enumerate(configs):
         kind = str(config.get("type") or "")
         if kind not in SUPPORTED_CHECKER_TYPES:
@@ -110,14 +112,15 @@ def _validate_checker_contract(configs: list[dict[str, Any]], scope: str) -> Non
             validate_answer_groups(config["groups"], config.get("texts"))
         if kind != "trace_policy":
             continue
-        required_tools = {
-            str(tool) for tool in (config.get("required_tools") or [])
-        }
-        declared_tools = {
-            str(tool)
-            for key in ("required_tools", "forbidden_tools")
-            for tool in (config.get(key) or [])
-        }
+        tools: dict[str, set[str]] = {}
+        for key in ("required_tools", "forbidden_tools"):
+            configured = config.get(key)
+            values = [] if configured is None else configured
+            if not isinstance(values, list) or any(not isinstance(tool, str) for tool in values):
+                raise ValueError(f"{scope}[{index}] {key} must be a list of tool names")
+            tools[key] = {tool for tool in values if isinstance(tool, str)}
+        required_tools = tools["required_tools"]
+        declared_tools = required_tools | tools["forbidden_tools"]
         legacy_tools = sorted(declared_tools & LEGACY_TOOL_NAMES)
         if legacy_tools:
             raise ValueError(
@@ -146,12 +149,12 @@ class EvalCase(BaseModel):
     turns: list["EvalTurn"] = Field(default_factory=list)
     project_id: str = ""
     fixture: str = ""
-    checkers: list[dict[str, Any]] = Field(default_factory=list)
-    hard_checkers: list[dict[str, Any]] = Field(default_factory=list)
+    checkers: list[JsonObject] = Field(default_factory=list)
+    hard_checkers: list[JsonObject] = Field(default_factory=list)
     max_seconds: float = Field(default=600.0, gt=0, le=3600)
     max_tool_calls: int = Field(default=100, gt=0, le=1000)
     max_total_tokens: int = Field(default=200000, gt=0, le=1000000)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_contract(self) -> "EvalCase":
@@ -199,9 +202,9 @@ class EvalTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1)
-    checkers: list[dict[str, Any]] = Field(default_factory=list)
-    hard_checkers: list[dict[str, Any]] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    checkers: list[JsonObject] = Field(default_factory=list)
+    hard_checkers: list[JsonObject] = Field(default_factory=list)
+    metadata: JsonObject = Field(default_factory=dict)
 
 class ProjectManifest(BaseModel):
     """可复现评测项目的固定边界。"""
@@ -220,7 +223,7 @@ class ProjectManifest(BaseModel):
 
     @field_validator("fixture", "base_fixture", "entry_file", "source_dir", "test_dir", "protected_paths", "allowed_write_paths")
     @classmethod
-    def validate_relative_paths(cls, value):
+    def validate_relative_paths(cls, value: str | list[str]) -> str | list[str]:
         values = value if isinstance(value, list) else [value]
         for item in values:
             if not item:
@@ -236,7 +239,7 @@ class CheckerResult(BaseModel):
     passed: bool
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     message: str = ""
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: JsonObject = Field(default_factory=dict)
 
 
 EvalStatus = Literal[
@@ -284,7 +287,7 @@ class EvalResult(BaseModel):
     checker_results: list[CheckerResult] = Field(default_factory=list)
     error: str = ""
     failure_category: EvalFailureCategory = "none"
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
     @classmethod
     def started(cls, run_id: str, case_id: str) -> "EvalResult":

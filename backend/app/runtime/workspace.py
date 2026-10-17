@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+from app.agent_base.host_api.data import WorkspaceManifestPayload
 
 
 LayoutMode = Literal["project", "explicit"]
@@ -129,7 +130,7 @@ class WorkspaceManifest:
             project_files=discovered,
         )
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> WorkspaceManifestPayload:
         """Serialize the canonical layout for traces and run metadata."""
         return asdict(self)
 

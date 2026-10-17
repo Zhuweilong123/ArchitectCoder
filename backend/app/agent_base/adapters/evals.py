@@ -1,68 +1,75 @@
 """Loading, fallback and validation adapters for optional capabilities."""
 
 from __future__ import annotations
+
 import logging
 from typing import Any
 
-from extensions.evals.plugin_api import EvalProvider
+from app.agent_base.host_api.data import JsonObject
+from extensions.evals.plugin_api import (
+    EvalCase, EvalResult, EvalBatch, EvalBatchRequest, EvalBatchMergeRequest,
+    EvalArchiveRequest, EvalPerformanceArchiveRequest, EvalBaseline, EvalBatchRecord,
+    EvalArchiveReceipt, EvalArchiveRecord, EvalPerformanceRecord, EvalBatchDeleted,
+    EvalPerformanceDeleted, EvalProvider,
+)
 
 logger = logging.getLogger(__name__)
 
 class NoOpEvalProvider:
     """Explicit empty provider used when evaluations are disabled."""
 
-    def list_cases(self) -> list[Any]:
+    def list_cases(self) -> list[EvalCase]:
         return []
 
-    def get_case(self, case_id: str) -> Any | None:
+    def get_case(self, case_id: str) -> EvalCase | None:
         return None
 
-    def get_baseline(self) -> dict[str, Any]:
+    def get_baseline(self) -> EvalBaseline:
         raise RuntimeError("evaluation provider is disabled")
 
-    async def run_case(self, case: Any) -> Any:
+    async def run_case(self, case: EvalCase) -> EvalResult:
         raise RuntimeError("evaluation provider is disabled")
 
-    def list_results(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_results(self, limit: int = 100) -> list[JsonObject]:
         return []
 
-    async def start_batch(self, request: Any) -> Any:
+    async def start_batch(self, request: EvalBatchRequest) -> EvalBatch:
         raise RuntimeError("evaluation provider is disabled")
 
-    def merge_batches(self, request: Any) -> Any:
+    def merge_batches(self, request: EvalBatchMergeRequest) -> EvalBatch:
         raise RuntimeError("evaluation provider is disabled")
 
-    def list_batches(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_batches(self, limit: int = 20) -> list[EvalBatchRecord]:
         return []
 
-    def get_batch(self, batch_id: str) -> Any | None:
+    def get_batch(self, batch_id: str) -> EvalBatch | None:
         return None
 
-    def delete_batch(self, batch_id: str) -> dict[str, Any]:
+    def delete_batch(self, batch_id: str) -> EvalBatchDeleted:
         raise RuntimeError("evaluation provider is disabled")
 
-    def trends(self, limit: int = 20) -> list[dict[str, Any]]:
+    def trends(self, limit: int = 20) -> list[EvalBatchRecord]:
         return []
 
-    def archive(self, request: Any) -> dict[str, Any]:
+    def archive(self, request: EvalArchiveRequest) -> EvalArchiveReceipt:
         raise RuntimeError("evaluation provider is disabled")
 
-    def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]:
+    def archive_baseline(self, snapshot: EvalBaseline, note: str = "") -> EvalArchiveReceipt:
         raise RuntimeError("evaluation provider is disabled")
 
-    def list_archives(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_archives(self, limit: int = 20) -> list[EvalArchiveRecord]:
         return []
 
-    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_performance_results(self, limit: int = 20) -> list[EvalPerformanceRecord]:
         return []
 
-    def get_performance_result(self, result_id: str) -> dict[str, Any] | None:
+    def get_performance_result(self, result_id: str) -> EvalPerformanceRecord | None:
         return None
 
-    def delete_performance_result(self, result_id: str) -> dict[str, Any]:
+    def delete_performance_result(self, result_id: str) -> EvalPerformanceDeleted:
         raise RuntimeError("evaluation provider is disabled")
 
-    def archive_performance_result(self, request: Any) -> dict[str, Any]:
+    def archive_performance_result(self, request: EvalPerformanceArchiveRequest) -> EvalArchiveReceipt:
         raise RuntimeError("evaluation provider is disabled")
 
 

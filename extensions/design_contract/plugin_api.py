@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
+from app.agent_base.host_api.data import JsonObject
+from app.agent_base.host_api.data import WorkspaceManifestPayload as ContractManifest
+from app.agent_base.host_api.payloads import json_object
 from app.agent_base.host_api.contexts import ContractGatePort, ContractFailureAnalyzerPort
+
+
+class ContractManifestPort(Protocol):
+    def to_dict(self) -> ContractManifest: ...
 
 
 @dataclass(frozen=True)
@@ -23,7 +30,7 @@ class ContractEntity:
     path: str = ""
     line: int | None = None
     parent_id: str = ""
-    attributes: dict[str, Any] = field(default_factory=dict)
+    attributes: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -53,10 +60,10 @@ class ArtifactFacts:
     entities: tuple[ContractEntity, ...] = ()
     mappings: tuple[ContractMapping, ...] = ()
     diagnostics: tuple[dict[str, str], ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self) -> JsonObject:
+        return json_object(asdict(self))
 
 
 @dataclass(frozen=True)
@@ -68,10 +75,10 @@ class ContractSnapshot:
     status: str
     entities: tuple[ContractEntity, ...] = ()
     mappings: tuple[ContractMapping, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self) -> JsonObject:
+        return json_object(asdict(self))
 
 
 class ContractProvider(Protocol):
@@ -79,7 +86,7 @@ class ContractProvider(Protocol):
 
     def collect(
         self,
-        manifest: Any,
+        manifest: ContractManifest | ContractManifestPort | None,
         project_id: str = "",
         scope: str = "project",
     ) -> ContractSnapshot: ...
@@ -90,7 +97,7 @@ class ArtifactFactsProvider(Protocol):
 
     def collect_facts(
         self,
-        manifest: Any,
+        manifest: ContractManifest | ContractManifestPort | None,
         project_id: str = "",
         scope: str = "project",
     ) -> ArtifactFacts: ...

@@ -8,7 +8,9 @@ policy and persistence remain private to the extension.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, NotRequired, Protocol, TypedDict
+from typing import NotRequired, Protocol, TypedDict
+from app.agent_base.host_api.data import ConversationMessage, JsonObject
+from app.agent_base.host_api.execution_types import ToolCallDetail
 
 
 class MemoryResource(TypedDict):
@@ -37,7 +39,7 @@ class MemoryRecallResult:
     context_block: str = ""
     memory_ids: tuple[str, ...] = ()
     token_count: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,10 @@ class MemoryArchiveRequest:
     project_id: str
     user_message: str
     final_answer: str
-    tool_steps: tuple[dict[str, Any], ...] = ()
+    tool_steps: tuple[ToolCallDetail, ...] = ()
     run_id: str = ""
     trace_id: str = ""
-    conversation_history: tuple[dict[str, str], ...] = ()
+    conversation_history: tuple[ConversationMessage, ...] = ()
     terminal_status: str = "completed"
     resources: tuple[MemoryResource, ...] = ()
 
@@ -56,7 +58,7 @@ class MemoryArchiveRequest:
 @dataclass(frozen=True)
 class MemoryArchiveResult:
     stored_count: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,7 @@ class MemoryEventRequest:
 
     project_id: str
     event_type: str
-    tool_steps: tuple[dict[str, Any], ...] = ()
+    tool_steps: tuple[ToolCallDetail, ...] = ()
     resources: tuple[MemoryResource, ...] = ()
     memory_ids: tuple[str, ...] = ()
     reason: str = ""
@@ -78,7 +80,7 @@ class MemoryEventRequest:
 class MemoryEventResult:
     affected_count: int = 0
     resources: tuple[MemoryResource, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 class MemoryPort(Protocol):
