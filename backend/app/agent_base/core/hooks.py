@@ -178,7 +178,7 @@ class HookRegistry:
             self._hooks[event].clear()
             self._metadata = {key: value for key, value in self._metadata.items() if key[0] != event}
 
-    def clear_managed(self):
+    def clear_managed(self) -> None:
         for stage, hooks in tuple(self._hooks.items()):
             for _, _, handler in tuple(hooks):
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
@@ -234,11 +234,11 @@ class HookRegistry:
     async def aemit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
         return await self._drive_async(self._emit(event, ctx))
 
-    def invoke(self, ctx: HookContext):
-        return self._drive_sync(self._invoke(ctx))
+    def invoke(self, ctx: HookContext) -> None:
+        self._drive_sync(self._invoke(ctx))
 
-    async def ainvoke(self, ctx: HookContext):
-        return await self._drive_async(self._invoke(ctx))
+    async def ainvoke(self, ctx: HookContext) -> None:
+        await self._drive_async(self._invoke(ctx))
 
     def _invoke(self, ctx):
         """Execute only the requested interface plus its stage observers."""
@@ -614,8 +614,8 @@ class RunPolicyHook:
 _run_policy_hook = RunPolicyHook()
 
 
-def default_hook_bindings():
-    bindings = [
+def default_hook_bindings() -> tuple[tuple[HookEvent, Hook, int, str, str], ...]:
+    bindings: list[tuple[HookEvent, Hook, int, str, str]] = [
         (HookEvent.MODEL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.model_before"),
         (HookEvent.TOOL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.tool_before"),
         (HookEvent.MODEL_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),

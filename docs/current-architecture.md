@@ -151,6 +151,8 @@ Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` �
 
 统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。
 
+生命周期与刷新模块通过管理器的工厂校验、计划诊断和刷新候选接口操作目录，不直接访问其工厂缓存或诊断字典。`PluginSnapshot` 明确绑定管理器、Hook 注册表和可选执行计划；刷新服务要求已有编译计划。计划报告与刷新结果使用结构化类型，导出的计划报告与内部状态隔离。动态 provider 的异构参数和返回值仅在调度适配器内部传递，领域调用方继续使用各自的公开协议；调度同时核对贡献 ID、服务模式和接口 ID。`plugin_dispatch.py`、`plugin_runtime.py`、`lifecycle.py` 和对应报告类型已纳入严格类型检查。
+
 插件 provider 的边界如下：
 
 | 所有者 | 负责内容 |

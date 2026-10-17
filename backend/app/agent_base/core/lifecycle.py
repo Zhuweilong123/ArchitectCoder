@@ -5,20 +5,23 @@ import hashlib
 import importlib
 import inspect
 from typing import cast
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Iterable
 import json
 import os
 import html
 import tempfile
 from functools import wraps
 from dataclasses import asdict, dataclass
+from copy import deepcopy
 from pathlib import Path
 
-from app.agent_base.host_api.lifecycle import Contribution
+from app.agent_base.host_api.lifecycle import Contribution, HookContext, HookEvent, PUBLIC_STAGES, NOTIFICATIONS
+from app.agent_base.host_api.payloads import json_object
 from app.agent_base.host_api.configuration import PluginConfiguration
 from .plugins import PluginSpec, PluginManager
+from .plugin_types import PlanBody, PlanPlugin, PlanReport, PlanStage
 from types import ModuleType
-from .hooks import Hook, HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
+from .hooks import Hook, HookRegistry, HookResult
 from .plugin_dispatch import SERVICE_STAGES, service_contributions
 
 # Only these existing boundaries consume mutations/control decisions.
@@ -45,7 +48,7 @@ def resolve_contribution(item: Contribution) -> Hook:
     return cast(Hook, handler)
 
 
-def core_contributions():
+def core_contributions() -> tuple[Contribution, ...]:
     from .hooks import default_hook_bindings
     items = []
     for stage, handler, priority, mode, identifier in default_hook_bindings():
@@ -56,7 +59,7 @@ def core_contributions():
 
 
 class OrderingError(ValueError):
-    def __init__(self, message, ids):
+    def __init__(self, message: str, ids: Iterable[str]) -> None:
         super().__init__(message)
         self.ids = set(ids)
 
@@ -65,7 +68,7 @@ def _ordered(items: list[tuple[str, Contribution]]) -> tuple[tuple[str, Contribu
     by_id = {item.id: item for _, item in items}
     if len(by_id) != len(items):
         raise ValueError("duplicate contribution IDs")
-    edges = {key: set() for key in by_id}
+    edges: dict[str, set[str]] = {key: set() for key in by_id}
     for _, item in items:
         for dependency in (*item.before, *item.after):
             if dependency not in by_id:
@@ -89,29 +92,30 @@ def _ordered(items: list[tuple[str, Contribution]]) -> tuple[tuple[str, Contribu
 
 @dataclass(frozen=True)
 class ExecutionPlan:
-    plugins: tuple[dict, ...]
+    plugins: tuple[PlanPlugin, ...]
     contributions: tuple[tuple[str, Contribution], ...]
 
-    def as_dict(self):
-        stages = []
-        notifications = []
+    def as_dict(self) -> PlanReport:
+        stages: list[PlanStage] = []
+        notifications: list[PlanStage] = []
         for stage in (*PUBLIC_STAGES, *NOTIFICATIONS):
-            items = [{**asdict(item), "stage": stage.value, "plugin": plugin}
+            items = [json_object({**asdict(item), "stage": stage.value, "plugin": plugin})
                      for plugin, item in self.contributions if item.stage == stage]
             for order, item in enumerate(items, 1):
                 item["order"] = order
             (stages if stage in PUBLIC_STAGES else notifications).append({"stage": stage.value, "supported_modes": sorted(PHASE_MODES[stage]),
                            "contributions": items})
-        data = {"schema_version": 1, "dispatch": "sequential sync/async; observers survive control short-circuit; services execute only on matching requests",
-                "plugins": list(self.plugins), "stages": stages, "notifications": notifications,
+        data: PlanBody = {"schema_version": 1, "dispatch": "sequential sync/async; observers survive control short-circuit; services execute only on matching requests",
+                "plugins": deepcopy(list(self.plugins)), "stages": stages, "notifications": notifications,
                 "run_end_semantics": "execution interval closed; approval and background completion are separate"}
         digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
         return {"plan_id": digest, **data}
 
-    def mermaid(self, view="schedule"):
+    def mermaid(self, view: str = "schedule") -> str:
         if view not in {"schedule", "organization"}:
             raise ValueError("view must be schedule or organization")
-        label = lambda value: json.dumps(html.escape(str(value), quote=True), ensure_ascii=False)
+        def label(value: str) -> str:
+            return json.dumps(html.escape(value, quote=True), ensure_ascii=False)
         lines = ["flowchart TD", f"  %% plan_id: {self.as_dict()['plan_id']}"]
         for stage in PUBLIC_STAGES:
             lines.append(f"  {stage.name}[{label(stage.value)}]")
@@ -128,7 +132,7 @@ class ExecutionPlan:
             for name, node in plugins.items():
                 status = next((row["status"] for row in self.plugins if row["name"] == name), "active")
                 lines.append(f"  {node}[{label(name + ': ' + status)}]")
-        previous = {}
+        previous: dict[HookEvent, str] = {}
         for index, (plugin, item) in enumerate(self.contributions):
             if item.stage not in PUBLIC_STAGES:
                 continue
@@ -152,7 +156,7 @@ class ExecutionPlan:
                     lines.append(f"  {plugins[row['name']]} -.-> {node}")
         return "\n".join(lines) + "\n"
 
-    def write(self, directory):
+    def write(self, directory: str | Path) -> None:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         files = {"plugin-plan.json": json.dumps(self.as_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -177,12 +181,21 @@ def declared_contributions(spec: PluginSpec, manager: PluginManager,
                            settings: PluginConfiguration | None = None,
                            module: ModuleType | None = None) -> tuple[Contribution, ...]:
     """Use the same declaration and validation contract in app and library runs."""
-    declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
+    declaration = (manager.load_factory(spec.contribution_loader) if spec.contribution_loader
                    else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)
     configured = tuple(Contribution(**{**item, "stage": HookEvent(item["stage"]),
         "before": tuple(item.get("before", ())), "after": tuple(item.get("after", ()))}) for item in spec.contributions)
     services = service_contributions(spec)
-    declared = (*configured, *(tuple(declaration(settings=settings)) if declaration else ()), *services)
+    loaded: list[Contribution] = []
+    if declaration is not None:
+        values: object = declaration(settings=settings)
+        if not isinstance(values, Iterable):
+            raise ValueError("contribution loader must return an iterable of Contribution values")
+        for value in values:
+            if not isinstance(value, Contribution):
+                raise ValueError("invalid contribution declaration or stage")
+            loaded.append(value)
+    declared = (*configured, *loaded, *services)
     validate_contributions(declared)
     return declared
 
@@ -209,17 +222,17 @@ def validate_contributions(declared: Iterable[Contribution]) -> None:
             raise ValueError("invocation scope is reserved for service executors")
 
 
-def discover_plan(manager, settings) -> ExecutionPlan:
+def discover_plan(manager: PluginManager, settings: PluginConfiguration) -> ExecutionPlan:
     """Read explicit declarations without constructing storage/LLM providers."""
     manager.configure(settings)
     settings = manager.effective_settings(settings)
     dependency_errors = manager.dependency_errors(settings)
-    rows = []
+    rows: list[PlanPlugin] = []
     items = [("core", item) for item in core_contributions()]
-    manager._ensure_extension_import_path()
+    manager.ensure_import_path()
     for spec in manager.specs:
         provider = str(getattr(settings, spec.provider_setting, spec.default_provider) or spec.default_provider).strip()
-        row = {"name": spec.name, "provider": provider, "source": spec.source, "status": "discovered", "error": "",
+        row: PlanPlugin = {"name": spec.name, "provider": provider, "source": spec.source, "status": "discovered", "error": "",
                 "version": spec.version, "slot": spec.slot or spec.name,
                 "revision": spec.revision, "manifest_digest": spec.manifest_digest,
                 "implementation_digest": spec.implementation_digest, "diagnostics": [],
@@ -238,12 +251,9 @@ def discover_plan(manager, settings) -> ExecutionPlan:
             continue
         phase = "import"
         try:
-            factory = manager._load_factory(provider)
-            manager._validated_factories[provider] = factory
+            factory = manager.load_factory(provider)
             phase = "factory_signature"
-            if inspect.iscoroutinefunction(factory):
-                raise TypeError("plugin factories must be synchronous")
-            inspect.signature(factory).bind_partial(settings=settings)
+            manager.validate_factory(provider, factory, settings)
             module = importlib.import_module(provider.partition(":")[0])
             phase = "contributions"
             declared = declared_contributions(spec, manager, settings, module)
@@ -268,8 +278,8 @@ def discover_plan(manager, settings) -> ExecutionPlan:
         for row in rows:
             dependency = dependent_failures[row["name"]]
             if row["status"] == "discovered" and dependency:
-                row.update(status="unavailable", error=f"required plugin dependency is unavailable: {dependency}",
-                           contributions=[], interface_bindings=[])
+                row.update({"status": "unavailable", "error": f"required plugin dependency is unavailable: {dependency}",
+                            "contributions": [], "interface_bindings": []})
                 row["diagnostics"] = [manager.diagnostic(manager.get_spec(row["name"]), "plan", "dependencies", "dependency_unavailable", row["error"], row["provider"])]
                 rejected.add(row["name"])
         if rejected:
@@ -290,11 +300,11 @@ def discover_plan(manager, settings) -> ExecutionPlan:
                     row["interface_bindings"] = []
                     row["diagnostics"] = [manager.diagnostic(manager.get_spec(row["name"]), "plan", "ordering", "ordering_failed", row["error"], row["provider"])]
             items = [(plugin, item) for plugin, item in items if plugin not in rejected]
-    manager._plan_errors = {row["name"]: row["error"] for row in rows if row["status"] == "unavailable"}
+    manager.record_plan_errors({row["name"]: row["error"] for row in rows if row["status"] == "unavailable"})
     return ExecutionPlan(tuple(rows), ordered)
 
 
-def build_plan(manager, settings):
+def build_plan(manager: PluginManager, settings: PluginConfiguration) -> ExecutionPlan:
     manager.configure(settings)
     return discover_plan(manager, settings)
 
@@ -307,11 +317,11 @@ def install_plan(plan: ExecutionPlan, registry: HookRegistry) -> None:
     registry.clear_managed()
     for order, (plugin, item, handler) in enumerate(resolved):
         @wraps(handler)
-        def binding(context, handler=handler):
+        def binding(context: HookContext, handler: Hook = handler) -> HookResult | Awaitable[HookResult]:
             return handler(context)
         registry.register(item.stage, binding, priority=len(plan.contributions) - order,
                           fail_closed=item.fail_closed, contribution_id=item.id,
                           plugin=plugin, mode=item.mode, interface_id=item.interface_id,
-                          plugin_version=versions.get(plugin, {}).get("version", ""),
-                          plugin_revision=versions.get(plugin, {}).get("revision", ""))
+                          plugin_version=versions[plugin]["version"] if plugin in versions else "",
+                          plugin_revision=versions[plugin]["revision"] if plugin in versions else "")
     registry.plan_id = plan.as_dict()["plan_id"]

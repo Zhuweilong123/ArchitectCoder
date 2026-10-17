@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
-from typing import Awaitable, Callable, ParamSpec, TypeVar
+from typing import Awaitable, Callable, Iterator, ParamSpec, TypeVar, TYPE_CHECKING
 from app.agent_base.host_api.configuration import PluginConfiguration
+from .plugin_types import PluginDiagnostic, PluginRefreshResult
+if TYPE_CHECKING:
+    from .plugins import PluginManager
+    from .hooks import HookRegistry
+    from .lifecycle import ExecutionPlan
 P = ParamSpec("P")
 R = TypeVar("R")
 from pathlib import Path
@@ -18,22 +22,22 @@ from weakref import WeakValueDictionary
 
 @dataclass(frozen=True)
 class PluginSnapshot:
-    manager: object
-    registry: object
+    manager: PluginManager
+    registry: HookRegistry
     settings: PluginConfiguration
-    plan: object = None
+    plan: ExecutionPlan | None = None
 
 
 _bound: ContextVar[PluginSnapshot | None] = ContextVar("plugin_snapshot", default=None)
 _active: PluginSnapshot | None = None
-_known = WeakValueDictionary()
+_known: WeakValueDictionary[str, PluginSnapshot] = WeakValueDictionary()
 
 
 def current_snapshot() -> PluginSnapshot | None:
     return _bound.get() or _active
 
 
-def publish_snapshot(snapshot):
+def publish_snapshot(snapshot: PluginSnapshot | None) -> PluginSnapshot | None:
     global _active
     previous, _active = _active, snapshot
     if snapshot is not None and snapshot.registry.plan_id:
@@ -41,12 +45,12 @@ def publish_snapshot(snapshot):
     return previous
 
 
-def snapshot_for_plan(plan_id):
+def snapshot_for_plan(plan_id: str) -> PluginSnapshot | None:
     return _known.get(plan_id)
 
 
 @contextmanager
-def plugin_scope(snapshot=None):
+def plugin_scope(snapshot: PluginSnapshot | None = None) -> Iterator[PluginSnapshot | None]:
     """Nested tasks and asyncio.to_thread inherit the enclosing generation."""
     token = _bound.set(snapshot or current_snapshot())
     try:
@@ -66,7 +70,9 @@ def pin_plugins(function: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]
 class PluginRefreshService:
     """Add-only refresh. Existing implementations, settings and routes require restart."""
 
-    def __init__(self, snapshot, directory):
+    def __init__(self, snapshot: PluginSnapshot, directory: str | Path) -> None:
+        if snapshot.plan is None:
+            raise ValueError("plugin refresh requires a compiled execution plan")
         self.active = snapshot
         self.directory = Path(directory)
         self.snapshots = {snapshot.registry.plan_id: snapshot}
@@ -74,25 +80,23 @@ class PluginRefreshService:
         self._candidate_lock = threading.Lock()
         # Remember attempted imports too: rejected candidates must never reload Python code.
         self._code_baseline = {spec.source: spec.implementation_digest for spec in snapshot.manager.specs}
-        self.last_result = None
+        self.last_result: PluginRefreshResult | None = None
 
-    def snapshot_for_plan(self, plan_id):
+    def snapshot_for_plan(self, plan_id: str) -> PluginSnapshot | None:
         return self.snapshots.get(plan_id)
 
-    def _candidate(self):
+    def _candidate(self) -> tuple[PluginSnapshot | None, list[PluginDiagnostic], list[str]]:
         # An API cancellation can leave its import worker running; serialize those workers too.
         with self._candidate_lock:
             return self._build_candidate()
 
-    def _build_candidate(self):
+    def _build_candidate(self) -> tuple[PluginSnapshot | None, list[PluginDiagnostic], list[str]]:
         from .lifecycle import build_plan, install_plan
-        from .plugins import PluginManager
         previous = self.active
+        if previous.plan is None:
+            raise ValueError("plugin refresh requires a compiled execution plan")
         original = previous.manager
-        manager = PluginManager(None if original._auto_scan else tuple(original._manual_specs.values()))
-        if original._auto_scan:
-            for spec in original._manual_specs.values():
-                manager.register(spec)
+        manager = original.refresh_candidate()
         # Only unmanaged host hooks are carried forward; managed contributions are recompiled.
         registry = previous.registry.copy()
         registry.plan_id = ""
@@ -103,7 +107,7 @@ class PluginRefreshService:
             effective = manager.effective_settings(previous.settings)
             old_specs = {spec.name: spec for spec in original.specs}
             new_specs = {spec.name: spec for spec in manager.specs}
-            diagnostics = []
+            diagnostics: list[PluginDiagnostic] = []
             for name, spec in old_specs.items():
                 if new_specs.get(name) != spec:
                     diagnostics.append({"plugin": name, "code": "restart_required", "message": "Existing plugin declarations or code changed, or the plugin was removed; restart the backend."})
@@ -123,8 +127,6 @@ class PluginRefreshService:
                     diagnostics.append({"plugin": name, "code": "restart_required", "message": "Existing plugin deployment configuration changed; restart the backend."})
             if diagnostics:
                 return None, diagnostics, []
-            manager._states = dict(original._states)
-            manager._diagnostics = copy.deepcopy(original._diagnostics)
             added = sorted(set(new_specs) - set(old_specs))
             for spec in manager.specs:
                 self._code_baseline[spec.source] = spec.implementation_digest
@@ -139,15 +141,18 @@ class PluginRefreshService:
                 return None, diagnostics, added
             install_plan(plan, registry)
             frozen = manager.freeze(effective)
-            return PluginSnapshot(frozen, registry, frozen._fixed_settings, plan), [], added
+            return PluginSnapshot(frozen, registry, frozen.effective_settings(effective), plan), [], added
 
-    async def refresh(self):
+    async def refresh(self) -> PluginRefreshResult:
         async with self._lock:
             previous = self.active
+            result: PluginRefreshResult
             try:
                 candidate, diagnostics, added = await asyncio.to_thread(self._candidate)
                 if diagnostics:
                     result = {"status": "rejected", "plan_id": previous.registry.plan_id, "added": [], "diagnostics": diagnostics}
+                elif candidate is None or candidate.plan is None:
+                    raise RuntimeError("plugin refresh produced no compiled candidate")
                 elif candidate.registry.plan_id == previous.registry.plan_id:
                     result = {"status": "unchanged", "plan_id": previous.registry.plan_id, "added": [], "diagnostics": []}
                 else:

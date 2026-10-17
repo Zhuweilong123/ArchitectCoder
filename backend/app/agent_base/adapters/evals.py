@@ -97,7 +97,7 @@ def _load_factory(provider: str):
     """Compatibility hook; actual loading remains owned by PluginManager."""
     from app.agent_base.core.plugins import PluginManager
 
-    return PluginManager._load_factory(provider)
+    return PluginManager.load_factory(provider)
 
 
 def load_evals(*, settings=None, **kwargs) -> EvalProvider:
