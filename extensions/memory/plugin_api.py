@@ -8,7 +8,14 @@ policy and persistence remain private to the extension.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
+
+
+class MemoryResource(TypedDict):
+    resource_id: str
+    version: str
+    kind: NotRequired[str]
+    path: NotRequired[str]
 
 
 class MemoryRecallOptions(TypedDict, total=False):
@@ -43,7 +50,7 @@ class MemoryArchiveRequest:
     trace_id: str = ""
     conversation_history: tuple[dict[str, str], ...] = ()
     terminal_status: str = "completed"
-    resources: tuple[dict[str, Any], ...] = ()
+    resources: tuple[MemoryResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,7 +66,7 @@ class MemoryEventRequest:
     project_id: str
     event_type: str
     tool_steps: tuple[dict[str, Any], ...] = ()
-    resources: tuple[dict[str, Any], ...] = ()
+    resources: tuple[MemoryResource, ...] = ()
     memory_ids: tuple[str, ...] = ()
     reason: str = ""
     run_id: str = ""
@@ -70,7 +77,7 @@ class MemoryEventRequest:
 @dataclass(frozen=True)
 class MemoryEventResult:
     affected_count: int = 0
-    resources: tuple[dict[str, Any], ...] = ()
+    resources: tuple[MemoryResource, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

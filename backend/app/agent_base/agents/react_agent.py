@@ -23,6 +23,7 @@ from contextlib import aclosing
 from typing import Optional, List, AsyncGenerator, Unpack
 
 from ..core.agent import Agent
+from ..core.extension_context import ExtensionContext
 from ..host_api.agents import ModelPort, ConversationSnapshot, HistoryEntry
 from copy import deepcopy
 from ..host_api.data import ConversationMessage, WorkspaceSnapshot
@@ -90,6 +91,7 @@ class ReActAgent(Agent[ModelPort]):
     ) -> None:
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
+        self.extension_context: ExtensionContext | None = None
         self.current_history: List[str] = []
         self.execution_budget = execution_budget
         self.max_tool_calls = max(0, max_tool_calls)

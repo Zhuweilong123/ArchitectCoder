@@ -8,7 +8,7 @@ async def assemble_extensions(context, *, settings, inputs, interface_id="assemb
     from app.agent_base.core.plugins import get_plugin_manager
     from app.agent_base.core.lifecycle import discover_plan, install_plan
     from app.agent_base.core.extension_context import extension_scope
-    registry = context._registry or get_hooks()
+    registry = context.hooks_for(get_hooks())
     manager = get_plugin_manager()
     manager.configure(settings)
     if not registry.plan_id:
@@ -42,5 +42,5 @@ async def assemble_extensions(context, *, settings, inputs, interface_id="assemb
             raise RuntimeError(f"required assembly capability is unavailable: {slot}")
         bindings = context.metadata.setdefault("required_execution_bindings", {}).setdefault(slot, [])
         bindings.extend(identifier for identifier in identifiers if identifier not in bindings)
-    context._registry = registry
+    context.bind_hooks(registry)
     return request

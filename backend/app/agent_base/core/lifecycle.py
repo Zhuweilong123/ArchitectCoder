@@ -15,6 +15,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.agent_base.host_api.lifecycle import Contribution
+from app.agent_base.host_api.configuration import PluginConfiguration
+from .plugins import PluginSpec, PluginManager
+from types import ModuleType
 from .hooks import Hook, HookEvent, HookRegistry, PUBLIC_STAGES, NOTIFICATIONS
 from .plugin_dispatch import SERVICE_STAGES, service_contributions
 
@@ -58,7 +61,7 @@ class OrderingError(ValueError):
         self.ids = set(ids)
 
 
-def _ordered(items):
+def _ordered(items: list[tuple[str, Contribution]]) -> tuple[tuple[str, Contribution], ...]:
     by_id = {item.id: item for _, item in items}
     if len(by_id) != len(items):
         raise ValueError("duplicate contribution IDs")
@@ -170,7 +173,9 @@ class ExecutionPlan:
                 temporary.unlink(missing_ok=True)
 
 
-def declared_contributions(spec, manager, settings=None, module=None):
+def declared_contributions(spec: PluginSpec, manager: PluginManager,
+                           settings: PluginConfiguration | None = None,
+                           module: ModuleType | None = None) -> tuple[Contribution, ...]:
     """Use the same declaration and validation contract in app and library runs."""
     declaration = (manager._load_factory(spec.contribution_loader) if spec.contribution_loader
                    else getattr(module, "list_contributions", None) if not spec.manifest_owned else None)

@@ -31,7 +31,7 @@ import inspect
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from app.agent_base.host_api.lifecycle import (
     HookEvent, PUBLIC_STAGES, NOTIFICATIONS, HookAction, HookDecision, HookContext,
@@ -114,13 +114,30 @@ HookResult = Optional[str | HookDecision]
 Hook = Callable[[HookContext], HookResult | Awaitable[HookResult]]
 
 
+class HookMetadata(TypedDict):
+    id: str
+    plugin: str
+    mode: str
+    interface_id: str
+    plugin_version: str
+    plugin_revision: str
+
+
 class HookRegistry:
     """事件 → 有序 hook 列表的全局单例注册表。"""
 
-    def __init__(self):
-        self._hooks: dict[HookEvent, list] = {e: [] for e in HookEvent}
-        self._metadata: dict[tuple[HookEvent, int], dict] = {}
+    def __init__(self) -> None:
+        self._hooks: dict[HookEvent, list[tuple[int, bool, Hook]]] = {e: [] for e in HookEvent}
+        self._metadata: dict[tuple[HookEvent, int], HookMetadata] = {}
         self.plan_id = ""
+
+    def copy(self) -> HookRegistry:
+        """Copy bindings and metadata while sharing the handler capabilities."""
+        registry = HookRegistry()
+        registry._hooks = {stage: list(items) for stage, items in self._hooks.items()}
+        registry._metadata = {key: value.copy() for key, value in self._metadata.items()}
+        registry.plan_id = self.plan_id
+        return registry
 
     def register(
         self,

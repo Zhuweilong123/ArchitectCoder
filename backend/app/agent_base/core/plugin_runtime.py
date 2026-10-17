@@ -85,7 +85,6 @@ class PluginRefreshService:
             return self._build_candidate()
 
     def _build_candidate(self):
-        from .hooks import HookRegistry
         from .lifecycle import build_plan, install_plan
         from .plugins import PluginManager
         previous = self.active
@@ -95,9 +94,8 @@ class PluginRefreshService:
             for spec in original._manual_specs.values():
                 manager.register(spec)
         # Only unmanaged host hooks are carried forward; managed contributions are recompiled.
-        registry = HookRegistry()
-        registry._hooks = {stage: list(items) for stage, items in previous.registry._hooks.items()}
-        registry._metadata = copy.deepcopy(previous.registry._metadata)
+        registry = previous.registry.copy()
+        registry.plan_id = ""
         registry.clear_managed()
         candidate = PluginSnapshot(manager, registry, previous.settings)
         with plugin_scope(candidate):

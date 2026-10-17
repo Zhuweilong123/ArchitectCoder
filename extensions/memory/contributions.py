@@ -8,6 +8,7 @@ from typing import cast
 
 from app.agent_base.host_api.services import get_lifecycle_services
 from .plugin_api import MemoryArchiveRequest, MemoryEventRequest, MemoryRecallRequest, MemoryPort, MemoryRecallOptions
+from .state import MemoryRunState
 
 logger = logging.getLogger(__name__)
 _MEMORY_BLOCK = re.compile(r"<project_memory>.*?</project_memory>", re.DOTALL)
@@ -17,7 +18,7 @@ def _binding():
     context = get_lifecycle_services().extension_context()
     if context is None:
         return None, None, None
-    return context, context.provider("memory", MemoryPort), context.state("memory")
+    return context, context.provider("memory", MemoryPort), context.state("memory", MemoryRunState)
 
 
 async def _recall(provider, project_id, query):
@@ -34,14 +35,14 @@ async def prepare(context):
     if provider is None or "sections" not in context.payload:
         return
     project_id = context.payload.get("project_id", "")
-    state.clear()
+    state.reset()
     if not project_id:
         return
     try:
         result = await _recall(provider, project_id, context.payload.get("user_message", ""))
         if result.context_block:
             context.payload["sections"]["memory"] = result.context_block
-        state["recall_report"] = result.metadata
+        state.recall_report = result.metadata
     except Exception:
         logger.warning("[Memory] prepare recall failed", exc_info=True)
 
@@ -50,13 +51,12 @@ def run_start(context):
     session, provider, state = _binding()
     if provider is None or "user_message" not in context.payload:
         return
-    state.clear()
-    state.update(query=context.payload["user_message"], resources={}, dirty=False, run_id=context.run_id)
+    state.reset(query=context.payload["user_message"], run_id=context.run_id)
 
 
 async def tool_after(context):
     session, provider, state = _binding()
-    if provider is None or "result" not in context.payload or state.get("run_id") != context.run_id:
+    if provider is None or "result" not in context.payload or state.run_id != context.run_id:
         return
     project_id = session.project_id
     observe = getattr(provider, "observe", None)
@@ -64,22 +64,21 @@ async def tool_after(context):
         return
     detail = {"name": context.tool_name, "arguments": context.tool_input,
               "observation": context.tool_output, **context.payload["result"]}
-    state["dirty"] = state.get("dirty", False) or bool(detail.get("changes"))
+    state.dirty = state.dirty or bool(detail.get("changes"))
     # Dispatch is awaited at each tool boundary, before the next mutation.
     result = await observe(MemoryEventRequest(
         project_id, "tool_observed", tool_steps=(detail,), run_id=context.run_id,
         trace_id=context.payload.get("trace_id", ""),
         event_id=f"{project_id}:{context.run_id}:{context.payload.get('event_id', '')}",
     ))
-    resources = state.setdefault("resources", {})
     for resource in result.resources:
-        resources[resource["resource_id"]] = dict(resource)
-    state["dirty"] = state.get("dirty", False) or bool(detail.get("changes") or result.affected_count)
+        state.resources[resource["resource_id"]] = resource.copy()
+    state.dirty = state.dirty or bool(detail.get("changes") or result.affected_count)
 
 
 async def model_before(context):
     session, provider, state = _binding()
-    if provider is None or not state.get("dirty") or context.messages is None or state.get("run_id") != context.run_id:
+    if provider is None or not state.dirty or context.messages is None or state.run_id != context.run_id:
         return
     index = context.payload.get("current_user_index", -1)
     if not 0 <= index < len(context.messages):
@@ -87,19 +86,19 @@ async def model_before(context):
     message = context.messages[index]
     content = str(message.get("content") or "")
     if not _MEMORY_BLOCK.search(content):
-        state["dirty"] = False
+        state.dirty = False
         return
     replacement = ""
     try:
-        result = await _recall(provider, session.project_id, state.get("query", ""))
+        result = await _recall(provider, session.project_id, state.query)
         match = _MEMORY_BLOCK.search(result.context_block)
         replacement = match.group(0) if match else ""
-        state["recall_report"] = result.metadata
+        state.recall_report = result.metadata
     except Exception:
         logger.warning("[Memory] refresh failed; removing stale projection", exc_info=True)
     message["content"] = _MEMORY_BLOCK.sub(lambda _: replacement, content)
-    state["dirty"] = False
-    state["refreshed"] = message["content"] != content
+    state.dirty = False
+    state.refreshed = message["content"] != content
 
 
 def should_archive(checkpoint_status, tool_calls_detail, checkpoint=None, *, user_message="", final_answer=""):
@@ -116,7 +115,7 @@ def task_after(context):
     if provider is None:
         return
     data = context.payload
-    if state.get("archive_scheduled"):
+    if state.archive_scheduled:
         return
     project_id = data.get("project_id", "")
     if not project_id or not should_archive(data.get("status", ""), data.get("tool_steps", []),
@@ -126,9 +125,9 @@ def task_after(context):
         project_id, data["user_message"], data["final_answer"],
         tool_steps=tuple(data.get("tool_steps", ())), run_id=context.run_id,
         trace_id=data.get("trace_id", ""), conversation_history=tuple(data.get("conversation_history", ())),
-        terminal_status=data["status"], resources=tuple(state.get("resources", {}).values()),
+        terminal_status=data["status"], resources=tuple(state.resources.values()),
     )
-    state["archive_scheduled"] = True
+    state.archive_scheduled = True
     # The snapshot is frozen before background work; future runs cannot rebind evidence.
     get_lifecycle_services().submit_background(archive_task(provider, request), owner="memory_archive",
                       run_id=request.run_id, source_trace_id=request.trace_id)

@@ -20,6 +20,7 @@ from .validation import SourceFactsProvider, ValidationReport, ValidationRequire
 
 ProviderT = TypeVar("ProviderT")
 WorkResult = TypeVar("WorkResult")
+StateT = TypeVar("StateT")
 
 
 class RuntimePort(Protocol):
@@ -36,7 +37,7 @@ class ExtensionContextPort(Protocol):
 
     def provider(self, name: str, contract: type[ProviderT]) -> ProviderT | None: ...
     def provider_options(self, name: str) -> Mapping[str, object]: ...
-    def state(self, name: str) -> dict[str, object]: ...
+    def state(self, name: str, state_type: type[StateT]) -> StateT: ...
 
 
 class OperationPort(Protocol):

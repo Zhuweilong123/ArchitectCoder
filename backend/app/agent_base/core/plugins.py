@@ -131,7 +131,7 @@ class PluginManager:
         self._manual_specs[spec.name] = spec
         self._configuration = None
 
-    def get_spec(self, name):
+    def get_spec(self, name: str) -> PluginSpec:
         spec = self._specs.get(name)
         if spec is None:
             spec = next((item for item in self.specs if item.slot == name), None)

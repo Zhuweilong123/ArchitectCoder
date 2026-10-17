@@ -147,6 +147,8 @@ Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` �
 
 插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过按能力划分的服务协议、公开运行状态协议和 `ExtensionContextPort` 获取。插件只使用按能力划分的公开接口，底层宿主实例解析保留在模块内部。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
 
+插件私有状态通过 `ExtensionContextPort.state(name, StateType)` 取得，由插件定义具名数据类，宿主负责按请求创建、隔离和校验状态类型。Memory 使用 `MemoryRunState` 保存资源证据与归档标记，Design Contract 使用 `ContractExecutionState` 保存门禁结果。原来的 `state(name)` 字典入口已移除，外部插件也需要传入状态类型。请求与待审批状态统一由 `ExtensionContext` 管理，终态发布后释放；Agent 不再动态挂载 `extension_runs`。Hook 注册表通过 `copy()` 提供绑定快照，装配、请求分叉和插件刷新不再复制其私有字段。
+
 统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。
 
 插件 provider 的边界如下：
