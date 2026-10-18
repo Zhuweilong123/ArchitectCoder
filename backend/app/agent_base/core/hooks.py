@@ -31,7 +31,7 @@ import inspect
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from app.agent_base.host_api.lifecycle import (
     HookEvent, PUBLIC_STAGES, NOTIFICATIONS, HookAction, HookDecision, HookContext,
@@ -114,13 +114,30 @@ HookResult = Optional[str | HookDecision]
 Hook = Callable[[HookContext], HookResult | Awaitable[HookResult]]
 
 
+class HookMetadata(TypedDict):
+    id: str
+    plugin: str
+    mode: str
+    interface_id: str
+    plugin_version: str
+    plugin_revision: str
+
+
 class HookRegistry:
     """事件 → 有序 hook 列表的全局单例注册表。"""
 
-    def __init__(self):
-        self._hooks: dict[HookEvent, list] = {e: [] for e in HookEvent}
-        self._metadata: dict[tuple[HookEvent, int], dict] = {}
+    def __init__(self) -> None:
+        self._hooks: dict[HookEvent, list[tuple[int, bool, Hook]]] = {e: [] for e in HookEvent}
+        self._metadata: dict[tuple[HookEvent, int], HookMetadata] = {}
         self.plan_id = ""
+
+    def copy(self) -> HookRegistry:
+        """Copy bindings and metadata while sharing the handler capabilities."""
+        registry = HookRegistry()
+        registry._hooks = {stage: list(items) for stage, items in self._hooks.items()}
+        registry._metadata = {key: value.copy() for key, value in self._metadata.items()}
+        registry.plan_id = self.plan_id
+        return registry
 
     def register(
         self,
@@ -161,7 +178,7 @@ class HookRegistry:
             self._hooks[event].clear()
             self._metadata = {key: value for key, value in self._metadata.items() if key[0] != event}
 
-    def clear_managed(self):
+    def clear_managed(self) -> None:
         for stage, hooks in tuple(self._hooks.items()):
             for _, _, handler in tuple(hooks):
                 if self._metadata.get((stage, id(handler)), {}).get("id"):
@@ -217,11 +234,11 @@ class HookRegistry:
     async def aemit(self, event: HookEvent, ctx: HookContext) -> list[HookResult]:
         return await self._drive_async(self._emit(event, ctx))
 
-    def invoke(self, ctx: HookContext):
-        return self._drive_sync(self._invoke(ctx))
+    def invoke(self, ctx: HookContext) -> None:
+        self._drive_sync(self._invoke(ctx))
 
-    async def ainvoke(self, ctx: HookContext):
-        return await self._drive_async(self._invoke(ctx))
+    async def ainvoke(self, ctx: HookContext) -> None:
+        await self._drive_async(self._invoke(ctx))
 
     def _invoke(self, ctx):
         """Execute only the requested interface plus its stage observers."""
@@ -597,8 +614,8 @@ class RunPolicyHook:
 _run_policy_hook = RunPolicyHook()
 
 
-def default_hook_bindings():
-    bindings = [
+def default_hook_bindings() -> tuple[tuple[HookEvent, Hook, int, str, str], ...]:
+    bindings: list[tuple[HookEvent, Hook, int, str, str]] = [
         (HookEvent.MODEL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.model_before"),
         (HookEvent.TOOL_BEFORE, _interrupt_hook, 100, "control", "core.interrupt.tool_before"),
         (HookEvent.MODEL_BEFORE, _todo_reminder_hook, 50, "transform", "core.todo.reminder"),

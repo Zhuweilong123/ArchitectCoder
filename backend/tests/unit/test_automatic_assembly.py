@@ -85,7 +85,7 @@ def check(ctx):
         assert session.providers["auto_policy_demo"].ping() == "bound"
         request = asyncio.run(dispatch_execution(ExecutionRequest(ExecutionSlots.CHECK)))
     assert not request.allowed and request.message == "new plugin policy"
-    assert session.state("auto_policy_demo") is not agent.extension_context.state("auto_policy_demo")
+    assert session.state("auto_policy_demo", dict) is not agent.extension_context.state("auto_policy_demo", dict)
 
 
 @pytest.mark.parametrize("tools,bindings", [([object()], {}), ([], {"execution.check": [""]}),

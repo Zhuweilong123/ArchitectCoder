@@ -7,28 +7,29 @@ application's tool assembly layer.
 
 from __future__ import annotations
 
-from app.agent_base.host_api.data import ToolSchema
+from app.agent_base.host_api.data import JsonObject, ToolSchema
 
-from .base import Tool
+from .base import Tool, ToolParameter
+from .contracts import ToolValue
 from .result import ToolResult
 
 
 class AsyncTool(Tool):
     """Tool adapter whose ``run`` method returns an awaitable execution."""
 
-    def get_parameters(self) -> list:
+    def get_parameters(self) -> list[ToolParameter]:
         return []
 
-    def run(self, parameters: dict) -> str:
-        return self._execute(parameters)  # type: ignore[return-value]
+    async def run(self, parameters: JsonObject) -> str:
+        return await self._execute(parameters)
 
-    async def _execute(self, parameters: dict) -> str:
+    async def _execute(self, parameters: JsonObject) -> str:
         raise NotImplementedError
 
-    async def run_result(self, parameters: dict) -> ToolResult:
+    async def run_result(self, parameters: JsonObject) -> ToolResult:
         return ToolResult.from_value(await self._execute_result(parameters))
 
-    async def _execute_result(self, parameters: dict):
+    async def _execute_result(self, parameters: JsonObject) -> ToolValue:
         return await self._execute(parameters)
 
     def to_openai_schema(self) -> ToolSchema:

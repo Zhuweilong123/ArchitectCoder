@@ -6,9 +6,14 @@ concerns. The host adapter uses this contract to validate provider calls.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import NotRequired, Protocol, TypedDict
 
 from pydantic import BaseModel, Field
+
+from app.agent_base.host_api.data import JsonObject
+
+from .models import EvalCase as EvalCase, EvalResult as EvalResult
+from .batch_models import EvalBatch as EvalBatch
 
 
 class EvalBatchRequest(BaseModel):
@@ -43,41 +48,120 @@ class EvalPerformanceArchiveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class EvalBaseline(TypedDict, total=False):
+    agent: str
+    label: str
+    version: str
+    captured_at: str
+    source_result: str
+    case_ids: list[str]
+    case_count: int
+    passed: int
+    failed: int
+    timeout: int
+    pass_rate: float
+    average_score: float
+    total_duration_ms: float
+    total_tokens: int
+    total_tool_calls: int
+
+
+class EvalBatchRecord(TypedDict, total=False):
+    batch_id: str
+    agent: str
+    suite: str
+    version: str
+    label: str
+    case_ids: list[str]
+    status: str
+    started_at: str
+    finished_at: str
+    current_case_id: str
+    results: list[JsonObject]
+    summary: JsonObject
+    error: str
+    performance_result_id: str
+    source_batch_ids: list[str]
+
+
+class EvalArchiveReceipt(TypedDict):
+    archive_id: str
+    created_at: str
+    path: str
+    batch_id: str
+
+
+class EvalArchiveRecord(TypedDict):
+    archive_id: str
+    created_at: str
+    note: str
+    batch_id: str
+    agent: str
+    version: str
+    suite: str
+    started_at: str
+    finished_at: str
+    summary: JsonObject
+
+
+class EvalPerformanceRecord(TypedDict):
+    result_id: str
+    file_name: str
+    source_path: str
+    version: str
+    suite: str
+    started_at: str
+    finished_at: str
+    result_count: int
+    summary: JsonObject
+    archived: bool
+    results: NotRequired[list[JsonObject]]
+
+
+class EvalBatchDeleted(TypedDict):
+    batch_id: str
+
+
+class EvalPerformanceDeleted(TypedDict):
+    result_id: str
+    path: str
+
+
 class EvalProvider(Protocol):
     """Provider contract for case execution and result management."""
 
-    def list_cases(self) -> list[Any]: ...
+    def list_cases(self) -> list[EvalCase]: ...
 
-    def get_case(self, case_id: str) -> Any | None: ...
+    def get_case(self, case_id: str) -> EvalCase | None: ...
 
-    def get_baseline(self) -> dict[str, Any]: ...
+    def get_baseline(self) -> EvalBaseline: ...
 
-    async def run_case(self, case: Any) -> Any: ...
+    async def run_case(self, case: EvalCase) -> EvalResult: ...
 
-    def list_results(self, limit: int = 100) -> list[dict[str, Any]]: ...
+    def list_results(self, limit: int = 100) -> list[JsonObject]: ...
 
-    async def start_batch(self, request: Any) -> Any: ...
+    async def start_batch(self, request: EvalBatchRequest) -> EvalBatch: ...
 
-    def merge_batches(self, request: Any) -> Any: ...
+    def merge_batches(self, request: EvalBatchMergeRequest) -> EvalBatch: ...
 
-    def list_batches(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_batches(self, limit: int = 20) -> list[EvalBatchRecord]: ...
 
-    def get_batch(self, batch_id: str) -> Any | None: ...
+    def get_batch(self, batch_id: str) -> EvalBatch | None: ...
 
-    def delete_batch(self, batch_id: str) -> dict[str, Any]: ...
+    def delete_batch(self, batch_id: str) -> EvalBatchDeleted: ...
 
-    def trends(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def trends(self, limit: int = 20) -> list[EvalBatchRecord]: ...
 
-    def archive(self, request: Any) -> dict[str, Any]: ...
+    def archive(self, request: EvalArchiveRequest) -> EvalArchiveReceipt: ...
 
-    def archive_baseline(self, snapshot: dict[str, Any], note: str = "") -> dict[str, Any]: ...
+    def archive_baseline(self, snapshot: EvalBaseline, note: str = "") -> EvalArchiveReceipt: ...
 
-    def list_archives(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_archives(self, limit: int = 20) -> list[EvalArchiveRecord]: ...
 
-    def list_performance_results(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_performance_results(self, limit: int = 20) -> list[EvalPerformanceRecord]: ...
 
-    def get_performance_result(self, result_id: str) -> dict[str, Any] | None: ...
+    def get_performance_result(self, result_id: str) -> EvalPerformanceRecord | None: ...
 
-    def delete_performance_result(self, result_id: str) -> dict[str, Any]: ...
+    def delete_performance_result(self, result_id: str) -> EvalPerformanceDeleted: ...
 
-    def archive_performance_result(self, request: Any) -> dict[str, Any]: ...
+    def archive_performance_result(self, request: EvalPerformanceArchiveRequest) -> EvalArchiveReceipt: ...

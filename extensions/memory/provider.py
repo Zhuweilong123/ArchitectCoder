@@ -7,6 +7,7 @@ import os
 import hashlib
 from dataclasses import asdict, is_dataclass
 from typing import Any
+from app.agent_base.host_api.execution_types import ToolCallDetail
 
 from app.agent_base.host_api.environment import project_storage
 
@@ -23,7 +24,7 @@ def _memory_db_path(settings, project_file: str = "", workspace_root: str = "") 
     return str((storage.state_dir / "memories.db")) if storage else ""
 
 
-def _format_tool_steps(tool_steps: tuple[dict[str, Any], ...]) -> str:
+def _format_tool_steps(tool_steps: tuple[ToolCallDetail, ...]) -> str:
     steps: list[dict[str, Any]] = []
     for item in tool_steps or ():
         if not isinstance(item, dict):

@@ -12,6 +12,7 @@ from typing import Any
 
 from app.agent_base.host_api.environment import project_id as project_id_for
 
+from .plugin_api import ContractManifest, ContractManifestPort
 from .plugin_api import ArtifactFacts, ContractEntity, ContractMapping, ContractSnapshot
 from extensions.design_contract.language_adapters import (ClangAstAdapter, LanguageAdapterRegistry, PythonAstAdapter, default_language_adapters)
 
@@ -84,7 +85,7 @@ class DesignContractProvider:
 
     def collect(
         self,
-        manifest: Any,
+        manifest: ContractManifest | ContractManifestPort | None,
         project_id: str = "",
         scope: str = "project",
     ) -> ContractSnapshot:
@@ -116,7 +117,7 @@ class DesignContractProvider:
 
     def collect_facts(
         self,
-        manifest: Any,
+        manifest: ContractManifest | ContractManifestPort | None,
         project_id: str = "",
         scope: str = "project",
     ) -> ArtifactFacts:
@@ -227,8 +228,8 @@ class DesignContractProvider:
                         parent_id=diagram_id,
                         attributes={
                             "uml_id": str(item.get("id") or ""),
-                            "methods": tuple(_item_name(v) for v in item.get("methods", []) or []),
-                            "attributes": tuple(_item_name(v) for v in item.get("attributes", []) or []),
+                            "methods": [_item_name(v) for v in item.get("methods", []) or []],
+                            "attributes": [_item_name(v) for v in item.get("attributes", []) or []],
                         },
                     ))
                     for method in item.get("methods", []) or []:

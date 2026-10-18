@@ -16,6 +16,7 @@ from extensions.memory.plugin_api import (MemoryArchiveResult, MemoryEventResult
 from app.agent_base.core.plugins import PluginManager
 from app.agent_base.core.background_tasks import BackgroundTaskRegistry, bind_background_registry, reset_background_registry
 from extensions.memory.provider import SQLiteMemoryProvider
+from extensions.memory.state import MemoryRunState
 
 
 @pytest.fixture
@@ -136,7 +137,7 @@ def test_authoritative_task_event_controls_archive_and_preserves_review_evidence
     @extension_request
     async def execute(agent, run_id):
         from app.agent_base.core.extension_context import current_extension_context
-        current_extension_context().state('memory')['resources'] = {
+        current_extension_context().state('memory', MemoryRunState).resources = {
             'api:item': {'resource_id': 'api:item', 'version': 'old-etag'},
         }
         await hooks.get_hooks().aemit(HookEvent.FINALIZE, HookContext(HookEvent.FINALIZE, 'Test', run_id=run_id))
@@ -144,14 +145,14 @@ def test_authoritative_task_event_controls_archive_and_preserves_review_evidence
     async def run():
         await execute(agent, 'review-run')
         assert not archived
-        assert 'review-run' in agent.extension_runs
+        assert agent.extension_context.run_context('review-run') is not None
         registry = BackgroundTaskRegistry()
         token = bind_background_registry(registry)
         payload = dict(project_id='project', user_message='edit', final_answer='done',
                        checkpoint={'mutation_evidence': [{}]}, tool_steps=[])
         await publish_task_result(agent, run_id='review-run', status='completed', **payload)
         await registry.drain(1)
-        assert 'review-run' not in agent.extension_runs
+        assert agent.extension_context.run_context('review-run') is None
         assert archived[0].resources[0]['version'] == 'old-etag'
         await publish_task_result(agent, run_id='partial-run', status='partial', **payload)
         assert len(archived) == 1
@@ -192,11 +193,11 @@ def test_concurrent_runs_keep_resources_and_dirty_state_separate(isolated_hooks)
                 payload={'user_message': run_id}))
             await registry.atrigger(HookEvent.TOOL_AFTER, HookContext(HookEvent.TOOL_AFTER, 'Test', run_id=run_id,
                 tool_name='read_file', tool_input={}, payload={'result': {'changes': []}, 'event_id': run_id}))
-            return local.state('memory')
+            return local.state('memory', MemoryRunState)
     async def run():
         first, second = await asyncio.gather(run_one('a'), run_one('b'))
-        assert set(first['resources']) == {'a'} and set(second['resources']) == {'b'}
-        assert first['query'] == 'a' and second['query'] == 'b'
-        assert not first['dirty'] and not second['dirty']
-        assert base.state('memory') == {}
+        assert set(first.resources) == {'a'} and set(second.resources) == {'b'}
+        assert first.query == 'a' and second.query == 'b'
+        assert not first.dirty and not second.dirty
+        assert base.state('memory', MemoryRunState) == MemoryRunState()
     asyncio.run(run())

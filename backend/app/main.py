@@ -74,7 +74,7 @@ async def lifespan(application):
     install_plan(plan, get_hooks())
     application.state.plugin_plan = plan
     frozen = plugin_manager.freeze(settings)
-    snapshot = PluginSnapshot(frozen, get_hooks(), frozen._fixed_settings, plan)
+    snapshot = PluginSnapshot(frozen, get_hooks(), frozen.effective_settings(settings), plan)
     service = PluginRefreshService(snapshot, settings.plugin_plan_dir)
     previous_snapshot = publish_snapshot(snapshot)
     application.state.plugin_refresh = service

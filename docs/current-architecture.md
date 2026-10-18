@@ -4,7 +4,7 @@
 >
 > 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-10-15
+> 文档同步：2026-10-17
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -93,6 +93,16 @@ json_mode），自定义提示词只包含 planner / executor。模型规划输�
 
 ## 3. 当前基础工具契约
 
+`Tool` 的参数为 `JsonObject`，返回值为 JSON 数据或 `ToolResult`，也可通过 awaitable
+返回。`AsyncTool.run` 是明确的异步方法，调用方须 `await`；公共 `run_result` 默认委托
+`run`，具体工具可覆盖它以保留错误码、变更与验证证据。异步执行器通过这一接口统一归一化
+结果，不再动态查找方法。同步入口保留 `run` 调用，拒绝异步方法；同步包装器意外返回的
+未启动协程会被关闭。用户中断与取消向上传播，不转换成普通工具失败。
+
+函数型工具以 `RegisteredFunction` 保存描述与回调，只接收字符串 input；函数和类工具
+使用相同的异步结果归一化规则。输出存储绑定使用独立协议。注册表只负责目录、别名、schema
+与执行转发，执行器负责权限检查和调用；工具包按需导出注册表，避免导入顺序形成循环依赖。
+
 生产 Agent 的基础工具是：
 
 | 工具 | 使用场景 |
@@ -131,13 +141,21 @@ extensions.skills:create
 
 ### 插件架构与扩展契约
 
+插件的公开请求、结果与 Provider Protocol 定义在各自的 `plugin_api.py`。Memory 的工具证据和会话消息复用宿主结构；Design Contract 使用明确的工作区清单和事实模型；Evals 使用用例、结果、批次模型及归档记录；Knowledge Graph 使用项目、事实输入和具名查询结果。稳定业务字段使用模型或 `TypedDict`，可扩展元数据使用递归 `JsonObject`，公开签名不使用 `Any` 或未声明元素类型的容器。事实模型的 `to_dict()` 返回独立 JSON 快照，集合统一导出为列表。
+
+Evals 的 `EvalBatch` 位于纯数据模块 `batch_models.py`，公开协议不依赖批次调度实现；原 `batches.EvalBatch` 导入路径保留兼容。默认 Provider 与 NoOp Provider 使用相同的接口签名。六个 `plugin_api.py`、评测公共模型和 `backend/tests/typing/plugin_protocols.py` 纳入严格类型检查，后者验证具体实现与公开协议的兼容性；这不代表所有插件内部实现均已纳入严格检查。
+
 Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 服务贡献完成。前者准备共享目录快照，后者绑定 provider、提供工具并声明必需的执行检查。`assembly.py` 统一派发请求、注册返回的工具并构造 Agent，不再显式加载或绑定 memory、skills、design_contract、orchestration provider。独立目录插件经扫描即可进入真实生产装配，新增同类能力不需要修改宿主装配入口；普通 initialize 广播不会执行装配服务。
 
 配置、项目身份、状态目录、运行目录、工作区路径解析和进程输出解码通过 `host_api/environment.py` 和按能力划分的服务协议 提供。依赖解析沿用当前请求的配置和扫描目录，后台任务继承相同绑定。宿主管理项目状态目录，插件选择数据库文件名；评测插件管理运行目录内的评测布局。版本化用例与 fixture 保留在 `backend/evals`，UML Project 仍是宿主业务数据协议。API/CLI 接入层可以使用宿主 loader adapter，领域模块禁止直接导入 backend.config、app.runtime、宿主 services/core/agent 实现或插件宿主加载器，边界由 AST 回归测试验证。
 
 插件机制把稳定的 Agent 端口与可替换的领域实现分开：`host_api/` 定义宿主协议，`adapters/` 负责加载、校验和降级，`core/` 管理通用生命周期、事件路由和操作上下文，`extensions/` 保存 provider、存储、序列化和领域算法。插件不得直接导入 `app.agent_base.core`；需要宿主能力时通过按能力划分的服务协议、公开运行状态协议和 `ExtensionContextPort` 获取。插件只使用按能力划分的公开接口，底层宿主实例解析保留在模块内部。`Contribution` 是纯数据声明，handler 的解析、校验和注册由宿主执行，插件不直接操作 `HookRegistry` 或 `ContextVar`。
 
+插件私有状态通过 `ExtensionContextPort.state(name, StateType)` 取得，由插件定义具名数据类，宿主负责按请求创建、隔离和校验状态类型。Memory 使用 `MemoryRunState` 保存资源证据与归档标记，Design Contract 使用 `ContractExecutionState` 保存门禁结果。原来的 `state(name)` 字典入口已移除，外部插件也需要传入状态类型。请求与待审批状态统一由 `ExtensionContext` 管理，终态发布后释放；Agent 不再动态挂载 `extension_runs`。Hook 注册表通过 `copy()` 提供绑定快照，装配、请求分叉和插件刷新不再复制其私有字段。
+
 统一管理器维护插件声明、provider 实例和执行计划。`plugin.json` 是插件身份、入口、接口、默认阶段、默认配置和依赖的来源；`PluginManager` 读取启停与 provider 配置，检查依赖，按 `module:factory` 创建 provider，校验必需接口，并记录 `loaded`、`disabled` 或 `unavailable` 状态。领域 loader 在 provider 不可用时使用对应 NoOp 或端口约定的降级结果。具体扫描、配置覆盖和受控刷新规则见[插件目录发现](plugin-discovery.md)。
+
+生命周期与刷新模块通过管理器的工厂校验、计划诊断和刷新候选接口操作目录，不直接访问其工厂缓存或诊断字典。`PluginSnapshot` 明确绑定管理器、Hook 注册表和可选执行计划；刷新服务要求已有编译计划。计划报告与刷新结果使用结构化类型，导出的计划报告与内部状态隔离。动态 provider 的异构参数和返回值仅在调度适配器内部传递，领域调用方继续使用各自的公开协议；调度同时核对贡献 ID、服务模式和接口 ID。`plugin_dispatch.py`、`plugin_runtime.py`、`lifecycle.py` 和对应报告类型已纳入严格类型检查。
 
 插件 provider 的边界如下：
 

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from .batch_models import EvalBatch as EvalBatch
 
 from .paths import evaluation_root
 from .plugin_api import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
@@ -52,24 +52,6 @@ def _baseline_case_ids() -> set[str]:
             and getattr(case, "metadata", {}).get("baseline_comparable") is not False
         )
     }
-
-
-class EvalBatch(BaseModel):
-    batch_id: str
-    agent: str = "devagent"
-    suite: str = ""
-    version: str
-    label: str = ""
-    case_ids: list[str]
-    status: str = "queued"
-    started_at: str = ""
-    finished_at: str = ""
-    current_case_id: str = ""
-    results: list[EvalResult] = Field(default_factory=list)
-    summary: EvalSummary = Field(default_factory=EvalSummary)
-    error: str = ""
-    performance_result_id: str = ""
-    source_batch_ids: list[str] = Field(default_factory=list)
 
 
 class EvalBatchManager:

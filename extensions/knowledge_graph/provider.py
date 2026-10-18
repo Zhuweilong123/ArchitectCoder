@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from app.agent_base.host_api.environment import project_storage
 
 from .builder import GraphBuilder
 from .database import KnowledgeGraphDB
 from .retriever import GraphRetriever
-from .plugin_api import GraphPreindexRequest, GraphPreindexResult
+from .plugin_api import (
+    BuildStats, GraphMap, GraphFacts, GraphLocations, GraphExpansion, GraphImpact, GraphDiff,
+    GraphPreindexRequest, GraphPreindexResult,
+)
+
+if TYPE_CHECKING:
+    from app.models.uml import Project
+    from extensions.design_contract.plugin_api import ArtifactFacts
 
 
 class _LocalKnowledgeGraphContext:
@@ -75,7 +82,7 @@ class LocalKnowledgeGraphProvider:
             self.settings, project_file=project_file, workspace_root=workspace_root,
         )
 
-    def rebuild_project(self, project: Any, project_id: str, filepath: str = "") -> Any:
+    def rebuild_project(self, project: Project, project_id: str, filepath: str = "") -> BuildStats | None:
         path = self._path_for(project_file=filepath)
         if not path:
             raise ValueError("project path is required for knowledge graph indexing")
@@ -99,9 +106,7 @@ class LocalKnowledgeGraphProvider:
         finally:
             builder.close()
 
-    def search_diagrams(
-        self, project_id: str, queries: list[str], top_k: int = 6,
-    ) -> dict[str, set[str]]:
+    def search_diagrams(self, project_id: str, queries: list[str], top_k: int = 6) -> dict[str, set[str]]:
         if not project_id or not queries or not os.path.isfile(self.db_path):
             return {}
         retriever = GraphRetriever(db_path=self.db_path)
@@ -132,12 +137,12 @@ class LocalKnowledgeGraphProvider:
         finally:
             context.close()
 
-    def map_project(self, project_id: str, top_classes: int = 15) -> dict:
+    def map_project(self, project_id: str, top_classes: int = 15) -> GraphMap:
         return self._run_service(
             lambda service: service.map_project(project_id, top_classes),
         )
 
-    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> GraphFacts:
         if not os.path.isfile(self.db_path):
             return {
                 "available": False,
@@ -150,7 +155,7 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.contract_facts(project_id, max_items),
         )
 
-    def index_facts(self, facts: Any) -> Any:
+    def index_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         """Project shared ``ArtifactFacts`` into the local graph when requested."""
         metadata = getattr(facts, "metadata", {}) or {}
         path = self._path_for(
@@ -165,7 +170,7 @@ class LocalKnowledgeGraphProvider:
         finally:
             builder.close()
 
-    def sync_facts(self, facts: Any) -> Any:
+    def sync_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         """Synchronize the local graph from changed artifact facts."""
         metadata = getattr(facts, "metadata", {}) or {}
         path = self._path_for(
@@ -180,30 +185,26 @@ class LocalKnowledgeGraphProvider:
         finally:
             builder.close()
 
-    def locate(self, project_id: str, pattern: str, node_types=None,
-               source=None, top_k: int = 10) -> dict:
+    def locate(self, project_id: str, pattern: str, node_types: list[str] | None = None, source: str | None = None, top_k: int = 10) -> GraphLocations:
         return self._run_service(
             lambda service: service.locate(
                 project_id, pattern, node_types, source, top_k,
             ),
         )
 
-    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing",
-               edge_types=None, max_depth: int = 2, max_nodes: int = 50) -> dict:
+    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing", edge_types: list[str] | None = None, max_depth: int = 2, max_nodes: int = 50) -> GraphExpansion:
         return self._run_service(
             lambda service: service.expand(
                 project_id, node_ids, direction, edge_types, max_depth, max_nodes,
             ),
         )
 
-    def impact(self, project_id: str, node_id: str, max_depth: int = 2,
-               max_nodes: int = 50) -> dict:
+    def impact(self, project_id: str, node_id: str, max_depth: int = 2, max_nodes: int = 50) -> GraphImpact:
         return self._run_service(
             lambda service: service.impact(project_id, node_id, max_depth, max_nodes),
         )
 
-    def diff(self, project_id: str, source_dir: str | None = None,
-             force_rebuild: bool = False, max_items: int = 30) -> dict:
+    def diff(self, project_id: str, source_dir: str | None = None, force_rebuild: bool = False, max_items: int = 30) -> GraphDiff:
         return self._run_service(
             lambda service: service.diff(
                 project_id, source_dir, force_rebuild, max_items,

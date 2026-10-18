@@ -8,7 +8,16 @@ policy and persistence remain private to the extension.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypedDict
+from typing import NotRequired, Protocol, TypedDict
+from app.agent_base.host_api.data import ConversationMessage, JsonObject
+from app.agent_base.host_api.execution_types import ToolCallDetail
+
+
+class MemoryResource(TypedDict):
+    resource_id: str
+    version: str
+    kind: NotRequired[str]
+    path: NotRequired[str]
 
 
 class MemoryRecallOptions(TypedDict, total=False):
@@ -30,7 +39,7 @@ class MemoryRecallResult:
     context_block: str = ""
     memory_ids: tuple[str, ...] = ()
     token_count: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -38,18 +47,18 @@ class MemoryArchiveRequest:
     project_id: str
     user_message: str
     final_answer: str
-    tool_steps: tuple[dict[str, Any], ...] = ()
+    tool_steps: tuple[ToolCallDetail, ...] = ()
     run_id: str = ""
     trace_id: str = ""
-    conversation_history: tuple[dict[str, str], ...] = ()
+    conversation_history: tuple[ConversationMessage, ...] = ()
     terminal_status: str = "completed"
-    resources: tuple[dict[str, Any], ...] = ()
+    resources: tuple[MemoryResource, ...] = ()
 
 
 @dataclass(frozen=True)
 class MemoryArchiveResult:
     stored_count: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -58,8 +67,8 @@ class MemoryEventRequest:
 
     project_id: str
     event_type: str
-    tool_steps: tuple[dict[str, Any], ...] = ()
-    resources: tuple[dict[str, Any], ...] = ()
+    tool_steps: tuple[ToolCallDetail, ...] = ()
+    resources: tuple[MemoryResource, ...] = ()
     memory_ids: tuple[str, ...] = ()
     reason: str = ""
     run_id: str = ""
@@ -70,8 +79,8 @@ class MemoryEventRequest:
 @dataclass(frozen=True)
 class MemoryEventResult:
     affected_count: int = 0
-    resources: tuple[dict[str, Any], ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
+    resources: tuple[MemoryResource, ...] = ()
+    metadata: JsonObject = field(default_factory=dict)
 
 
 class MemoryPort(Protocol):

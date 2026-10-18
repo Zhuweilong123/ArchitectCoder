@@ -15,7 +15,9 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Any, Mapping
+from typing import Callable, Mapping, cast
+from app.agent_base.host_api.configuration import PluginConfiguration
+from .plugin_types import PluginCallable, PluginDiagnostic
 
 from backend.config.plugin_catalog import (
     BUILTIN_PLUGIN_ROOT, config_path, scan_manifests, packaged_manifests,
@@ -107,7 +109,7 @@ DEFAULT_PLUGIN_SPECS = tuple(manifest_spec(data) for data in packaged_manifests(
 class PluginManager:
     """Register, load, inspect and safely disable extension providers."""
 
-    def __init__(self, specs: tuple[PluginSpec, ...] | None = None):
+    def __init__(self, specs: tuple[PluginSpec, ...] | None = None) -> None:
         self._auto_scan = specs is None
         self._manual_specs = {spec.name: spec for spec in (specs or ())}
         specs = DEFAULT_PLUGIN_SPECS if specs is None else specs
@@ -115,10 +117,10 @@ class PluginManager:
         self._states: dict[str, PluginState] = {}
         self._configuration = None
         self._overrides = {}
-        self._plan_errors = {}
-        self._diagnostics = {}
-        self._fixed_settings = None
-        self._validated_factories = {}
+        self._plan_errors: dict[str, str] = {}
+        self._diagnostics: dict[tuple[str, str], PluginDiagnostic] = {}
+        self._fixed_settings: PluginConfiguration | None = None
+        self._validated_factories: dict[str, PluginCallable] = {}
 
     @property
     def specs(self) -> tuple[PluginSpec, ...]:
@@ -131,7 +133,7 @@ class PluginManager:
         self._manual_specs[spec.name] = spec
         self._configuration = None
 
-    def get_spec(self, name):
+    def get_spec(self, name: str) -> PluginSpec:
         spec = self._specs.get(name)
         if spec is None:
             spec = next((item for item in self.specs if item.slot == name), None)
@@ -160,7 +162,7 @@ class PluginManager:
                 raise ValueError(f"duplicate or conflicting plugin slot: {slot}")
             slots[slot] = spec.name
 
-    def configure(self, settings):
+    def configure(self, settings: PluginConfiguration | None) -> None:
         if self._fixed_settings is not None:
             return
         roots = tuple(getattr(settings, "plugin_roots", ()))
@@ -185,7 +187,7 @@ class PluginManager:
         self._configuration = signature
         self._plan_errors = {}
 
-    def effective_settings(self, settings):
+    def effective_settings(self, settings: PluginConfiguration | None) -> PluginConfiguration:
         if self._fixed_settings is not None:
             return self._fixed_settings
         declarations = ({"id": spec.name, "provider": spec.default_provider,
@@ -194,7 +196,7 @@ class PluginManager:
                          "prefix": spec.settings_prefix or f"plugin_{spec.name}_"}} for spec in self.specs)
         return resolved_settings(settings, declarations, self._overrides)
 
-    def freeze(self, settings):
+    def freeze(self, settings: PluginConfiguration) -> PluginManager:
         """Freeze catalog/config and factory references without sharing provider instances."""
         frozen = copy.copy(self)
         frozen._specs = copy.deepcopy(self._specs)
@@ -206,7 +208,29 @@ class PluginManager:
         frozen._validated_factories = dict(self._validated_factories)
         return frozen
 
-    def dependency_errors(self, settings):
+    def refresh_candidate(self) -> PluginManager:
+        """Create an independent catalog using the same discovery policy and observations."""
+        candidate = PluginManager(None if self._auto_scan else copy.deepcopy(tuple(self._manual_specs.values())))
+        if self._auto_scan:
+            for spec in self._manual_specs.values():
+                candidate.register(copy.deepcopy(spec))
+        candidate._states = dict(self._states)
+        candidate._diagnostics = copy.deepcopy(self._diagnostics)
+        return candidate
+
+    def record_plan_errors(self, errors: Mapping[str, str]) -> None:
+        """Replace planning diagnostics without exposing the manager's storage."""
+        self._plan_errors = dict(errors)
+
+    def validate_factory(self, provider: str, factory: PluginCallable,
+                         settings: PluginConfiguration) -> None:
+        """Validate and pin a synchronous factory without constructing a provider."""
+        if inspect.iscoroutinefunction(factory):
+            raise TypeError("plugin factories must be synchronous")
+        inspect.signature(factory).bind_partial(settings=settings)
+        self._validated_factories[provider] = factory
+
+    def dependency_errors(self, settings: PluginConfiguration) -> dict[str, str]:
         errors, visiting, visited = {}, [], set()
         def enabled(spec):
             return getattr(settings, spec.enabled_setting, spec.default_enabled) and str(
@@ -255,14 +279,14 @@ class PluginManager:
         self._validate_slots(combined)
         self._specs = combined
 
-    def _ensure_extension_import_path(self) -> None:
+    def ensure_import_path(self) -> None:
         roots = {_PROJECT_ROOT, *(Path(spec.source).parent.parent for spec in self.specs if spec.manifest_owned)}
         for root in sorted(roots, key=str):
             if str(root) not in sys.path:
                 sys.path.insert(0, str(root))
 
     @staticmethod
-    def _load_factory(provider: str):
+    def load_factory(provider: str) -> PluginCallable:
         module_name, separator, attribute = provider.partition(":")
         if not separator or not module_name or not attribute:
             raise ValueError("plugin provider must use 'module:factory' syntax")
@@ -270,12 +294,13 @@ class PluginManager:
         factory = getattr(module, attribute)
         if not callable(factory):
             raise TypeError(f"plugin provider is not callable: {provider}")
-        return factory
+        return cast(PluginCallable, factory)
 
     def _state(self, name: str, provider: str, status: str, error: str = "") -> None:
         self._states[name] = PluginState(name, provider, status, error)
 
-    def diagnostic(self, spec, component, phase, code, message, provider=""):
+    def diagnostic(self, spec: PluginSpec, component: str, phase: str, code: str,
+                   message: str, provider: str = "") -> PluginDiagnostic:
         return {"plugin": spec.name, "component": component, "phase": phase, "code": code,
                 "message": message, "provider": provider or spec.default_provider,
                 "source": spec.source, "version": spec.version, "revision": spec.revision}
@@ -297,10 +322,10 @@ class PluginManager:
         self,
         name: str,
         *,
-        settings=None,
-        kwargs: Mapping[str, Any] | None = None,
-        factory_loader=None,
-    ) -> Any | None:
+        settings: PluginConfiguration | None = None,
+        kwargs: Mapping[str, object] | None = None,
+        factory_loader: Callable[[str], PluginCallable] | None = None,
+    ) -> object | None:
         """Load one provider, returning ``None`` for disabled/unavailable slots."""
         if settings is None:
             try:
@@ -332,8 +357,8 @@ class PluginManager:
 
         phase = "import"
         try:
-            self._ensure_extension_import_path()
-            factory = (self._validated_factories.get(provider) if self._fixed_settings is not None else None) or (factory_loader or self._load_factory)(provider)
+            self.ensure_import_path()
+            factory = (self._validated_factories.get(provider) if self._fixed_settings is not None else None) or (factory_loader or self.load_factory)(provider)
             phase = "factory"
             if inspect.iscoroutinefunction(factory):
                 raise TypeError("plugin factories must be synchronous")
@@ -379,7 +404,7 @@ class PluginManager:
         method: str,
         *,
         settings=None,
-        kwargs: Mapping[str, Any] | None = None,
+        kwargs: Mapping[str, object] | None = None,
         default=None,
     ):
         """Call an optional provider contribution without domain-specific host code."""
@@ -396,7 +421,9 @@ class PluginManager:
             logger.warning("[Plugins] %s contribution %s failed", name, method, exc_info=True)
             return default if default is not None else []
 
-    def load_optional(self, name: str, *, settings=None, kwargs: dict[str, object] | None = None, factory_loader: Callable[[str], Callable[..., object]] | None = None) -> object | None:
+    def load_optional(self, name: str, *, settings: PluginConfiguration | None = None,
+                      kwargs: Mapping[str, object] | None = None,
+                      factory_loader: Callable[[str], PluginCallable] | None = None) -> object | None:
         """Domain ports retain their NoOp behavior when a plugin is absent."""
         try:
             return self.load(name, settings=settings, kwargs=kwargs, factory_loader=factory_loader)
@@ -419,7 +446,7 @@ class PluginManager:
         # Keep the route mounted even when the provider is disabled so clients
         # receive the provider's explicit 503 response instead of a route 404.
         try:
-            self._ensure_extension_import_path()
+            self.ensure_import_path()
             module_name, separator, attribute = spec.router_provider.partition(":")
             if not separator or not module_name or not attribute:
                 raise ValueError("plugin router must use 'module:attribute' syntax")

@@ -1,9 +1,9 @@
 """工具基类 — 所有工具必须继承并实现 ``run`` 和 ``get_parameters``"""
 
-from app.agent_base.host_api.data import ToolSchema
+from app.agent_base.host_api.data import JsonObject, JsonValue, ToolSchema
+from .contracts import ToolExecution
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
 from pydantic import BaseModel
 
 
@@ -13,7 +13,7 @@ class ToolParameter(BaseModel):
     type: str
     description: str
     required: bool = True
-    default: Any = None
+    default: JsonValue = None
 
 
 class Tool(ABC):
@@ -31,11 +31,11 @@ class Tool(ABC):
             def get_parameters(self) -> list[ToolParameter]:
                 return [ToolParameter(name="q", type="string", description="查询")]
 
-            def run(self, parameters: dict) -> str:
+            def run(self, parameters: JsonObject) -> str:
                 return f"结果: {parameters['q']}"
     """
 
-    def __init__(self, name: str, description: str):
+    def __init__(self, name: str, description: str) -> None:
         self.name = name
         self.description = description
         # Optional non-schema names used by compatibility callers.  Aliases
@@ -47,23 +47,27 @@ class Tool(ABC):
         self.can_parallel = False
 
     @abstractmethod
-    def run(self, parameters: Dict[str, Any]) -> str:
-        """执行工具，返回字符串结果"""
+    def run(self, parameters: JsonObject) -> ToolExecution:
+        """Return a JSON value/result, directly or through an awaitable."""
         ...
 
+    def run_result(self, parameters: JsonObject) -> ToolExecution:
+        """Structured execution hook; legacy tools delegate to their run method."""
+        return self.run(parameters)
+
     @abstractmethod
-    def get_parameters(self) -> List[ToolParameter]:
+    def get_parameters(self) -> list[ToolParameter]:
         """获取工具参数定义"""
         ...
 
     def to_openai_schema(self) -> ToolSchema:
         """转换为 OpenAI Function Calling schema"""
         parameters = self.get_parameters()
-        properties = {}
-        required = []
+        properties: JsonObject = {}
+        required: list[JsonValue] = []
 
         for param in parameters:
-            prop = {
+            prop: JsonObject = {
                 "type": param.type,
                 "description": param.description,
             }

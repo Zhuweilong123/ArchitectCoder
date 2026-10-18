@@ -1,51 +1,53 @@
 """Loading, fallback and validation adapters for optional capabilities."""
 
 from __future__ import annotations
-from typing import Any
 
-from extensions.knowledge_graph.plugin_api import KnowledgeGraphProvider
+from typing import Any, TYPE_CHECKING
+
+from extensions.knowledge_graph.plugin_api import (
+    BuildStats, GraphMap, GraphFacts, GraphLocations, GraphExpansion, GraphImpact, GraphDiff,
+    KnowledgeGraphProvider,
+)
+
+if TYPE_CHECKING:
+    from app.models.uml import Project
+    from extensions.design_contract.plugin_api import ArtifactFacts
 
 class NoOpKnowledgeGraphProvider:
     """Explicit no-op provider for deployments without graph indexing."""
 
-    def rebuild_project(self, project: Any, project_id: str, filepath: str = "") -> None:
+    def rebuild_project(self, project: Project, project_id: str, filepath: str = "") -> BuildStats | None:
         return None
 
-    def search_diagrams(
-        self, project_id: str, queries: list[str], top_k: int = 6,
-    ) -> dict[str, set[str]]:
+    def search_diagrams(self, project_id: str, queries: list[str], top_k: int = 6) -> dict[str, set[str]]:
         return {}
 
     @staticmethod
     def _disabled() -> dict:
         return {"error": "knowledge graph provider is disabled"}
 
-    def map_project(self, project_id: str, top_classes: int = 15) -> dict:
+    def map_project(self, project_id: str, top_classes: int = 15) -> GraphMap:
         return self._disabled()
 
-    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> GraphFacts:
         return {"available": False, "nodes": [], "edges": [], "error": self._disabled()["error"]}
 
-    def index_facts(self, facts: Any) -> None:
+    def index_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         return None
 
-    def sync_facts(self, facts: Any) -> None:
+    def sync_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         return None
 
-    def locate(self, project_id: str, pattern: str, node_types=None,
-               source=None, top_k: int = 10) -> dict:
+    def locate(self, project_id: str, pattern: str, node_types: list[str] | None = None, source: str | None = None, top_k: int = 10) -> GraphLocations:
         return self._disabled()
 
-    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing",
-               edge_types=None, max_depth: int = 2, max_nodes: int = 50) -> dict:
+    def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing", edge_types: list[str] | None = None, max_depth: int = 2, max_nodes: int = 50) -> GraphExpansion:
         return self._disabled()
 
-    def impact(self, project_id: str, node_id: str, max_depth: int = 2,
-               max_nodes: int = 50) -> dict:
+    def impact(self, project_id: str, node_id: str, max_depth: int = 2, max_nodes: int = 50) -> GraphImpact:
         return self._disabled()
 
-    def diff(self, project_id: str, source_dir: str | None = None,
-             force_rebuild: bool = False, max_items: int = 30) -> dict:
+    def diff(self, project_id: str, source_dir: str | None = None, force_rebuild: bool = False, max_items: int = 30) -> GraphDiff:
         return self._disabled()
 
     def create_tools(

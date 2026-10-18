@@ -3,6 +3,7 @@ from app.agent_base.host_api.services import get_execution_services
 from app.agent_base.host_api.contexts import ContractGateContext, ContractFailureAnalysisContext
 from copy import deepcopy
 from .plugin_api import ContractBinding
+from .state import ContractExecutionState
 
 
 def _binding():
@@ -33,9 +34,9 @@ async def check(context):
         return
     request = context.invocation
     decision = await binding.gate.evaluate(_gate_context(request, session))
-    state = session.state("design_contract.execution")
-    state["result"] = decision.result
-    state["message"] = decision.message
+    state = session.state("design_contract.execution", ContractExecutionState)
+    state.result = decision.result
+    state.message = decision.message
     value = decision.result.to_dict() if decision.result is not None else {
         "status": "skipped", "changed_paths": [], "violations": [],
         "can_commit": bool(decision.allowed), "requires_confirmation": False}
@@ -56,11 +57,11 @@ async def rejected(context):
     if binding is None:
         return
     request = context.invocation
-    state = session.state("design_contract.execution")
-    if state.get("result") is not None:
+    state = session.state("design_contract.execution", ContractExecutionState)
+    if state.result is not None:
         request.message = await binding.analyzer.analyze(ContractFailureAnalysisContext(
-            invoke=request.capabilities["analyze"], result=state["result"],
-            message=state["message"], run_id=request.run_id,
+            invoke=request.capabilities["analyze"], result=state.result,
+            message=state.message, run_id=request.run_id,
             rollback_completed=request.data["rollback_completed"],
             allowed_tools=tuple(request.allowed_tools) if request.allowed_tools is not None else None))
     request.checkpoint["contract_failure_analysis"] = request.message
@@ -71,7 +72,7 @@ async def committed(context):
     if binding is None:
         return
     request = context.invocation
-    result = session.state("design_contract.execution").get("result")
+    result = session.state("design_contract.execution", ContractExecutionState).result
     if result is None:
         return
     finalizer = getattr(binding.gate, "finalize", None)

@@ -191,3 +191,71 @@ def test_async_handler_is_awaited_in_real_agent_model_phase(monkeypatch):
     agent = ReActAgent("test", Model(), ToolRegistry())
     assert asyncio.run(agent.arun("hello")) == "done"
     assert seen == ["before", "finalize"]
+
+
+@pytest.mark.parametrize("mode,interface_id", [("observer", "sample.ping"), ("service", "sample.other")])
+def test_matching_contribution_id_cannot_replace_service_contract(monkeypatch, mode, interface_id):
+    from app.agent_base.core.plugin_dispatch import ScheduledProvider
+    spec = PluginSpec("sample", "enabled", "provider", "sample:create", ("ping",))
+    provider = ScheduledProvider(SimpleNamespace(ping=lambda: pytest.fail("must not call provider")), spec)
+    registry = HookRegistry()
+    registry.plan_id = "compiled"
+    registry.register(HookEvent.RUN_START, lambda ctx: None, contribution_id="sample.interface.ping",
+                      mode=mode, interface_id=interface_id)
+    monkeypatch.setattr(hooks, "_registry", registry)
+    with pytest.raises(RuntimeError, match="not in the active execution plan"):
+        provider.ping()
+
+
+def test_sync_interface_closes_accidental_coroutine(monkeypatch):
+    from app.agent_base.core.plugin_dispatch import ScheduledProvider
+    created = []
+
+    async def work():
+        pytest.fail("sync dispatch must not execute the coroutine")
+
+    def ping():
+        coroutine = work()
+        created.append(coroutine)
+        return coroutine
+
+    monkeypatch.setattr(hooks, "_registry", HookRegistry())
+    spec = PluginSpec("sample", "enabled", "provider", "sample:create", ("ping",))
+    provider = ScheduledProvider(SimpleNamespace(ping=ping), spec)
+    with pytest.raises(TypeError, match="synchronous provider interface returned an awaitable"):
+        provider.ping()
+    assert inspect.getcoroutinestate(created[0]) == inspect.CORO_CLOSED
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_bound_invocation_preserves_keyword_arguments_and_result_identity(monkeypatch, asynchronous):
+    from app.agent_base.core.plugin_dispatch import ScheduledProvider
+    value = SimpleNamespace(contents=["evidence"])
+
+    def ping(prefix, *, result):
+        assert prefix == "request"
+        return result
+
+    spec = PluginSpec("sample", "enabled", "provider", "sample:create", ("ping",),
+                      async_methods=("ping",) if asynchronous else ())
+    monkeypatch.setattr(hooks, "_registry", HookRegistry())
+    provider = ScheduledProvider(SimpleNamespace(ping=ping), spec)
+    result = provider.ping("request", result=value)
+    if asynchronous:
+        result = asyncio.run(result)
+    assert result is value
+
+
+def test_invocation_executes_once_and_rejects_other_request_kinds():
+    from app.agent_base.core.plugin_dispatch import Invocation, invoke_provider
+    from app.agent_base.host_api.assembly import AssemblyRequest
+    calls = []
+    invocation = Invocation("sample.ping", lambda: calls.append("called"))
+    context = HookContext(HookEvent.RUN_START, "sample", invocation=invocation)
+    invoke_provider(context)
+    with pytest.raises(RuntimeError, match="missing or repeated"):
+        invoke_provider(context)
+    assert calls == ["called"]
+    context.invocation = AssemblyRequest({}, lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="missing or repeated"):
+        invoke_provider(context)

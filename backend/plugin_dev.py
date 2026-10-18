@@ -258,7 +258,7 @@ async def inspect_plugin(args):
             provider = None
             if getattr(args, "instantiate", False) or (args.command == "run" and args.method):
                 def capture_factory(entry):
-                    factory = manager._load_factory(entry)
+                    factory = manager.load_factory(entry)
 
                     @wraps(factory)
                     def create(**kwargs):

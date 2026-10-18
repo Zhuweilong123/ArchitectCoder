@@ -35,6 +35,18 @@ class WorkspaceSnapshot(TypedDict, total=False):
     project_files: list[str]
     workspace_roots: list[str]
 
+
+class WorkspaceManifestPayload(TypedDict, total=False):
+    """Workspace layout accepted by artifact collectors before JSON serialization."""
+    workspace_root: str
+    design_root: str
+    source_root: str
+    test_root: str
+    project_file: str
+    project_files: tuple[str, ...] | list[str]
+    layout_mode: str
+    consistency_policy: str
+
 class ChangedPath(TypedDict):
     path: str
     operation: NotRequired[str]

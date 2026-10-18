@@ -37,7 +37,7 @@ async def run_fc_loop(
 ) -> AsyncGenerator[ReActProgress, None]:
     from ...core.plugin_runtime import plugin_scope
     from ...core.extension_context import extension_scope, current_extension_context
-    session = getattr(agent, "extension_context", None)
+    session = agent.extension_context
     with plugin_scope(), extension_scope(current_extension_context() or (session.fork() if session else None)):
         stream = _run_fc_loop_scoped(agent, input_text, context=context, **kwargs)
         try:

@@ -52,7 +52,7 @@ def service(tmp_path, **options):
     registry = HookRegistry()
     install_plan(plan, registry)
     frozen = manager.freeze(settings)
-    snapshot = PluginSnapshot(frozen, registry, frozen._fixed_settings, plan)
+    snapshot = PluginSnapshot(frozen, registry, frozen.effective_settings(settings), plan)
     output = tmp_path / "plans"
     plan.write(output)
     publish_snapshot(snapshot)
@@ -277,3 +277,36 @@ def test_code_changed_after_rejected_import_attempt_requires_restart(tmp_path, m
     result = asyncio.run(controller.refresh())
     assert result["status"] == "rejected"
     assert any(item["code"] == "restart_required" for item in result["diagnostics"])
+
+
+def test_refresh_requires_compiled_plan(tmp_path):
+    snapshot = PluginSnapshot(PluginManager(()), HookRegistry(), SimpleNamespace())
+    with pytest.raises(ValueError, match="compiled execution plan"):
+        PluginRefreshService(snapshot, tmp_path)
+
+
+@pytest.mark.parametrize("auto_scan", [False, True])
+def test_refresh_candidate_preserves_observations_without_sharing_mutable_catalog(auto_scan):
+    from app.agent_base.core.plugins import PluginSpec
+    spec = PluginSpec("sample", "enabled", "provider", "sample:create", (), defaults={"nested": [1]})
+    original = PluginManager() if auto_scan else PluginManager((spec,))
+    if auto_scan:
+        original.register(spec)
+    original.record_diagnostic(spec, "provider", "factory", "load_failed", "original error")
+    candidate = original.refresh_candidate()
+    assert candidate.diagnostics() == original.diagnostics()
+    candidate.get_spec("sample").defaults["nested"].append(2)
+    candidate.record_diagnostic(spec, "provider", "factory", "load_failed", "candidate error")
+    assert original.get_spec("sample").defaults == {"nested": [1]}
+    original_row = next(row for row in original.diagnostics() if row["name"] == "sample")
+    assert original_row["diagnostics"][0]["message"] == "original error"
+
+
+def test_exported_plan_report_is_detached_from_active_plan(tmp_path):
+    controller, _ = service(tmp_path)
+    plan = controller.active.plan
+    before = plan.as_dict()
+    exported = plan.as_dict()
+    exported["plugins"][0]["interfaces"].append("injected")
+    exported["stages"][0]["contributions"].clear()
+    assert plan.as_dict() == before
