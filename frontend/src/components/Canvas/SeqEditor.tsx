@@ -140,7 +140,7 @@ const SeqEditor: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const isInternalUpdate = useRef(false);
-  const clipboard = useRef<any>(null);
+  const clipboard = useRef<SeqLifeline | null>(null);
   const [messageMode, setMessageMode] = useState<MessageType>('sync');
   const messageModeRef = useRef<MessageType>('sync');
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
@@ -217,12 +217,14 @@ const SeqEditor: React.FC = () => {
       },
     });
 
+    let selectedFragmentId: string | null = null;
+
     // Click-to-click message creation (lifelines only)
     graph.on('node:click', ({ node }) => {
       setRightPanelTab('properties');
       setRightPanelVisible(true);
       if (node.shape === 'seq-fragment') {
-        (graph as any).__selectedFragment = node.id;
+        selectedFragmentId = node.id;
         return;
       }
       const store = useDiagramStore.getState();
@@ -260,7 +262,7 @@ const SeqEditor: React.FC = () => {
     const clearBlankSelection = () => {
       selectLifeline(null);
       selectMessage(null);
-      (graph as any).__selectedFragment = null;
+      selectedFragmentId = null;
       setRightPanelVisible(false);
     };
     const detachBlankCanvasTap = attachBlankCanvasTap(graph, clearBlankSelection);
@@ -309,7 +311,7 @@ const SeqEditor: React.FC = () => {
           x: nextPosition.x,
           y_start: nextPosition.y,
           y_end: nextPosition.y + h,
-        } as any);
+        });
       }
     });
     graph.on('node:resized', ({ node }) => {
@@ -318,7 +320,7 @@ const SeqEditor: React.FC = () => {
         useDiagramStore.getState().updateFragment(node.id, {
           x: node.position().x, width: node.size().width,
           y_start: node.position().y, y_end: node.position().y + node.size().height,
-        } as any);
+        });
       }
     });
     // One snapshot per drag/resize operation (on mouseup)
@@ -334,7 +336,7 @@ const SeqEditor: React.FC = () => {
         // Select fragment for deletion
         const store = useDiagramStore.getState();
         // Store the fragment ID temporarily for delete key
-        (graph as any).__selectedFragment = node.id;
+        selectedFragmentId = node.id;
         return;
       }
     });
@@ -387,16 +389,16 @@ const SeqEditor: React.FC = () => {
     // Save edge Y position when dragged
     graph.on('edge:change:source', ({ edge, current }) => {
       if (isInternalUpdate.current) return;
-      if (typeof (current as any)?.y === 'number') {
+      if (current && 'y' in current && typeof current.y === 'number') {
         const store = useDiagramStore.getState();
-        store.updateMessage(edge.id, { y: (current as any).y } as any);
+        store.updateMessage(edge.id, { y: current.y });
       }
     });
     graph.on('edge:change:target', ({ edge, current }) => {
       if (isInternalUpdate.current) return;
-      if (typeof (current as any)?.y === 'number') {
+      if (current && 'y' in current && typeof current.y === 'number') {
         const store = useDiagramStore.getState();
-        store.updateMessage(edge.id, { y: (current as any).y } as any);
+        store.updateMessage(edge.id, { y: current.y });
       }
     });
     // Also capture vertex moves for self-messages
@@ -404,9 +406,9 @@ const SeqEditor: React.FC = () => {
       if (isInternalUpdate.current) return;
       const store = useDiagramStore.getState();
       const src = edge.getSource();
-      const srcY = typeof (src as any)?.y === 'number' ? (src as any).y : edge.getSourcePoint()?.y;
+      const srcY = 'y' in src && typeof src.y === 'number' ? src.y : edge.getSourcePoint()?.y;
       if (typeof srcY === 'number') {
-        store.updateMessage(edge.id, { y: srcY } as any);
+        store.updateMessage(edge.id, { y: srcY });
       }
     });
 
@@ -421,7 +423,7 @@ const SeqEditor: React.FC = () => {
       if (modifier && key === 'c') {
         if (store.selectedLifelineId) {
           const ll = (getActiveDiagram().lifelines || []).find((l) => l.id === store.selectedLifelineId);
-          if (ll) clipboard.current = JSON.parse(JSON.stringify(ll));
+          if (ll) clipboard.current = structuredClone(ll);
         }
       } else if (modifier && key === 'v') {
         e.preventDefault();
@@ -453,10 +455,10 @@ const SeqEditor: React.FC = () => {
         graph.cleanSelection();
         selectLifeline(null);
         selectMessage(null);
-        (graph as any).__selectedFragment = null;
+        selectedFragmentId = null;
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // Delete selected element
-        const fragId = (graph as any).__selectedFragment;
+        const fragId = selectedFragmentId;
         const targetIds = {
           fragment: fragId || '',
           message: store.selectedMessageId || '',
@@ -474,7 +476,7 @@ const SeqEditor: React.FC = () => {
           }
           selectLifeline(null);
           selectMessage(null);
-          (graph as any).__selectedFragment = null;
+          selectedFragmentId = null;
         }
       }
     };
@@ -951,7 +953,7 @@ const SeqEditor: React.FC = () => {
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
   // ── Sync grid settings ─────────────────────────────
   useEffect(() => {
-    const graph = graphRef.current as any;
+    const graph = graphRef.current;
     if (!graph) return;
     syncCanvasGrid(graph, {
       visible: gridSettings.grid_visible,
@@ -990,7 +992,7 @@ const SeqEditor: React.FC = () => {
         type,
         y_start: y,
         y_end: y + 120,
-      } as any);
+      });
     }
   }, []);
 

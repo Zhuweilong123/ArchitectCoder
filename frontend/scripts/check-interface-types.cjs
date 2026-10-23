@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 const files = [
+  'src/components/DiffViewer/DiffViewer.tsx', 'src/components/AgentChat/AgentChat.tsx',
+  'src/components/Toolbar/Toolbar.tsx', 'src/components/Canvas/UMLEditor.tsx',
   'src/services/api.ts', 'src/services/agentChat.ts', 'src/services/apiErrors.ts',
   'src/services/designElementHandler.ts', 'src/types/designEvents.ts',
   'src/types/evaluation.ts', 'src/types/json.ts', 'src/types/trace.ts',

@@ -29,7 +29,9 @@ import logging
 import os
 from typing import Any, Callable, Optional
 
-from .plugin_api import KnowledgeGraphProvider
+from .plugin_api import (
+    KnowledgeGraphProvider, GraphMap, GraphFacts, GraphLocations, GraphExpansion, GraphImpact, GraphDiff,
+)
 from app.agent_base.tools.base import Tool, ToolParameter
 from app.agent_base.tools.async_tool import AsyncTool
 
@@ -115,7 +117,7 @@ class KGService:
     # ── map: 有界结构地图 ──────────────────────────────────
 
     def map_project(self, project_id: str,
-                          top_classes: int = MAX_MAP_CLASSES) -> dict:
+                          top_classes: int = MAX_MAP_CLASSES) -> GraphMap:
         """返回项目结构地图：图清单+类数、承重墙类、源码/测试文件统计。"""
         if not project_id:
             return {"error": "未绑定 project_id，无法生成地图"}
@@ -181,7 +183,7 @@ class KGService:
             },
         }
 
-    def contract_facts(self, project_id: str, max_items: int = 5000) -> dict:
+    def contract_facts(self, project_id: str, max_items: int = 5000) -> GraphFacts:
         """Export bounded graph facts for read-side contract integrations.
 
         The contract layer consumes this neutral representation rather than
@@ -221,7 +223,7 @@ class KGService:
     def locate(self, project_id: str, pattern: str,
                      node_types: Optional[list[str]] = None,
                      source: Optional[str] = None,
-                     top_k: int = DEFAULT_TOP_K) -> dict:
+                     top_k: int = DEFAULT_TOP_K) -> GraphLocations:
         """BM25 全文检索 + 名称模糊匹配（复用 GraphRetriever.query）。"""
         if not project_id:
             return {"error": "未绑定 project_id"}
@@ -242,7 +244,7 @@ class KGService:
                      direction: str = "outgoing",
                      edge_types: Optional[list[str]] = None,
                      max_depth: int = MAX_EXPAND_DEPTH,
-                     max_nodes: int = MAX_EXPAND_NODES) -> dict:
+                     max_nodes: int = MAX_EXPAND_NODES) -> GraphExpansion:
         """n-hop BFS 邻域展开，结果带 depth 与经过的边类型。"""
         if not node_ids:
             return {"error": "node_ids 为空"}
@@ -283,7 +285,7 @@ class KGService:
 
     def impact(self, project_id: str, node_id: str,
                      max_depth: int = MAX_IMPACT_DEPTH,
-                     max_nodes: int = MAX_IMPACT_NODES) -> dict:
+                     max_nodes: int = MAX_IMPACT_NODES) -> GraphImpact:
         """反向依赖 BFS：改这个节点会碰谁。直接依赖(depth=1) vs 传递依赖。"""
         if not node_id:
             return {"error": "node_id 为空"}
@@ -341,7 +343,7 @@ class KGService:
 
     def diff(self, project_id: str, source_dir: Optional[str] = None,
                    force_rebuild: bool = False,
-                   max_items: int = MAX_DIFF_ITEMS) -> dict:
+                   max_items: int = MAX_DIFF_ITEMS) -> GraphDiff:
         """设计层 vs 代码层差异（复用 GraphRetriever.diff，含代码层惰性重建）。"""
         result = self.ctx.retriever.diff(
             project_id, source_dir=source_dir, force_rebuild=force_rebuild,

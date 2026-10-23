@@ -4,30 +4,39 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING, TypeVar
+
+from app.agent_base.host_api.configuration import PluginConfiguration
+from app.agent_base.tools.base import Tool
 
 from app.agent_base.host_api.environment import project_storage
 
 from .builder import GraphBuilder
 from .database import KnowledgeGraphDB
 from .retriever import GraphRetriever
+from .models import NodeResult
 from .plugin_api import (
     BuildStats, GraphMap, GraphFacts, GraphLocations, GraphExpansion, GraphImpact, GraphDiff,
     GraphPreindexRequest, GraphPreindexResult,
 )
 
 if TYPE_CHECKING:
+    from .tools import KGService
     from app.models.uml import Project
     from extensions.design_contract.plugin_api import ArtifactFacts
+
+
+_Result = TypeVar("_Result")
+_QUERY_UNAVAILABLE = "project path is required for knowledge graph queries"
 
 
 class _LocalKnowledgeGraphContext:
     """Per-operation SQLite resources used by the local provider."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        self._db = None
-        self._retriever = None
+        self._db: KnowledgeGraphDB | None = None
+        self._retriever: GraphRetriever | None = None
 
     @property
     def db(self) -> KnowledgeGraphDB:
@@ -55,7 +64,7 @@ class _LocalKnowledgeGraphContext:
 class LocalKnowledgeGraphProvider:
     """Adapter exposing the existing SQLite graph implementation."""
 
-    def __init__(self, settings=None, db_path: str | None = None, **kwargs):
+    def __init__(self, settings: PluginConfiguration | None = None, db_path: str | None = None, **kwargs: object) -> None:
         self.settings = settings
         self.db_path = self._database_path(
             settings, db_path=db_path,
@@ -64,7 +73,7 @@ class LocalKnowledgeGraphProvider:
         )
 
     @staticmethod
-    def _database_path(settings=None, *, db_path=None, project_file="", workspace_root="") -> str:
+    def _database_path(settings: PluginConfiguration | None = None, *, db_path: str | None = None, project_file: str = "", workspace_root: str = "") -> str:
         if settings is None:
             from app.agent_base.host_api.environment import configuration as get_settings
 
@@ -123,14 +132,14 @@ class LocalKnowledgeGraphProvider:
             retriever.close()
         return hits
 
-    def _run_service(self, callback: Callable[[Any], Any]) -> Any:
+    def _run_service(self, callback: Callable[[KGService], _Result], unavailable: _Result) -> _Result:
         """Run the existing local graph service behind this provider."""
         # Imported lazily to keep the provider usable without loading Agent
         # tool classes during application startup.
         from .tools import KGService
 
         if not self.db_path:
-            return {"error": "project path is required for knowledge graph queries"}
+            return unavailable
         context = _LocalKnowledgeGraphContext(self.db_path)
         try:
             return callback(KGService(context))
@@ -140,6 +149,7 @@ class LocalKnowledgeGraphProvider:
     def map_project(self, project_id: str, top_classes: int = 15) -> GraphMap:
         return self._run_service(
             lambda service: service.map_project(project_id, top_classes),
+            unavailable=GraphMap(error=_QUERY_UNAVAILABLE),
         )
 
     def contract_facts(self, project_id: str, max_items: int = 5000) -> GraphFacts:
@@ -153,11 +163,12 @@ class LocalKnowledgeGraphProvider:
             }
         return self._run_service(
             lambda service: service.contract_facts(project_id, max_items),
+            unavailable=GraphFacts(error=_QUERY_UNAVAILABLE),
         )
 
     def index_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         """Project shared ``ArtifactFacts`` into the local graph when requested."""
-        metadata = getattr(facts, "metadata", {}) or {}
+        metadata = facts.metadata
         path = self._path_for(
             project_file=str(metadata.get("project_file") or ""),
             workspace_root=str(metadata.get("workspace_root") or ""),
@@ -172,7 +183,7 @@ class LocalKnowledgeGraphProvider:
 
     def sync_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         """Synchronize the local graph from changed artifact facts."""
-        metadata = getattr(facts, "metadata", {}) or {}
+        metadata = facts.metadata
         path = self._path_for(
             project_file=str(metadata.get("project_file") or ""),
             workspace_root=str(metadata.get("workspace_root") or ""),
@@ -190,6 +201,7 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.locate(
                 project_id, pattern, node_types, source, top_k,
             ),
+            unavailable=GraphLocations(error=_QUERY_UNAVAILABLE),
         )
 
     def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing", edge_types: list[str] | None = None, max_depth: int = 2, max_nodes: int = 50) -> GraphExpansion:
@@ -197,11 +209,13 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.expand(
                 project_id, node_ids, direction, edge_types, max_depth, max_nodes,
             ),
+            unavailable=GraphExpansion(error=_QUERY_UNAVAILABLE),
         )
 
     def impact(self, project_id: str, node_id: str, max_depth: int = 2, max_nodes: int = 50) -> GraphImpact:
         return self._run_service(
             lambda service: service.impact(project_id, node_id, max_depth, max_nodes),
+            unavailable=GraphImpact(error=_QUERY_UNAVAILABLE),
         )
 
     def diff(self, project_id: str, source_dir: str | None = None, force_rebuild: bool = False, max_items: int = 30) -> GraphDiff:
@@ -209,6 +223,7 @@ class LocalKnowledgeGraphProvider:
             lambda service: service.diff(
                 project_id, source_dir, force_rebuild, max_items,
             ),
+            unavailable=GraphDiff(error=_QUERY_UNAVAILABLE),
         )
 
     def create_tools(
@@ -217,7 +232,7 @@ class LocalKnowledgeGraphProvider:
         project_file: str = "",
         source_dir: str = "",
         include_compare: bool = False,
-    ) -> list[Any]:
+    ) -> list[Tool]:
         """Create Agent tools while keeping the concrete factory in this extension."""
         from .tools import create_kg_v2_tools
         from app.agent_base.host_api.services import get_provider_services
@@ -233,7 +248,7 @@ class LocalKnowledgeGraphProvider:
         )
 
     @staticmethod
-    def _collect_diagram_hits(retriever, result, output: dict[str, set[str]]) -> None:
+    def _collect_diagram_hits(retriever: GraphRetriever, result: NodeResult, output: dict[str, set[str]]) -> None:
         node = result.node
         node_type = node.node_type.value
         if node_type == "diagram":
@@ -261,8 +276,8 @@ class LocalKnowledgeGraphProvider:
                     pending.add((source_id, source_name, source_type))
 
 
-def create(*, settings=None, **kwargs):
-    return LocalKnowledgeGraphProvider(settings=settings, **kwargs)
+def create(*, settings: PluginConfiguration | None = None, db_path: str | None = None, **kwargs: object) -> LocalKnowledgeGraphProvider:
+    return LocalKnowledgeGraphProvider(settings=settings, db_path=db_path, **kwargs)
 
 
 __all__ = ["LocalKnowledgeGraphProvider", "create"]

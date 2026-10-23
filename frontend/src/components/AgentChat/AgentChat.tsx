@@ -121,7 +121,7 @@ const AgentChat: React.FC = () => {
   const messageListRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
-  const inputRef = useRef<any>(null);
+  const inputRef = useRef<React.ElementRef<typeof Input.TextArea>>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -233,7 +233,7 @@ const AgentChat: React.FC = () => {
 
   // ── 连接 WebSocket ──
   const connect = useCallback((open = true) => {
-    const token = (import.meta as any).env?.VITE_API_TOKEN as string | undefined;
+    const token = import.meta.env.VITE_API_TOKEN;
     const ws = connectAgentChat(createAgentChatEventHandler({
       setMessages,
       onSessionSync: recoverHistory,
