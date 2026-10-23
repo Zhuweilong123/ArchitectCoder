@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from app.agent_base.host_api.data import JsonObject
 from extensions.evals.plugin_api import (
     EvalCase, EvalResult, EvalBatch, EvalBatchRequest, EvalBatchMergeRequest,
@@ -16,6 +14,7 @@ from .trace_cases import (TraceCaseCaptureRequest, TraceCaseDraftRequest, TraceC
 
 from .batches import get_batch_manager
 from .registry import load_cases
+from .persistence import read_baseline
 from .runner import EvalRunner
 
 
@@ -72,9 +71,7 @@ class LocalEvalProvider:
         from .paths import baseline_path
 
         path = baseline_path()
-        if not path.is_file():
-            raise FileNotFoundError(path)
-        return json.loads(path.read_text(encoding="utf-8"))
+        return read_baseline(path)
 
     async def run_case(self, case: EvalCase) -> EvalResult:
         return await self._runner().run_case(case)

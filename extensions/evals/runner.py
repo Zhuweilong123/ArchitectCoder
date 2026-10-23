@@ -1386,13 +1386,6 @@ class EvalRunner:
             handle.write(result.model_dump_json() + "\n")
 
     def list_results(self, limit: int = 100) -> list[JsonObject]:
-        if not self.results_path.is_file():
-            return []
-        lines = self.results_path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 1000)):]
-        result = []
-        for line in lines:
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return result
+        from .persistence import read_jsonl, validate_result
+
+        return read_jsonl(self.results_path, validate_result, limit=max(1, min(limit, 1000)))
