@@ -4,7 +4,7 @@
 >
 > 代码基线：`dev-4.0` 工作树；版本记录见 Git 历史
 >
-> 文档同步：2026-10-17
+> 文档同步：2026-10-23
 >
 > 本文是当前代码的单一入口。旧版本基线、优化过程和评测数字请分别参阅文末的历史文档。
 
@@ -144,6 +144,10 @@ extensions.skills:create
 插件的公开请求、结果与 Provider Protocol 定义在各自的 `plugin_api.py`。Memory 的工具证据和会话消息复用宿主结构；Design Contract 使用明确的工作区清单和事实模型；Evals 使用用例、结果、批次模型及归档记录；Knowledge Graph 使用项目、事实输入和具名查询结果。稳定业务字段使用模型或 `TypedDict`，可扩展元数据使用递归 `JsonObject`，公开签名不使用 `Any` 或未声明元素类型的容器。事实模型的 `to_dict()` 返回独立 JSON 快照，集合统一导出为列表。
 
 Evals 的 `EvalBatch` 位于纯数据模块 `batch_models.py`，公开协议不依赖批次调度实现；原 `batches.EvalBatch` 导入路径保留兼容。默认 Provider 与 NoOp Provider 使用相同的接口签名。六个 `plugin_api.py`、评测公共模型和 `backend/tests/typing/plugin_protocols.py` 纳入严格类型检查，后者验证具体实现与公开协议的兼容性；这不代表所有插件内部实现均已纳入严格检查。
+
+Evals 和 Knowledge Graph 的宿主适配器、Knowledge Graph 本地 Provider 也纳入严格类型检查。评测包装器显式转发公开协议方法，通过保留参数与返回值类型的公共调用函数记录异常；取消继续向上传播。Trace 用例等附加操作暂保留在动态兼容入口。知识图谱查询使用具体服务类型与泛型返回值，缺失工作区时返回对应查询的结构化降级结果，成功或失败均释放查询资源。
+
+CI 在 Ubuntu 执行后端全量测试与类型检查，Windows 单独验证工作区路径、权限策略、WSL 命令边界和原生进程执行。Windows 实际进程测试覆盖带空格工作目录及字面量参数传递，不依赖安装 WSL。前端接口检查同时覆盖聊天、差异报告、工具栏和 UML 编辑器；业务数据复用现有模型，时序图选中片段保存在编辑器局部状态中。
 
 Agent 装配通过 initialize 阶段的 `assembly.catalog` 和 `assembly.bind` 服务贡献完成。前者准备共享目录快照，后者绑定 provider、提供工具并声明必需的执行检查。`assembly.py` 统一派发请求、注册返回的工具并构造 Agent，不再显式加载或绑定 memory、skills、design_contract、orchestration provider。独立目录插件经扫描即可进入真实生产装配，新增同类能力不需要修改宿主装配入口；普通 initialize 广播不会执行装配服务。
 

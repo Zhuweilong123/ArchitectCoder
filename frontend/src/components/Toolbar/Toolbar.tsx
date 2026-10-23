@@ -200,7 +200,7 @@ const Toolbar: React.FC = () => {
   const userProfile = (() => {
     // Try to detect home directory from common env patterns
     // Vite exposes env vars via import.meta.env; also try USERPROFILE (Windows)
-    const env = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
+    const env = import.meta.env;
     const up = env.VITE_USERPROFILE || '';
     if (up) return up;
     // Fallback: try common drives for Windows

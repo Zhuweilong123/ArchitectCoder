@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from app.agent_base.host_api.configuration import PluginConfiguration
+from app.agent_base.tools.base import Tool
 
 from extensions.knowledge_graph.plugin_api import (
     BuildStats, GraphMap, GraphFacts, GraphLocations, GraphExpansion, GraphImpact, GraphDiff,
@@ -22,15 +25,11 @@ class NoOpKnowledgeGraphProvider:
     def search_diagrams(self, project_id: str, queries: list[str], top_k: int = 6) -> dict[str, set[str]]:
         return {}
 
-    @staticmethod
-    def _disabled() -> dict:
+    def map_project(self, project_id: str, top_classes: int = 15) -> GraphMap:
         return {"error": "knowledge graph provider is disabled"}
 
-    def map_project(self, project_id: str, top_classes: int = 15) -> GraphMap:
-        return self._disabled()
-
     def contract_facts(self, project_id: str, max_items: int = 5000) -> GraphFacts:
-        return {"available": False, "nodes": [], "edges": [], "error": self._disabled()["error"]}
+        return {"available": False, "nodes": [], "edges": [], "error": "knowledge graph provider is disabled"}
 
     def index_facts(self, facts: ArtifactFacts) -> BuildStats | None:
         return None
@@ -39,16 +38,16 @@ class NoOpKnowledgeGraphProvider:
         return None
 
     def locate(self, project_id: str, pattern: str, node_types: list[str] | None = None, source: str | None = None, top_k: int = 10) -> GraphLocations:
-        return self._disabled()
+        return {"error": "knowledge graph provider is disabled"}
 
     def expand(self, project_id: str, node_ids: list[str], direction: str = "outgoing", edge_types: list[str] | None = None, max_depth: int = 2, max_nodes: int = 50) -> GraphExpansion:
-        return self._disabled()
+        return {"error": "knowledge graph provider is disabled"}
 
     def impact(self, project_id: str, node_id: str, max_depth: int = 2, max_nodes: int = 50) -> GraphImpact:
-        return self._disabled()
+        return {"error": "knowledge graph provider is disabled"}
 
     def diff(self, project_id: str, source_dir: str | None = None, force_rebuild: bool = False, max_items: int = 30) -> GraphDiff:
-        return self._disabled()
+        return {"error": "knowledge graph provider is disabled"}
 
     def create_tools(
         self,
@@ -56,11 +55,11 @@ class NoOpKnowledgeGraphProvider:
         project_file: str = "",
         source_dir: str = "",
         include_compare: bool = False,
-    ) -> list[Any]:
+    ) -> list[Tool]:
         return []
 
 
-def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
+def load_knowledge_graph(*, settings: PluginConfiguration | None = None, **kwargs: object) -> KnowledgeGraphProvider:
     """Load the configured graph provider through the central manager."""
     from app.agent_base.core.plugins import get_plugin_manager
 
@@ -69,13 +68,14 @@ def load_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
         settings=settings,
         kwargs=kwargs,
     )
-    return instance if instance is not None else NoOpKnowledgeGraphProvider()
+    # The manager validates the dynamically loaded provider against its manifest.
+    return cast(KnowledgeGraphProvider, instance) if instance is not None else NoOpKnowledgeGraphProvider()
 
 
 _default_provider: KnowledgeGraphProvider | None = None
 
 
-def get_knowledge_graph(*, settings=None, **kwargs) -> KnowledgeGraphProvider:
+def get_knowledge_graph(*, settings: PluginConfiguration | None = None, **kwargs: object) -> KnowledgeGraphProvider:
     """Return the process default provider for read-side integrations."""
     global _default_provider
     if _default_provider is None:

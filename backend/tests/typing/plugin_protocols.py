@@ -1,5 +1,5 @@
 """CI checks concrete and disabled providers against their public protocols."""
-from app.agent_base.adapters.evals import NoOpEvalProvider
+from app.agent_base.adapters.evals import NoOpEvalProvider, _ResilientEvalProvider
 from app.agent_base.adapters.knowledge_graph import NoOpKnowledgeGraphProvider
 from app.runtime.workspace import WorkspaceManifest
 from extensions.design_contract.plugin_api import ArtifactFactsProvider, ContractManifestPort, ContractProvider
@@ -30,3 +30,5 @@ def check_provider_contracts(
     disabled_eval_port: EvalProvider = disabled_evals
     disabled_graph_port: KnowledgeGraphProvider = disabled_graph
     manifest_port: ContractManifestPort = workspace
+
+    wrapped_eval_port: EvalProvider = _ResilientEvalProvider(evals)

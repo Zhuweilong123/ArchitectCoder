@@ -23,7 +23,7 @@ import {
 import { getClassNodeSize, resolveClassLayouts } from '../../utils/classLayout';
 import { CLASS_MEMBER_PREVIEW_COUNT, getClassContentLayout } from '../../utils/classContentLayout';
 import {
-  type UmlClass,
+  type UmlClass, type UmlRelation,
   Stereotype, RelationType,
 } from '../../types/uml';
 import './UMLEditor.css';
@@ -209,7 +209,7 @@ const UMLEditor: React.FC = () => {
     index: 0,
     timestamp: 0,
   });
-  const clipboard = useRef<{ classes: any[]; relations: any[] }>({ classes: [], relations: [] });
+  const clipboard = useRef<{ classes: UmlClass[]; relations: UmlRelation[] }>({ classes: [], relations: [] });
 
   const {
     diagram, selectedClassId, selectedClassIds, selectedRelationId,
@@ -389,7 +389,7 @@ const UMLEditor: React.FC = () => {
         const selectedIdSet = new Set(selectedIds);
         const classes = getActiveDiagram().classes
           .filter((cls) => selectedIdSet.has(cls.id))
-          .map((cls) => JSON.parse(JSON.stringify(cls)));
+          .map((cls) => structuredClone(cls));
         if (classes.length > 0) {
           clipboard.current = { classes, relations: [] };
           console.log('[UMLEditor] Copied classes:', classes.length);
@@ -400,7 +400,7 @@ const UMLEditor: React.FC = () => {
         // Paste copied classes at offset position with same size
         store.beginBatch();
         try {
-          clipboard.current.classes.forEach((cls: any) => {
+          clipboard.current.classes.forEach((cls) => {
             store.addClass({ x: cls.position.x + 30, y: cls.position.y + 30 });
             // Apply copied size, attributes, methods
             const store2 = useDiagramStore.getState();
@@ -420,7 +420,7 @@ const UMLEditor: React.FC = () => {
         } finally {
           store.endBatch();
         }
-        clipboard.current = { classes: clipboard.current.classes.map((c: any) => ({
+        clipboard.current = { classes: clipboard.current.classes.map((c) => ({
           ...c, position: { x: c.position.x + 30, y: c.position.y + 30 }
         })), relations: [] };
       } else if (modifier && key === 'z' && !e.shiftKey) {
@@ -799,7 +799,7 @@ const UMLEditor: React.FC = () => {
   // Epsilon guard breaks the zoomTo → scale event → setZoom → effect loop.
   // ── Sync grid settings ───────────────────────────────
   useEffect(() => {
-    const graph = graphRef.current as any;
+    const graph = graphRef.current;
     if (!graph) return;
     syncCanvasGrid(graph, {
       visible: gridSettings.grid_visible,

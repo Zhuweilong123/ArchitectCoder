@@ -1,6 +1,9 @@
 """Tests for the provider-neutral knowledge-graph boundary."""
 
 from types import SimpleNamespace
+import sqlite3
+
+import pytest
 
 from app.agent_base.adapters.knowledge_graph import (NoOpKnowledgeGraphProvider, load_knowledge_graph)
 from app.models.uml import Project, UmlClass, UmlDiagram
@@ -151,3 +154,43 @@ def test_v2_tools_can_be_created_with_a_custom_provider(tmp_path):
     assert json.loads(asyncio.run(tools[0]._execute({}))) == {
         "project_id": project_id_for(project_file),
     }
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_local_query_closes_database_on_success_and_failure(tmp_path, fails):
+    provider = LocalKnowledgeGraphProvider(db_path=str(tmp_path / "query.db"))
+    connections = []
+    expected = {"project_id": "demo"}
+    error = RuntimeError("query failed")
+
+    def query(service):
+        connections.append(service.ctx.db.conn)
+        if fails:
+            raise error
+        return expected
+
+    if fails:
+        with pytest.raises(RuntimeError) as caught:
+            provider._run_service(query, unavailable={"error": "unavailable"})
+        assert caught.value is error
+    else:
+        assert provider._run_service(query, unavailable={"error": "unavailable"}) is expected
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+
+
+def test_local_query_without_workspace_keeps_structured_fallbacks(tmp_path, monkeypatch):
+    provider = LocalKnowledgeGraphProvider(db_path=str(tmp_path / "unused.db"))
+    provider.db_path = ""
+
+    def unexpected_context(*args, **kwargs):
+        pytest.fail("queries without a workspace must not open a database")
+
+    monkeypatch.setattr("extensions.knowledge_graph.provider._LocalKnowledgeGraphContext", unexpected_context)
+    expected = {"error": "project path is required for knowledge graph queries"}
+    assert provider.map_project("demo") == expected
+    assert provider.locate("demo", "name") == expected
+    assert provider.expand("demo", ["node"]) == expected
+    assert provider.impact("demo", "node") == expected
+    assert provider.diff("demo") == expected
+    assert provider.contract_facts("demo")["available"] is False

@@ -34,6 +34,33 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+  windows-contracts:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check Windows paths and command policies
+        run: >-
+          python -m pytest -q
+          tests/unit/test_capability_path_syntax.py
+          tests/unit/test_capabilities.py
+          tests/unit/test_agent_workspace_paths.py
+          tests/unit/test_workspace_manifest.py
+          tests/integration/test_wsl_shell.py
+          tests/integration/test_windows_command_executor.py
+          tests/integration/test_workspace_tool_contracts.py
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
