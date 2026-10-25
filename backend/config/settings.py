@@ -222,8 +222,9 @@ class Settings(BaseSettings):
         backend_dir = Path(__file__).resolve().parents[1]
         return str((backend_dir / path).resolve())
 
-    # Agent 可访问的工作区根目录，多个目录用逗号分隔。为空时使用
-    # 仓库目录和项目目录；需要访问外部源码时显式配置此项。
+    # Strict deployments restrict project selection to these roots (comma-separated)
+    # plus storage directories. Local mode can select any OS-accessible project;
+    # Agent tools are scoped separately to the selected workspace.
     workspace_roots: str = ""
 
     # CORS

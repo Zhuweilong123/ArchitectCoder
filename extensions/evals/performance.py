@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .models import EvalResult
+from .persistence import read_archive, read_jsonl, validate_result
 from .summary import summarize
+
+
+logger = logging.getLogger(__name__)
 
 
 _VERSION_RE = re.compile(r"-v(?P<version>[0-9][A-Za-z0-9_.-]*)\.jsonl$")
@@ -42,19 +46,7 @@ def _result_id(path: Path) -> str:
 
 
 def _load_rows(path: Path) -> list[EvalResult]:
-    rows: list[EvalResult] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return rows
-    for line in lines:
-        try:
-            value = json.loads(line)
-            if isinstance(value, dict):
-                rows.append(EvalResult.model_validate(value))
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
-    return rows
+    return [EvalResult.model_validate(row, strict=True) for row in read_jsonl(path, validate_result)]
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -111,7 +103,7 @@ def _archive_sources(eval_root: Path) -> set[str]:
         return sources
     for path in archive_root.glob("archive_*.json"):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = read_archive(path)
             batch = data.get("batch") or {}
             source = batch.get("source_result_id")
             if source:
@@ -121,7 +113,8 @@ def _archive_sources(eval_root: Path) -> set[str]:
                 match.group(0).replace("\\", "/")
                 for match in re.finditer(r"(?:backend/)?temp/evals/(?:results/)?performance-[A-Za-z0-9_.-]+\.jsonl", note)
             )
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+        except (OSError, ValueError):
+            logger.warning("Skipping unreadable or invalid evaluation archive: %s", path)
             continue
     return sources
 

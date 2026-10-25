@@ -73,6 +73,16 @@ export async function exportMarkdown(diagram: UmlDiagram): Promise<string> {
 
 // ─── Browse directories ────────────────────────────────
 
+export interface BrowseRoot {
+  name: string;
+  path: string;
+}
+
+export async function getBrowseRoots(): Promise<BrowseRoot[]> {
+  const { data } = await api.get<{ roots: BrowseRoot[] }>('/files/browse-roots');
+  return data.roots;
+}
+
 export interface BrowseResult {
   current: string;
   parent: string;

@@ -6,7 +6,7 @@ concerns. The host adapter uses this contract to validate provider calls.
 
 from __future__ import annotations
 
-from typing import NotRequired, Protocol, TypedDict
+from typing import Annotated, NotRequired, Protocol, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -48,6 +48,21 @@ class EvalPerformanceArchiveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+_Count = Annotated[int, Field(ge=0)]
+_Rate = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+class EvalBaselineGroup(TypedDict, total=False):
+    name: str
+    total: _Count
+    passed: _Count
+    failed: _Count
+    timeout: _Count
+    errors: _Count
+    pass_rate: _Rate
+    average_score: _Rate
+
+
 class EvalBaseline(TypedDict, total=False):
     agent: str
     label: str
@@ -55,15 +70,20 @@ class EvalBaseline(TypedDict, total=False):
     captured_at: str
     source_result: str
     case_ids: list[str]
-    case_count: int
-    passed: int
-    failed: int
-    timeout: int
-    pass_rate: float
-    average_score: float
-    total_duration_ms: float
-    total_tokens: int
-    total_tool_calls: int
+    case_count: _Count
+    passed: _Count
+    failed: _Count
+    timeout: _Count
+    errors: _Count
+    budget_finalized: _Count
+    pass_rate: _Rate
+    average_score: _Rate
+    total_duration_ms: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    total_tokens: _Count
+    total_tool_calls: _Count
+    failure_categories: dict[str, _Count]
+    eval_contract: dict[str, str]
+    groups: list[EvalBaselineGroup]
 
 
 class EvalBatchRecord(TypedDict, total=False):
@@ -82,6 +102,8 @@ class EvalBatchRecord(TypedDict, total=False):
     error: str
     performance_result_id: str
     source_batch_ids: list[str]
+    source_result_id: str
+    created_at: str
 
 
 class EvalArchiveReceipt(TypedDict):

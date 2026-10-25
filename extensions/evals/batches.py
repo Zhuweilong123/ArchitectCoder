@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.agent_base.host_api.data import JsonObject
+
 from .batch_models import EvalBatch as EvalBatch
 
 from .paths import evaluation_root
+from .persistence import read_archive, read_jsonl, validate_batch
 from .plugin_api import EvalArchiveRequest, EvalBatchMergeRequest, EvalBatchRequest
 
 from .models import EvalResult
 from .registry import load_cases
 from .runner import EvalRunner
 from .summary import EvalSummary, summarize
+
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -28,18 +35,8 @@ def _eval_root() -> Path:
     return evaluation_root()
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
+def _read_jsonl(path: Path, *, require_clean: bool = False) -> list[JsonObject]:
+    return read_jsonl(path, validate_batch, require_clean=require_clean)
 
 
 def _baseline_case_ids() -> set[str]:
@@ -83,15 +80,15 @@ class EvalBatchManager:
         if batch.status in {"queued", "running"}:
             raise ValueError(f"evaluation batch is still running: {batch_id}")
 
-        self._batches.pop(batch_id, None)
         path = _eval_root() / "batches.jsonl"
-        rows = _read_jsonl(path)
+        rows = _read_jsonl(path, require_clean=True)
         remaining = [row for row in rows if row.get("batch_id") != batch_id]
         if path.is_file():
             path.write_text(
                 "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in remaining),
                 encoding="utf-8",
             )
+        self._batches.pop(batch_id, None)
         return {"batch_id": batch_id}
 
     def list_batches(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -325,7 +322,7 @@ class EvalBatchManager:
         rows = []
         for path in sorted(root.glob("archive_*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = read_archive(path)
                 batch = data.get("batch") or {}
                 rows.append({
                     "archive_id": data.get("archive_id", path.stem),
@@ -339,7 +336,8 @@ class EvalBatchManager:
                     "finished_at": batch.get("finished_at", ""),
                     "summary": batch.get("summary", {}),
                 })
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
+                logger.warning("Skipping unreadable or invalid evaluation archive: %s", path)
                 continue
         return rows[:max(1, min(limit, 100))]
 
