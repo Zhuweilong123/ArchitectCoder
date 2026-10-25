@@ -57,7 +57,7 @@ def secured_app(tmp_path, monkeypatch):
         yield client, settings, workspace, tmp_path
 
 
-@pytest.mark.parametrize("endpoint", ["list", "list-projects", "browse", "open", "open-project", "validate-workspace"])
+@pytest.mark.parametrize("endpoint", ["list", "list-projects", "browse", "browse-roots", "open", "open-project", "validate-workspace"])
 def test_file_reads_require_authentication(secured_app, endpoint):
     client, *_ = secured_app
     assert client.get(f"/api/files/{endpoint}").status_code == 401
@@ -119,6 +119,77 @@ def test_workspace_open_save_browse_and_outside_denial(secured_app, safe):
     normalized, error = security.validate_agent_workspace_path(str(outside), kind="directory")
     assert error
     assert Path(normalized) == outside.resolve()
+
+
+def test_directory_picker_roots_are_navigable_without_exposing_parent_drives(secured_app):
+    client, settings, workspace, outside = secured_app
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    # Include a repeated root and a stale configuration entry.
+    settings.workspace_roots = f"{workspace},{workspace},{outside / 'missing'}"
+    response = client.get("/api/files/browse-roots", headers=headers)
+    assert response.status_code == 200
+    roots = response.json()["roots"]
+    assert {root["path"] for root in roots} == {
+        Path(settings.project_dir).as_posix(), Path(settings.runtime_dir).as_posix(), workspace.as_posix(),
+    }
+    assert len(roots) == 3
+    for root in roots:
+        listing = client.get("/api/files/browse", headers=headers, params={"path": root["path"], "safe": False})
+        assert listing.status_code == 200
+        assert listing.json()["current"] == root["path"]
+    assert client.get("/api/files/browse", headers=headers,
+                      params={"path": str(outside), "safe": False}).status_code == 403
+
+
+@pytest.mark.parametrize("safe", [True, False])
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_local_project_selection_browses_disks_and_opens_saves_unconfigured_projects(
+    secured_app, safe, authenticated,
+):
+    client, settings, _, outside = secured_app
+    settings.strict_production = False
+    settings.internal_api_token = TOKEN if authenticated else ""
+    headers = {"Authorization": f"Bearer {TOKEN}"} if authenticated else {}
+    # A different project, outside every configured root, including spaces/Unicode.
+    selected = outside / "另一个 project"
+    selected.mkdir()
+    design = selected / "design"
+    design.mkdir()
+    project = design / "demo.umlproj"
+    roots = client.get("/api/files/browse-roots", headers=headers).json()["roots"]
+    disk = Path(selected.anchor)
+    assert disk.as_posix() in {root["path"] for root in roots}
+    listing = client.get("/api/files/browse", headers=headers, params={"path": str(disk), "safe": safe})
+    assert listing.status_code == 200
+    assert listing.json()["current"] == disk.as_posix()
+    listing = client.get("/api/files/browse", headers=headers, params={"path": str(selected), "safe": safe})
+    assert listing.status_code == 200
+    assert listing.json()["parent"] == outside.as_posix()
+    assert listing.json()["dirs"] == [{"name": "design", "path": design.as_posix()}]
+    saved = client.post("/api/files/save-project", headers=headers,
+                        params={"filename": str(project), "safe": safe},
+                        json={"name": "external-project", "diagrams": []})
+    assert saved.status_code == 200, saved.text
+    opened = client.get("/api/files/open-project", headers=headers,
+                        params={"filepath": str(project), "safe": safe})
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["project"]["name"] == "external-project"
+    for path, kind in [(selected, "directory"), (project, "file")]:
+        validation = client.get("/api/files/validate-workspace", headers=headers,
+                                params={"path": str(path), "kind": kind})
+        assert validation.json()["valid"] is True
+        assert Path(validation.json()["path"]) == path.resolve()
+    missing = client.get("/api/files/validate-workspace", headers=headers,
+                         params={"path": str(selected / "missing"), "kind": "directory"})
+    assert missing.json()["valid"] is False
+
+    # Selecting an external project does not grant Agent tools the whole disk.
+    from app.core.capabilities import CapabilityPolicy
+    from app.runtime.workspace import WorkspaceManifest
+    manifest = WorkspaceManifest.from_paths(workspace_root=str(selected))
+    policy = CapabilityPolicy(workspace_roots=list(manifest.workspace_roots))
+    assert policy.check("read_file", {"path": str(project)}) is None
+    assert policy.check("read_file", {"path": str(outside / "other-project.txt")}) is not None
 
 
 def test_symlink_escape_is_not_listed_or_opened(secured_app):

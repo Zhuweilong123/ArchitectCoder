@@ -2,7 +2,9 @@
 
 import logging
 import os
+import string
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Depends
@@ -22,6 +24,7 @@ from app.core.security import (
     safe_path,
     sanitize_path_segment,
     validate_agent_workspace_path,
+    workspace_roots,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,11 +93,41 @@ async def export_to_markdown(req: ExportRequest):
 
 # ── Directory browsing ──────────────────────────────────
 
+class BrowseRoot(BaseModel):
+    name: str
+    path: str
+
+
+class BrowseRootsResponse(BaseModel):
+    roots: list[BrowseRoot]
+
+
+@router.get("/browse-roots", response_model=BrowseRootsResponse)
+async def list_browse_roots() -> BrowseRootsResponse:
+    """Local disk/home entry points, or configured roots for strict deployments."""
+    settings = get_settings()
+    if settings.strict_production:
+        candidates = workspace_roots(settings)
+    else:
+        disks = (tuple(Path(f"{letter}:/") for letter in string.ascii_uppercase)
+                 if os.name == "nt" else (Path("/"),))
+        candidates = (Path.home(), *disks)
+    roots: list[BrowseRoot] = []
+    for root in dict.fromkeys(candidates):
+        try:
+            if root.is_dir():
+                roots.append(BrowseRoot(name=root.name or root.as_posix(), path=root.as_posix()))
+        except OSError:
+            continue  # Disconnected or inaccessible drives are not entry points.
+    return BrowseRootsResponse(roots=roots)
+
+
 @router.get("/browse")
 async def browse_directory(path: str = "", safe: bool = True):
     """Browse a directory. Returns subdirectories and .uml files.
 
-    The legacy safe flag cannot expand the server-configured workspace roots.
+    Local mode accepts any OS-accessible directory. In strict mode, the legacy
+    safe flag cannot expand the server-configured workspace roots.
     """
     path_resolver = safe_path
 
@@ -220,7 +253,7 @@ async def save_project_endpoint(
     If filename looks like a full path (contains : or /), use it directly after
     path-safety validation. Otherwise create a new project directory.
 
-    External files require WORKSPACE_ROOTS; safe=false cannot bypass policy.
+    Strict deployments require WORKSPACE_ROOTS; safe=false cannot bypass policy.
     """
     path_resolver = safe_path
     filepath = None
@@ -269,7 +302,7 @@ async def save_project_endpoint(
 @router.get("/open-project")
 async def open_project(filepath: str, safe: bool = True):
     """Open a .umlproj (or legacy .uml) file as a Project.
-    External projects must be within configured workspace roots."""
+    Strict deployments restrict projects to configured workspace roots."""
     resolved = _resolve_open_path(filepath, safe=safe, mask_access_error=True)
     if not resolved.lower().endswith((".umlproj", ".uml")):
         raise HTTPException(status_code=400, detail="Only .umlproj or .uml files can be opened")

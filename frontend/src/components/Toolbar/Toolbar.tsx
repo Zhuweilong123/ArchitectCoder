@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Button, Select, Tooltip, Dropdown, Modal, List, message, Tag, Spin,
-  Divider, Input, Form, Slider,
+  Divider, Input, Form, Slider, Alert,
 } from 'antd';
 import {
   FileAddOutlined, FolderOpenOutlined, SaveOutlined,
@@ -27,7 +27,9 @@ import {
   listProjects,
   exportMarkdown,
   browseDirectory, type BrowseResult,
+  getBrowseRoots, type BrowseRoot,
 } from '../../services/api';
+import { apiErrorMessage } from '../../services/apiErrors';
 import { sendAgentMessage } from '../../services/agentChat';
 import { getActiveCanvasGraph } from '../Canvas/core/canvasRegistry';
 import { exportCanvasGraph, exportCanvasGraphSvg, exportProjectSnapshot, type CanvasExportFormat } from '../Canvas/core/canvasExport';
@@ -196,29 +198,6 @@ const Toolbar: React.FC = () => {
   // ── Path input for open dialog ──────────────────────
   const [pathInput, setPathInput] = useState('');
 
-  // ── Quick-access paths ──────────────────────────────
-  const userProfile = (() => {
-    // Try to detect home directory from common env patterns
-    // Vite exposes env vars via import.meta.env; also try USERPROFILE (Windows)
-    const env = import.meta.env;
-    const up = env.VITE_USERPROFILE || '';
-    if (up) return up;
-    // Fallback: try common drives for Windows
-    return 'C:/Users';
-  })();
-
-  const QUICK_PATHS = [
-    { label: '📂 桌面', path: `${userProfile}/Desktop` },
-    { label: '📂 文档', path: `${userProfile}/Documents` },
-    { label: '🏠 用户', path: userProfile },
-    { label: '💾 C盘', path: 'C:/' },
-    { label: '💾 D盘', path: 'D:/' },
-  ];
-
-  const localizedQuickPath = (label: string) => interfaceLanguage === 'en'
-    ? label.replace('桌面', 'Desktop').replace('文档', 'Documents').replace('用户', 'User').replace('盘', ' Drive')
-    : label;
-
   // Keep the toolbar compact while still showing where the active design is
   // located.  Paths are displayed relative to the workspace's parent; the
   // full host path remains available in the tooltip.
@@ -324,26 +303,53 @@ const Toolbar: React.FC = () => {
   const [projDirBrowseTarget, setProjDirBrowseTarget] = useState<'project' | 'design' | 'source' | 'test'>('project');
   const [projDirBrowseResult, setProjDirBrowseResult] = useState<BrowseResult | null>(null);
   const [projDirBrowsePath, setProjDirBrowsePath] = useState('');
+  const [projDirBrowseLoading, setProjDirBrowseLoading] = useState(false);
+  const [projDirBrowseError, setProjDirBrowseError] = useState('');
+  const [browseRoots, setBrowseRoots] = useState<BrowseRoot[]>([]);
+  const projDirBrowseRequest = useRef(0);
+
+  useEffect(() => {
+    if (!projDirBrowseVisible && !fileDialogVisible) return;
+    let active = true;
+    getBrowseRoots().then((roots) => {
+      if (active) setBrowseRoots(roots);
+    }).catch(() => {
+      if (active) setBrowseRoots([]);
+    });
+    return () => { active = false; };
+  }, [projDirBrowseVisible, fileDialogVisible]);
 
   const handleBrowseDirFor = useCallback(async (target: 'project' | 'design' | 'source' | 'test', path?: string) => {
+    const requestId = ++projDirBrowseRequest.current;
     setProjDirBrowseTarget(target);
+    setProjDirBrowseVisible(true);
+    setProjDirBrowseLoading(true);
+    setProjDirBrowseError('');
+    setProjDirBrowseResult(null);
+    // An explicit empty path requests the server's default directory.
+    const initialPath = path ?? (
+      target === 'project'
+        ? (projectRoot || currentWorkspacePath || '.')
+        : target === 'design'
+          ? (designDir || projectRoot || currentWorkspacePath || '.')
+          : target === 'source'
+            ? (sourceDir || projectRoot || currentWorkspacePath || '.')
+            : (testDir || projectRoot || currentWorkspacePath || '.')
+    );
+    setProjDirBrowsePath(initialPath);
     try {
-      // 默认从当前设置的值开始浏览，无设置则用当前工作目录
-      const initialPath = path || (
-        target === 'project'
-          ? (projectRoot || currentWorkspacePath || '.')
-          : target === 'design'
-            ? (designDir || projectRoot || currentWorkspacePath || '.')
-            : target === 'source'
-              ? (sourceDir || projectRoot || currentWorkspacePath || '.')
-              : (testDir || projectRoot || currentWorkspacePath || '.')
-      );
       const result = await browseDirectory(initialPath, false);
+      if (requestId !== projDirBrowseRequest.current) return;
       setProjDirBrowseResult(result);
       setProjDirBrowsePath(result.current);
-      setProjDirBrowseVisible(true);
-    } catch {
-      message.error('加载目录失败');
+    } catch (error) {
+      if (requestId !== projDirBrowseRequest.current) return;
+      const detail = apiErrorMessage(error);
+      setProjDirBrowseError(detail.includes('outside configured workspace roots')
+        ? '服务端启用了严格部署模式，此目录不在允许范围内。请联系部署管理员配置项目目录。'
+        : `加载目录失败：${detail}`);
+    } finally {
+      if (requestId === projDirBrowseRequest.current) setProjDirBrowseLoading(false);
     }
   }, [projectRoot, designDir, sourceDir, testDir, currentWorkspacePath]);
 
@@ -395,9 +401,8 @@ const Toolbar: React.FC = () => {
       || projectRoot
       || currentWorkspacePath
       || (currentFilepath ? pathDirName(currentFilepath) : '');
-    // The unified design picker may target an explicitly configured external
-    // directory. Keep the legacy flag aligned with directory browsing;
-    // the backend always enforces its configured workspace roots.
+    // Keep the legacy flag aligned with directory browsing. The backend
+    // determines path access from its local/strict deployment mode.
     browseUnsafe.current = true;
     void handleOpen(designPath || undefined, true);
   };
@@ -1187,14 +1192,15 @@ const Toolbar: React.FC = () => {
 
         {/* Quick-access paths */}
         <div style={{ marginBottom: 10, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {QUICK_PATHS.map((qp) => (
+          {browseRoots.map((root) => (
             <Button
-              key={qp.path}
+              key={root.path}
               size="small"
-              onClick={() => handleNavigateTo(qp.path)}
+              title={root.path}
+              onClick={() => handleNavigateTo(root.path)}
               style={{ fontSize: 11 }}
             >
-              {localizedQuickPath(qp.label)}
+              {root.name}
             </Button>
           ))}
         </div>
@@ -1402,10 +1408,17 @@ const Toolbar: React.FC = () => {
       <Modal
         title={`选择${projDirBrowseTarget === 'project' ? '工作' : projDirBrowseTarget === 'design' ? '设计' : projDirBrowseTarget === 'source' ? '源码' : '测试'}目录`}
         open={projDirBrowseVisible}
-        onCancel={() => setProjDirBrowseVisible(false)}
+        onCancel={() => {
+          ++projDirBrowseRequest.current;
+          setProjDirBrowseLoading(false);
+          setProjDirBrowseVisible(false);
+        }}
         footer={null}
         width={600}
       >
+        {projDirBrowseError && (
+          <Alert type="error" showIcon message={projDirBrowseError} style={{ marginBottom: 12 }} />
+        )}
         <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
           <Button size="small" onClick={handleProjDirParent}
             disabled={!projDirBrowseResult?.parent}>
@@ -1430,9 +1443,11 @@ const Toolbar: React.FC = () => {
           </Button>
         </div>
         <div style={{ marginBottom: 10, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {QUICK_PATHS.map((qp) => (
-            <Button key={qp.path} size="small" onClick={() => handleProjDirNav(qp.path)} style={{ fontSize: 11 }}>
-              {qp.label}
+          <span style={{ fontSize: 12 }}>快速访问：</span>
+          <Button size="small" onClick={() => handleProjDirNav('')}>默认目录</Button>
+          {browseRoots.map((root) => (
+            <Button key={root.path} size="small" title={root.path} onClick={() => handleProjDirNav(root.path)} style={{ fontSize: 11 }}>
+              {root.name}
             </Button>
           ))}
         </div>
@@ -1441,13 +1456,15 @@ const Toolbar: React.FC = () => {
             type="primary"
             size="small"
             icon={<FolderOpenOutlined />}
-            onClick={() => handleProjDirSelect(projDirBrowseResult?.current || projDirBrowsePath)}
+            disabled={projDirBrowseLoading || !projDirBrowseResult}
+            onClick={() => { if (projDirBrowseResult) handleProjDirSelect(projDirBrowseResult.current); }}
           >
             选择当前目录
           </Button>
         </div>
         <List
           size="small"
+          loading={projDirBrowseLoading}
           style={{ maxHeight: 300, overflow: 'auto' }}
           locale={{ emptyText: '暂无子目录' }}
         >
