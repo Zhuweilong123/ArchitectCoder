@@ -30,7 +30,7 @@ export interface CheckerConfig {
   relation_type?: string;
   class_name?: string;
   method?: string;
-  params?: string[];
+  params?: string;
   return_type?: string;
   labels?: string[];
   source_turn_index?: number;

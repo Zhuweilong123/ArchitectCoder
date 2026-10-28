@@ -10,6 +10,7 @@ for (const extension of ['.ts', '.tsx']) {
 }
 require.extensions['.css'] = () => {};
 const { draftTurns, savedReviewPayload, reviewPayload, hasHardCriteria, selectTurns } = require('../src/components/EvaluationCenter/traceCaseReview.ts');
+const { validateCheckerConfigs } = require('../src/components/EvaluationCenter/evaluationUtils.ts');
 
 const turn = (index, prompt, hard = []) => ({ prompt, checkers: [], hard_checkers: hard, metadata: { source_turn_index: index } });
 const draft = () => ({
@@ -17,7 +18,11 @@ const draft = () => ({
   trace_summary: { turns: 2, turn_details: [{ prompt: 'fix', source_turn_index: 1 }, { prompt: 'thanks', source_turn_index: 2 }] },
   case: { id: 'test', name: 'Original', project_id: 'baseline', prompt: '', turns: [turn(1, 'fix'), turn(2, 'thanks')],
     checkers: [], hard_checkers: [{ type: 'file_exists', path: 'src/main.py' }], metadata: {} },
-  validation: { passed: true, score: 1, checker_results: [] },
+  validation: { passed: true, score: 1, checker_results: [], metadata: { trace_case_initial_assertions: {
+    results: [{ scope: 'case', index: 0, checker: 'file_exists', passed: true, message: 'src/main.py exists' }],
+    skipped: [{ scope: 'turn:1', index: 0, checker: 'pytest', reason: 'requires execution' }],
+    all_checked_passed: true,
+  } } },
 });
 
 test('restoring legacy single-turn drafts does not introduce unsaved edits', () => {
@@ -28,6 +33,33 @@ test('restoring legacy single-turn drafts does not introduce unsaved edits', () 
   assert.equal(turns[0].metadata.source_turn_index, 1);
   assert.deepEqual(reviewPayload(value.case.name, value.case.project_id, value.case.checkers,
     value.case.hard_checkers, turns, false), savedReviewPayload(value));
+});
+
+test('single surviving source turn preserves its original evidence index', () => {
+  const value = draft();
+  value.case.turns = [];
+  value.case.prompt = 'fix';
+  value.case.metadata.source_turn_index = 2;
+  assert.equal(draftTurns(value)[0].metadata.source_turn_index, 2);
+});
+
+test('checker review rejects empty predicates and preserves empty exact expectations', () => {
+  for (const checker of [
+    { type: 'answer_contains_all', texts: [] },
+    { type: 'answer_ordered_contains', texts: [' '] },
+    { type: 'file_contains', path: 'main.py', text: ' ' },
+    { type: 'paths_unchanged', paths: [] },
+    { type: 'trace_policy', required_tools: [] },
+    { type: 'trace_policy', max_tool_calls: -1 },
+  ]) assert.throws(() => validateCheckerConfigs([checker], 'hard'));
+  for (const checker of [
+    { type: 'uml_method_signature', path: 'a.umlproj', class_name: 'A', method: 'run', params: '' },
+    { type: 'uml_component_names', path: 'a.umlproj', names: [] },
+    { type: 'uml_sequence_exact', path: 'a.umlproj', labels: [] },
+    { type: 'json_field', path: 'config.json', field: 'optional', expected: null },
+    { type: 'json_field', path: 'config.json', field: 'optional', expected: '' },
+    { type: 'trace_policy', max_tool_calls: 0 },
+  ]) assert.doesNotThrow(() => validateCheckerConfigs([checker], 'hard'));
 });
 
 test('turn selection preserves edited prompts and criteria in original chronological order', () => {
@@ -97,6 +129,9 @@ test('rendered workflow prevents stale publishing and saves edits before validat
     await act(async () => { root.render(React.createElement(ConfigProvider, { theme: { token: { motion: false } } }, React.createElement(EvaluationCenter))); });
     await act(async () => { button('恢复').click(); });
     assert.equal(button('发布用例').disabled, false);
+    assert.ok(document.body.textContent.includes('已检查的结构断言在起点全部通过'));
+    assert.ok(document.body.textContent.includes('未检查（需执行、回答或运行期基线）'));
+    assert.ok(document.body.textContent.includes('src/main.py exists'));
     const input = [...document.querySelectorAll('input')].find((item) => item.value === 'Original');
     await act(async () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'Edited');

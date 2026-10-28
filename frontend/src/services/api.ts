@@ -408,6 +408,7 @@ export interface EvalRepositoryInfo {
 }
 
 export interface EvalResult {
+  metadata?: JsonObject;
   run_id: string;
   case_id: string;
   agent: string;

@@ -108,6 +108,25 @@ def _validate_checker_contract(configs: list[JsonObject], scope: str) -> None:
             raise ValueError(
                 f"{scope}[{index}] is missing required fields: {missing_fields}"
             )
+        # Presence alone is insufficient: empty predicates can pass without
+        # checking any task outcome. Empty exact sets/signatures remain valid.
+        for field in CHECKER_REQUIRED_FIELDS.get(kind, ()):
+            value = config[field]
+            if field == "groups":
+                continue  # Nested alternatives are validated below.
+            if field == "params":
+                if not isinstance(value, str):
+                    raise ValueError(f"{scope}[{index}] params must be a string")
+            elif field in {"texts", "paths", "labels", "names"}:
+                allow_empty = (kind, field) in {
+                    ("uml_component_names", "names"),
+                    ("uml_sequence_exact", "labels"),
+                }
+                if (not isinstance(value, list) or (not value and not allow_empty)
+                        or any(not isinstance(item, str) or not item.strip() for item in value)):
+                    raise ValueError(f"{scope}[{index}] {field} must contain non-empty strings")
+            elif not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{scope}[{index}] {field} must be a non-empty string")
         if kind == "answer_contains_groups":
             validate_answer_groups(config["groups"], config.get("texts"))
         if kind != "trace_policy":
@@ -133,6 +152,17 @@ def _validate_checker_contract(configs: list[JsonObject], scope: str) -> None:
                 f"{scope}[{index}] requires tools outside the fixed "
                 f"foundation-tools-v1 protocol: {unsupported_tools}"
             )
+        for key in ("required_tools", "forbidden_tools", "required_event_types", "required_contract_statuses"):
+            constraint_values = config.get(key, [])
+            if not isinstance(constraint_values, list) or any(not isinstance(value, str) or not value.strip() for value in constraint_values):
+                raise ValueError(f"{scope}[{index}] {key} must contain non-empty strings")
+        limit = config.get("max_tool_calls")
+        if limit is not None and (type(limit) is not int or limit < 0):
+            raise ValueError(f"{scope}[{index}] max_tool_calls must be a non-negative integer")
+        if limit is None and not any(config.get(key) for key in (
+            "required_tools", "forbidden_tools", "required_event_types", "required_contract_statuses",
+        )):
+            raise ValueError(f"{scope}[{index}] trace_policy requires a non-empty constraint")
 
 
 class EvalCase(BaseModel):

@@ -83,7 +83,9 @@ const CheckerEditor: React.FC<CheckerEditorProps> = ({ title, value, onChange, d
       try { parsed = JSON.parse(rawValue); } catch { parsed = rawValue; }
     }
     const next = { ...value[index] };
-    if (parsed === undefined || parsed === '') delete next[field.key];
+    const preserveEmpty = (value[index].type === 'uml_method_signature' && field.key === 'params')
+      || (value[index].type === 'json_field' && field.key === 'expected');
+    if (parsed === undefined || (parsed === '' && !preserveEmpty)) delete next[field.key];
     else next[field.key] = parsed;
     updateChecker(index, next);
   };
@@ -178,6 +180,11 @@ const EvaluationCenter: React.FC = () => {
   const traceCaseHasHardCriteria = hasHardCriteria(traceCaseHardCheckers, traceCaseTurns);
   const traceCaseNeedsBaseline = Boolean(traceCaseDraft?.capture && traceCaseReviewProjectId === traceCaseDraft.capture.project_id);
   const traceCaseReadOnly = traceCaseDraft?.status === 'published';
+  const traceCaseInitialAssertions = traceCaseDraft?.validation?.metadata?.trace_case_initial_assertions as {
+    results: { scope: string; index: number; checker: string; passed: boolean; message: string }[];
+    skipped: { scope: string; index: number; checker: string; reason: string }[];
+    all_checked_passed: boolean;
+  } | undefined;
   const traceCaseSourceTurns: TraceCaseTurn[] = traceCaseDraft
     ? (traceCaseDraft.trace_summary.turn_details?.map((turn, index: number) => ({
       prompt: turn.prompt, checkers: [], hard_checkers: [], metadata: { source_turn_index: turn.source_turn_index || index + 1 },
@@ -1335,6 +1342,25 @@ const EvaluationCenter: React.FC = () => {
             </Card>
             </Space>
             </fieldset>
+            {traceCaseInitialAssertions ? <Card size="small" title={tx(interfaceLanguage, '执行前的起始断言检查', 'Assertions before execution')}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Alert showIcon type={traceCaseInitialAssertions.all_checked_passed ? 'warning' : 'info'}
+                  message={traceCaseInitialAssertions.all_checked_passed
+                    ? tx(interfaceLanguage, '已检查的结构断言在起点全部通过；若这是修复任务，请确认 fixture 是否已包含修复结果。', 'All checked structural criteria already pass. For repair tasks, check whether the fixture already contains the solution.')
+                    : tx(interfaceLanguage, '在隔离副本上检查文件、JSON 和 UML 必过条件；初始失败不等于用例验证失败。', 'File, JSON and UML hard criteria checked on an isolated baseline. Initial failures do not fail validation.')}
+                  description={tx(interfaceLanguage, '这些结果用于审核；逐轮条件也以初始状态检查，后续轮次可能依赖前轮修改。', 'For review only. Turn criteria are checked against the initial state and may depend on earlier turns.')} />
+                {traceCaseInitialAssertions.results.length ? <Table size="small" pagination={false}
+                  rowKey={(row) => `${row.scope}:${row.index}`} dataSource={traceCaseInitialAssertions.results} columns={[
+                    { title: tx(interfaceLanguage, '范围', 'Scope'), dataIndex: 'scope' },
+                    { title: tx(interfaceLanguage, '检查项', 'Criterion'), dataIndex: 'checker' },
+                    { title: tx(interfaceLanguage, '初始结果', 'Initial result'), dataIndex: 'passed', render: (passed: boolean) => statusTag(passed ? 'passed' : 'failed', passed, interfaceLanguage) },
+                    { title: tx(interfaceLanguage, '说明', 'Details'), dataIndex: 'message' },
+                  ]} /> : null}
+                {traceCaseInitialAssertions.skipped.length ? <Text type="secondary">
+                  {tx(interfaceLanguage, '未检查（需执行、回答或运行期基线）', 'Not checked (requires execution, an answer or a runtime baseline)')}: {traceCaseInitialAssertions.skipped.map((item) => `${item.scope} / ${item.checker}`).join(', ')}
+                </Text> : null}
+              </Space>
+            </Card> : null}
             {traceCaseDraft.validation ? (
               <Alert
                 type={traceCaseDraft.validation.passed ? 'success' : 'error'}
