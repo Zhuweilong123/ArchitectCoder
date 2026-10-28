@@ -301,3 +301,13 @@ This keeps the Trace-to-case feature optional and removable without adding Trace
 - 验收命令：`python -m pytest backend/tests/unit/test_trace_case_factory.py backend/tests/integration/test_eval_mvp.py -q`；前端 `npm run test:trace-cases`、`npm run build`。
 
 历史开始前快照、Git revision 重建、自动提取语义断言及完整敏感信息扫描仍是后续能力；没有原始快照时不声称已经恢复原任务环境。
+
+## 2026-10-28：断言有效性与跨 run 证据归属
+
+- 隔离试运行前，在临时副本上按标准 fixture 物化规则合并 base fixture 与 overlay，检查文件、JSON 和 UML Hard Checkers。结果随验证记录保存在 `metadata.trace_case_initial_assertions` 中，并在审核界面单独显示。
+- 所有已检查的结构断言在起点通过时提示检查是否捕获了修复后的状态；此提示不自动阻止发布，因为查询任务和保护性条件可以合法地初始通过。逐轮断言也只与初始状态比较，不能据此推断前置轮次执行后的状态。
+- 回答、工具轨迹、pytest 与路径保护条件明确列为未检查；起始检查不执行测试命令，也不将部分检查结果称为完整复现验证。标准 Agent 试运行与最终 Hard Checker 门槛保持独立。
+- Checker 合约拒绝空的包含条件、空路径、空文本和无约束工具策略，保留无参数方法、空组件集合、空精确时序等有效的精确期望值。前端 UML 方法参数与后端统一使用字符串格式。
+- Trace 证据优先按 `run_id` 归属轮次，避免交错运行的工具和回复串轮。无法匹配的 run 事件不归入当前轮，并生成审核提示；无 run ID 的历史记录继续按顺序兼容。
+- 运行错误与缺少完成事件生成审核提示。空消息过滤后只剩单轮时保留原始 `source_turn_index`，保证历史回答和候选约束仍指向正确来源。
+- 验证指纹增加版本标记；升级前尚未发布的通过结果需要重新试运行。已发布用例不受影响。

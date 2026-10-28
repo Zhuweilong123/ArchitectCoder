@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,8 @@ from app.agent_base.host_api.services import get_provider_services
 from .models import EVAL_TRACE_TOOL_NAMES, EvalCase, EvalTurn, ProjectManifest
 from .paths import cases_dir, fixtures_dir, projects_dir
 from .projects import load_projects, resolve_fixture
+from .checkers import build_checkers
+from .fixture_materializer import materialize_fixture
 
 TraceCaseReviewRequest.model_rebuild()
 
@@ -273,6 +276,8 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
     tool_names: set[str] = set()
     tool_errors = 0
     event_counts: dict[str, int] = {}
+    runs: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
 
     for event in events:
         event_type = str(event.get("event_type") or "unknown")
@@ -289,23 +294,36 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "completed": False,
                 "run_id": str(event.get("run_id") or ""),
             }
-        elif current is not None and event_type == "tool_call":
+            if current["run_id"]:
+                runs[current["run_id"]] = current
+            continue
+        run_id = str(event.get("run_id") or "")
+        target = runs.get(run_id) if run_id else (None if event.get("background_task_id") else current)
+        if target is None:
+            if run_id and current is not None and not current["run_id"] and not event.get("background_task_id"):
+                target = current  # Older user_message events have no run ID.
+                warnings.append("source user messages have no run IDs; event ownership uses chronological fallback")
+            elif event_type in {"tool_call", "tool_result", "done", "error"}:
+                warnings.append(f"unassigned {event_type} event for run {run_id}; evidence was not attributed to a turn")
+        if target is not None and event_type == "tool_call":
             tool_name = str(event.get("tool_name") or "").strip()
             if tool_name:
                 tool_names.add(tool_name)
-                current["tool_names"].append(tool_name)
-        elif current is not None and event_type == "tool_result":
+                target["tool_names"].append(tool_name)
+        elif target is not None and event_type == "tool_result":
             if event.get("error"):
                 tool_errors += 1
-                current["tool_errors"] += 1
-                current["failures"].append({
+                target["tool_errors"] += 1
+                target["failures"].append({
                     "tool_name": str(event.get("tool_name") or ""),
                     "error": str(event.get("error") or ""),
                     "run_id": str(event.get("run_id") or ""),
                 })
-        elif current is not None and event_type == "done":
-            current["answer"] = str(event.get("answer") or "")
-            current["completed"] = True
+        elif target is not None and event_type == "done":
+            target["answer"] = str(event.get("answer") or "")
+            target["completed"] = True
+        elif target is not None and event_type == "error":
+            target["failures"].append({"tool_name": "", "error": str(event.get("message") or "runtime error"), "run_id": run_id})
 
     if current is not None:
         turns.append(current)
@@ -328,6 +346,7 @@ def _extract_trace(events: list[dict[str, Any]]) -> dict[str, Any]:
         "tool_errors": tool_errors,
         "event_counts": event_counts,
         "workspace": workspace,
+        "warnings": list(dict.fromkeys(warnings)),
     }
 
 
@@ -358,11 +377,16 @@ def _case_from_extracted(
     trace_sha256: str,
 ) -> tuple[EvalCase, list[dict[str, Any]], list[str]]:
     raw_turns = extracted["turns"]
-    warnings: list[str] = []
+    warnings: list[str] = list(extracted.get("warnings", []))
     if not raw_turns:
         raise ValueError("Trace contains no user message and cannot become an evaluation case")
     if extracted["tool_errors"]:
         warnings.append(f"source Trace contains {extracted['tool_errors']} tool errors")
+    for index, turn in enumerate(raw_turns, 1):
+        if turn.get("completed") is False:
+            warnings.append(f"source turn {index} has no completion event; review its starting state and expected outcome")
+        if any(not failure.get("tool_name") for failure in turn.get("failures", [])):
+            warnings.append(f"source turn {index} contains runtime errors")
     if not request.project_id:
         warnings.append("bind a project manifest before validation or publishing")
     elif request.project_id not in load_projects():
@@ -398,6 +422,7 @@ def _case_from_extracted(
         "source_event_counts": extracted["event_counts"],
     }
     if len(turns) == 1:
+        metadata["source_turn_index"] = turns[0].metadata["source_turn_index"]
         case = EvalCase(
             id=_safe_case_id(request.case_id, request.session_id),
             name=request.name.strip() or turns[0].prompt[:120],
@@ -415,6 +440,37 @@ def _case_from_extracted(
             metadata=metadata,
         )
     return case, candidate_checkers, warnings
+
+
+async def _initial_assertions(case: EvalCase, fixture: Path, manifest: ProjectManifest) -> dict[str, Any]:
+    """Inspect structural hard criteria on a disposable, materialized baseline.
+
+    This is evidence for review, not a release gate: read-only tasks and
+    preservation criteria can legitimately pass before an Agent runs. Test
+    commands and runtime/answer criteria are explicitly left unevaluated.
+    """
+    results: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    groups = [("case", case.hard_checkers)] + [
+        (f"turn:{index}", turn.hard_checkers) for index, turn in enumerate(case.turns, 1)
+    ]
+    with tempfile.TemporaryDirectory(prefix="trace-case-baseline_", ignore_cleanup_errors=True) as directory:
+        workspace = Path(directory)
+        materialize_fixture(fixture, workspace, manifest)
+        for scope, configs in groups:
+            for index, config in enumerate(configs):
+                kind = str(config["type"])
+                identity = {"scope": scope, "index": index, "checker": kind}
+                if not (kind.startswith("file_") or kind.startswith("uml_") or kind == "json_field"):
+                    skipped.append({**identity, "reason": "requires execution, an answer, or a runtime baseline"})
+                    continue
+                result = await build_checkers([config])[0].check(workspace)
+                results.append({**identity, "passed": result.passed, "message": result.message})
+    return {
+        "results": results,
+        "skipped": skipped,
+        "all_checked_passed": bool(results) and all(item["passed"] for item in results),
+    }
 
 
 class TraceCaseFactory:
@@ -638,6 +694,7 @@ class TraceCaseFactory:
     def _validation_fingerprint(self, draft: TraceCaseDraft) -> str:
         fixture, manifest = self._fixture_inputs(draft)
         inputs = {
+            "validation_version": 2,
             "case": draft.case.model_dump(mode="json"),
             "manifest": manifest.model_dump(mode="json"),
             "fixture_sha256": _capture_digest(fixture)[0],
@@ -668,6 +725,7 @@ class TraceCaseFactory:
         fixture, manifest = self._fixture_inputs(draft)
         if using_capture and _capture_digest(fixture)[0] != capture.get("sha256"):
             raise ValueError("captured fixture changed; capture a new snapshot before validation")
+        initial_assertions = await _initial_assertions(draft.case, fixture, manifest)
         result = await self.runner.run_case(
             draft.case,
             **({"fixture_override": (fixture, manifest)} if using_capture else {}),
@@ -675,12 +733,14 @@ class TraceCaseFactory:
                 "trace_case_draft_id": draft.draft_id,
                 "trace_case_source_session_id": draft.session_id,
                 "trace_case_fixture_capture_id": capture.get("capture_id", ""),
+                "trace_case_initial_assertions": initial_assertions,
             },
         )
         current = _load_draft(draft_id)
         if current is None or self._validation_fingerprint(current) != fingerprint:
             raise ValueError("case or fixture changed during validation; validate again")
         result.metadata["trace_case_validation_fingerprint"] = fingerprint
+        result.metadata["trace_case_initial_assertions"] = initial_assertions
         draft.status = "validated" if result.passed else "validation_failed"
         draft.validation = result.model_dump(mode="json")
         _save_draft(draft)

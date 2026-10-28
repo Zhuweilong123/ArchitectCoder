@@ -32,6 +32,121 @@ def test_extract_trace_preserves_turns_and_supported_tools():
     assert set(extracted["supported_tool_names"]).issubset(EVAL_TRACE_TOOL_NAMES)
 
 
+def test_interleaved_run_evidence_stays_with_its_source_turn():
+    extracted = _extract_trace([
+        {"event_type": "user_message", "message": "first", "run_id": "r1"},
+        {"event_type": "user_message", "message": "second", "run_id": "r2"},
+        {"event_type": "tool_call", "tool_name": "apply_changes", "run_id": "r1", "background_task_id": "task"},
+        {"event_type": "done", "answer": "first answer", "run_id": "r1"},
+        {"event_type": "error", "message": "second failed", "run_id": "r2"},
+        {"event_type": "done", "answer": "unknown", "run_id": "orphan", "background_task_id": "other"},
+    ])
+    first, second = extracted["turns"]
+    assert first["tool_names"] == ["apply_changes"]
+    assert first["answer"] == "first answer" and first["completed"]
+    assert second["answer"] == "" and not second["completed"]
+    assert second["failures"][0]["error"] == "second failed"
+    _, candidates, warnings = _case_from_extracted(TraceCaseDraftRequest(session_id="interleaved"), extracted, "hash")
+    assert candidates[0]["_evidence"]["turn_index"] == 1
+    assert any("unassigned" in warning for warning in warnings)
+    assert any("runtime errors" in warning for warning in warnings)
+    assert any("no completion" in warning for warning in warnings)
+
+
+def test_filtered_single_turn_keeps_original_source_index():
+    extracted = _extract_trace([
+        {"event_type": "user_message", "message": " "},
+        {"event_type": "user_message", "message": "fix"},
+        {"event_type": "tool_call", "tool_name": "apply_changes"},
+    ])
+    case, candidates, _ = _case_from_extracted(TraceCaseDraftRequest(session_id="filtered"), extracted, "hash")
+    assert case.prompt == "fix"
+    assert case.metadata["source_turn_index"] == candidates[0]["_evidence"]["turn_index"] == 2
+
+
+def test_legacy_trace_uses_chronology_but_not_unidentified_background_events():
+    extracted = _extract_trace([
+        {"event_type": "user_message", "message": "legacy"},
+        {"event_type": "tool_call", "tool_name": "read_file", "run_id": "legacy-run"},
+        {"event_type": "done", "answer": "background", "background_task_id": "unknown"},
+        {"event_type": "done", "answer": "foreground", "run_id": "legacy-run"},
+    ])
+    assert extracted["turns"][0]["answer"] == "foreground"
+    assert extracted["turns"][0]["tool_names"] == ["read_file"]
+    assert any("chronological fallback" in warning for warning in extracted["warnings"])
+    assert any("unassigned" in warning for warning in extracted["warnings"])
+
+
+@pytest.mark.parametrize("checker", [
+    {"type": "answer_contains_all", "texts": []},
+    {"type": "answer_ordered_contains", "texts": [" "]},
+    {"type": "answer_contains_all", "texts": "fixed"},
+    {"type": "file_contains", "path": "src/main.py", "text": ""},
+    {"type": "file_exists", "path": " "},
+    {"type": "paths_unchanged", "paths": []},
+    {"type": "uml_sequence", "path": "design.umlproj", "labels": []},
+    {"type": "trace_policy", "required_tools": []},
+])
+def test_case_rejects_vacuous_hard_checkers(checker):
+    with pytest.raises(ValueError, match="non-empty"):
+        EvalCase(id="empty", prompt="fix", hard_checkers=[checker])
+
+
+@pytest.mark.parametrize("checker", [
+    {"type": "uml_method_signature", "path": "design.umlproj", "class_name": "A", "method": "run", "params": ""},
+    {"type": "uml_component_names", "path": "design.umlproj", "names": []},
+    {"type": "uml_sequence_exact", "path": "design.umlproj", "labels": []},
+    {"type": "json_field", "path": "config.json", "field": "optional", "expected": None},
+    {"type": "trace_policy", "max_tool_calls": 0},
+])
+def test_empty_exact_expectations_are_not_vacuous(checker):
+    assert EvalCase(id="exact", prompt="inspect", hard_checkers=[checker]).hard_checkers
+
+
+def test_initial_assertions_use_materialized_copy_and_skip_runtime_checks(tmp_path, monkeypatch):
+    from extensions.evals import fixture_materializer
+    from extensions.evals.models import EvalTurn, ProjectManifest
+    fixtures = tmp_path / "fixtures"
+    base, overlay = fixtures / "base", fixtures / "overlay"
+    base.mkdir(parents=True)
+    overlay.mkdir()
+    (base / "main.py").write_text("broken", encoding="utf-8")
+    (overlay / "main.py").write_text("fixed", encoding="utf-8")
+    monkeypatch.setattr(fixture_materializer, "fixtures_dir", lambda: fixtures)
+    case = EvalCase(id="initial", prompt="fix", hard_checkers=[
+        {"type": "file_contains", "path": "main.py", "text": "fixed"},
+        {"type": "paths_unchanged", "paths": ["main.py"]},
+        {"type": "pytest"},
+        {"type": "answer_contains_all", "texts": ["fixed"]},
+    ], turns=[EvalTurn(prompt="next", hard_checkers=[{"type": "file_exists", "path": "later.py"}])])
+    manifest = ProjectManifest(id="initial", fixture="overlay", base_fixture="base")
+    result = asyncio.run(trace_cases._initial_assertions(case, overlay, manifest))
+    assert [(item["scope"], item["passed"]) for item in result["results"]] == [("case", True), ("turn:1", False)]
+    assert [item["checker"] for item in result["skipped"]] == ["paths_unchanged", "pytest", "answer_contains_all"]
+    assert not result["all_checked_passed"]
+    assert (base / "main.py").read_text() == "broken"
+    assert (overlay / "main.py").read_text() == "fixed"
+
+
+@pytest.mark.parametrize("initially_passed", [False, True])
+def test_validation_records_initial_criteria_without_rejecting_valid_read_tasks(captured_case, initially_passed):
+    factory, draft_id = captured_case
+    draft = trace_cases._load_draft(draft_id)
+    if initially_passed:
+        draft.case.hard_checkers = [{"type": "file_exists", "path": "src/main.py"}]
+        trace_cases._save_draft(draft)
+    class PassingRunner:
+        async def run_case(self, case, result_metadata=None, **kwargs):
+            assert result_metadata["trace_case_initial_assertions"]["all_checked_passed"] is initially_passed
+            return EvalResult(run_id="run", case_id=case.id, status="passed", passed=True, metadata=result_metadata)
+    factory.runner = PassingRunner()
+    validated = asyncio.run(factory.validate(draft_id))
+    assert validated["status"] == "validated"
+    assert validated["validation"]["metadata"]["trace_case_initial_assertions"]["results"][0]["passed"] is initially_passed
+    factory.review(draft_id, TraceCaseReviewRequest(project_id=draft.case.project_id, hard_checkers=draft.case.hard_checkers))
+    assert factory.get(draft_id)["validation"] is None
+
+
 def test_observed_tools_are_scoped_candidates_not_automatic_pass_conditions():
     extracted = _extract_trace([
         {"event_type": "user_message", "message": "fix code"},

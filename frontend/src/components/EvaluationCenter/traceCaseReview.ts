@@ -2,7 +2,7 @@ import type { CheckerConfig } from '../../types/evaluation';
 import type { TraceCaseDraft, TraceCaseTurn } from '../../services/api';
 
 export function draftTurns(draft: TraceCaseDraft): TraceCaseTurn[] {
-  const turns = draft.case.turns?.length ? draft.case.turns : [{ prompt: draft.case.prompt, checkers: [], hard_checkers: [], metadata: {} }];
+  const turns = draft.case.turns?.length ? draft.case.turns : [{ prompt: draft.case.prompt, checkers: [], hard_checkers: [], metadata: { source_turn_index: draft.case.metadata?.source_turn_index || 1 } }];
   return turns.map((turn, index) => ({
     ...turn,
     checkers: turn.checkers || [],

@@ -117,7 +117,7 @@ export const TRACE_CHECKER_DEFINITIONS: CheckerDefinition[] = [
   { type: 'uml_component_names', label: 'UML 组件名称', fields: [{ key: 'path', label: '路径', required: true }, { key: 'names', label: '组件名称', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
   { type: 'uml_relation', label: 'UML 关系', fields: [{ key: 'path', label: '路径', required: true }, { key: 'source', label: '源元素', required: true }, { key: 'target', label: '目标元素', required: true }, { key: 'relation_type', label: '关系类型' }, { key: 'diagram', label: '图表名称' }] },
   { type: 'uml_method', label: 'UML 方法', fields: [{ key: 'path', label: '路径', required: true }, { key: 'class_name', label: '类名', required: true }, { key: 'method', label: '方法名', required: true }, { key: 'diagram', label: '图表名称' }] },
-  { type: 'uml_method_signature', label: 'UML 方法签名', fields: [{ key: 'path', label: '路径', required: true }, { key: 'class_name', label: '类名', required: true }, { key: 'method', label: '方法名', required: true }, { key: 'params', label: '参数', kind: 'list', required: true }, { key: 'return_type', label: '返回类型' }, { key: 'diagram', label: '图表名称' }] },
+  { type: 'uml_method_signature', label: 'UML 方法签名', fields: [{ key: 'path', label: '路径', required: true }, { key: 'class_name', label: '类名', required: true }, { key: 'method', label: '方法名', required: true }, { key: 'params', label: '参数', required: true }, { key: 'return_type', label: '返回类型' }, { key: 'diagram', label: '图表名称' }] },
   { type: 'uml_sequence', label: 'UML 时序包含', fields: [{ key: 'path', label: '路径', required: true }, { key: 'labels', label: '顺序标签', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
   { type: 'uml_sequence_exact', label: 'UML 时序精确匹配', fields: [{ key: 'path', label: '路径', required: true }, { key: 'labels', label: '精确标签', kind: 'list', required: true }, { key: 'diagram', label: '图表名称' }] },
 ];
@@ -132,9 +132,29 @@ export function validateCheckerConfigs(configs: CheckerConfig[], scope: string):
     if (!definition) throw new Error(`${scope}[${index}] 的 Checker 类型无效`);
     const missing = definition.fields.filter((field) => {
       const value = config[field.key];
-      return field.required && (value === undefined || value === '' || (Array.isArray(value) && value.length === 0));
+      const allowEmpty = (config.type === 'uml_method_signature' && field.key === 'params')
+        || (config.type === 'json_field' && field.key === 'expected')
+        || (config.type === 'uml_component_names' && field.key === 'names')
+        || (config.type === 'uml_sequence_exact' && field.key === 'labels');
+      return field.required && (value === undefined
+        || (!allowEmpty && (value === null || typeof value === 'string' && !value.trim() || Array.isArray(value) && value.length === 0)));
     });
     if (missing.length) throw new Error(`${scope}[${index}] 缺少：${missing.map((field) => field.label).join('、')}`);
+    if (config.type === 'trace_policy' && config.max_tool_calls == null
+      && !['required_tools', 'forbidden_tools', 'required_event_types', 'required_contract_statuses'].some((key) => Array.isArray(config[key]) && config[key].length > 0)) {
+      throw new Error(`${scope}[${index}] 工具策略必须包含至少一个约束`);
+    }
+    if (config.type === 'trace_policy' && config.max_tool_calls != null
+      && (!Number.isInteger(config.max_tool_calls) || config.max_tool_calls < 0)) {
+      throw new Error(`${scope}[${index}] 最大工具调用必须是非负整数`);
+    }
+    for (const key of ['texts', 'paths', 'labels', 'names', 'required_tools', 'forbidden_tools', 'required_event_types', 'required_contract_statuses']) {
+      if (config[key] === undefined) continue;
+      const values = config[key];
+      if (!Array.isArray(values) || values.some((value) => typeof value !== 'string' || !value.trim())) {
+        throw new Error(`${scope}[${index}] ${key} 必须是非空字符串组成的数组`);
+      }
+    }
     if (config.type === 'answer_contains_groups') {
       const ids = new Set<string>();
       if (!Array.isArray(config.groups) || !config.groups.length) {
