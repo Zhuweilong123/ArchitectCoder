@@ -153,8 +153,8 @@ def _validate_checker_contract(configs: list[JsonObject], scope: str) -> None:
                 f"foundation-tools-v1 protocol: {unsupported_tools}"
             )
         for key in ("required_tools", "forbidden_tools", "required_event_types", "required_contract_statuses"):
-            values = config.get(key, [])
-            if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+            constraint_values = config.get(key, [])
+            if not isinstance(constraint_values, list) or any(not isinstance(value, str) or not value.strip() for value in constraint_values):
                 raise ValueError(f"{scope}[{index}] {key} must contain non-empty strings")
         limit = config.get("max_tool_calls")
         if limit is not None and (type(limit) is not int or limit < 0):
